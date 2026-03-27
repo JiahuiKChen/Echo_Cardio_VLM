@@ -212,11 +212,28 @@ logs/
 data/
 tmp/
 *.tmp
+.venv-echoprime/
 
 # Local workspace dependencies and clones
 EchoPrime/
 MIMIC-IV-Data-Pipeline/
+model_data/
+derived/
 
 # Large local reference files (kept outside git)
 *.pdf
 *.zip
+
+# Common ML/data artifacts
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.npz
+*.npy
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.dcm
+*.dicom
