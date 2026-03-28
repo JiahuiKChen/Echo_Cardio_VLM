@@ -19,7 +19,8 @@ Usage:
     [--billing-project mimic-iv-anesthesia] \
     [--run-baseline true|false] \
     [--extract-max-clips 1000] \
-    [--extract-max-clips-per-study 2]
+    [--extract-max-clips-per-study 2] \
+    [--extract-num-workers 1]
 EOF
 }
 
@@ -41,12 +42,14 @@ BILLING_PROJECT="${ECHO_AI_BILLING_PROJECT:-}"
 RUN_BASELINE="false"
 EXTRACT_MAX_CLIPS=1000
 EXTRACT_MAX_CLIPS_PER_STUDY=2
+EXTRACT_NUM_WORKERS=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --billing-project) BILLING_PROJECT="$2"; shift 2 ;;
     --run-baseline) RUN_BASELINE="$(to_bool "$2")"; shift 2 ;;
     --extract-max-clips) EXTRACT_MAX_CLIPS="$2"; shift 2 ;;
     --extract-max-clips-per-study) EXTRACT_MAX_CLIPS_PER_STUDY="$2"; shift 2 ;;
+    --extract-num-workers) EXTRACT_NUM_WORKERS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "[error] Unknown argument: $1" >&2
@@ -107,7 +110,8 @@ DOWNLOAD_ROOT="${ECHO_AI_DATA_ROOT}/cloud_cohorts/stage_d_500study_scc"
   --require-measurement-link true \
   --gcs-bucket "mimic-iv-echo-1.0.physionet.org" \
   --extract-max-clips "${EXTRACT_MAX_CLIPS}" \
-  --extract-max-clips-per-study "${EXTRACT_MAX_CLIPS_PER_STUDY}"
+  --extract-max-clips-per-study "${EXTRACT_MAX_CLIPS_PER_STUDY}" \
+  --extract-num-workers "${EXTRACT_NUM_WORKERS}"
 
 ./scripts/run_cloud_cohort_postprocess.sh \
   --billing-project "${BILLING_PROJECT}" \

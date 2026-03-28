@@ -39,6 +39,7 @@ BILLING_PROJECT="${ECHO_AI_BILLING_PROJECT:-mimic-iv-anesthesia}"
 RUN_BASELINE="false"
 EXTRACT_MAX_CLIPS=1000
 EXTRACT_MAX_CLIPS_PER_STUDY=2
+EXTRACT_NUM_WORKERS=4
 SGE_PROJECT="mimicecho"
 JOB_NAME="echo_stage_d"
 
@@ -48,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --run-baseline) RUN_BASELINE="$(to_bool "$2")"; shift 2 ;;
     --extract-max-clips) EXTRACT_MAX_CLIPS="$2"; shift 2 ;;
     --extract-max-clips-per-study) EXTRACT_MAX_CLIPS_PER_STUDY="$2"; shift 2 ;;
+    --extract-num-workers) EXTRACT_NUM_WORKERS="$2"; shift 2 ;;
     --sge-project) SGE_PROJECT="$2"; shift 2 ;;
     --job-name) JOB_NAME="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -97,7 +99,8 @@ fi
   --billing-project "${BILLING_PROJECT}" \
   --run-baseline "${RUN_BASELINE}" \
   --extract-max-clips "${EXTRACT_MAX_CLIPS}" \
-  --extract-max-clips-per-study "${EXTRACT_MAX_CLIPS_PER_STUDY}"
+  --extract-max-clips-per-study "${EXTRACT_MAX_CLIPS_PER_STUDY}" \
+  --extract-num-workers "${EXTRACT_NUM_WORKERS}"
 EOF
 chmod +x "${JOB_SCRIPT}"
 
@@ -106,6 +109,17 @@ if ! command -v qsub >/dev/null 2>&1; then
   exit 1
 fi
 
-QSUB_OUT="$(qsub -cwd -P "${SGE_PROJECT}" -N "${JOB_NAME}" -j y -o "${LOG_DIR}" "${JOB_SCRIPT}")"
+QSUB_OUT="$(qsub \
+  -cwd \
+  -P "${SGE_PROJECT}" \
+  -N "${JOB_NAME}" \
+  -j y \
+  -o "${LOG_DIR}" \
+  -l h_rt=6:00:00 \
+  -pe omp "${EXTRACT_NUM_WORKERS}" \
+  -l mem_per_core=4G \
+  "${JOB_SCRIPT}")"
 echo "${QSUB_OUT}"
 echo "[info] Job script: ${JOB_SCRIPT}"
+echo "[info] Monitor with: qstat -u \$(whoami)"
+echo "[info] Log will appear in: ${LOG_DIR}/"
