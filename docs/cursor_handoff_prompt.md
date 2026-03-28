@@ -2,27 +2,66 @@
 
 Last updated: 2026-03-27
 
-## Current Ground Truth
+## Current Ground Truth (confirmed by SCC support ticket, 2026-03-27)
 
-- SCC support confirmed this project is **restricted-only** for now.
+- SCC support (Aaron Fuegi) confirmed this project is **restricted-only**.
 - Canonical storage:
   - Backed-up: `/restricted/project/mimicecho` (200 GB)
   - Non-backed-up: `/restricted/projectnb/mimicecho` (800 GB)
-- For this project, use `scc4.bu.edu` for shell access to restricted paths.
-- Earlier path visibility failures on `scc1/scc2/geo` were expected under this setup.
+  - Total free baseline quota: **1 TB** (maximum free allowance).
+- The `/restricted` partition is **only accessible from `scc4.bu.edu`**.
+  - `scc1`, `scc2`, and `geo` **cannot** see these paths — this is expected, not a bug.
+- `scc4.bu.edu` does not resolve from external/public DNS.
+  - **Preferred access:** SCC OnDemand web interface (https://scc-ondemand.bu.edu)
+  - **Alternative:** SSH to scc1 first, then `ssh scc4` from there.
+  - **Alternative:** BU VPN then `ssh pkarim@scc4.bu.edu`.
+- If runs exceed 1 TB, the LPI must purchase additional space via BU's
+  BUYIN or SAAS programs:
+  https://www.bu.edu/tech/support/research/computing-resources/file-storage/proj-diskspace/#BUYINandSAAS
 
 ## Operational Strategy
 
-- Keep code, manifests, configs, summaries, metrics, and small derived artifacts in:
-  - `/restricted/project/mimicecho`
-- Keep raw DICOM and bulky transient preprocessing files in:
-  - `/restricted/projectnb/mimicecho`
-- Stay under quota by deleting raw DICOM/transient artifacts after:
-  1. checksum/integrity checks,
-  2. manifest creation,
-  3. successful encoding export.
+### Storage layout
+- `/restricted/project/mimicecho` (200 GB, backed-up):
+  - Code, manifests, configs, summaries, metrics
+  - **EchoPrime encoded outputs** (embeddings, encoded representations)
+  - Small derived artifacts (keyframes, LVEF manifests, split maps)
+- `/restricted/projectnb/mimicecho` (800 GB, non-backed-up):
+  - Raw DICOM downloads (transient)
+  - Bulky intermediate preprocessing files
 
-## Immediate Validation Steps
+### Storage discipline (stay within 1 TB free quota)
+- No additional storage purchase for now — adjust only if constraints appear.
+- Delete raw DICOMs from `/restricted/projectnb` after:
+  1. checksum/integrity verification,
+  2. manifest creation,
+  3. successful EchoPrime encoding export to `/restricted/project`.
+- This encode-then-purge cycle should keep usage well within limits.
+- Monitor usage with `df -h` before and after each batch.
+
+## How to Connect to scc4
+
+`scc4.bu.edu` does **not** resolve from external/public DNS. Three options:
+
+### Option A: SCC OnDemand (recommended by SCC support)
+1. Go to https://scc-ondemand.bu.edu
+2. Log in with BU credentials + Duo
+3. Open a terminal (Clusters → SCC Shell Access)
+4. From the shell, the restricted paths should be visible
+
+### Option B: Jump through scc1
+```bash
+ssh pkarim@scc1.bu.edu   # Duo 2FA
+ssh scc4                  # internal hop, no 2FA
+```
+
+### Option C: BU VPN + direct SSH
+```bash
+# Connect to BU VPN first, then:
+ssh pkarim@scc4.bu.edu
+```
+
+## Immediate Validation Steps (run on scc4)
 
 ```bash
 hostname
@@ -30,7 +69,7 @@ ls -ld /restricted/project/mimicecho /restricted/projectnb/mimicecho
 df -h /restricted/project/mimicecho /restricted/projectnb/mimicecho
 ```
 
-If these pass, proceed:
+If these pass, run the full canary with a single command:
 
 ```bash
 cd /restricted/project/mimicecho/code
@@ -41,6 +80,12 @@ git pull
 module load python3/3.10.12
 module load google-cloud-sdk/455.0.0
 
+./scripts/scc_canary_full_runner.sh
+```
+
+Or step by step:
+
+```bash
 ./scripts/scc_prepare_workspace.sh \
   --project-name mimicecho \
   --billing-project mimic-iv-anesthesia \

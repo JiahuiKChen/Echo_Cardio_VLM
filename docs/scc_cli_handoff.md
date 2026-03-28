@@ -26,63 +26,65 @@ Build a reproducible echocardiography AI pipeline on MIMIC-IV-ECHO with:
   - admission/time bridge (`hadm_id`) produces many usable RR/DS links
   - sample sidecar outputs were created for manual inspection
 
-## 3) Current blocker (important)
+## 3) Previous blocker (RESOLVED 2026-03-27)
 
-SCC shell confirms:
-- user is in group `mimicecho` (`id -Gn` includes it)
-- but project storage paths are missing:
-  - `/project/mimicecho`
-  - `/projectnb/mimicecho`
-  - `/restricted/project/mimicecho`
-  - `/restricted/projectnb/mimicecho`
-- `qstat -u pkarim` currently shows no active jobs
+SCC support (Aaron Fuegi) confirmed:
+- Project storage is on the `/restricted` partition **only**.
+- Paths `/restricted/project/mimicecho` (200 GB) and `/restricted/projectnb/mimicecho` (800 GB) exist and are writable.
+- The `/restricted` partition is **only visible from `scc4.bu.edu`**.
+- `scc1`, `scc2`, `geo` cannot see restricted paths — this was the cause of all previous path failures.
+- `scc4.bu.edu` does not resolve from external DNS; use SCC OnDemand, BU VPN, or jump through scc1.
+- Total free quota: 1 TB. If more is needed, LPI must purchase via BUYIN/SAAS program.
 
-Interpretation:
-- This is not a local-Mac issue and not a VS Code UI issue.
-- It is an SCC provisioning/mount/path visibility issue.
-- SCC support ticket has been opened.
+The blocker is resolved: paths exist, the issue was using the wrong login node.
 
 ## 4) Strategic decisions currently in effect
 
 - Keep EchoPrime encoding label-agnostic.
 - Keep measurements beyond LVEF exported now, integrate as downstream targets later.
-- Defer full note-conditioning integration until storage path/provisioning is fixed.
+- Defer full note-conditioning integration until after canary validation.
 - Do not run large data/training workflows on local Mac.
+- **Storage strategy:** No additional purchase for now.
+  - EchoPrime encoded outputs → `/restricted/project/mimicecho` (200 GB, backed-up).
+  - Raw DICOMs → `/restricted/projectnb/mimicecho` (800 GB, non-backed-up, transient).
+  - Purge raw DICOMs after checksum + manifest + successful encoding.
+  - Reassess only if storage constraints actually appear.
 
-## 5) Immediate plan once SCC storage is fixed
+## 5) Immediate plan (storage confirmed)
 
-1. Confirm canonical storage path from SCC support.
-2. Clone/pull repo on SCC under that path.
-3. Run workspace prep script.
-4. Run preflight checks.
-5. Run canary cohort.
-6. Run Stage D/scale jobs.
+1. ~~Confirm canonical storage path from SCC support.~~ **DONE** (2026-03-27)
+2. Connect to scc4 via SCC OnDemand, VPN+SSH, or scc1 jump.
+3. Clone/pull repo on SCC under `/restricted/project/mimicecho/code`.
+4. Run `scripts/scc_canary_full_runner.sh` (handles workspace prep + canary end-to-end).
+5. Review canary outputs in `outputs/diagnostics/canary_<timestamp>/`.
+6. If canary passes, proceed to Stage D/scale jobs.
 
-## 6) SCC commands to run after support confirms paths
+## 6) SCC commands to run (on scc4)
 
 ```bash
-# 0) Basic host/path sanity
-echo "host: $(hostname)"
-id -Gn
+# 0) Connect to scc4 (pick one method):
+#    a) SCC OnDemand: https://scc-ondemand.bu.edu → Clusters → SCC Shell Access
+#    b) Jump: ssh pkarim@scc1.bu.edu && ssh scc4
+#    c) VPN:  ssh pkarim@scc4.bu.edu
 
-# 1) Clone repo (example path; adjust if SCC gives different canonical path)
+# 1) Verify paths are visible
+hostname            # should show scc4*
+ls -ld /restricted/project/mimicecho /restricted/projectnb/mimicecho
+df -h /restricted/project/mimicecho /restricted/projectnb/mimicecho
+
+# 2) Clone/update repo
 mkdir -p /restricted/project/mimicecho/code
 cd /restricted/project/mimicecho/code
-git clone https://github.com/JiahuiKChen/Echo_Cardio_VLM.git
+git clone https://github.com/JiahuiKChen/Echo_Cardio_VLM.git 2>/dev/null || true
 cd Echo_Cardio_VLM
+git pull
 
-# 2) Prepare workspace (no local fallback)
-./scripts/scc_prepare_workspace.sh \
-  --project-name mimicecho \
-  --billing-project mimic-iv-anesthesia \
-  --setup-env true \
-  --run-preflight false
+# 3) Load modules
+module load python3/3.10.12
+module load google-cloud-sdk/455.0.0
 
-# 3) Run access preflight explicitly
-./scripts/preflight_data_access.sh \
-  --billing-project mimic-iv-anesthesia \
-  --bucket-primary mimic-iv-echo-1.0.physionet.org \
-  --bucket-fallback mimic-iv-echo-0.1.physionet.org
+# 4) Run full canary (single command — handles everything)
+./scripts/scc_canary_full_runner.sh
 ```
 
 ## 7) Minimal Codex CLI usage on Linux
