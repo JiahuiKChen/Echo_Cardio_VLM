@@ -381,7 +381,7 @@ tail -n +2 "${SELECTED_STUDIES_CSV}" | while IFS=, read -r subject_id study_id n
 
   existing=0
   if [[ -d "${study_dir}" ]]; then
-    existing="$(find "${study_dir}" -maxdepth 1 -type f -name '*.dcm' | wc -l | tr -d ' ')"
+    existing="$(find "${study_dir}" -maxdepth 1 -type f -name '*.dcm' 2>/dev/null | wc -l | tr -d ' ')"
   fi
 
   if [[ "${existing}" -ge "${n_dicoms}" ]]; then
@@ -398,7 +398,7 @@ tail -n +2 "${SELECTED_STUDIES_CSV}" | while IFS=, read -r subject_id study_id n
     "${src_uri}" \
     "${parent_dir}"
 
-  actual="$(find "${study_dir}" -maxdepth 1 -type f -name '*.dcm' | wc -l | tr -d ' ')"
+  actual="$(find "${study_dir}" -maxdepth 1 -type f -name '*.dcm' 2>/dev/null | wc -l | tr -d ' ')"
   status="ok"
   if [[ "${actual}" -lt "${n_dicoms}" ]]; then
     status="incomplete"
