@@ -64,22 +64,25 @@ done
 JOB_SCRIPT="$(mktemp "${LOG_DIR}/stage_d_500study.XXXXXX.sh")"
 cat > "${JOB_SCRIPT}" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
 set -x
+
 cd "${REPO_ROOT}"
 
-if [[ -f /etc/profile.d/modules.sh ]]; then
-  source /etc/profile.d/modules.sh >/dev/null 2>&1 || true
-fi
-if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile ]]; then
-  source /etc/profile >/dev/null 2>&1 || true
-fi
-if ! command -v module >/dev/null 2>&1 && [[ -f /etc/bashrc ]]; then
-  source /etc/bashrc >/dev/null 2>&1 || true
-fi
-if ! command -v module >/dev/null 2>&1 && [[ -f /usr/share/Modules/init/bash ]]; then
-  source /usr/share/Modules/init/bash >/dev/null 2>&1 || true
-fi
+# Module init requires relaxed shell — profile scripts reference unset vars
+set +eu
+for init_file in \
+    /etc/profile.d/modules.sh \
+    /etc/profile \
+    /etc/bashrc \
+    /usr/share/Modules/init/bash; do
+  if command -v module >/dev/null 2>&1; then
+    break
+  fi
+  if [[ -f "\${init_file}" ]]; then
+    source "\${init_file}" >/dev/null 2>&1 || true
+  fi
+done
+set -eu
 
 if ! command -v module >/dev/null 2>&1; then
   echo "[error] Could not initialize SCC module command in batch shell." >&2
@@ -88,6 +91,8 @@ fi
 
 module load python3/3.10.12
 module load google-cloud-sdk/455.0.0
+
+set -o pipefail
 
 if [[ -f ./scc_env.sh ]]; then
   source ./scc_env.sh

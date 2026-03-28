@@ -39,22 +39,24 @@ done
 JOB_SCRIPT="$(mktemp "${LOG_DIR}/canary_2study.XXXXXX.sh")"
 cat > "${JOB_SCRIPT}" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
 set -x
+
 cd "${REPO_ROOT}"
 
-if [[ -f /etc/profile.d/modules.sh ]]; then
-  source /etc/profile.d/modules.sh >/dev/null 2>&1 || true
-fi
-if ! command -v module >/dev/null 2>&1 && [[ -f /etc/profile ]]; then
-  source /etc/profile >/dev/null 2>&1 || true
-fi
-if ! command -v module >/dev/null 2>&1 && [[ -f /etc/bashrc ]]; then
-  source /etc/bashrc >/dev/null 2>&1 || true
-fi
-if ! command -v module >/dev/null 2>&1 && [[ -f /usr/share/Modules/init/bash ]]; then
-  source /usr/share/Modules/init/bash >/dev/null 2>&1 || true
-fi
+set +eu
+for init_file in \
+    /etc/profile.d/modules.sh \
+    /etc/profile \
+    /etc/bashrc \
+    /usr/share/Modules/init/bash; do
+  if command -v module >/dev/null 2>&1; then
+    break
+  fi
+  if [[ -f "\${init_file}" ]]; then
+    source "\${init_file}" >/dev/null 2>&1 || true
+  fi
+done
+set -euo pipefail
 
 if ! command -v module >/dev/null 2>&1; then
   echo "[error] Could not initialize SCC module command in batch shell." >&2
