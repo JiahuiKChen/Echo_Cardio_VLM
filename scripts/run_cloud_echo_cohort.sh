@@ -392,13 +392,26 @@ tail -n +2 "${SELECTED_STUDIES_CSV}" | while IFS=, read -r subject_id study_id n
 
   src_uri="gs://${GCS_BUCKET}/files/${pfx}/p${subject_id}/s${study_id}"
   echo "[copy] ${src_uri} -> ${study_dir}"
-  gcloud storage cp \
-    --recursive \
-    --billing-project="${BILLING_PROJECT}" \
-    "${src_uri}" \
-    "${parent_dir}"
+
+  dl_ok=false
+  for attempt in 1 2 3; do
+    if gsutil -u "${BILLING_PROJECT}" -m cp -r \
+        "${src_uri}" "${parent_dir}" 2>&1; then
+      dl_ok=true
+      break
+    fi
+    echo "[warn] Download attempt ${attempt} failed for study=${study_id}; retrying in 5s..."
+    find "${study_dir}" -name '*.gstmp' -delete 2>/dev/null || true
+    sleep 5
+  done
 
   actual="$(find "${study_dir}" -maxdepth 1 -type f -name '*.dcm' 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${dl_ok}" != "true" && "${actual}" -lt "${n_dicoms}" ]]; then
+    echo "[error] Failed to download study=${study_id} after 3 attempts (got ${actual}/${n_dicoms})"
+    echo "${subject_id},${study_id},${n_dicoms},${actual},download_failed" >> "${DOWNLOAD_REPORT_CSV}"
+    continue
+  fi
+
   status="ok"
   if [[ "${actual}" -lt "${n_dicoms}" ]]; then
     status="incomplete"
