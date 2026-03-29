@@ -185,49 +185,91 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 
 ## Success metrics
 
-### Milestone 1
+### Milestone 1 (COMPLETE — 2026-03-28)
 
 - metadata and manifest pipeline runs end to end on a pilot subset
 - DICOM ingestion succeeds on a nontrivial sample
 - clip normalization is deterministic
 
-### Milestone 2
+### Milestone 2 (COMPLETE — 2026-03-28)
 
-- EchoPrime smoke test is completed or ruled out with concrete blocker documentation
+- Stage D 500-study pipeline completed on SCC
+- 37,961 DICOMs across 500 studies, zero read failures
+- 21,393 cine clips, 16,568 still images
+- 489 studies with usable LVEF measurements
+- LVEF range 10–85 (median 55), good clinical spread
+- Raw pixel baseline establishes floor: test AUC ≈ 0.37 (at chance)
 - study and clip counts after QC are known
 
-### Milestone 3
+### Milestone 3 (NEXT)
 
-- first reconstruction model produces stable training and visually credible outputs on a filtered view subset
+- EchoPrime embedding baseline demonstrates vision-only AUC significantly above floor
+- This validates that the curated dataset contains learnable visual signal for LVEF
 
 ### Milestone 4
 
-- evaluation table shows at least one meaningful utility signal beyond image aesthetics
+- first reconstruction model produces stable training and visually credible outputs on a filtered view subset
 
-## Offline evaluation plan
+### Milestone 5
 
-Adapt the evaluation philosophy of the Nature CXR paper, but make it echo-specific.
+- evaluation table shows incremental value across the modality-isolation ladder (E1–E6)
 
-### For reconstruction
+## Evaluation strategy: modality isolation
+
+A core principle of this project is strict modality isolation in the evaluation stack.
+Each source of information (vision, structured measurements, clinical notes) must be
+evaluated independently before any multimodal combination is tested. This prevents
+data leakage, enables clean ablation tables, and produces the layered contribution
+narrative that journal reviewers expect.
+
+### Evaluation ladder (each row is a distinct experiment)
+
+| Row | Input modality | Model | What it proves |
+|-----|---------------|-------|---------------|
+| E1 | Raw keyframe pixels | PCA + Ridge | Floor baseline (completed: test AUC ≈ 0.37) |
+| E2 | EchoPrime 523-d clip embeddings | Ridge / LogReg | Do pretrained echo features capture function from vision alone? |
+| E3 | Learned reconstruction embeddings | Ridge / LogReg | Are our trained representations competitive with EchoPrime? |
+| E4 | Structured measurements only (excl. LVEF) | Ridge / LogReg | Tabular ceiling — how far can non-imaging data go? |
+| E5 | Vision embeddings + measurements | Fusion model | Does multimodal fusion add incremental value? |
+| E6 | Vision + measurements + notes | Fusion model | Full multimodal contribution |
+
+Rows E1–E3 are vision-only and must be completed before any multimodal experiment.
+Structured measurements must never be included as input features when LVEF is the target
+without explicitly excluding LVEF and LVEF-derived fields from the input, to avoid leakage.
+
+### Role of structured measurements (deferred to Phase 6+)
+
+Structured measurements are most valuable as:
+- **Evaluation signal**: Do reconstructed echoes produce anatomy consistent with original measurements?
+- **Conditioning input**: Generate echoes conditioned on target measurements (controllable generation).
+- **Retrieval evaluation**: Can learned embeddings retrieve studies with similar measurement profiles?
+- **Tabular ceiling**: Row E4 establishes an upper bound for non-imaging prediction.
+
+They should NOT be used as input features in Phase 4 (baseline) or Phase 5 (reconstruction)
+experiments. This preserves the clean ablation story and avoids the leakage concern.
+
+### Publication-quality evaluation (adapted from Nature CXR paper)
+
+#### For reconstruction (Phase 5–6)
 
 - pixel-space metrics: MSE, MAE, PSNR, SSIM
 - latent or feature-space reconstruction similarity using a frozen encoder
 - view consistency score from a frozen view classifier
-- structured-measurement prediction agreement where feasible
+- structured-measurement prediction agreement (measurements as evaluation, not input)
 - clinician-style qualitative review of view identity and major anatomy
 
-### For representation utility
+#### For representation utility (Phase 4)
 
-- linear probe or lightweight regressor on structured measurements
-- retrieval of nearest clips or studies by diagnosis-related measurements
+- linear probe or lightweight regressor on LVEF from embeddings alone
+- retrieval of nearest clips or studies by learned embedding similarity
 - optional downstream task transfer on public datasets if format alignment is manageable
 
-### For later generation
+#### For conditional generation (Phase 6+)
 
 - fidelity and diversity metrics adapted to echo
 - expert reader study
 - view-conditional correctness
-- measurement-conditioned consistency
+- measurement-conditioned consistency (measurements as conditioning input)
 - downstream augmentation utility
 
 ## Ablation ideas
@@ -258,16 +300,24 @@ Adapt the evaluation philosophy of the Nature CXR paper, but make it echo-specif
 
 ## Milestone boundaries
 
-- Phase 0-3 are pipeline and data readiness
-- Phase 4 is the first meaningful model baseline
-- Phase 5 is the first reconstruction-first experiment
-- Phase 6 is the decision gate on whether to scale or pivot
-- Phase 7 is manuscript framing and scale-up planning
+- Phase 0–3: pipeline and data readiness (COMPLETE)
+- Phase 4a: vision-only EchoPrime baseline (NEXT)
+- Phase 4b: tabular-only measurement baseline (deferred, provides ceiling)
+- Phase 5: reconstruction-first experiment
+- Phase 6: multimodal integration and evaluation ladder (measurements + notes as inputs)
+- Phase 7: decision gate on scale-up or pivot
+- Phase 8: manuscript framing and scale-up planning
+
+## Resolved questions
+
+- Storage paths: `/restricted/project/mimicecho` (200 GB backed-up) and `/restricted/projectnb/mimicecho` (800 GB non-backed-up). Confirmed by SCC support 2026-03-27.
+- Login node: scc4.bu.edu (restricted partition only visible from scc4).
+- Per-study storage footprint: ~76 DICOMs/study, ~266 MB raw DICOM/study, ~1.5 MB extracted .npz/study.
+- Compute: SCC batch jobs via qsub with `-P mimicecho`. Compute nodes can access `/restricted` paths.
 
 ## Open questions
 
 - Do you also have MIMIC-IV Note access for the linked echo reports?
-- What exact mount path and write permissions are stable for the external drive from the execution environment?
-- How many clean A4C-like clips remain after view filtering on MIMIC-IV-ECHO?
-- What is the actual per-study storage footprint after pilot download?
-- Which future scale hardware will be available first: Linux workstation, cloud GPU, or lab server?
+- How many clean A4C-like clips remain after view filtering on MIMIC-IV-ECHO? (EchoPrime view classifier will answer this)
+- Which future scale hardware will be available for Phase 5 reconstruction training?
+- What is the achievable AUC ceiling from structured measurements alone (excl. LVEF)?

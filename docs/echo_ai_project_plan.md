@@ -163,41 +163,71 @@
 - raw-to-derived mapping table
 - per-study logs
 
-## Phase 4: First baseline model experiment
+## Phase 4a: Vision-only EchoPrime baseline (NEXT)
 
 ### Objectives
 
-- establish a low-risk baseline before any bespoke generative model claims
+- prove that pretrained echo video features capture cardiac function from vision alone
+- establish a strong vision-only baseline before any multimodal experiments
+- strict modality isolation: no structured measurements as input features
 
 ### Tasks
 
-- run EchoPrime encoder or another frozen baseline as a feature extractor
-- test simple regression or retrieval against structured measurements
-- quantify the utility of filtered clips and manifests
+- stage EchoPrime weights (echo_prime_encoder.pt, view_classifier.pt) to SCC
+- extract 523-d embeddings (512 video + 11 view) for all Stage D clips
+- train Ridge regression (LVEF continuous) and LogReg (LVEF binary) on embeddings
+- compare test AUC/MAE/R² against the raw-pixel floor (E1 vs E2 in evaluation ladder)
+- analyze view distribution from the classifier output
 
 ### Deliverables
 
-- baseline feature benchmark
-- downstream sanity-check table
+- clip embedding NPZ and manifest
+- embedding-based LVEF baseline metrics (train/val/test)
+- view distribution summary across 489 studies
+- comparison table: raw pixels vs EchoPrime embeddings
 
 ### Dependencies
 
-- clip manifest
-- extracted clips
+- Stage D extracted clips (COMPLETE)
+- LVEF still manifest with train/val/test splits (COMPLETE)
+- EchoPrime pretrained weights on SCC
 
 ### Risks
 
-- weak utility due to mismatch between public data and pretrained model assumptions
+- weak utility due to mismatch between public MIMIC data and EchoPrime's training distribution
+- CUDA memory pressure if batch size is too large
 
 ### Exit criteria
 
-- at least one baseline metric confirms that the curated subset is usable
+- EchoPrime embedding test AUC significantly above 0.50 (the raw-pixel floor is 0.37)
+- if AUC > 0.65: strong signal, proceed to Phase 5
+- if AUC 0.50–0.65: moderate signal, investigate view filtering before Phase 5
+- if AUC < 0.50: weak signal, reassess data quality or EchoPrime applicability
 
 ### Reproducibility artifacts
 
-- config file
-- run logs
-- baseline predictions table
+- embedding extraction config and manifest
+- baseline predictions CSV
+- metrics JSON
+- view distribution summary
+
+## Phase 4b: Tabular measurement ceiling (deferred)
+
+### Objectives
+
+- establish an upper bound for what structured measurements alone can predict
+- provide the "ceiling" row (E4) for the evaluation ladder
+
+### Tasks
+
+- extract non-LVEF structured measurements as tabular features
+- train Ridge/LogReg on measurement features → LVEF
+- compare against vision-only results from Phase 4a
+- this is a control experiment, not a main contribution
+
+### Exit criteria
+
+- tabular ceiling AUC and MAE are known for comparison in the manuscript
 
 ## Phase 5: First reconstruction or generation experiment
 
