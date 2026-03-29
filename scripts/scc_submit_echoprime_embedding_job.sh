@@ -120,7 +120,7 @@ fi
 
 GPU_FLAG=""
 if [[ "${USE_GPU}" == "true" ]]; then
-  GPU_FLAG="-l gpus=1 -l gpu_c=7.0"
+  GPU_FLAG="-l gpus=1 -l gpu_c=8.0 -l gpu_memory=48G"
 fi
 
 QSUB_OUT="$(qsub \

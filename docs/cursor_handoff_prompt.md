@@ -18,6 +18,17 @@ Last updated: 2026-03-27
 - If runs exceed 1 TB, the LPI must purchase additional space via BU's
   BUYIN or SAAS programs:
   https://www.bu.edu/tech/support/research/computing-resources/file-storage/proj-diskspace/#BUYINandSAAS
+- **GPU access is free** ("friendly user" mode — only CPU is charged).
+- Available shared GPUs (use `qgpus -v` for live status):
+  - A40: 68 total, 48 GB VRAM, CC 8.6 — best availability, default choice
+  - A6000: 77 total, 48 GB VRAM, CC 8.6 — also good availability
+  - A100: 5 total, 40 GB VRAM, CC 8.0 — limited
+  - A100-80G: 24 total, 80 GB VRAM, CC 8.0 — best for heavy training
+  - H200: 16 total, 144 GB VRAM, CC 9.0 — usually fully occupied
+- **Avoid V100s** (CC 7.0, 16 GB) — not supported by PyTorch 2.11.0+cu130.
+  Always request `-l gpu_c=8.0` minimum.
+- Login node interactive CPU limit: 15 min. Use `qsub` for anything heavier.
+- Default batch runtime: 12 hours. Buy-in nodes accept shared jobs ≤ 12 hours.
 
 ## Operational Strategy
 
