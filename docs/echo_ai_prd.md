@@ -228,10 +228,13 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 - H3 validated: using all ~43 videos/study vs 2 improves AUC by +0.061, MAE by -1.7 pts
 - Val/test gap minimal (0.967 vs 0.985), no overfitting
 
-### Milestone 5
+### Milestone 5 (COMPLETE — 2026-03-29)
 
-- Structured measurement baseline (E3) and first multimodal fusion (E5) evaluated on 500 studies
-- Tabular ceiling vs vision vs fusion comparison table complete
+- Structured measurement baseline (E3): **test AUC = 0.947**, MAE 8.6, R² 0.425
+- 39 features retained after leakage audit (3 excluded: biplane_lvef, lvef, lvef_upper)
+- 26% missing rate handled via median imputation
+- Top features clinically sensible: lvesd, lvot_vti, sept_e_prime, lvedd
+- Vision (0.985) > tabular (0.947) — clear gap creates headroom for fusion (E5)
 
 ### Milestone 6
 
@@ -258,7 +261,7 @@ narrative that journal reviewers expect.
 | E1 | Raw keyframe pixels | PCA + Ridge | Floor baseline | **Done**: test AUC ≈ 0.37 |
 | E2a | EchoPrime 512-d clip embeddings (2 clips/study) | Ridge | Do pretrained features capture function? | **Done**: test AUC = 0.924 |
 | E2b | EchoPrime 512-d embeddings (ALL clips/study, mean-pooled) | Ridge | Does multi-video aggregation improve over 2-clip? | **Done**: test AUC = 0.985 |
-| E3 | Structured measurements only (excl. LVEF) | Ridge / LogReg | Tabular ceiling — non-imaging upper bound | Pending |
+| E3 | Structured measurements only (39 features, excl. LVEF) | Ridge / LogReg | Tabular ceiling — non-imaging upper bound | **Done**: test AUC = 0.947 |
 | E4 | Clinical notes embeddings | Ridge / LogReg | Text-only prediction ceiling | Pending (requires note access) |
 | E5 | Vision + measurements (excl. LVEF) | Fusion MLP | Does multimodal fusion add value over either alone? | Pending |
 | E6 | Vision + measurements + notes | Fusion MLP | Full multimodal contribution | Pending |
@@ -342,8 +345,8 @@ Additionally:
 - Phase 0–3: pipeline and data readiness (COMPLETE)
 - Phase 4a: vision-only EchoPrime baseline, 2 clips/study (COMPLETE — test AUC 0.924)
 - Phase 4b: multi-video extraction and mean-pooled study embeddings (COMPLETE — test AUC 0.985)
-- Phase 4c: tabular-only baseline — structured measurements (excl. LVEF) predicting LVEF (NEXT)
-- Phase 5: multimodal fusion — vision + measurements, evaluation ladder comparison
+- Phase 4c: tabular-only baseline (COMPLETE — test AUC 0.947)
+- Phase 5: multimodal fusion — vision + measurements, evaluation ladder comparison (NEXT)
 - Phase 6: scale-up — batch-and-purge all 7,000 studies, re-run ladder at full scale
 - Phase 7: clinical notes integration (if access confirmed) — E4 and E6 experiments
 - Phase 8: manuscript — complete ablation table, figures, and submission

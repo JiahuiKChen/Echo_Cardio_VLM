@@ -273,7 +273,7 @@
 - aggregation method code and config
 - comparison metrics JSON
 
-## Phase 4c: Tabular measurement baseline (NEXT)
+## Phase 4c: Tabular measurement baseline (COMPLETE — 2026-03-29)
 
 ### Objectives
 
@@ -297,7 +297,16 @@
 
 - tabular ceiling AUC is known for comparison in the fusion experiment
 
-## Phase 5: Multimodal fusion
+### Result (2026-03-29)
+
+- **Test AUC = 0.947**, AP 0.805, R² 0.425, MAE 8.6 EF pts
+- 39 features retained from 60 total (3 excluded as LVEF leakage, 18 low-coverage)
+- 26% mean missing rate, handled via median imputation
+- Top features: lvesd (-4.49), lvot_vti (+4.45), sept_e_prime (+5.29), lvedd (-3.49)
+- Vision (0.985) > tabular (0.947): clear room for fusion to potentially improve
+- Decision: **proceed to Phase 5** (multimodal fusion)
+
+## Phase 5: Multimodal fusion (NEXT)
 
 ### Objectives
 
