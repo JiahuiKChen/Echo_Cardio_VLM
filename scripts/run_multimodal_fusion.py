@@ -171,10 +171,9 @@ def build_tabular_features(
     low_coverage = coverage[coverage < min_coverage].index.tolist()
     feature_cols = [m for m in safe_meas if m not in low_coverage]
 
+    wide = wide.reset_index()  # study_id back as column
     aligned = pd.DataFrame({"study_id": study_ids}).merge(
-        wide[["study_id" if "study_id" in wide.columns else wide.index.name] + feature_cols].reset_index()
-        if wide.index.name == "study_id"
-        else wide[feature_cols].reset_index(),
+        wide[["study_id"] + feature_cols],
         how="left", on="study_id",
     )
     tab_matrix = aligned[feature_cols].to_numpy(dtype=np.float32)
