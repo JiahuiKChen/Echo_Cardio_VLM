@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--max-clips", type=int, default=0, help="Cap number of clips processed. 0 disables.")
     parser.add_argument("--progress-every", type=int, default=100, help="Print progress every N clips.")
+    parser.add_argument("--checkpoint-every", type=int, default=500, help="Save checkpoint every N clips (0 disables).")
     parser.add_argument(
         "--path-prefix-from",
         type=str,
@@ -179,22 +180,19 @@ def main() -> int:
     batch_meta: list[dict[str, Any]] = []
     n_failed = 0
 
-    def flush_batch() -> None:
-        nonlocal batch_tensors, batch_meta
-        if not batch_tensors:
-            return
-        batch = torch.stack(batch_tensors, dim=0).to(device)  # N,C,T,H,W
+    def _run_inference(tensors: list[torch.Tensor], metas: list[dict[str, Any]]) -> None:
+        """Run video+view inference on a list of tensors and append results."""
+        batch = torch.stack(tensors, dim=0).to(device)
         with torch.no_grad():
-            feat = video_model(batch)  # N,512
-            first_frames = batch[:, :, 0, :, :]  # N,C,H,W
+            feat = video_model(batch)
+            first_frames = batch[:, :, 0, :, :]
             logits = view_model(first_frames)
             view_id = torch.argmax(logits, dim=1)
             one_hot = torch.nn.functional.one_hot(view_id, num_classes=11).float()
             emb523 = torch.cat([feat, one_hot], dim=1).detach().cpu().numpy().astype(np.float32)
             view_id_np = view_id.detach().cpu().numpy().astype(np.int32)
             feat_norm = torch.linalg.norm(feat, dim=1).detach().cpu().numpy().astype(np.float32)
-
-        for i, meta in enumerate(batch_meta):
+        for i, meta in enumerate(metas):
             embedding_idx = len(embeddings)
             embeddings.append(emb523[i])
             rows.append(
@@ -211,8 +209,48 @@ def main() -> int:
                     "error": None,
                 }
             )
+
+    def flush_batch() -> None:
+        nonlocal batch_tensors, batch_meta, n_failed
+        if not batch_tensors:
+            return
+        try:
+            _run_inference(batch_tensors, batch_meta)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            print(f"[warn] OOM on batch of {len(batch_tensors)} clips, retrying one-at-a-time")
+            for t, m in zip(batch_tensors, batch_meta):
+                try:
+                    _run_inference([t], [m])
+                except torch.cuda.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    n_failed += 1
+                    rows.append(
+                        {
+                            "embedding_idx": -1,
+                            "subject_id": int(m["subject_id"]),
+                            "study_id": int(m["study_id"]),
+                            "dicom_filepath": str(m["dicom_filepath"]),
+                            "npz_path": str(m["npz_path"]),
+                            "view_id": None,
+                            "view_name": None,
+                            "embedding_l2_norm": None,
+                            "write_ok": False,
+                            "error": "CUDA OOM even at batch_size=1",
+                        }
+                    )
+                    print(f"[warn] OOM on single clip {m['dicom_filepath']}, marking failed")
         batch_tensors = []
         batch_meta = []
+
+    def save_checkpoint(tag: str = "checkpoint") -> None:
+        if not embeddings:
+            return
+        ckpt_npz = args.output_npz.parent / f"{args.output_npz.stem}_{tag}.npz"
+        ckpt_csv = args.output_manifest.parent / f"{args.output_manifest.stem}_{tag}.csv"
+        np.savez_compressed(ckpt_npz, embeddings=np.stack(embeddings, axis=0).astype(np.float32))
+        pd.DataFrame(rows).to_csv(ckpt_csv, index=False)
+        print(f"[checkpoint] saved {len(embeddings)} embeddings -> {ckpt_npz.name}")
 
     total = len(work_df)
     for i, (_, row) in enumerate(work_df.iterrows(), start=1):
@@ -252,6 +290,9 @@ def main() -> int:
             )
         if args.progress_every > 0 and i % args.progress_every == 0:
             print(f"[info] processed {i}/{total}")
+        if args.checkpoint_every > 0 and i % args.checkpoint_every == 0:
+            flush_batch()
+            save_checkpoint(tag=f"at{i}")
 
     flush_batch()
 
