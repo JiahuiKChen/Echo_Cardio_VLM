@@ -163,7 +163,7 @@
 - raw-to-derived mapping table
 - per-study logs
 
-## Phase 4a: Vision-only EchoPrime baseline (NEXT)
+## Phase 4a: Vision-only EchoPrime baseline (COMPLETE — 2026-03-29)
 
 ### Objectives
 
@@ -203,6 +203,14 @@
 - if AUC > 0.65: strong signal, proceed to Phase 5
 - if AUC 0.50–0.65: moderate signal, investigate view filtering before Phase 5
 - if AUC < 0.50: weak signal, reassess data quality or EchoPrime applicability
+
+### Result (2026-03-29)
+
+- **Test AUC = 0.924** — exceeds the 0.65 threshold for "strong signal"
+- Study-level: AUC 0.924, AP 0.797, R² 0.446, MAE 8.4, RMSE 10.2
+- Val AUC 0.915, minimal overfitting
+- 998/998 clips embedded, 489 studies with LVEF labels joined
+- Decision: **proceed to Phase 5** (reconstruction experiment)
 
 ### Reproducibility artifacts
 

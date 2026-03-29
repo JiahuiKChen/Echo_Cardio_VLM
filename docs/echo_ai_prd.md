@@ -201,10 +201,14 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 - Raw pixel baseline establishes floor: test AUC ≈ 0.37 (at chance)
 - study and clip counts after QC are known
 
-### Milestone 3 (NEXT)
+### Milestone 3 (COMPLETE — 2026-03-29)
 
-- EchoPrime embedding baseline demonstrates vision-only AUC significantly above floor
-- This validates that the curated dataset contains learnable visual signal for LVEF
+- EchoPrime embedding baseline: **test AUC = 0.924** (study-level), vastly above the E1 floor of 0.37
+- 998/998 clips embedded successfully, 499 studies, 489 with LVEF labels
+- Study-level test metrics: AUC 0.924, AP 0.797, R² 0.446, MAE 8.4 EF points
+- Val/test gap minimal (AUC 0.915 vs 0.924), no overfitting concern
+- Confirms pretrained EchoPrime features capture cardiac function from video alone
+- Ridge regression on frozen 523-d embeddings — no fine-tuning needed for strong signal
 
 ### Milestone 4
 
@@ -227,7 +231,7 @@ narrative that journal reviewers expect.
 | Row | Input modality | Model | What it proves |
 |-----|---------------|-------|---------------|
 | E1 | Raw keyframe pixels | PCA + Ridge | Floor baseline (completed: test AUC ≈ 0.37) |
-| E2 | EchoPrime 523-d clip embeddings | Ridge / LogReg | Do pretrained echo features capture function from vision alone? |
+| E2 | EchoPrime 523-d clip embeddings | Ridge | **Completed: test AUC = 0.924** — pretrained features capture function from vision alone |
 | E3 | Learned reconstruction embeddings | Ridge / LogReg | Are our trained representations competitive with EchoPrime? |
 | E4 | Structured measurements only (excl. LVEF) | Ridge / LogReg | Tabular ceiling — how far can non-imaging data go? |
 | E5 | Vision embeddings + measurements | Fusion model | Does multimodal fusion add incremental value? |
@@ -301,7 +305,7 @@ experiments. This preserves the clean ablation story and avoids the leakage conc
 ## Milestone boundaries
 
 - Phase 0–3: pipeline and data readiness (COMPLETE)
-- Phase 4a: vision-only EchoPrime baseline (NEXT)
+- Phase 4a: vision-only EchoPrime baseline (COMPLETE — test AUC 0.924)
 - Phase 4b: tabular-only measurement baseline (deferred, provides ceiling)
 - Phase 5: reconstruction-first experiment
 - Phase 6: multimodal integration and evaluation ladder (measurements + notes as inputs)
