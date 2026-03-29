@@ -121,7 +121,7 @@ fi
 # Step 2: Identify already-processed studies, split remaining into batches
 # ===================================================================
 log "=== Step 2: Splitting into batches ==="
-"${PYTHON_BIN}" - <<'PYEOF'
+"${PYTHON_BIN}" - "${ALL_STUDIES_CSV}" "${EXISTING_STUDIES_CSV}" "${FULLSCALE_ROOT}/batches" "${BATCH_SIZE_STUDIES}" <<'PYEOF'
 import pandas as pd
 import sys, json
 from pathlib import Path
@@ -165,7 +165,6 @@ summary = {"n_total": len(all_df), "n_already_done": len(already_done),
 (batch_dir / "batch_manifest.json").write_text(json.dumps(summary, indent=2))
 print(json.dumps(summary, indent=2))
 PYEOF
-"${ALL_STUDIES_CSV}" "${EXISTING_STUDIES_CSV}" "${FULLSCALE_ROOT}/batches" "${BATCH_SIZE_STUDIES}"
 
 BATCH_MANIFEST="${FULLSCALE_ROOT}/batches/batch_manifest.json"
 N_BATCHES="$("${PYTHON_BIN}" -c "import json; print(json.load(open('${BATCH_MANIFEST}'))['n_batches'])")"
@@ -348,7 +347,7 @@ log "=== Step 7: Building split map and LVEF manifest ==="
   2>/dev/null || log "[warn] split map builder not found, using inline version"
 
 if [[ ! -f "${FULLSCALE_ROOT}/manifests/subject_split_map_v1.csv" ]]; then
-  "${PYTHON_BIN}" - <<'PYEOF'
+  "${PYTHON_BIN}" - "${ALL_STUDIES_CSV}" "${FULLSCALE_ROOT}/manifests/subject_split_map_v1.csv" <<'PYEOF'
 import numpy as np, pandas as pd, json, sys
 from pathlib import Path
 
@@ -369,12 +368,11 @@ summary = {"n_subjects": n, "split_counts": split_df["split"].value_counts().to_
 out.with_suffix(".summary.json").write_text(json.dumps(summary, indent=2))
 print(json.dumps(summary, indent=2))
 PYEOF
-  "${ALL_STUDIES_CSV}" "${FULLSCALE_ROOT}/manifests/subject_split_map_v1.csv"
 fi
 
 # Build a keyframe manifest stub for LVEF manifest builder
 # (we use the merged clip embedding manifest as the keyframe source)
-"${PYTHON_BIN}" - <<'PYEOF'
+"${PYTHON_BIN}" - "${MERGED_EMB_DIR}/clip_embedding_manifest.csv" "${FULLSCALE_ROOT}/manifests/keyframe_stub.csv" <<'PYEOF'
 import pandas as pd, sys
 from pathlib import Path
 
@@ -394,7 +392,6 @@ out.parent.mkdir(parents=True, exist_ok=True)
 stub.to_csv(out, index=False)
 print(f"[written] {out} ({len(stub)} rows)")
 PYEOF
-"${MERGED_EMB_DIR}/clip_embedding_manifest.csv" "${FULLSCALE_ROOT}/manifests/keyframe_stub.csv"
 
 "${PYTHON_BIN}" scripts/build_lvef_still_manifest.py \
   --selected-studies-csv "${ALL_STUDIES_CSV}" \
