@@ -27,11 +27,11 @@ DATA_ROOT="${ECHO_AI_DATA_ROOT:-/restricted/projectnb/mimicecho/echo_ai_data}"
 BATCH_SIZE_STUDIES=500
 EMBED_BATCH_SIZE=8
 EXTRACT_NUM_WORKERS=4
-MIN_DICOMS=40
-MAX_DICOMS=140
+MIN_DICOMS=5
+MAX_DICOMS=99999
 SEED=20260323
 
-FULLSCALE_ROOT="${REPO_ROOT}/outputs/cloud_cohorts/fullscale_7k"
+FULLSCALE_ROOT="${REPO_ROOT}/outputs/cloud_cohorts/fullscale_all"
 EXISTING_EMB_DIR="${REPO_ROOT}/outputs/cloud_cohorts/stage_d_500study_scc/echoprime_embeddings_512"
 EXISTING_STUDIES_CSV="${REPO_ROOT}/outputs/cloud_cohorts/stage_d_500study_scc/manifests/selected_studies.csv"
 
