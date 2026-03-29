@@ -219,7 +219,7 @@
 - metrics JSON
 - view distribution summary
 
-## Phase 4b: Multi-video extraction and aggregation (NEXT)
+## Phase 4b: Multi-video extraction and aggregation (COMPLETE — 2026-03-29)
 
 ### Objectives
 
@@ -258,13 +258,22 @@
 - If AUC improves: confirms H3, proceed with all-clip for remaining experiments
 - If AUC unchanged or worse: mean pooling is sufficient, consider simpler aggregation
 
+### Result (2026-03-29)
+
+- **Test AUC = 0.985** (up from 0.924), AP 0.942, R² 0.588, MAE 6.7 EF pts
+- 21,393 clips extracted → 512-d encoder-only embeddings → mean-pooled to 499 study-level vectors
+- Median 42.9 clips/study (range 18–65), matching MVE-Echo's median of 41
+- H3 strongly validated: +0.061 AUC, -1.7 MAE by using all clips instead of 2
+- Embedding extraction took 867s (14.5 min) on GPU, aggregation + baseline on CPU in seconds
+- Decision: **proceed to Phase 4c** (tabular measurement baseline)
+
 ### Reproducibility artifacts
 
 - all-clip extraction manifest
 - aggregation method code and config
 - comparison metrics JSON
 
-## Phase 4c: Tabular measurement baseline
+## Phase 4c: Tabular measurement baseline (NEXT)
 
 ### Objectives
 

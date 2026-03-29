@@ -220,10 +220,13 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 - Confirms pretrained EchoPrime features capture cardiac function from video alone
 - Ridge regression on frozen 523-d embeddings — no fine-tuning needed for strong signal
 
-### Milestone 4
+### Milestone 4 (COMPLETE — 2026-03-29)
 
-- Multi-video embeddings (all clips/study) extracted and study-level aggregation baseline (E2b) evaluated
-- Comparison: 2-clip vs all-clip study-level AUC to validate H3
+- Multi-video extraction: 21,393 clips from 499 studies (median 42.9 clips/study)
+- 512-d encoder-only embeddings (view classifier dropped), mean-pooled to study-level
+- **Test AUC = 0.985** (up from 0.924 with 2 clips), AP 0.942, R² 0.588, MAE 6.7 EF points
+- H3 validated: using all ~43 videos/study vs 2 improves AUC by +0.061, MAE by -1.7 pts
+- Val/test gap minimal (0.967 vs 0.985), no overfitting
 
 ### Milestone 5
 
@@ -254,7 +257,7 @@ narrative that journal reviewers expect.
 |-----|---------------|-------|---------------|--------|
 | E1 | Raw keyframe pixels | PCA + Ridge | Floor baseline | **Done**: test AUC ≈ 0.37 |
 | E2a | EchoPrime 512-d clip embeddings (2 clips/study) | Ridge | Do pretrained features capture function? | **Done**: test AUC = 0.924 |
-| E2b | EchoPrime 512-d embeddings (ALL clips/study, attention-aggregated) | Ridge / MLP | Does multi-video aggregation improve over 2-clip? | **Next** |
+| E2b | EchoPrime 512-d embeddings (ALL clips/study, mean-pooled) | Ridge | Does multi-video aggregation improve over 2-clip? | **Done**: test AUC = 0.985 |
 | E3 | Structured measurements only (excl. LVEF) | Ridge / LogReg | Tabular ceiling — non-imaging upper bound | Pending |
 | E4 | Clinical notes embeddings | Ridge / LogReg | Text-only prediction ceiling | Pending (requires note access) |
 | E5 | Vision + measurements (excl. LVEF) | Fusion MLP | Does multimodal fusion add value over either alone? | Pending |
@@ -338,8 +341,8 @@ Additionally:
 
 - Phase 0–3: pipeline and data readiness (COMPLETE)
 - Phase 4a: vision-only EchoPrime baseline, 2 clips/study (COMPLETE — test AUC 0.924)
-- Phase 4b: multi-video extraction — embed ALL clips/study, attention-aggregated study embeddings (NEXT)
-- Phase 4c: tabular-only baseline — structured measurements (excl. LVEF) predicting LVEF
+- Phase 4b: multi-video extraction and mean-pooled study embeddings (COMPLETE — test AUC 0.985)
+- Phase 4c: tabular-only baseline — structured measurements (excl. LVEF) predicting LVEF (NEXT)
 - Phase 5: multimodal fusion — vision + measurements, evaluation ladder comparison
 - Phase 6: scale-up — batch-and-purge all 7,000 studies, re-run ladder at full scale
 - Phase 7: clinical notes integration (if access confirmed) — E4 and E6 experiments
