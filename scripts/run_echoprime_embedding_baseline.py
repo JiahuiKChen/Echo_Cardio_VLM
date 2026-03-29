@@ -125,7 +125,10 @@ def main() -> int:
             )
         )
         join_cols = key_cols + ["subject_id", "split", "lvef", "lvef_binary_reduced"]
-        model_df = emb_meta_ok.merge(label_agg[join_cols], how="inner", on=key_cols)
+        drop_cols = [c for c in join_cols if c in emb_meta_ok.columns and c not in key_cols]
+        model_df = emb_meta_ok.drop(columns=drop_cols, errors="ignore").merge(
+            label_agg[join_cols], how="inner", on=key_cols,
+        )
     else:
         key_cols = ["subject_id", "study_id", "dicom_filepath"]
         for c in key_cols:
