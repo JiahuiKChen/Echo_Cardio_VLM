@@ -306,7 +306,7 @@
 - Vision (0.985) > tabular (0.947): clear room for fusion to potentially improve
 - Decision: **proceed to Phase 5** (multimodal fusion)
 
-## Phase 5: Multimodal fusion (NEXT)
+## Phase 5: Multimodal fusion (COMPLETE — 2026-03-29)
 
 ### Objectives
 
@@ -316,32 +316,27 @@
 ### Tasks
 
 - concatenate study-level vision embeddings (512-d) with tabular measurement features
-- train fusion MLP: [vision || measurements] → LVEF (binary and continuous)
-- compare fusion vs vision-only vs measurements-only (E2b vs E3 vs E5)
-- ablation: which measurement features contribute most in the fusion model
+- train linear (Ridge/LogReg) and MLP fusion models
+- compare fusion vs vision-only vs measurements-only with bootstrap CIs
+- controlled 3-way comparison with identical model architectures
 
-### Deliverables
+### Result (2026-03-29)
 
-- fusion model code and config
-- E2b vs E3 vs E5 comparison table
-- ablation/feature importance analysis
-- draft "main result" figure for manuscript
+Linear models (test set, n=84):
 
-### Dependencies
+| Config | Test AUC | 95% CI | MAE | R² |
+|--------|----------|--------|-----|-----|
+| Vision only | 0.985 | [0.947, 1.0] | 6.70 | 0.588 |
+| Tabular only | 0.947 | [0.867, 0.999] | 8.63 | 0.425 |
+| Fusion | 0.990 | [0.963, 1.0] | 7.27 | 0.560 |
 
-- Phase 4b (multi-video embeddings) and Phase 4c (measurement baseline) complete
+Key findings:
+- Fusion edges vision by +0.005 AUC but CIs overlap → not significant at n=84
+- Fusion MAE worse than vision-only → tabular adds noise to continuous regression
+- MLPs overfit badly (tabular MLP AUC 0.664, negative R²) → need more data, not more model
+- Decision: **proceed to Phase 6 scale-up** for statistical power
 
-### Risks
-
-- measurements add noise rather than signal if leakage-cleaned features are too weak
-- small sample size (500 studies) limits statistical power for fusion advantage
-
-### Exit criteria
-
-- fusion AUC > max(vision-only AUC, measurement-only AUC) — confirms multimodal value
-- even a null result is publishable if properly framed as modality-isolation analysis
-
-## Phase 6: Full-scale extraction (batch-and-purge)
+## Phase 6: Full-scale extraction (batch-and-purge) (NEXT)
 
 ### Objectives
 

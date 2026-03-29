@@ -236,7 +236,16 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 - Top features clinically sensible: lvesd, lvot_vti, sept_e_prime, lvedd
 - Vision (0.985) > tabular (0.947) — clear gap creates headroom for fusion (E5)
 
-### Milestone 6
+### Milestone 6 (COMPLETE — 2026-03-29)
+
+- E5 multimodal fusion: **test AUC = 0.990** (fusion) vs 0.985 (vision) vs 0.947 (tabular)
+- Linear fusion edges vision by +0.005 AUC, but 95% CIs overlap at n=84 test studies
+- Fusion MAE 7.27 worse than vision-only 6.70 — tabular adds noise to regression
+- MLP models overfit badly at n=326 training studies (tabular MLP AUC = 0.664)
+- Key finding: fusion signal exists but lacks statistical power at current scale
+- Decision: **proceed to Phase 6 scale-up** (7,000 studies) for publication-quality CIs
+
+### Milestone 7
 
 - Full 7,000+ study extraction via batch-and-purge
 - Final evaluation table across E1–E6 with publication-quality statistics and confidence intervals
@@ -263,7 +272,7 @@ narrative that journal reviewers expect.
 | E2b | EchoPrime 512-d embeddings (ALL clips/study, mean-pooled) | Ridge | Does multi-video aggregation improve over 2-clip? | **Done**: test AUC = 0.985 |
 | E3 | Structured measurements only (39 features, excl. LVEF) | Ridge / LogReg | Tabular ceiling — non-imaging upper bound | **Done**: test AUC = 0.947 |
 | E4 | Clinical notes embeddings | Ridge / LogReg | Text-only prediction ceiling | Pending (requires note access) |
-| E5 | Vision + measurements (excl. LVEF) | Fusion MLP | Does multimodal fusion add value over either alone? | Pending |
+| E5 | Vision + measurements (excl. LVEF) | Concat + Ridge/LogReg | Does multimodal fusion add value over either alone? | **Done**: test AUC = 0.990 (CIs overlap vision at n=84) |
 | E6 | Vision + measurements + notes | Fusion MLP | Full multimodal contribution | Pending |
 
 **Critical design rules:**
@@ -346,8 +355,8 @@ Additionally:
 - Phase 4a: vision-only EchoPrime baseline, 2 clips/study (COMPLETE — test AUC 0.924)
 - Phase 4b: multi-video extraction and mean-pooled study embeddings (COMPLETE — test AUC 0.985)
 - Phase 4c: tabular-only baseline (COMPLETE — test AUC 0.947)
-- Phase 5: multimodal fusion — vision + measurements, evaluation ladder comparison (NEXT)
-- Phase 6: scale-up — batch-and-purge all 7,000 studies, re-run ladder at full scale
+- Phase 5: multimodal fusion (COMPLETE — fusion AUC 0.990, CIs overlap vision at n=84)
+- Phase 6: scale-up — batch-and-purge all 7,000 studies, re-run ladder at full scale (NEXT)
 - Phase 7: clinical notes integration (if access confirmed) — E4 and E6 experiments
 - Phase 8: manuscript — complete ablation table, figures, and submission
 
