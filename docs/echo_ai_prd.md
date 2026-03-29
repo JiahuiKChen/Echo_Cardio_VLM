@@ -1,12 +1,12 @@
-# PRD: MIMIC-IV-ECHO Generative Echocardiography MVP
+# PRD: Multimodal Echocardiography Analysis on MIMIC-IV-ECHO
 
 ## Project title
 
-Storage-aware echocardiography video representation and reconstruction on MIMIC-IV-ECHO, with a bridge to future conditional generation
+Multimodal echocardiography analysis: systematic evaluation of vision, structured measurements, and clinical notes on public data
 
 ## Executive summary
 
-The project goal is to build a rigorous, reproducible echocardiography AI pipeline on top of MIMIC-IV-ECHO that starts with the smallest scientifically defensible path to a publishable result and preserves a clean path toward later report- or measurement-conditioned generation. The initial product is not a full text-to-video generator. It is a storage-aware data and experimentation stack that can: ingest MIMIC-IV-ECHO study metadata and selected DICOM studies, build a deterministic study and clip manifest, extract normalized cine clips, validate a pretrained baseline such as EchoPrime for encoder reuse, and train a first echo-specific reconstruction model on a carefully chosen subset. The immediate target is a working end-to-end pipeline and a credible reconstruction result on a constrained subset, followed by evaluation strong enough to support a future manuscript.
+This project builds the first multimodal echocardiography prediction pipeline on public data, combining video embeddings, structured quantitative measurements, and clinical notes from MIMIC-IV-ECHO. The core contribution is a modality-isolation evaluation ladder that systematically quantifies what each data source contributes to cardiac function prediction — a methodological gap in the current literature. Existing published work on MIMIC-IV-ECHO uses video alone (Echo-Vision-FM, MVE-Echo) or video with proprietary text (EchoPrime). No published work has used structured measurements or MIMIC clinical notes as input features alongside vision for prediction. The project preserves a clean path toward measurement-conditioned echo generation as a stretch goal.
 
 ## Problem statement
 
@@ -27,40 +27,48 @@ Clinically, echocardiography is central to assessment of ventricular function, c
 - future synthetic data generation for rare findings, imbalance mitigation, and privacy-aware method development
 - a pathway to multimodal conditioning with reports and structured measurements
 
-## Current state of the field
+## Competitive landscape
 
-Three literature signals matter most for this project:
+Three published works have used MIMIC-IV-ECHO. Understanding exactly what each did — and did not do — defines our contribution.
 
-### EchoCardMAE implication
+### Echo-Vision-FM (Zhang et al., Nature Communications 2026)
 
-Echo-specific masked video modeling is a credible route to useful echo representations and reconstructions. The paper is important not because it solves generation, but because it shows that echo-tailored reconstruction choices matter:
+- VideoMAE pre-training on all 525K MIMIC-IV-ECHO videos (self-supervised, no labels)
+- ViT-Base encoder, 85% mask ratio, 30 epochs on A100 GPUs
+- Fine-tuned and evaluated on EchoNet-Dynamic, CAMUS, and TMED (not on MIMIC itself)
+- LVEF MAE 3.87%, AUC 0.931 on EchoNet-Dynamic
+- Claims first public-data echo video foundation model
+- **Did not use** MIMIC structured measurements or clinical notes at all
+- **Did not evaluate** on MIMIC-IV-ECHO downstream tasks
 
-- key-region masking rather than generic masking
-- robustness to temporal clip selection
-- denoising-aware reconstruction under ultrasound speckle
+### MVE-Echo (Tohyama et al., medRxiv 2025)
 
-That supports a reconstruction-first MVP rather than jumping straight to a full conditional generative model.
+- Multi-view encoder using masked transformer on top of EchoPrime 512-d embeddings
+- Processed all 7,169 studies (median 41 videos/study) from MIMIC-IV-ECHO
+- Attention-based aggregation of per-video embeddings into study-level 512-d vectors
+- Evaluated on 21 binary classification tasks defined from structured measurements and ICD codes
+- Structured measurements used as **prediction labels only**, never as input features
+- Adversarial debiasing for sex and race (limited effectiveness)
+- **Did not use** structured measurements as input features
+- **Did not use** clinical notes
 
-### Nature CXR generation implication
+### EchoPrime (Vukadinovic et al., 2024)
 
-The chest X-ray paper shows what a technically credible medical generation paper looks like:
+- Multi-view vision-language model trained on 12M proprietary Stanford video-report pairs
+- Contrastive learning between video embeddings and clinical report text
+- View classifier (11 classes) exhibits domain shift on MIMIC-IV-ECHO data (69% SSN misclassification confirmed by our diagnostic)
+- 512-d encoder features generalize well (our E2 baseline: test AUC 0.924)
+- **Did not use** MIMIC data for training; used proprietary text only
 
-- start from a strong pretrained base and adapt to the domain
-- evaluate fidelity, diversity, prompt alignment, expert judgment, retrieval/report consistency, and downstream synthetic utility
-- separate image realism from clinical correctness
-- show synthetic utility as augmentation, not just pretty samples
+### What remains unclaimed
 
-For echo, this means we should not publish around visuals alone. We need an evaluation stack that tests anatomical plausibility, view consistency, structured-measurement consistency, expert readability, and downstream usefulness.
-
-### AI echocardiography review implication
-
-The review reinforces that:
-
-- multi-view echo interpretation is valuable but operationally complex
-- vision-language work such as EchoPrime exists, but large-scale public multimodal echo resources are limited
-- future progress depends on warehousing, standardization, and multimodal linkage
-
-That argues for investing early in a robust manifest and preprocessing layer.
+| Gap | Description |
+|-----|-------------|
+| Measurements as input features | No paper uses structured measurements alongside vision for prediction |
+| Clinical notes integration | No paper uses MIMIC clinical notes for echo analysis |
+| Modality-isolation ablation | No systematic E1–E6 ladder quantifying each source's contribution |
+| Multi-video study-level embeddings + measurements | MVE-Echo aggregates videos but never adds tabular features |
+| Measurement-conditioned generation | No conditional echo generation on public data |
 
 ## Why MIMIC-IV-ECHO is an appropriate starting dataset
 
@@ -90,25 +98,26 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 ## Goals
 
 - Build a deterministic metadata-to-manifest pipeline for MIMIC-IV-ECHO.
-- Validate raw DICOM ingestion on a small study subset.
-- Produce a reproducible clip extraction and QC pipeline.
-- Establish one strong baseline feature extractor / retrieval baseline.
-- Train and evaluate one echo-specific reconstruction-first baseline on a subset.
-- Preserve a clean migration path to larger hardware and later conditional generation.
+- Extract EchoPrime embeddings from ALL multiframe DICOMs per study (~41 videos/study), not a small subset.
+- Establish vision-only, measurement-only, and multimodal baselines across the evaluation ladder.
+- Demonstrate incremental value of each modality (vision, measurements, notes) for cardiac prediction.
+- Scale to all ~7,000 MIMIC-IV-ECHO studies for publication-quality results.
+- Preserve a path toward measurement-conditioned echo generation.
 
 ## Non-goals
 
-- Training a large direct text-to-video model on the laptop.
-- Downloading all imaging data before subset validation.
-- Treating EchoPrime as the main training codebase.
+- Replicating VideoMAE pre-training (Echo-Vision-FM already published this on MIMIC).
+- Training a large direct text-to-video model.
 - Claiming clinical deployment readiness.
+- View-filtering by EchoPrime classifier (confirmed unreliable on MIMIC due to domain shift).
 
 ## Hypotheses
 
-- H1: A reconstruction-first masked video objective on filtered MIMIC-IV-ECHO clips will produce clinically interpretable reconstructions and reusable embeddings with lower risk than direct conditional generation.
-- H2: Restricting the first experiment to a dominant view such as A4C will reduce engineering and evaluation noise enough to accelerate the first publishable result.
-- H3: A deterministic manifest plus derived normalized clip store will provide better long-term flexibility than trying to use EchoPrime as a compression layer.
-- H4: Study-level structured measurements can later support conditional or controllable generation, but they are too weakly aligned for the first MVP.
+- H1: Adding structured measurements (excl. LVEF) as input features alongside vision embeddings will improve LVEF prediction beyond vision-only baselines.
+- H2: Clinical notes contain complementary signal not captured by vision or measurements alone.
+- H3: Multi-video study-level embeddings (using all ~41 clips/study via attention aggregation) will outperform single-clip or 2-clip embeddings.
+- H4: A modality-isolation evaluation ladder will produce the clean ablation table needed for a strong publication narrative.
+- H5: Measurement-conditioned echo generation is feasible as a stretch goal once the multimodal pipeline is validated.
 
 ## Data sources
 
@@ -172,8 +181,9 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 
 ### Modeling layer
 
-- first model: small masked reconstruction / MAE-style baseline on filtered clips
-- later model: study- or clip-conditioned latent generation
+- Study-level aggregation: attention-weighted pooling over all per-clip EchoPrime 512-d embeddings
+- Multimodal fusion MLP: concatenated vision embeddings + structured measurement features
+- Optional stretch: measurement-conditioned echo generation
 
 ### Evaluation layer
 
@@ -212,11 +222,23 @@ This is enough to build a real public pipeline, but not enough to justify a dire
 
 ### Milestone 4
 
-- first reconstruction model produces stable training and visually credible outputs on a filtered view subset
+- Multi-video embeddings (all clips/study) extracted and study-level aggregation baseline (E2b) evaluated
+- Comparison: 2-clip vs all-clip study-level AUC to validate H3
 
 ### Milestone 5
 
-- evaluation table shows incremental value across the modality-isolation ladder (E1–E6)
+- Structured measurement baseline (E3) and first multimodal fusion (E5) evaluated on 500 studies
+- Tabular ceiling vs vision vs fusion comparison table complete
+
+### Milestone 6
+
+- Full 7,000+ study extraction via batch-and-purge
+- Final evaluation table across E1–E6 with publication-quality statistics and confidence intervals
+
+### Milestone 7
+
+- Clinical notes integration (E4, E6) if note access confirmed
+- Manuscript draft with complete ablation table
 
 ## Evaluation strategy: modality isolation
 
@@ -228,29 +250,38 @@ narrative that journal reviewers expect.
 
 ### Evaluation ladder (each row is a distinct experiment)
 
-| Row | Input modality | Model | What it proves |
-|-----|---------------|-------|---------------|
-| E1 | Raw keyframe pixels | PCA + Ridge | Floor baseline (completed: test AUC ≈ 0.37) |
-| E2 | EchoPrime 523-d clip embeddings | Ridge | **Completed: test AUC = 0.924** — pretrained features capture function from vision alone |
-| E3 | Learned reconstruction embeddings | Ridge / LogReg | Are our trained representations competitive with EchoPrime? |
-| E4 | Structured measurements only (excl. LVEF) | Ridge / LogReg | Tabular ceiling — how far can non-imaging data go? |
-| E5 | Vision embeddings + measurements | Fusion model | Does multimodal fusion add incremental value? |
-| E6 | Vision + measurements + notes | Fusion model | Full multimodal contribution |
+| Row | Input modality | Model | What it proves | Status |
+|-----|---------------|-------|---------------|--------|
+| E1 | Raw keyframe pixels | PCA + Ridge | Floor baseline | **Done**: test AUC ≈ 0.37 |
+| E2a | EchoPrime 512-d clip embeddings (2 clips/study) | Ridge | Do pretrained features capture function? | **Done**: test AUC = 0.924 |
+| E2b | EchoPrime 512-d embeddings (ALL clips/study, attention-aggregated) | Ridge / MLP | Does multi-video aggregation improve over 2-clip? | **Next** |
+| E3 | Structured measurements only (excl. LVEF) | Ridge / LogReg | Tabular ceiling — non-imaging upper bound | Pending |
+| E4 | Clinical notes embeddings | Ridge / LogReg | Text-only prediction ceiling | Pending (requires note access) |
+| E5 | Vision + measurements (excl. LVEF) | Fusion MLP | Does multimodal fusion add value over either alone? | Pending |
+| E6 | Vision + measurements + notes | Fusion MLP | Full multimodal contribution | Pending |
 
-Rows E1–E3 are vision-only and must be completed before any multimodal experiment.
-Structured measurements must never be included as input features when LVEF is the target
-without explicitly excluding LVEF and LVEF-derived fields from the input, to avoid leakage.
+**Critical design rules:**
+- Structured measurements must explicitly exclude LVEF and LVEF-derived fields when LVEF is the prediction target, to prevent leakage.
+- Each row uses the same train/val/test split (subject-level, frozen).
+- Vision embeddings use all available multiframe DICOMs per study (~41 median), not a 2-clip subset.
+- The 11-d view one-hot from EchoPrime's view classifier is dropped (confirmed unreliable on MIMIC due to domain shift). Only the 512-d encoder features are used.
 
-### Role of structured measurements (deferred to Phase 6+)
+### DICOM utilization strategy
 
-Structured measurements are most valuable as:
-- **Evaluation signal**: Do reconstructed echoes produce anatomy consistent with original measurements?
-- **Conditioning input**: Generate echoes conditioned on target measurements (controllable generation).
-- **Retrieval evaluation**: Can learned embeddings retrieve studies with similar measurement profiles?
-- **Tabular ceiling**: Row E4 establishes an upper bound for non-imaging prediction.
+Prior work (MVE-Echo) processed a **median of 41 videos per study**. Our initial pipeline extracted only 2 clips per study (~5% utilization). For publication-quality results, we must extract and embed **all multiframe DICOMs per study**, then aggregate to study-level embeddings via attention or mean pooling.
 
-They should NOT be used as input features in Phase 4 (baseline) or Phase 5 (reconstruction)
-experiments. This preserves the clean ablation story and avoids the leakage concern.
+Storage strategy for full extraction: batch-and-purge. Download ~500 studies at a time, extract all clips, compute EchoPrime embeddings, delete raw DICOMs, repeat. Final stored artifacts (embeddings + manifests) are small (~1 GB for all 7,000 studies).
+
+### Role of structured measurements
+
+Structured measurements serve dual roles depending on the experiment:
+
+1. **As prediction targets** (following MVE-Echo's 21-task framework): LVEF < 50%, impaired RV function, valve disease severity, E/e' > 15, etc.
+2. **As input features** (our novel contribution): Non-LVEF measurements alongside vision embeddings to test multimodal fusion.
+
+Additionally:
+- **Evaluation signal**: Do model predictions agree with structured measurements?
+- **Conditioning input** (stretch goal): Generate echoes conditioned on target measurements.
 
 ### Publication-quality evaluation (adapted from Nature CXR paper)
 
@@ -278,12 +309,13 @@ experiments. This preserves the clean ablation story and avoids the leakage conc
 
 ## Ablation ideas
 
-- single-view versus multi-view training
-- 16 versus 32 frames
-- 112 versus 224 resolution
-- with versus without ultrasound-region masking
-- plain masked reconstruction versus echo-specific masking heuristics
-- with versus without denoised targets
+- 2 clips/study versus all clips/study (H3 validation)
+- Mean pooling versus attention aggregation for multi-video embeddings
+- Which structured measurement features contribute most (feature importance)
+- LVEF leakage tests: performance with vs. without LVEF-correlated measurements
+- Vision-only versus measurements-only versus fusion (the core E1–E6 ladder)
+- Note embedding strategies (ClinicalBERT, MedBERT, bag-of-words)
+- 16 versus 32 frames for clip extraction
 
 ## Risks and failure modes
 
@@ -305,12 +337,13 @@ experiments. This preserves the clean ablation story and avoids the leakage conc
 ## Milestone boundaries
 
 - Phase 0–3: pipeline and data readiness (COMPLETE)
-- Phase 4a: vision-only EchoPrime baseline (COMPLETE — test AUC 0.924)
-- Phase 4b: tabular-only measurement baseline (deferred, provides ceiling)
-- Phase 5: reconstruction-first experiment
-- Phase 6: multimodal integration and evaluation ladder (measurements + notes as inputs)
-- Phase 7: decision gate on scale-up or pivot
-- Phase 8: manuscript framing and scale-up planning
+- Phase 4a: vision-only EchoPrime baseline, 2 clips/study (COMPLETE — test AUC 0.924)
+- Phase 4b: multi-video extraction — embed ALL clips/study, attention-aggregated study embeddings (NEXT)
+- Phase 4c: tabular-only baseline — structured measurements (excl. LVEF) predicting LVEF
+- Phase 5: multimodal fusion — vision + measurements, evaluation ladder comparison
+- Phase 6: scale-up — batch-and-purge all 7,000 studies, re-run ladder at full scale
+- Phase 7: clinical notes integration (if access confirmed) — E4 and E6 experiments
+- Phase 8: manuscript — complete ablation table, figures, and submission
 
 ## Resolved questions
 
@@ -319,9 +352,16 @@ experiments. This preserves the clean ablation story and avoids the leakage conc
 - Per-study storage footprint: ~76 DICOMs/study, ~266 MB raw DICOM/study, ~1.5 MB extracted .npz/study.
 - Compute: SCC batch jobs via qsub with `-P mimicecho`. Compute nodes can access `/restricted` paths.
 
+## Resolved questions (Phase 4a+)
+
+- EchoPrime view classifier: confirmed unreliable on MIMIC (69% SSN misclassification due to domain shift). Decision: drop the 11-d view one-hot, use only 512-d encoder features.
+- Preprocessing: confirmed our pipeline matches MVE-Echo's reference implementation (crop, mask, color space, normalization).
+- DICOM utilization: median 76 DICOMs/study but only ~42 multiframe (cine); initial pipeline used only 2 clips per study; must scale to all clips.
+
 ## Open questions
 
 - Do you also have MIMIC-IV Note access for the linked echo reports?
-- How many clean A4C-like clips remain after view filtering on MIMIC-IV-ECHO? (EchoPrime view classifier will answer this)
-- Which future scale hardware will be available for Phase 5 reconstruction training?
+- Which future scale hardware will be available for Phase 5+ fusion training?
 - What is the achievable AUC ceiling from structured measurements alone (excl. LVEF)?
+- How does multi-video attention aggregation (all clips) compare to mean pooling?
+- What is the optimal set of structured measurement features (after LVEF leakage exclusion)?

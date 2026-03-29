@@ -219,163 +219,200 @@
 - metrics JSON
 - view distribution summary
 
-## Phase 4b: Tabular measurement ceiling (deferred)
+## Phase 4b: Multi-video extraction and aggregation (NEXT)
 
 ### Objectives
 
-- establish an upper bound for what structured measurements alone can predict
-- provide the "ceiling" row (E4) for the evaluation ladder
+- extract EchoPrime 512-d embeddings from ALL multiframe DICOMs per study (not just 2)
+- build study-level aggregated embeddings (attention pooling or mean pooling)
+- validate H3: multi-video aggregation improves over 2-clip baseline
 
 ### Tasks
 
-- extract non-LVEF structured measurements as tabular features
-- train Ridge/LogReg on measurement features → LVEF
-- compare against vision-only results from Phase 4a
-- this is a control experiment, not a main contribution
-
-### Exit criteria
-
-- tabular ceiling AUC and MAE are known for comparison in the manuscript
-
-## Phase 5: First reconstruction or generation experiment
-
-### Objectives
-
-- train the first echo-specific model aligned with the eventual generation goal
-
-### Tasks
-
-- start with single-view masked reconstruction on a filtered subset
-- use a small MAE-style or masked autoencoder baseline
-- log reconstructions, validation curves, and ablations
+- modify extraction pipeline to process all cine DICOMs per study (current DICOM audit shows median ~42 multiframe DICOMs/study across our 500 studies)
+- drop the 11-d view one-hot features (unreliable); use only 512-d encoder features
+- implement study-level aggregation: start with mean pooling, then attention-weighted pooling
+- re-run LVEF baseline with study-level multi-video embeddings
+- compare study-level AUC: 2-clip vs all-clip
 
 ### Deliverables
 
-- trained pilot reconstruction model
-- reconstruction figure panels
-- ablation summary
+- all-clip embedding NPZ and manifest (~21,000 clips for 500 studies)
+- study-level aggregated embedding NPZ (one 512-d vector per study)
+- comparison table: E2a (2-clip) vs E2b (all-clip, mean pool) vs E2b (all-clip, attention)
 
 ### Dependencies
 
-- stable clip cache
-- baseline verification from Phase 4
+- Stage D extracted clips — must re-run extraction for ALL multiframe DICOMs, not just 2/study
+- EchoPrime encoder weights (already on SCC)
 
 ### Risks
 
-- training too slow on laptop
-- reconstructions look plausible but not clinically meaningful
+- Extraction time scales linearly: ~21K clips takes ~10x longer than 998 clips
+- GPU memory: batch processing should be fine (83s for 998 clips at bs=8)
+- Storage: ~21K NPZ files at ~1.5 MB each ≈ 32 GB in projectnb (within quota)
 
 ### Exit criteria
 
-- stable training and at least one credible qualitative and quantitative reconstruction result
+- All-clip study-level AUC ≥ E2a AUC (0.924) — validates multi-video value
+- If AUC improves: confirms H3, proceed with all-clip for remaining experiments
+- If AUC unchanged or worse: mean pooling is sufficient, consider simpler aggregation
 
 ### Reproducibility artifacts
 
-- model config
-- checkpoints
-- sample reconstructions
-- training logs
+- all-clip extraction manifest
+- aggregation method code and config
+- comparison metrics JSON
 
-## Phase 6: Evaluation and decision gate
+## Phase 4c: Tabular measurement baseline
 
 ### Objectives
 
-- decide whether to scale, pivot, or stop
+- establish what structured measurements alone can predict (E3 in evaluation ladder)
+- identify which measurements are safe to use as input features (LVEF leakage audit)
 
 ### Tasks
 
-- compute reconstruction metrics
-- test view consistency and measurement consistency
-- run a small expert-style review protocol if feasible
-- compare against baseline and ablations
+- audit all 114 unique measurements: identify any LVEF-derived or LVEF-correlated fields
+- build a feature matrix from non-LVEF structured measurements (handle missing values)
+- train Ridge/LogReg on measurement features → LVEF (binary and continuous)
+- report AUC, MAE, R² to compare against vision-only (E2b)
 
 ### Deliverables
 
-- evaluation table
-- go/no-go decision memo
-
-### Dependencies
-
-- Phase 5 outputs
-
-### Risks
-
-- metrics fail to reflect clinical plausibility
-- insufficient sample size for strong claims
+- measurement feature matrix with leakage audit report
+- tabular-only LVEF baseline metrics
+- feature importance ranking
 
 ### Exit criteria
 
-- a clear recommendation on scale-up or redesign
+- tabular ceiling AUC is known for comparison in the fusion experiment
 
-### Reproducibility artifacts
-
-- frozen evaluation code
-- summary tables
-- figure manifests
-
-## Phase 7: Scale-up plan and manuscript framing
+## Phase 5: Multimodal fusion
 
 ### Objectives
 
-- translate the pilot into a paper-quality program
+- combine vision embeddings with structured measurements (novel contribution)
+- demonstrate incremental value of multimodal input (E5 in evaluation ladder)
 
 ### Tasks
 
-- estimate compute and storage for larger subsets
-- choose scale hardware
-- plan manuscript claims, figures, and evaluation scope
-- decide when to introduce conditional generation
+- concatenate study-level vision embeddings (512-d) with tabular measurement features
+- train fusion MLP: [vision || measurements] → LVEF (binary and continuous)
+- compare fusion vs vision-only vs measurements-only (E2b vs E3 vs E5)
+- ablation: which measurement features contribute most in the fusion model
 
 ### Deliverables
 
-- scale-up spec
-- manuscript outline
-- figure and table plan
+- fusion model code and config
+- E2b vs E3 vs E5 comparison table
+- ablation/feature importance analysis
+- draft "main result" figure for manuscript
 
 ### Dependencies
 
-- successful decision gate
+- Phase 4b (multi-video embeddings) and Phase 4c (measurement baseline) complete
 
 ### Risks
 
-- overextending from a pilot result
-- scaling before data quality is understood
+- measurements add noise rather than signal if leakage-cleaned features are too weak
+- small sample size (500 studies) limits statistical power for fusion advantage
 
 ### Exit criteria
 
-- a defensible plan for larger training and paper framing
+- fusion AUC > max(vision-only AUC, measurement-only AUC) — confirms multimodal value
+- even a null result is publishable if properly framed as modality-isolation analysis
 
-### Reproducibility artifacts
+## Phase 6: Full-scale extraction (batch-and-purge)
 
-- hardware plan
-- frozen subset definition
-- manuscript checklist
+### Objectives
 
-## Hardware classification
+- scale from 500 to all ~7,000 MIMIC-IV-ECHO studies for publication-quality statistics
+- achieve sample sizes comparable to published work (MVE-Echo: 7,169 studies)
 
-### Laptop-feasible now
+### Tasks
 
-- metadata inspection
-- manifest generation
-- checksum verification
-- DICOM decode on tiny subsets
-- EchoPrime environment setup
-- encoder-only smoke tests
-- tiny preprocessing and tiny pilot runs
+- batch-and-purge workflow: download ~500 studies, extract all clips, compute embeddings, delete raw DICOMs, repeat
+- storage budget: ~266 MB × 500 = ~130 GB per batch (within 800 GB projectnb)
+- final stored artifacts: embeddings + manifests only (~1-2 GB total)
+- re-run full evaluation ladder (E1–E5) at 7,000-study scale
+- compute confidence intervals and statistical significance tests
 
-### Laptop-feasible but slow
+### Deliverables
 
-- limited clip extraction on a few hundred studies
-- tiny reconstruction experiments at low resolution
+- full-scale embedding store for all 7,000 studies
+- publication-quality evaluation table with CIs
+- batch-and-purge execution logs
 
-### Not realistic on current hardware
+### Dependencies
 
-- serious multi-view video pretraining
-- large-scale direct conditional generation
-- manuscript-scale diffusion or large transformer video training
+- Phase 5 fusion pipeline validated on 500 studies
 
-### Better deferred to scale hardware
+### Exit criteria
 
-- reconstruction pretraining on large subsets
-- any direct conditional generation model
-- broad ablation sweeps and repeated experiments
+- all studies processed, final evaluation table ready for manuscript
+
+## Phase 7: Clinical notes integration
+
+### Objectives
+
+- add clinical notes as a third modality (E4 and E6 in evaluation ladder)
+- requires confirmed MIMIC-IV Note access
+
+### Tasks
+
+- verify note access and link echo studies to discharge/radiology notes
+- extract note embeddings (ClinicalBERT or similar)
+- E4: notes-only → LVEF baseline
+- E6: vision + measurements + notes → LVEF fusion
+- compare across full E1–E6 ladder
+
+### Exit criteria
+
+- full E1–E6 ladder complete with all three modalities
+
+## Phase 8: Manuscript
+
+### Objectives
+
+- write and submit the publication
+
+### Tasks
+
+- finalize ablation table (E1–E6)
+- create manuscript figures: modality contribution, attention heatmaps, case studies
+- frame contribution: first systematic multimodal evaluation on public echo data
+- compare against MVE-Echo, Echo-Vision-FM, EchoPrime baselines
+- discuss limitations (domain shift, note access, storage constraints)
+
+### Exit criteria
+
+- submitted manuscript with reproducible code and data pipeline
+
+## Hardware classification (SCC-based)
+
+### CPU batch jobs (no GPU needed)
+
+- metadata inspection and manifest generation
+- DICOM download (gsutil, 4-6h for 500 studies)
+- DICOM audit and cine extraction
+- structured measurement export from BigQuery
+- feature matrix construction and tabular baselines (Ridge/LogReg)
+
+### GPU batch jobs (A40/A6000, gpu_c=8.0, gpu_memory=48G)
+
+- EchoPrime embedding extraction (~83s for 998 clips at bs=8)
+- Multi-video extraction: ~21K clips/500 studies, estimate ~30 min at bs=8
+- Fusion MLP training (lightweight, any GPU suffices)
+
+### Full-scale batch-and-purge (CPU + GPU per batch)
+
+- ~14 batches of 500 studies each
+- ~130 GB raw DICOM per batch (within 800 GB projectnb quota)
+- Delete raw DICOMs after embedding extraction, keep only NPZ + manifests
+- Total timeline estimate: 2-3 days of queued jobs
+
+### Not needed for this project
+
+- Multi-GPU training (all models are lightweight MLPs on frozen embeddings)
+- VideoMAE pre-training (Echo-Vision-FM already published this)

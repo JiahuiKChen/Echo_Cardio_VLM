@@ -32,6 +32,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ridge-alpha", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--clip-threshold", type=float, default=0.5, help="Binary threshold for clip-level eval.")
+    parser.add_argument(
+        "--join-key",
+        choices=["clip", "study_id"],
+        default="clip",
+        help="Join strategy: 'clip' uses (subject_id, study_id, dicom_filepath); "
+        "'study_id' uses (study_id) for study-level aggregated embeddings.",
+    )
     return parser.parse_args()
 
 
@@ -82,32 +89,59 @@ def main() -> int:
     if "embeddings" not in emb_data:
         raise ValueError(f"{args.embedding_npz} missing 'embeddings' array")
     emb = emb_data["embeddings"].astype(np.float32)
-    if emb.ndim != 2 or emb.shape[1] != 523:
-        raise ValueError(f"Expected embeddings shape (N,523), got {emb.shape}")
+    if emb.ndim != 2:
+        raise ValueError(f"Expected 2D embeddings, got shape {emb.shape}")
 
     emb_meta = pd.read_csv(args.embedding_manifest)
-    emb_meta_ok = emb_meta[emb_meta["write_ok"].fillna(False)].copy().reset_index(drop=True)
+
+    if "write_ok" in emb_meta.columns:
+        emb_meta_ok = emb_meta[emb_meta["write_ok"].fillna(False)].copy().reset_index(drop=True)
+    else:
+        emb_meta_ok = emb_meta.copy()
+
+    idx_col = "embedding_idx" if "embedding_idx" not in emb_meta_ok.columns else "study_idx"
+    if idx_col == "study_idx" and "study_idx" in emb_meta_ok.columns:
+        pass  # study-level manifest already has study_idx
+    else:
+        emb_meta_ok["embedding_idx"] = np.arange(len(emb_meta_ok), dtype=int)
+        idx_col = "embedding_idx"
+
     if len(emb_meta_ok) != emb.shape[0]:
         raise RuntimeError(
-            f"Embedding matrix row count ({emb.shape[0]}) does not match successful manifest rows ({len(emb_meta_ok)})."
+            f"Embedding matrix row count ({emb.shape[0]}) does not match manifest rows ({len(emb_meta_ok)})."
         )
-    emb_meta_ok["embedding_idx"] = np.arange(len(emb_meta_ok), dtype=int)
 
     labels = pd.read_csv(args.label_manifest)
-    key_cols = ["subject_id", "study_id", "dicom_filepath"]
-    for c in key_cols:
-        if c not in labels.columns:
-            raise ValueError(f"Label manifest missing required key column: {c}")
-    for c in ["split", "lvef", "lvef_binary_reduced"]:
-        if c not in labels.columns:
-            raise ValueError(f"Label manifest missing required column: {c}")
 
-    join_cols = key_cols + ["split", "lvef", "lvef_binary_reduced"]
-    model_df = emb_meta_ok.merge(labels[join_cols], how="inner", on=key_cols, validate="one_to_one")
+    if args.join_key == "study_id":
+        key_cols = ["study_id"]
+        label_agg = (
+            labels.groupby("study_id", as_index=False)
+            .agg(
+                subject_id=("subject_id", "first"),
+                split=("split", "first"),
+                lvef=("lvef", "median"),
+                lvef_binary_reduced=("lvef_binary_reduced", "max"),
+            )
+        )
+        join_cols = key_cols + ["subject_id", "split", "lvef", "lvef_binary_reduced"]
+        model_df = emb_meta_ok.merge(label_agg[join_cols], how="inner", on=key_cols)
+    else:
+        key_cols = ["subject_id", "study_id", "dicom_filepath"]
+        for c in key_cols:
+            if c not in labels.columns:
+                raise ValueError(f"Label manifest missing required key column: {c}")
+        join_cols = key_cols + ["split", "lvef", "lvef_binary_reduced"]
+        model_df = emb_meta_ok.merge(labels[join_cols], how="inner", on=key_cols, validate="one_to_one")
+
+    for c in ["split", "lvef", "lvef_binary_reduced"]:
+        if c not in model_df.columns:
+            raise ValueError(f"Missing required column after join: {c}")
+
     if model_df.empty:
         raise RuntimeError("No rows after joining embeddings with labels.")
 
-    x = emb[model_df["embedding_idx"].to_numpy(dtype=int)]
+    x = emb[model_df[idx_col].to_numpy(dtype=int)]
     y_reg = model_df["lvef"].to_numpy(dtype=np.float32)
     y_bin = model_df["lvef_binary_reduced"].to_numpy(dtype=np.int32)
 
@@ -155,7 +189,7 @@ def main() -> int:
             lvef_binary_reduced=("lvef_binary_reduced", "max"),
             pred_lvef=("pred_lvef", "mean"),
             pred_reduced_prob=("pred_reduced_prob", "mean"),
-            n_clips=("embedding_idx", "count"),
+            n_clips=(idx_col, "count"),
         )
         .reset_index(drop=True)
     )

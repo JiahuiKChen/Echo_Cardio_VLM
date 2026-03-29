@@ -14,7 +14,8 @@ Usage:
     [--batch-size 8] \
     [--max-clips 0] \
     [--npz-path-prefix-from /old/prefix] \
-    [--npz-path-prefix-to /new/prefix]
+    [--npz-path-prefix-to /new/prefix] \
+    [--encoder-only]
 
 Inputs expected under cohort-root:
   extract_smoke/extraction_manifest.csv
@@ -33,6 +34,7 @@ BATCH_SIZE=8
 MAX_CLIPS=0
 NPZ_PATH_PREFIX_FROM=""
 NPZ_PATH_PREFIX_TO=""
+ENCODER_ONLY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --max-clips) MAX_CLIPS="$2"; shift 2 ;;
     --npz-path-prefix-from) NPZ_PATH_PREFIX_FROM="$2"; shift 2 ;;
     --npz-path-prefix-to) NPZ_PATH_PREFIX_TO="$2"; shift 2 ;;
+    --encoder-only) ENCODER_ONLY="--encoder-only"; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "[error] Unknown argument: $1" >&2
@@ -105,6 +108,9 @@ extract_cmd=(
 )
 if [[ -n "${NPZ_PATH_PREFIX_FROM}" ]]; then
   extract_cmd+=(--path-prefix-from "${NPZ_PATH_PREFIX_FROM}" --path-prefix-to "${NPZ_PATH_PREFIX_TO}")
+fi
+if [[ -n "${ENCODER_ONLY}" ]]; then
+  extract_cmd+=(--encoder-only)
 fi
 "${extract_cmd[@]}"
 

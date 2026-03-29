@@ -59,6 +59,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional destination prefix for rewritten output_path entries.",
     )
+    parser.add_argument(
+        "--encoder-only",
+        action="store_true",
+        help="Output 512-d encoder features only (skip unreliable view classifier).",
+    )
     return parser.parse_args()
 
 
@@ -82,13 +87,12 @@ def choose_device(requested: str) -> torch.device:
     return torch.device("cpu")
 
 
-def load_models(weights_dir: Path, device: torch.device) -> tuple[torch.nn.Module, torch.nn.Module]:
+def load_models(
+    weights_dir: Path, device: torch.device, encoder_only: bool = False,
+) -> tuple[torch.nn.Module, torch.nn.Module | None]:
     encoder_ckpt = weights_dir / "echo_prime_encoder.pt"
-    view_ckpt = weights_dir / "view_classifier.pt"
     if not encoder_ckpt.exists():
         raise FileNotFoundError(f"Missing encoder checkpoint: {encoder_ckpt}")
-    if not view_ckpt.exists():
-        raise FileNotFoundError(f"Missing view-classifier checkpoint: {view_ckpt}")
 
     video_model = torchvision.models.video.mvit_v2_s()
     video_model.head[-1] = torch.nn.Linear(video_model.head[-1].in_features, 512)
@@ -98,6 +102,12 @@ def load_models(weights_dir: Path, device: torch.device) -> tuple[torch.nn.Modul
     for p in video_model.parameters():
         p.requires_grad = False
 
+    if encoder_only:
+        return video_model, None
+
+    view_ckpt = weights_dir / "view_classifier.pt"
+    if not view_ckpt.exists():
+        raise FileNotFoundError(f"Missing view-classifier checkpoint: {view_ckpt}")
     view_model = torchvision.models.convnext_base()
     view_model.classifier[-1] = torch.nn.Linear(view_model.classifier[-1].in_features, 11)
     view_state = torch.load(str(view_ckpt), map_location="cpu")
@@ -170,7 +180,11 @@ def main() -> int:
     if work_df.empty:
         raise RuntimeError("No eligible clips in extraction manifest after filtering write_ok=true.")
 
-    video_model, view_model = load_models(weights_dir=args.weights_dir.resolve(), device=device)
+    encoder_only = args.encoder_only
+    emb_dim = 512 if encoder_only else 523
+    video_model, view_model = load_models(
+        weights_dir=args.weights_dir.resolve(), device=device, encoder_only=encoder_only,
+    )
     mean = torch.tensor([29.110628, 28.076836, 29.096405], dtype=torch.float32).reshape(3, 1, 1, 1)
     std = torch.tensor([47.989223, 46.456997, 47.20083], dtype=torch.float32).reshape(3, 1, 1, 1)
 
@@ -181,20 +195,27 @@ def main() -> int:
     n_failed = 0
 
     def _run_inference(tensors: list[torch.Tensor], metas: list[dict[str, Any]]) -> None:
-        """Run video+view inference on a list of tensors and append results."""
+        """Run video encoder (and optionally view classifier) on a batch."""
         batch = torch.stack(tensors, dim=0).to(device)
         with torch.no_grad():
             feat = video_model(batch)
-            first_frames = batch[:, :, 0, :, :]
-            logits = view_model(first_frames)
-            view_id = torch.argmax(logits, dim=1)
-            one_hot = torch.nn.functional.one_hot(view_id, num_classes=11).float()
-            emb523 = torch.cat([feat, one_hot], dim=1).detach().cpu().numpy().astype(np.float32)
-            view_id_np = view_id.detach().cpu().numpy().astype(np.int32)
             feat_norm = torch.linalg.norm(feat, dim=1).detach().cpu().numpy().astype(np.float32)
+
+            if encoder_only or view_model is None:
+                emb_np = feat.detach().cpu().numpy().astype(np.float32)
+                view_id_np = np.full(len(metas), -1, dtype=np.int32)
+            else:
+                first_frames = batch[:, :, 0, :, :]
+                logits = view_model(first_frames)
+                view_id = torch.argmax(logits, dim=1)
+                one_hot = torch.nn.functional.one_hot(view_id, num_classes=11).float()
+                emb_np = torch.cat([feat, one_hot], dim=1).detach().cpu().numpy().astype(np.float32)
+                view_id_np = view_id.detach().cpu().numpy().astype(np.int32)
+
         for i, meta in enumerate(metas):
             embedding_idx = len(embeddings)
-            embeddings.append(emb523[i])
+            embeddings.append(emb_np[i])
+            vid = int(view_id_np[i])
             rows.append(
                 {
                     "embedding_idx": embedding_idx,
@@ -202,8 +223,8 @@ def main() -> int:
                     "study_id": int(meta["study_id"]),
                     "dicom_filepath": str(meta["dicom_filepath"]),
                     "npz_path": str(meta["npz_path"]),
-                    "view_id": int(view_id_np[i]),
-                    "view_name": COARSE_VIEWS[int(view_id_np[i])],
+                    "view_id": vid if vid >= 0 else None,
+                    "view_name": COARSE_VIEWS[vid] if 0 <= vid < len(COARSE_VIEWS) else None,
                     "embedding_l2_norm": float(feat_norm[i]),
                     "write_ok": True,
                     "error": None,
@@ -299,7 +320,7 @@ def main() -> int:
     if embeddings:
         emb_arr = np.stack(embeddings, axis=0).astype(np.float32)
     else:
-        emb_arr = np.zeros((0, 523), dtype=np.float32)
+        emb_arr = np.zeros((0, emb_dim), dtype=np.float32)
 
     args.output_npz.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.output_npz, embeddings=emb_arr)
