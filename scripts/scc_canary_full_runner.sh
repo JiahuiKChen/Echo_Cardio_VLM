@@ -3,6 +3,14 @@
 # Covers: path verification, workspace prep, canary 2-study run,
 #         output collection, and failure diagnostics.
 #
+# IMPORTANT: This script is for the 2-study canary ONLY.
+# The canary is small enough to run interactively on the login node.
+# For Stage D (500+ studies) or any GPU work, use the qsub batch
+# submission scripts instead:
+#   ./scripts/scc_submit_stage_d_job.sh
+#   ./scripts/scc_submit_echoprime_embedding_job.sh
+# The login node kills interactive processes exceeding 15 min CPU time.
+#
 # Usage (on scc4):
 #   chmod +x scripts/scc_canary_full_runner.sh
 #   ./scripts/scc_canary_full_runner.sh

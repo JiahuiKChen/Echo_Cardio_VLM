@@ -81,6 +81,17 @@ if ! command -v qsub >/dev/null 2>&1; then
   exit 1
 fi
 
-QSUB_OUT="$(qsub -cwd -P "${SGE_PROJECT}" -N "${JOB_NAME}" -j y -o "${LOG_DIR}" "${JOB_SCRIPT}")"
+QSUB_OUT="$(qsub \
+  -cwd \
+  -P "${SGE_PROJECT}" \
+  -N "${JOB_NAME}" \
+  -j y \
+  -o "${LOG_DIR}" \
+  -l h_rt=2:00:00 \
+  -pe omp 2 \
+  -l mem_per_core=4G \
+  "${JOB_SCRIPT}")"
 echo "${QSUB_OUT}"
 echo "[info] Job script: ${JOB_SCRIPT}"
+echo "[info] Monitor with: qstat -u \$(whoami)"
+echo "[info] Log will appear in: ${LOG_DIR}/"
