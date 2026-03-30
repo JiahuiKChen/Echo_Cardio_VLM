@@ -247,8 +247,7 @@ EOSQL
   "${PYTHON_BIN}" scripts/audit_mimic_echo_dicoms.py \
     --data-root "${BATCH_DOWNLOAD_ROOT}" \
     --records-csv "${BATCH_RECORDS_CSV}" \
-    --output-audit "${BATCH_AUDIT_DIR}/dicom_audit.csv" \
-    --output-cine "${BATCH_AUDIT_DIR}/cine_candidates.csv"
+    --output-dir "${BATCH_AUDIT_DIR}"
 
   # --- 3c: Extract all cine clips ---
   log "[batch ${BATCH_IDX}] Extracting all cine clips..."
