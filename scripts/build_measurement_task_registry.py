@@ -98,8 +98,20 @@ UNIT_ALIASES = {
     "liter": "l",
     "liters": "l",
     "m/s": "m/s",
+    "m / s": "m/s",
+    "m per s": "m/s",
+    "m per sec": "m/s",
+    "m/sec": "m/s",
+    "m second": "m/s",
+    "m s": "m/s",
     "m sec": "m/s",
     "cm/s": "cm/s",
+    "cm / s": "cm/s",
+    "cm per s": "cm/s",
+    "cm per sec": "cm/s",
+    "cm/sec": "cm/s",
+    "cm second": "cm/s",
+    "cm s": "cm/s",
     "cm sec": "cm/s",
     "m2": "m2",
     "m^2": "m2",
@@ -210,11 +222,16 @@ def normalize_text(value: Any) -> str:
 def normalize_unit(value: Any) -> str:
     if pd.isna(value):
         return "unknown"
-    text = normalize_text(value)
+    text = str(value).strip().lower()
+    text = text.replace("μ", "u").replace("µ", "u")
+    text = re.sub(r"[^a-z0-9/%^.\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return "unknown"
-    text = text.replace("per second", "/s").replace("per sec", "/s")
-    text = text.replace("m sec", "m/s").replace("cm sec", "cm/s")
+    text = text.replace("per second", "per sec")
+    text = text.replace("meters", "meter").replace("centimeters", "centimeter").replace("millimeters", "millimeter")
+    text = text.replace("square meter", "m2").replace("square centimeter", "cm2")
+    text = text.replace("meter^2", "m2").replace("centimeter^2", "cm2")
     if text in UNIT_ALIASES:
         return UNIT_ALIASES[text]
     if "%" in text:
@@ -275,26 +292,38 @@ def compute_canonical_group(group: pd.DataFrame, total_reference_studies: int) -
     numeric = group.dropna(subset=["result_numeric"]).copy()
     result_rate = float(len(numeric) / len(group)) if len(group) > 0 else 0.0
 
+    n_studies_any = int(group["study_id"].nunique())
+    n_studies_with_result = int(numeric["study_id"].nunique()) if not numeric.empty else 0
+    n_subjects_any = int(group["subject_id"].nunique())
+    n_subjects_with_result = int(numeric["subject_id"].nunique()) if not numeric.empty else 0
+
     canonical_unit = "unknown"
     p05 = p50 = p95 = np.nan
     if not numeric.empty:
-        canonical_unit = str(numeric["canonical_value_unit"].value_counts().index[0])
-        numeric_same_unit = numeric[numeric["canonical_value_unit"] == canonical_unit]
+        unit_counts = numeric["canonical_value_unit"].value_counts()
+        non_unknown_pref = [u for u in unit_counts.index.tolist() if u != "unknown"]
+        canonical_unit = str(non_unknown_pref[0] if non_unknown_pref else unit_counts.index[0])
+        numeric_same_unit = numeric[numeric["canonical_value_unit"] == canonical_unit] if canonical_unit != "unknown" else numeric
         if not numeric_same_unit.empty:
             p05 = float(np.nanpercentile(numeric_same_unit["result_canonical"].to_numpy(dtype=float), 5))
             p50 = float(np.nanpercentile(numeric_same_unit["result_canonical"].to_numpy(dtype=float), 50))
             p95 = float(np.nanpercentile(numeric_same_unit["result_canonical"].to_numpy(dtype=float), 95))
 
-    n_studies = int(group["study_id"].nunique())
-    study_coverage = float(n_studies / total_reference_studies) if total_reference_studies > 0 else 0.0
+    study_coverage_any = float(n_studies_any / total_reference_studies) if total_reference_studies > 0 else 0.0
+    study_coverage_with_result = (
+        float(n_studies_with_result / total_reference_studies) if total_reference_studies > 0 else 0.0
+    )
 
     return {
         "n_rows": int(len(group)),
         "n_result_rows": int(len(numeric)),
         "result_rate": round(result_rate, 4),
-        "n_studies": n_studies,
-        "n_subjects": int(group["subject_id"].nunique()),
-        "study_coverage": round(study_coverage, 4),
+        "n_studies_any": n_studies_any,
+        "n_studies_with_result": n_studies_with_result,
+        "n_subjects_any": n_subjects_any,
+        "n_subjects_with_result": n_subjects_with_result,
+        "study_coverage_any": round(study_coverage_any, 4),
+        "study_coverage_with_result": round(study_coverage_with_result, 4),
         "n_original_measurements": int(group["measurement"].nunique()),
         "original_measurements_top10": series_top_counts(group["measurement"], limit=10),
         "unit_categories": ",".join(non_unknown_cat) if non_unknown_cat else "unknown",
@@ -368,14 +397,19 @@ def main() -> int:
                 "n_rows": int(len(g)),
                 "n_result_rows": int(len(numeric)),
                 "result_rate": round(float(len(numeric) / len(g)) if len(g) else 0.0, 4),
-                "n_studies": int(g["study_id"].nunique()),
-                "n_subjects": int(g["subject_id"].nunique()),
+                "n_studies_any": int(g["study_id"].nunique()),
+                "n_studies_with_result": int(numeric["study_id"].nunique()) if not numeric.empty else 0,
+                "n_subjects_any": int(g["subject_id"].nunique()),
+                "n_subjects_with_result": int(numeric["subject_id"].nunique()) if not numeric.empty else 0,
                 "unit_norm_top10": series_top_counts(g["unit_norm"], limit=10),
                 "unit_categories": ",".join(sorted(set([x for x in g["unit_category"].tolist() if x != "unknown"])))
                 or "unknown",
             }
         )
-    raw_df = pd.DataFrame(raw_rows).sort_values(["n_studies", "n_rows"], ascending=False).reset_index(drop=True)
+    raw_df = pd.DataFrame(raw_rows).sort_values(
+        ["n_studies_with_result", "n_result_rows", "n_rows"],
+        ascending=False,
+    ).reset_index(drop=True)
 
     # Per-canonical task summary.
     canonical_rows: list[dict[str, Any]] = []
@@ -384,7 +418,7 @@ def main() -> int:
         row.update(compute_canonical_group(g, total_reference_studies=total_reference_studies))
         canonical_rows.append(row)
     canonical_df = pd.DataFrame(canonical_rows).sort_values(
-        ["n_studies", "n_result_rows", "n_rows"],
+        ["n_studies_with_result", "n_result_rows", "n_rows"],
         ascending=False,
     ).reset_index(drop=True)
 
@@ -393,7 +427,7 @@ def main() -> int:
     reasons: list[list[str]] = []
     for _, row in canonical_df.iterrows():
         r: list[str] = []
-        if int(row["n_studies"]) < args.min_studies:
+        if int(row["n_studies_with_result"]) < args.min_studies:
             r.append("low_study_count")
         if int(row["n_result_rows"]) < args.min_result_rows:
             r.append("low_result_rows")
@@ -468,8 +502,8 @@ def main() -> int:
     top_selected = selected_df.head(20)[
         [
             "canonical_measurement",
-            "n_studies",
-            "study_coverage",
+            "n_studies_with_result",
+            "study_coverage_with_result",
             "n_result_rows",
             "result_rate",
             "recommended_canonical_unit",
@@ -478,7 +512,7 @@ def main() -> int:
     top_excluded = excluded_df.head(20)[
         [
             "canonical_measurement",
-            "n_studies",
+            "n_studies_with_result",
             "n_result_rows",
             "result_rate",
             "n_unit_categories",
