@@ -347,14 +347,20 @@ log "=== Step 7: Building split map and LVEF manifest ==="
 
 if [[ ! -f "${FULLSCALE_ROOT}/manifests/subject_split_map_v1.csv" ]]; then
   "${PYTHON_BIN}" - "${ALL_STUDIES_CSV}" "${FULLSCALE_ROOT}/manifests/subject_split_map_v1.csv" <<'PYEOF'
-import numpy as np, pandas as pd, json, sys
+import hashlib
+import json
+import numpy as np
+import pandas as pd
+import sys
 from pathlib import Path
 
 csv = Path(sys.argv[1])
 out = Path(sys.argv[2])
 df = pd.read_csv(csv)
 subjects = sorted(df["subject_id"].unique().tolist())
-rng = np.random.default_rng(abs(hash("echo-ai-fixed-split-seed-v1")) % (2**31))
+seed_text = "echo-ai-fixed-split-seed-v1"
+seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:8], 16)
+rng = np.random.default_rng(seed)
 rng.shuffle(subjects)
 n = len(subjects)
 n_train = max(1, int(n * 0.7))
@@ -363,7 +369,12 @@ splits = (["train"] * n_train + ["val"] * n_val + ["test"] * (n - n_train - n_va
 split_df = pd.DataFrame({"subject_id": subjects, "split": splits})
 out.parent.mkdir(parents=True, exist_ok=True)
 split_df.to_csv(out, index=False)
-summary = {"n_subjects": n, "split_counts": split_df["split"].value_counts().to_dict()}
+summary = {
+    "seed_text": seed_text,
+    "seed_int": int(seed),
+    "n_subjects": n,
+    "split_counts": split_df["split"].value_counts().to_dict(),
+}
 out.with_suffix(".summary.json").write_text(json.dumps(summary, indent=2))
 print(json.dumps(summary, indent=2))
 PYEOF
