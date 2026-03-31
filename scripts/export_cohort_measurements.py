@@ -93,9 +93,8 @@ def run_bq_query(query: str, billing_project: str, max_rows: int) -> str:
         "--nouse_legacy_sql",
         "--format=csv",
         f"--max_rows={max_rows}",
-        query,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, input=query)
     if proc.returncode != 0:
         raise RuntimeError(f"bq query failed (exit {proc.returncode}):\n{proc.stderr.strip()}")
     return proc.stdout
