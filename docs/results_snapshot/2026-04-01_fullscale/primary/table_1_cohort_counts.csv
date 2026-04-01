@@ -1,0 +1,6 @@
+stage,n_studies
+Eligible studies,4530
+Study embeddings available,4696
+LVEF evaluation cohort,2833
+LVEF ∩ study embeddings,2833
+LVEF missing in study embeddings,0

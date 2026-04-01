@@ -1,0 +1,3 @@
+criterion,vision,tabular,fusion
+best_test_r2,0,3,26
+best_test_mae_norm_iqr,0,7,22

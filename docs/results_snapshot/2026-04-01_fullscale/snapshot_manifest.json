@@ -1,0 +1,24 @@
+{
+  "generated_at_utc": "2026-04-01T22:24:03.340046+00:00",
+  "fullscale_root": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all",
+  "snapshot_dir": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale",
+  "freeze_pack": "/restricted/project/mimicecho/outputs/freeze_fullscale_20260331_111135",
+  "copied_files": [
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/audit/fullscale_audit_summary.json",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/audit/fullscale_audit_report.md",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/primary/table_1_cohort_counts.csv",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/primary/table_2_primary_metrics.csv",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/primary/table_3_tabular_feature_audit.csv",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/primary/results_summary.json",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/primary/figure_1_primary_metrics.png",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/primary/figure_2_auc_with_bootstrap_ci.png",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/multitask/multitask_macro_summary.csv",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/multitask/multitask_task_level_comparison.csv",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/multitask/multitask_win_counts.csv",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/multitask/multitask_top_fusion_gains.csv",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/multitask/multitask_results_summary.json",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/multitask/figure_multitask_macro.png",
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/multitask/figure_multitask_fusion_gain_hist.png"
+  ],
+  "readme": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/docs/results_snapshot/2026-04-01_fullscale/README.md"
+}

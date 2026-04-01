@@ -1,0 +1,57 @@
+{
+  "fullscale_root": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all",
+  "vision_dir": "eval_multitask_vision_strict",
+  "tabular_dir": "eval_multitask_tabular_strict",
+  "fusion_dir": "eval_multitask_fusion_strict",
+  "n_common_tasks": 29,
+  "macro": [
+    {
+      "modality": "vision",
+      "tasks_scored": 29,
+      "mean_r2": 0.3196394813471827,
+      "median_r2": 0.35787010192871094,
+      "mean_mae_norm_iqr": 0.49531902332333877
+    },
+    {
+      "modality": "tabular",
+      "tasks_scored": 29,
+      "mean_r2": 0.43849176990574806,
+      "median_r2": 0.3920081853866577,
+      "mean_mae_norm_iqr": 0.4191308732583908
+    },
+    {
+      "modality": "fusion",
+      "tasks_scored": 29,
+      "mean_r2": 0.4885591247986103,
+      "median_r2": 0.5575881004333496,
+      "mean_mae_norm_iqr": 0.39732382377361763
+    }
+  ],
+  "win_counts": [
+    {
+      "criterion": "best_test_r2",
+      "vision": 0,
+      "tabular": 3,
+      "fusion": 26
+    },
+    {
+      "criterion": "best_test_mae_norm_iqr",
+      "vision": 0,
+      "tabular": 7,
+      "fusion": 22
+    }
+  ],
+  "fusion_gain_summary": {
+    "mean_delta_r2_vs_vision": 0.1689196434514276,
+    "median_delta_r2_vs_vision": 0.08990395069122312,
+    "mean_delta_r2_vs_tabular": 0.05006735489286225,
+    "median_delta_r2_vs_tabular": 0.044743239879608154,
+    "n_tasks_fusion_beats_vision_r2": 28,
+    "n_tasks_fusion_beats_tabular_r2": 26
+  },
+  "figure_generation": {
+    "figure_multitask_macro_png": true,
+    "figure_multitask_fusion_gain_hist_png": true
+  },
+  "outputs_dir": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/reporting_multitask_assets"
+}

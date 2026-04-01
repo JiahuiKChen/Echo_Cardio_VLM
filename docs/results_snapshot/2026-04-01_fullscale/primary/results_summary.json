@@ -1,0 +1,38 @@
+{
+  "generated_at_utc": "2026-03-31T16:47:45.522061+00:00",
+  "fullscale_root": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all",
+  "output_dir": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/reporting_assets",
+  "inputs": {
+    "audit_summary": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/audit_postrun/fullscale_audit_summary.json",
+    "e2_metrics": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e2b_vision/echoprime_embedding_baseline_metrics.json",
+    "e3_metrics": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e3_tabular/tabular_baseline_metrics.json",
+    "e5_metrics": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e5_fusion/fusion_metrics.json",
+    "leakage_audit": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e3_tabular/measurement_leakage_audit.json",
+    "e5_bootstrap_metrics": "outputs/cloud_cohorts/fullscale_all/eval_e5_fusion_boot10k/fusion_metrics.json"
+  },
+  "key_counts": {
+    "eligible_studies": 4530,
+    "study_embeddings": 4696,
+    "lvef_eval_studies": 2833,
+    "lvef_intersection_with_embeddings": 2833,
+    "lvef_missing_embeddings": 0,
+    "duplicate_study_embeddings": 0
+  },
+  "figure_generation": {
+    "figure_1_primary_metrics_png": true,
+    "figure_2_auc_ci_png": true,
+    "note": "If false, matplotlib is unavailable in the active Python env."
+  },
+  "tables": [
+    "table_1_cohort_counts.csv",
+    "table_1_cohort_counts.md",
+    "table_2_primary_metrics.csv",
+    "table_2_primary_metrics.md",
+    "table_3_tabular_feature_audit.csv",
+    "table_3_tabular_feature_audit.md"
+  ],
+  "figures": [
+    "figure_1_primary_metrics.png",
+    "figure_2_auc_with_bootstrap_ci.png"
+  ]
+}

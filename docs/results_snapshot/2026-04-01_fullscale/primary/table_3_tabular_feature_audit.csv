@@ -1,0 +1,9 @@
+item,value
+Unique measurements (raw),78.0
+Excluded as LVEF leakage,4.0
+Excluded for low coverage,23.0
+Retained tabular features,51.0
+Mean missing rate (retained features),0.4312
+Tabular test AUC,0.9152911164465786
+Tabular test R2,0.43829071521759033
+Tabular test MAE,6.684192657470703

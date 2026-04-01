@@ -1,0 +1,116 @@
+{
+  "fullscale_root": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all",
+  "required_files": {
+    "all_eligible_studies": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/manifests/all_eligible_studies.csv",
+    "structured_measurements": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/manifests/structured_measurements.csv",
+    "subject_split_map": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/manifests/subject_split_map_v1.csv",
+    "keyframe_stub": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/manifests/keyframe_stub.csv",
+    "lvef_manifest": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/manifests/lvef_still_manifest.csv",
+    "merged_clip_manifest": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/merged_clip_embeddings_512/clip_embedding_manifest.csv",
+    "study_embedding_manifest": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/study_embeddings_512/study_embedding_manifest.csv",
+    "e2b_metrics": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e2b_vision/echoprime_embedding_baseline_metrics.json",
+    "e3_metrics": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e3_tabular/tabular_baseline_metrics.json",
+    "e3_leakage_audit": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e3_tabular/measurement_leakage_audit.json",
+    "e5_metrics": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e5_fusion/fusion_metrics.json"
+  },
+  "missing_files": [],
+  "counts": {
+    "all_eligible_studies": {
+      "n_rows": 4530,
+      "n_studies": 4530,
+      "n_subjects": 4530
+    },
+    "keyframe_stub": {
+      "n_rows": 4696,
+      "n_studies": 4696,
+      "n_subjects": 4525
+    },
+    "lvef_manifest": {
+      "n_rows": 2833,
+      "n_studies": 2833,
+      "n_subjects": 2833
+    },
+    "merged_clip_manifest": {
+      "n_rows": 191993,
+      "n_studies": 4696,
+      "n_subjects": 4525
+    },
+    "study_embedding_manifest": {
+      "n_rows": 4696,
+      "n_studies": 4696,
+      "n_subjects": 4525
+    },
+    "structured_measurements": {
+      "n_rows": 669378,
+      "n_studies": 4530,
+      "n_subjects": 4530,
+      "n_result_parsed": 145653,
+      "n_unique_measurements": 186
+    }
+  },
+  "checks": {
+    "split_map_duplicate_subject_rows": 0,
+    "split_map_invalid_splits": [],
+    "study_embedding_duplicate_study_rows": 0,
+    "merged_clip_studies_with_multiple_subject_ids": 0,
+    "merged_clip_clips_per_study_stats": {
+      "min": 1,
+      "median": 41.0,
+      "max": 106
+    },
+    "label_manifest_subjects_with_multiple_splits": 0,
+    "label_vs_split_map_mismatch_subject_rows": 0,
+    "label_subject_rows_missing_in_split_map": 0
+  },
+  "intersections": {
+    "lvef_vs_study_embeddings": {
+      "n_lvef": 2833,
+      "n_study_embeddings": 4696,
+      "n_intersection": 2833,
+      "n_lvef_missing_in_study_embeddings": 0,
+      "n_study_embeddings_missing_in_lvef": 1863
+    },
+    "lvef_vs_keyframe_stub": {
+      "n_lvef": 2833,
+      "n_keyframe": 4696,
+      "n_intersection": 2833,
+      "n_lvef_missing_in_keyframe": 0
+    },
+    "lvef_vs_all_eligible": {
+      "n_lvef": 2833,
+      "n_all_eligible": 4530,
+      "n_intersection": 2833
+    }
+  },
+  "metrics": [
+    {
+      "experiment": "E2b_vision",
+      "source": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e2b_vision/echoprime_embedding_baseline_metrics.json",
+      "n_test": 426,
+      "auc": 0.9580582232893157,
+      "r2": 0.6126729846000671,
+      "mae": 5.676061630249023
+    },
+    {
+      "experiment": "E3_tabular",
+      "source": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e3_tabular/tabular_baseline_metrics.json",
+      "n_test": 426,
+      "auc": 0.9152911164465786,
+      "r2": 0.43829071521759033,
+      "mae": 6.684192657470703,
+      "missing_rate_mean": 0.4312,
+      "n_features": 51
+    },
+    {
+      "experiment": "E5_fusion",
+      "source": "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/cloud_cohorts/fullscale_all/eval_e5_fusion/fusion_metrics.json",
+      "chosen_config": "fusion_concat__linear",
+      "n_test": 426,
+      "auc": 0.9618097238895559,
+      "r2": 0.6615248918533325,
+      "mae": 5.393465518951416,
+      "n_tabular_features": 51
+    }
+  ],
+  "warnings": []
+}
