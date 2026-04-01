@@ -12,17 +12,16 @@ It intentionally avoids copying row-level manifests, embeddings, or restricted
 data-derived study files.
 """
 
-from __future__ import annotations
-
 import argparse
 import csv
 import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Dict, List, Optional
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--fullscale-root",
@@ -45,21 +44,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def read_json(path: Path) -> dict:
+def read_json(path):
     return json.loads(path.read_text())
 
 
-def read_csv_rows(path: Path) -> list[dict[str, str]]:
+def read_csv_rows(path):
     with path.open(newline="") as f:
         return list(csv.DictReader(f))
 
 
-def copy_required(src: Path, dst: Path) -> None:
+def copy_required(src, dst):
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
 
 
-def fmt_float(val: str | float | int | None, ndigits: int = 4) -> str:
+def fmt_float(val, ndigits=4):
     if val in ("", None):
         return "NA"
     try:
@@ -69,15 +68,15 @@ def fmt_float(val: str | float | int | None, ndigits: int = 4) -> str:
 
 
 def build_readme(
-    snapshot_dir: Path,
-    fullscale_root: Path,
-    freeze_pack: Path | None,
-    audit: dict,
-    primary_summary: dict,
-    primary_table: list[dict[str, str]],
-    multitask_summary: dict,
-    multitask_macro: list[dict[str, str]],
-) -> str:
+    snapshot_dir,
+    fullscale_root,
+    freeze_pack,
+    audit,
+    primary_summary,
+    primary_table,
+    multitask_summary,
+    multitask_macro,
+):
     counts = audit.get("counts", {})
     intersections = audit.get("intersections", {})
 
@@ -182,7 +181,7 @@ def build_readme(
     )
 
 
-def main() -> int:
+def main():
     args = parse_args()
     fullscale_root = args.fullscale_root.resolve()
     snapshot_dir = args.snapshot_dir.resolve()
