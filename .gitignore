@@ -237,3 +237,6 @@ derived/
 *.hdf5
 *.dcm
 *.dicom
+*predictions*.csv
+*patient*.csv
+*restricted*

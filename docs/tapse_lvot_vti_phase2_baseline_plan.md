@@ -39,6 +39,8 @@ Primary models:
 - Null median baseline using the training-set target median.
 - Ridge regression with standardized EchoPrime embeddings and a predeclared alpha grid selected by validation MAE.
 
+Phase 2.1 stable-v2 reruns should use `docs/phase2_stable_imaging_baselines_runbook.md`, which defaults to a numerically stable Ridge solver (`svd`), an expanded alpha grid, explicit random seed metadata, captured warnings, and a separate output root.
+
 Primary test metrics:
 
 - MAE, RMSE, R2, median absolute error, and MAE normalized by training-set IQR.

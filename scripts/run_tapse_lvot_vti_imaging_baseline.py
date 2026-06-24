@@ -12,11 +12,13 @@ import argparse
 import hashlib
 import json
 import re
+import warnings as py_warnings
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.linear_model import Ridge
 from sklearn.metrics import (
     accuracy_score,
@@ -57,7 +59,8 @@ TARGETS: dict[str, dict[str, Any]] = {
     },
 }
 
-DEFAULT_RIDGE_ALPHAS = "0.01,0.1,1,10,100"
+DEFAULT_RIDGE_ALPHAS = "0.01,0.03,0.1,0.3,1,3,10,30,100,300,1000"
+RIDGE_SOLVERS = ["auto", "svd", "cholesky", "lsqr", "sparse_cg", "sag", "saga"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,9 +73,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target", choices=["lvot_vti", "tapse", "all"], default="lvot_vti")
     parser.add_argument("--analysis-label", default="all_clips_study_embeddings")
     parser.add_argument("--ridge-alphas", default=DEFAULT_RIDGE_ALPHAS)
+    parser.add_argument(
+        "--ridge-solver",
+        choices=RIDGE_SOLVERS,
+        default="svd",
+        help="Ridge solver. stable-v2 defaults to svd for numerical stability.",
+    )
+    parser.add_argument(
+        "--standardize-features",
+        dest="standardize_features",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fit StandardScaler on the training split before Ridge. Enabled by default.",
+    )
     parser.add_argument("--n-bootstrap", type=int, default=2000)
     parser.add_argument("--bootstrap-unit", choices=["subject", "study"], default="subject")
-    parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--random-seed", type=int, default=None, help="Primary reproducibility seed.")
+    parser.add_argument("--seed", type=int, default=1337, help="Legacy alias used when --random-seed is omitted.")
     parser.add_argument("--min-train-n", type=int, default=120)
     parser.add_argument("--min-val-n", type=int, default=40)
     parser.add_argument("--min-test-n", type=int, default=40)
@@ -85,6 +102,18 @@ def parse_args() -> argparse.Namespace:
         "--allow-repo-output-for-testing",
         action="store_true",
         help="Permit patient-level prediction output inside the git worktree. Use only for synthetic tests.",
+    )
+    parser.add_argument(
+        "--write-patient-predictions",
+        dest="write_patient_predictions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write per-study prediction CSV. Requires --allow-restricted-patient-outputs outside tests.",
+    )
+    parser.add_argument(
+        "--allow-restricted-patient-outputs",
+        action="store_true",
+        help="Acknowledge that patient-level predictions are being written to approved restricted storage.",
     )
     return parser.parse_args()
 
@@ -119,6 +148,12 @@ def parse_float_list(text: str) -> list[float]:
     return out
 
 
+def effective_random_seed(args: argparse.Namespace) -> int:
+    if args.random_seed is not None:
+        return int(args.random_seed)
+    return int(args.seed)
+
+
 def existing_required_paths(args: argparse.Namespace) -> list[Path]:
     return [
         args.structured_measurements_csv,
@@ -131,7 +166,7 @@ def existing_required_paths(args: argparse.Namespace) -> list[Path]:
 def example_scc_command() -> str:
     return """cd /restricted/project/mimicecho/code/Echo_Cardio_VLM
 PY=.venv-echoprime/bin/python
-OUT=/restricted/project/mimicecho/outputs/tapse_lvot_vti_phase2
+OUT=/restricted/project/mimicecho/outputs/tapse_lvot_vti_phase2_stable_v2
 
 $PY scripts/run_tapse_lvot_vti_imaging_baseline.py \\
   --structured-measurements-csv outputs/cloud_cohorts/fullscale_all/manifests/structured_measurements.csv \\
@@ -139,7 +174,10 @@ $PY scripts/run_tapse_lvot_vti_imaging_baseline.py \\
   --study-embedding-manifest outputs/cloud_cohorts/fullscale_all/study_embeddings_512/study_embedding_manifest.csv \\
   --subject-split-map-csv outputs/cloud_cohorts/fullscale_all/manifests/subject_split_map_v1.csv \\
   --target lvot_vti \\
-  --analysis-label all_clips_study_embeddings \\
+  --analysis-label all_clips_study_embeddings_stable_v2 \\
+  --ridge-solver svd \\
+  --standardize-features \\
+  --allow-restricted-patient-outputs \\
   --output-dir $OUT/lvot_vti/all_clips"""
 
 
@@ -149,15 +187,25 @@ def inside_current_worktree(path: Path) -> bool:
     return resolved == cwd or cwd in resolved.parents
 
 
-def guard_output_path(path: Path, allow_repo_output_for_testing: bool) -> None:
-    if allow_repo_output_for_testing:
-        return
-    if inside_current_worktree(path):
-        raise RuntimeError(
-            f"Refusing to write patient-level predictions inside the repo: {path}. "
-            "Use an approved restricted output directory, or pass "
-            "--allow-repo-output-for-testing only for synthetic tests."
+def resolve_patient_prediction_policy(args: argparse.Namespace, warnings: list[str]) -> bool:
+    if not args.write_patient_predictions:
+        warnings.append("Patient-level predictions disabled by --no-write-patient-predictions.")
+        return False
+
+    if inside_current_worktree(args.output_dir) and not args.allow_repo_output_for_testing:
+        warnings.append(
+            "Output directory is inside the git worktree; patient-level predictions will not be written."
         )
+        return False
+
+    if not args.allow_restricted_patient_outputs and not args.allow_repo_output_for_testing:
+        warnings.append(
+            "Patient-level predictions requested without --allow-restricted-patient-outputs; "
+            "predictions will not be written."
+        )
+        return False
+
+    return True
 
 
 def stable_seed(seed: int, *parts: str) -> int:
@@ -201,6 +249,8 @@ def extract_target(measures: pd.DataFrame, target: str, exclude_hard_extremes: b
     )
     rows["hard_invalid_or_extreme"] = (rows["target_value"] <= 0.0) | (rows["target_value"] > cfg["hard_high"])
 
+    numeric_rows_before_exclusions = int(len(rows))
+    hard_invalid_or_extreme_before_exclusions = int(rows["hard_invalid_or_extreme"].sum())
     excluded_hard = int(rows["hard_invalid_or_extreme"].sum()) if exclude_hard_extremes else 0
     if exclude_hard_extremes:
         rows = rows[~rows["hard_invalid_or_extreme"]].copy()
@@ -222,6 +272,8 @@ def extract_target(measures: pd.DataFrame, target: str, exclude_hard_extremes: b
     summary = {
         "target": target,
         "clinical_unit": cfg["clinical_unit"],
+        "numeric_rows_before_exclusions": numeric_rows_before_exclusions,
+        "hard_invalid_or_extreme_before_exclusions": hard_invalid_or_extreme_before_exclusions,
         "numeric_rows": int(len(rows)),
         "numeric_studies": int(grouped["study_id_str"].nunique()),
         "numeric_subjects": int(grouped["subject_id_str"].nunique()),
@@ -440,31 +492,57 @@ def binary_metrics(y_true: np.ndarray, y_pred: np.ndarray, target: str, split: s
     return rows
 
 
+def build_ridge_pipeline(alpha: float, solver: str, standardize_features: bool, seed: int) -> Pipeline:
+    steps: list[tuple[str, Any]] = []
+    if standardize_features:
+        steps.append(("scaler", StandardScaler()))
+    steps.append(("ridge", Ridge(alpha=alpha, solver=solver, random_state=seed)))
+    return Pipeline(steps)
+
+
 def fit_ridge_with_val_selection(
     x: np.ndarray,
     y: np.ndarray,
     split: pd.Series,
     alphas: list[float],
     seed: int,
-) -> tuple[np.ndarray, float, pd.DataFrame]:
+    solver: str,
+    standardize_features: bool,
+) -> tuple[np.ndarray, float, pd.DataFrame, list[dict[str, Any]]]:
     train_mask = split.eq("train").to_numpy()
     val_mask = split.eq("val").to_numpy()
     selection_rows: list[dict[str, Any]] = []
+    warning_records: list[dict[str, Any]] = []
     best_alpha = alphas[0]
     best_val_mae = np.inf
     best_predictions: np.ndarray | None = None
 
     for alpha in alphas:
-        model = Pipeline(
-            [
-                ("scaler", StandardScaler()),
-                ("ridge", Ridge(alpha=alpha, random_state=seed)),
-            ]
-        )
-        model.fit(x[train_mask], y[train_mask])
-        pred = model.predict(x).astype(np.float32)
+        model = build_ridge_pipeline(alpha, solver, standardize_features, seed)
+        with py_warnings.catch_warnings(record=True) as caught:
+            py_warnings.simplefilter("always")
+            model.fit(x[train_mask], y[train_mask])
+            pred = model.predict(x).astype(np.float32)
+        warning_messages = [str(item.message) for item in caught]
+        for item in caught:
+            warning_records.append(
+                {
+                    "alpha": float(alpha),
+                    "category": item.category.__name__,
+                    "message": str(item.message),
+                }
+            )
         val_mae = float(mean_absolute_error(y[val_mask], pred[val_mask]))
-        selection_rows.append({"alpha": float(alpha), "val_mae": val_mae})
+        selection_rows.append(
+            {
+                "alpha": float(alpha),
+                "val_mae": val_mae,
+                "ridge_solver": solver,
+                "features_standardized": bool(standardize_features),
+                "warning_count": int(len(warning_messages)),
+                "warning_messages": " | ".join(dict.fromkeys(warning_messages)),
+            }
+        )
         if val_mae < best_val_mae:
             best_alpha = alpha
             best_val_mae = val_mae
@@ -474,7 +552,7 @@ def fit_ridge_with_val_selection(
         raise RuntimeError("No Ridge model was fit.")
     selection = pd.DataFrame(selection_rows)
     selection["selected"] = selection["alpha"].eq(best_alpha)
-    return best_predictions, float(best_alpha), selection
+    return best_predictions, float(best_alpha), selection, warning_records
 
 
 def split_counts(frame: pd.DataFrame) -> dict[str, int]:
@@ -568,6 +646,11 @@ def run_target(
         "split_counts": counts,
         "status": "skipped" if skip_reason else "ok",
         "skip_reason": skip_reason,
+        "ridge_solver": args.ridge_solver,
+        "features_standardized": bool(args.standardize_features),
+        "ridge_alpha_grid": parse_float_list(args.ridge_alphas),
+        "random_seed": effective_random_seed(args),
+        "hard_extremes_excluded": bool(args.exclude_hard_extremes),
         "warnings": split_warnings + join_warnings,
     }
 
@@ -596,9 +679,16 @@ def run_target(
     frame = frame.copy()
     frame["pred_null_median"] = train_median
 
-    ridge_seed = stable_seed(args.seed, target, args.analysis_label, "ridge")
-    frame["pred_ridge"], selected_alpha, alpha_selection = fit_ridge_with_val_selection(
-        x, y, frame["split"], parse_float_list(args.ridge_alphas), ridge_seed
+    random_seed = effective_random_seed(args)
+    ridge_seed = stable_seed(random_seed, target, args.analysis_label, "ridge")
+    frame["pred_ridge"], selected_alpha, alpha_selection, ridge_warning_records = fit_ridge_with_val_selection(
+        x,
+        y,
+        frame["split"],
+        parse_float_list(args.ridge_alphas),
+        ridge_seed,
+        args.ridge_solver,
+        bool(args.standardize_features),
     )
     alpha_selection.insert(0, "target", target)
     alpha_selection.insert(1, "analysis_label", args.analysis_label)
@@ -625,6 +715,8 @@ def run_target(
             row["skip_reason"] = ""
             row["analysis_label"] = args.analysis_label
             row["ridge_alpha_selected"] = selected_alpha if model_name == "ridge" else np.nan
+            row["ridge_solver"] = args.ridge_solver if model_name == "ridge" else ""
+            row["features_standardized"] = bool(args.standardize_features) if model_name == "ridge" else np.nan
             if np.isfinite(train_iqr) and train_iqr > 0 and pd.notna(row["mae"]):
                 row["mae_over_train_iqr"] = float(row["mae"] / train_iqr)
             metric_rows.append(row)
@@ -640,12 +732,18 @@ def run_target(
                 model_name,
                 args.bootstrap_unit,
                 args.n_bootstrap,
-                stable_seed(args.seed, target, args.analysis_label, model_name, "bootstrap"),
+                stable_seed(random_seed, target, args.analysis_label, model_name, "bootstrap"),
             )
         )
 
     summary["ridge_alpha_selected"] = selected_alpha
     summary["train_target_iqr"] = train_iqr
+    summary["ridge_warning_count"] = int(len(ridge_warning_records))
+    summary["ridge_warnings"] = ridge_warning_records
+    if ridge_warning_records:
+        summary["warnings"] = summary["warnings"] + [
+            f"Ridge emitted {len(ridge_warning_records)} warning(s); see imaging_baseline_warnings.json."
+        ]
     return (
         pd.DataFrame(metric_rows),
         pd.DataFrame(binary_rows),
@@ -658,11 +756,8 @@ def run_target(
 
 def main() -> int:
     args = parse_args()
-    try:
-        guard_output_path(args.output_dir, args.allow_repo_output_for_testing)
-    except RuntimeError as exc:
-        print(json.dumps({"blocked_for_governance": True, "reason": str(exc)}, indent=2))
-        return 2
+    run_warnings: list[str] = []
+    write_patient_predictions = resolve_patient_prediction_policy(args, run_warnings)
 
     missing_paths = [str(path) for path in existing_required_paths(args) if not path.exists()]
     if missing_paths:
@@ -670,6 +765,7 @@ def main() -> int:
             "blocked_for_modeling": True,
             "missing_paths": missing_paths,
             "example_scc_command": example_scc_command(),
+            "warnings": run_warnings,
         }
         print(json.dumps(payload, indent=2))
         return 2
@@ -701,24 +797,29 @@ def main() -> int:
         binary_frames.append(binary)
         alpha_frames.append(alpha_selection)
         ci_frames.append(bootstrap_ci_df)
-        prediction_cols = [
-            "target",
-            "analysis_label",
-            "subject_id",
-            "study_id",
-            "split",
-            "target_value",
-            "outside_primary_range",
-            "hard_invalid_or_extreme",
-            "n_target_rows",
-            "pred_null_median",
-            "pred_ridge",
-        ]
-        preds = preds.copy()
-        preds["target"] = target
-        preds["analysis_label"] = args.analysis_label
-        optional_cols = [c for c in ["n_selected_clips", "view_policy", "threshold", "pooling", "view_policy_score_max"] if c in preds.columns]
-        prediction_frames.append(preds[[c for c in prediction_cols + optional_cols if c in preds.columns]])
+        if write_patient_predictions:
+            prediction_cols = [
+                "target",
+                "analysis_label",
+                "subject_id",
+                "study_id",
+                "split",
+                "target_value",
+                "outside_primary_range",
+                "hard_invalid_or_extreme",
+                "n_target_rows",
+                "pred_null_median",
+                "pred_ridge",
+            ]
+            preds = preds.copy()
+            preds["target"] = target
+            preds["analysis_label"] = args.analysis_label
+            optional_cols = [
+                c
+                for c in ["n_selected_clips", "view_policy", "threshold", "pooling", "view_policy_score_max"]
+                if c in preds.columns
+            ]
+            prediction_frames.append(preds[[c for c in prediction_cols + optional_cols if c in preds.columns]])
         summaries.append(summary)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -728,6 +829,7 @@ def main() -> int:
     ci_path = args.output_dir / "imaging_baseline_bootstrap_ci.csv"
     predictions_path = args.output_dir / "imaging_baseline_predictions.csv"
     summary_path = args.output_dir / "imaging_baseline_summary.json"
+    warnings_path = args.output_dir / "imaging_baseline_warnings.json"
 
     metrics_df = pd.concat(metric_frames, ignore_index=True, sort=False) if metric_frames else pd.DataFrame()
     binary_df = pd.concat(binary_frames, ignore_index=True, sort=False) if binary_frames else pd.DataFrame()
@@ -739,31 +841,76 @@ def main() -> int:
     binary_df.to_csv(binary_path, index=False)
     alpha_df.to_csv(alpha_path, index=False)
     ci_df.to_csv(ci_path, index=False)
-    predictions_df.to_csv(predictions_path, index=False)
+    if write_patient_predictions:
+        predictions_df.to_csv(predictions_path, index=False)
+
+    all_target_warnings = [
+        warning
+        for summary in summaries
+        for warning in summary.get("warnings", [])
+    ]
+    ridge_warning_records = [
+        {
+            "target": summary.get("target"),
+            **warning,
+        }
+        for summary in summaries
+        for warning in summary.get("ridge_warnings", [])
+    ]
+    all_warnings = list(dict.fromkeys(run_warnings + all_target_warnings))
+    warnings_payload = {
+        "warnings": all_warnings,
+        "ridge_warning_count": int(len(ridge_warning_records)),
+        "ridge_warnings": ridge_warning_records,
+        "patient_level_predictions_written": bool(write_patient_predictions),
+        "patient_level_prediction_path": str(predictions_path) if write_patient_predictions else "",
+    }
+    warnings_path.write_text(json.dumps(warnings_payload, indent=2))
 
     summary_payload = {
+        "target": targets[0] if len(targets) == 1 else "all",
         "analysis_label": args.analysis_label,
         "targets": targets,
+        "clinical_units": {target: TARGETS[target]["clinical_unit"] for target in targets},
         "structured_measurements_csv": str(args.structured_measurements_csv),
         "study_embedding_npz": str(args.study_embedding_npz),
         "study_embedding_manifest": str(args.study_embedding_manifest),
         "subject_split_map_csv": str(args.subject_split_map_csv),
         "embedding_index_column": idx_col,
         "embedding_shape": list(embeddings.shape),
+        "ridge_solver": args.ridge_solver,
+        "features_standardized": bool(args.standardize_features),
         "ridge_alphas": parse_float_list(args.ridge_alphas),
+        "sklearn_version": sklearn.__version__,
         "n_bootstrap": int(args.n_bootstrap),
         "bootstrap_unit": args.bootstrap_unit,
-        "patient_level_outputs_written": True,
-        "patient_level_outputs": [str(predictions_path)],
-        "aggregate_outputs": [str(metrics_path), str(binary_path), str(alpha_path), str(ci_path), str(summary_path)],
+        "random_seed": effective_random_seed(args),
+        "legacy_seed_arg": int(args.seed),
+        "hard_extremes_excluded": bool(args.exclude_hard_extremes),
+        "patient_level_outputs_written": bool(write_patient_predictions),
+        "patient_level_outputs": [str(predictions_path)] if write_patient_predictions else [],
+        "aggregate_outputs": [
+            str(metrics_path),
+            str(binary_path),
+            str(alpha_path),
+            str(ci_path),
+            str(warnings_path),
+            str(summary_path),
+        ],
         "manuscript_safe_after_review": [
             str(metrics_path),
             str(binary_path),
             str(alpha_path),
             str(ci_path),
+            str(warnings_path),
             str(summary_path),
         ],
-        "governance_note": "Predictions are patient-level restricted outputs and must not be committed.",
+        "governance_note": (
+            "Prediction CSVs are patient-level restricted outputs and must not be committed. "
+            "Aggregate metrics, alpha selection, bootstrap CIs, warnings, and summary JSON may be "
+            "manuscript-safe after review."
+        ),
+        "warnings": all_warnings,
         "target_summaries": summaries,
     }
     summary_path.write_text(json.dumps(summary_payload, indent=2))
@@ -773,7 +920,11 @@ def main() -> int:
     print(f"[written] {binary_path.resolve()}")
     print(f"[written] {alpha_path.resolve()}")
     print(f"[written] {ci_path.resolve()}")
-    print(f"[written] {predictions_path.resolve()}")
+    print(f"[written] {warnings_path.resolve()}")
+    if write_patient_predictions:
+        print(f"[written] {predictions_path.resolve()}")
+    else:
+        print(f"[not-written] {predictions_path.resolve()} (patient-level predictions disabled)")
     print(f"[written] {summary_path.resolve()}")
     return 0
 
