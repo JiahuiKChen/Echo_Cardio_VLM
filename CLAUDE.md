@@ -4,7 +4,7 @@ Follow `AGENTS.md` as the canonical project rule file. This short mirror exists 
 
 ## Purpose
 
-This repo is a reproducible MIMIC-IV-ECHO pipeline for SCC-based DICOM processing, EchoPrime embeddings, structured measurement audits, and manuscript-safe aggregate reporting. Current Phase 1 work is audit infrastructure for TAPSE and LVOT VTI feasibility, not modeling.
+This repo is a reproducible MIMIC-IV-ECHO pipeline for SCC-based DICOM processing, EchoPrime embeddings, structured measurement audits, imaging-only baselines, and manuscript-safe aggregate reporting. Phase 2 prioritizes LVOT VTI imaging-only baselines after the Phase 1 audits pass; TAPSE remains a cautious secondary target.
 
 ## Hard Rules
 
@@ -14,6 +14,7 @@ This repo is a reproducible MIMIC-IV-ECHO pipeline for SCC-based DICOM processin
 - Do not hard-code SCC paths; accept paths through CLI arguments and provide example commands.
 - Use deterministic subject-level splits only.
 - Do not train or evaluate TAPSE/LVOT VTI models until Phase 1 audits pass.
+- After audits pass, Phase 2 imaging-only baselines may use EchoPrime embeddings. Patient-level predictions and view-filtered embedding manifests must stay in approved restricted storage and must not be committed.
 
 ## ECHOVIEW And Targets
 
@@ -21,6 +22,7 @@ This repo is a reproducible MIMIC-IV-ECHO pipeline for SCC-based DICOM processin
 - ECHOVIEW is a derived subset, not the whole MIMIC-IV-ECHO DICOM corpus.
 - TAPSE: primary view policy is A4C-family; A4C-family plus RV inflow is sensitivity.
 - LVOT VTI: primary feasibility must be Doppler-sensitive using A5C-or-other; strict A5C-only is sensitivity.
+- For Phase 2, the broader fullscale all-clips embedding cohort is the primary modeling denominator. ECHOVIEW-filtered cohorts are sensitivity analyses.
 - TAPSE and LVOT VTI require target-specific leakage exclusions before any tabular or fusion comparator.
 
 ## Required Audit Artifacts

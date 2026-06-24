@@ -25,6 +25,8 @@ This repository contains a reproducible, SCC-first MIMIC-IV-ECHO research pipeli
 - TAPSE primary feasibility uses A4C-family probabilities; A4C-family plus RV inflow is a sensitivity policy.
 - LVOT VTI primary feasibility must be Doppler-sensitive. Evaluate A5C-only, other-only, A5C-or-other, and all-clips comparators; strict A5C-only is not primary.
 - Do not model TAPSE or LVOT VTI until denominator, ECHOVIEW join, target feasibility, leakage, and split-integrity audits pass.
+- After those audits pass, Phase 2 may run imaging-only baselines from EchoPrime embeddings. Prediction files and view-filtered embedding manifests are patient-level restricted outputs and must stay outside the repo.
+- LVOT VTI is the Phase 2 priority target. TAPSE is a cautious secondary target; ECHOVIEW-filtered TAPSE analyses are sensitivity analyses, not the primary denominator.
 
 ## Leakage Rules
 
@@ -45,4 +47,4 @@ Generate aggregate, manuscript-safe outputs for:
 - target-specific leakage exclusions,
 - checksums where applicable.
 
-Fail closed when required restricted data are unavailable: report missing inputs and print exact SCC commands rather than inventing counts.
+Fail closed when required restricted data are unavailable: report missing inputs and print exact SCC commands rather than inventing counts. Any baseline script that writes patient-level predictions or embedding manifests should refuse repo-local output directories unless explicitly run in synthetic-test mode.
