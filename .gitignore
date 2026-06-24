@@ -213,6 +213,7 @@ data/
 tmp/
 *.tmp
 .venv-echoprime/
+.DS_Store
 
 # Local workspace dependencies and clones
 EchoPrime/
@@ -240,3 +241,10 @@ derived/
 *predictions*.csv
 *patient*.csv
 *restricted*
+
+# Restricted/deidentified figure-ready exports
+*_figure_ready.csv
+phase2_figure_ready_export_manifest.json
+README_RESTRICTED_DERIVED_EXPORT.md
+restricted_mimic_exports/
+phase2_figures_local/
