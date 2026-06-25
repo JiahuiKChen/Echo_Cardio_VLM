@@ -1,55 +1,87 @@
 # Phase 2 Manuscript Sections: Imaging-Only LVOT VTI and TAPSE Baselines
 
-## Methods Draft: Imaging-Only Modeling
+Revision note: converted the prior internal synthesis into manuscript-style sections; moved interpretation from Results to Discussion; expanded Methods to define MIMIC-IV-ECHO, EchoPrime, ECHOVIEW, cohort construction, splits, model development, and sensitivity analyses.
 
-We evaluated whether frozen echocardiography embeddings contained signal for structured LVOT VTI and TAPSE measurements. For each study, we used precomputed EchoPrime study-level embeddings as fixed imaging-only features. Structured measurement targets were extracted from the echocardiography measurement table, using LVOT VTI as the primary target and TAPSE as a cautious secondary target. Analyses used deterministic subject-level train, validation, and test splits to prevent the same patient from contributing studies across modeling partitions.
+## Methods
 
-For each target, we fit Ridge regression models on the training split. Features were standardized using parameters fit on the training data only, and the same transformation was then applied to validation and test splits. Ridge models used the numerically stable `svd` solver. Regularization strength was selected exclusively on the validation split from a prespecified alpha grid; the held-out test split was used only once for final performance reporting. A train-median null model was evaluated as the reference baseline.
+### Data Sources and Cohort
 
-Continuous performance was summarized on the held-out test split using mean absolute error (MAE), root mean squared error, R2, Pearson and Spearman correlation, calibration summaries, and Bland-Altman bias and limits of agreement. Subject-level bootstrap resampling was used to estimate 95% confidence intervals for key test-set metrics. Hard-extreme target exclusion was evaluated as a robustness sensitivity to assess whether performance was driven by implausible structured-measurement outliers; borderline physiologic outliers were not silently removed.
+This analysis used MIMIC-IV-ECHO as the source of echocardiography DICOMs and structured echocardiographic measurements. The imaging cohort was defined from the processed MIMIC-IV-ECHO DICOM subset available through the project pipeline, rather than the entire structured-measurement denominator. Structured report measurements were used as labels. LVOT VTI was specified as the primary measurement target, and TAPSE was specified as a secondary measurement target.
 
-ECHOVIEW-filtered LVOT VTI analyses were performed as limited subset sensitivities. View-filtered embeddings were derived from ECHOVIEW-labeled clips under prespecified view policies, including A5C-or-other and other-only at probability threshold 0.70, with an A5C-or-other threshold ladder at 0.80, 0.90, and 0.95. These analyses were treated as subset sensitivity checks rather than competing primary denominators because ECHOVIEW labels cover a derived subset rather than the full available DICOM corpus.
+EchoPrime was used to derive frozen study-level echocardiography embeddings. The primary analysis used all-clips study-level EchoPrime embeddings. ECHOVIEW view classifications were used only for view-filtered sensitivity analyses and were not used to define the primary modeling denominator.
 
-Exploratory binary low-VTI summaries were derived from the continuous LVOT VTI predictions using thresholds of LVOT VTI <18 cm and <20 cm. These binary metrics were thresholded summaries of the continuous Ridge predictions and were not separately optimized classifiers.
+### Cohort Construction
 
-## Results Draft
+Target-positive studies were linked to available study-level EchoPrime embeddings. The LVOT VTI all-clips analysis included 3,782 studies with both a structured LVOT VTI target and a study-level embedding. These were split into 2,654 training, 573 validation, and 555 held-out test studies. The TAPSE all-clips analysis included 1,131 studies with both a structured TAPSE target and a study-level embedding, split into 787 training, 184 validation, and 160 held-out test studies.
 
-### Primary LVOT VTI Imaging-Only Model
+Splits were deterministic and subject-level, with no subject overlap between training, validation, and test partitions. The validation split was used for model selection. The held-out test split was used only for final evaluation.
 
-The primary all-clips LVOT VTI model showed moderate imaging-only predictive performance on the held-out subject-level test set (Figure 1; Table 1). Among 555 test studies, Ridge regression reduced MAE from 4.54 cm for the train-median null baseline to 3.64 cm. Test-set R2 was 0.372. Subject-level bootstrap confidence intervals supported a reproducible signal, with Ridge MAE 95% CI 3.41 to 3.88 cm and Ridge R2 95% CI 0.30 to 0.43.
+### Model Development and Evaluation
 
-Bland-Altman analysis showed a mean prediction-minus-observed bias of +0.28 cm, with limits of agreement from -8.85 to +9.41 cm. Thus, although frozen EchoPrime study embeddings encoded information related to LVOT VTI, the remaining error was too large for measurement-grade automation. These findings support an imaging-only estimation and risk-stratification signal rather than replacement of clinical Doppler LVOT VTI measurement.
+Frozen EchoPrime study embeddings were used as predictors. For each target, Ridge regression models were fit on the training split. Features were standardized with a `StandardScaler` fit on the training data only; the fitted transformation was then applied to validation and test data. Ridge models used the numerically stable `svd` solver. Regularization strength was selected on the validation split only from the prespecified alpha grid 0.01, 0.03, 0.1, 0.3, 1, 3, 10, 30, 100, 300, and 1000. A train-median null model was evaluated as the reference baseline.
 
-Exploratory low-VTI summaries derived from the continuous LVOT VTI predictions showed AUROC 0.846 for LVOT VTI <18 cm and AUROC 0.812 for LVOT VTI <20 cm (Supplementary Table S3). These binary summaries were not separately trained classifiers and should be interpreted as exploratory thresholded summaries of the continuous model output.
+The primary evaluation metric was mean absolute error (MAE). Secondary continuous metrics included root mean squared error, R2, Pearson correlation, Spearman correlation, and Bland-Altman bias and limits of agreement. Subject-level bootstrap resampling was used to estimate 95% confidence intervals for key test-set metrics.
 
-### Robustness and ECHOVIEW Sensitivity Analyses
+Exploratory binary low-VTI summaries were derived from continuous LVOT VTI predictions at thresholds of LVOT VTI <18 cm and <20 cm. These binary analyses were thresholded summaries of continuous predictions and were not separately trained classifiers.
 
-The LVOT VTI result was not driven by the single hard-extreme structured target value. After excluding hard-extreme targets, the held-out test MAE was 3.62 cm and test R2 was 0.376, essentially unchanged from the primary all-clips model (Supplementary Table S1).
+### Sensitivity Analyses
 
-ECHOVIEW-filtered LVOT VTI analyses were directionally positive but weaker and substantially smaller than the primary all-clips analysis (Supplementary Table S2). The A5C-or-other policy at threshold 0.70 included 65 test studies and achieved MAE 4.07 cm with R2 0.151. The other-only policy at threshold 0.70 also included 65 test studies and achieved MAE 4.14 cm with R2 0.123. The strict A5C-only 0.70 analysis was skipped as underpowered because of insufficient training data, and should not be interpreted as a negative result. Stricter A5C-or-other thresholds at 0.80, 0.90, and 0.95 did not improve performance, and bootstrap confidence intervals for R2 crossed zero. These subset sensitivities support the primary interpretation but do not establish superior view selection or define a preferred primary modeling denominator.
+Hard-extreme target exclusion was evaluated as a robustness check for both LVOT VTI and TAPSE. This sensitivity analysis excluded only hard invalid or extreme target values according to prespecified target rules and did not remove borderline physiologic outliers.
 
-### TAPSE Secondary Endpoint
+LVOT VTI ECHOVIEW-filtered sensitivity analyses used view-filtered embeddings from ECHOVIEW-labeled clips. Prespecified view policies included A5C-or-other, other-only, and A5C-only at probability threshold 0.70, with an additional A5C-or-other threshold ladder at 0.80, 0.90, and 0.95. These analyses were interpreted as limited subset analyses rather than the primary denominator because ECHOVIEW covers a derived view-classification subset.
 
-TAPSE was evaluated as a cautious secondary endpoint using the same stable-v2 modeling framework (Supplementary Figure S1; Table 1). Among 160 held-out test studies, Ridge regression reduced MAE from 3.79 mm for the train-median null baseline to 3.17 mm. Test-set R2 was 0.284. Subject-level bootstrap confidence intervals were 2.80 to 3.56 mm for Ridge MAE and 0.13 to 0.40 for Ridge R2.
+## Results
 
-Bland-Altman analysis showed prediction-minus-observed bias of +0.22 mm, with limits of agreement from -7.52 to +7.96 mm. The selected Ridge alpha was 1000, indicating a strongly regularized model. Together with the smaller test set, this supports reporting TAPSE as a secondary imaging-only signal rather than as a measurement-grade TAPSE automation result.
+### Cohort and Split Summary
 
-## Limitations Draft
+The primary LVOT VTI all-clips cohort included 3,782 target-positive studies with study-level EchoPrime embeddings. The deterministic subject-level split included 2,654 training studies, 573 validation studies, and 555 test studies. The TAPSE all-clips cohort included 1,131 target-positive studies with study-level EchoPrime embeddings, split into 787 training studies, 184 validation studies, and 160 test studies.
 
-This analysis was retrospective and used a single dataset. The modeling targets were structured report measurements rather than independent manual remeasurement, so model performance reflects prediction of report-derived measurements rather than a prospective measurement workflow. LVOT VTI is a Doppler-derived value; all-clips study embeddings may capture correlated study-level information rather than direct spectral-trace measurement. Prediction error and Bland-Altman limits of agreement remained too wide for replacement of clinical LVOT VTI or TAPSE measurement.
+### Primary LVOT VTI Performance
 
-ECHOVIEW-filtered analyses were limited by the derived ECHOVIEW-labeled subset and should not be treated as the full available DICOM denominator. The ECHOVIEW LVOT VTI test sets were substantially smaller than the all-clips test set, and the strict A5C-only sensitivity was underpowered. TAPSE was evaluated in a smaller test set and selected a high regularization strength, supporting cautious secondary interpretation. Binary low-VTI summaries were exploratory thresholded summaries of continuous predictions and had modest sensitivity at the reported operating points. External validation, prospective evaluation, and leakage-safe comparison against clinical covariate baselines are needed before stronger clinical claims.
+In the held-out LVOT VTI test set of 555 studies, the null median baseline had MAE 4.54 cm. The Ridge model selected alpha 0.3 and achieved MAE 3.64 cm, RMSE 4.66 cm, and R2 0.372 (Figure 1; Table 1). The subject-level bootstrap 95% CI was 3.41 to 3.88 cm for Ridge MAE and 0.30 to 0.43 for Ridge R2.
+
+Bland-Altman analysis showed prediction-minus-observed bias +0.28 cm, with limits of agreement from -8.85 to +9.41 cm. For exploratory low-VTI thresholds derived from the continuous predictions, AUROC was 0.846 for LVOT VTI <18 cm and 0.812 for LVOT VTI <20 cm (Supplementary Table S3).
+
+### LVOT VTI Robustness and ECHOVIEW Sensitivity Analyses
+
+After hard-extreme target exclusion, the LVOT VTI test set remained 555 studies. The Ridge model achieved MAE 3.62 cm and R2 0.376 (Supplementary Table S1).
+
+ECHOVIEW-filtered LVOT VTI analyses used smaller test sets than the all-clips analysis (Supplementary Table S2). The A5C-or-other policy at threshold 0.70 included 65 test studies and achieved MAE 4.07 cm and R2 0.151. The other-only policy at threshold 0.70 included 65 test studies and achieved MAE 4.14 cm and R2 0.123. The A5C-only policy at threshold 0.70 had 22 test studies and was skipped because of insufficient training data. A5C-or-other thresholds of 0.80, 0.90, and 0.95 did not improve performance; R2 estimates were approximately 0.12 to 0.14, with bootstrap confidence intervals crossing zero.
+
+### TAPSE Secondary Endpoint Performance
+
+In the held-out TAPSE test set of 160 studies, the null median baseline had MAE 3.79 mm. The Ridge model selected alpha 1000 and achieved MAE 3.17 mm, RMSE 3.94 mm, and R2 0.284 (Supplementary Figure S1; Table 1). The subject-level bootstrap 95% CI was 2.80 to 3.56 mm for Ridge MAE and 0.13 to 0.40 for Ridge R2.
+
+Bland-Altman analysis showed prediction-minus-observed bias +0.22 mm, with limits of agreement from -7.52 to +7.96 mm. The hard-extreme sensitivity produced the same test-set size and similar performance, with MAE 3.17 mm and R2 0.284 (Supplementary Table S1).
+
+### Exploratory Binary Low-VTI Summaries
+
+For LVOT VTI <18 cm, test-set prevalence was 0.191 and AUROC was 0.846. At the reported operating point, sensitivity was 0.358 and specificity was 0.960. For LVOT VTI <20 cm, prevalence was 0.332 and AUROC was 0.812, with sensitivity 0.478 and specificity 0.911 (Supplementary Table S3).
+
+## Discussion
+
+The primary LVOT VTI model showed a moderate imaging-only estimation signal using frozen EchoPrime study-level embeddings. Compared with the train-median null baseline, Ridge regression reduced MAE by approximately 0.90 cm and achieved positive test-set R2. The low-VTI ROC findings suggest potential utility for exploratory risk stratification, but these analyses were thresholded summaries of continuous predictions and were not separately optimized classifiers.
+
+The error distribution places important constraints on interpretation. Bland-Altman limits of agreement remained wide, indicating that the model should not be presented as a replacement for clinical Doppler LVOT VTI measurement. The analysis predicts structured report measurements and does not constitute independently adjudicated manual measurement or direct extraction of LVOT VTI from spectral Doppler traces.
+
+The hard-extreme robustness analysis produced results similar to the primary LVOT VTI analysis, indicating that the primary result was not materially altered by excluding hard-extreme target values. ECHOVIEW-filtered LVOT VTI analyses were smaller and had weaker performance than the all-clips analysis. These findings support treating ECHOVIEW-filtered analyses as sensitivity analyses rather than as a competing primary modeling denominator or evidence of superior view selection.
+
+TAPSE showed a secondary imaging-only signal under the same modeling framework. However, the TAPSE test set was smaller than the LVOT VTI test set, and the selected alpha of 1000 indicates strong regularization. TAPSE should therefore be interpreted as a secondary endpoint requiring additional validation.
+
+## Limitations
+
+This was a retrospective single-dataset analysis from a MIMIC-IV-ECHO derived cohort. Labels were structured report measurements, without independent manual remeasurement or adjudication. Label noise and measurement heterogeneity may therefore affect the reported performance. LVOT VTI is Doppler-derived and may not be directly visible in all all-clips study embeddings. ECHOVIEW analyses used a limited derived view-classification subset rather than the full DICOM denominator. The TAPSE analysis had a smaller sample size and selected a strongly regularized model. Binary low-VTI analyses were exploratory thresholded summaries of continuous predictions. External validation is needed before clinical generalization.
 
 ## Figure and Table Callout Map
 
 | Manuscript element | Recommended callout | Purpose |
 |---|---|---|
-| Primary LVOT VTI performance | Figure 1 | Main visual summary of observed-versus-predicted LVOT VTI, Bland-Altman agreement, MAE comparison, and exploratory low-VTI ROC curves. |
-| Main continuous metrics | Table 1 | Primary LVOT VTI and secondary TAPSE all-clips stable-v2 results. |
+| Primary LVOT VTI model performance | Figure 1 | Main visual summary of observed-versus-predicted LVOT VTI, Bland-Altman agreement, MAE comparison, and exploratory low-VTI ROC curves. |
+| Main continuous performance metrics | Table 1 | Primary LVOT VTI and secondary TAPSE all-clips stable-v2 results. |
 | TAPSE secondary endpoint | Supplementary Figure S1 | Visual summary of TAPSE observed-versus-predicted, Bland-Altman, and MAE comparison panels. |
-| Hard-extreme robustness | Supplementary Table S1 | Demonstrates LVOT VTI and TAPSE results are materially unchanged after hard-extreme exclusion. |
-| LVOT ECHOVIEW sensitivities | Supplementary Table S2 | Reports limited subset sensitivity analyses and underpowered A5C-only run. |
-| Binary low-VTI summaries | Supplementary Table S3 | Exploratory low-VTI threshold summaries derived from continuous LVOT VTI predictions. |
+| Hard-extreme robustness | Supplementary Table S1 | Robustness analyses after hard-extreme target exclusion. |
+| ECHOVIEW view-filtered sensitivities | Supplementary Table S2 | Limited subset LVOT VTI sensitivity analyses using ECHOVIEW view-filtered embeddings. |
+| Exploratory binary low-VTI analyses | Supplementary Table S3 | Thresholded binary summaries derived from continuous LVOT VTI predictions. |
 
 ## Figure Caption Text
 
@@ -74,8 +106,8 @@ Frozen EchoPrime study embeddings were used to predict structured TAPSE on the h
 
 ## Reviewer-Risk Notes
 
-- The strongest reviewer-facing claim is that frozen imaging embeddings contain reproducible LVOT VTI-related signal, not that the model performs clinical measurement.
-- The Bland-Altman limits are wide and should be acknowledged wherever LVOT VTI performance is discussed.
-- The ECHOVIEW subset is useful as a sensitivity analysis, but its smaller denominator and crossing R2 confidence intervals make it unsuitable as the primary analysis.
-- The TAPSE signal is positive but weaker than LVOT VTI and strongly regularized; it is best reported as secondary or supplementary depending on manuscript space.
-- Binary low-VTI AUROC values are encouraging, but threshold sensitivity is modest and should be framed as exploratory risk stratification.
+- Results should remain numerical and avoid clinical interpretation beyond the reported metrics.
+- Discussion should acknowledge the wide Bland-Altman limits when interpreting LVOT VTI performance.
+- ECHOVIEW analyses are best framed as limited subset sensitivities because of their smaller denominator and uncertainty.
+- TAPSE is positive but secondary, smaller, and strongly regularized.
+- Binary low-VTI AUROC values are exploratory and should be paired with the reported operating-point sensitivity and specificity.
