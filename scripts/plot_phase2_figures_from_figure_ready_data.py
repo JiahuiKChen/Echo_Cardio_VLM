@@ -3,13 +3,13 @@
 
 The input CSVs must already be deidentified figure-ready exports. This script
 does not require raw prediction files, identifiers, manifests, DICOM paths, or
-SCC metadata.
+SCC metadata. It writes only figure files plus aggregate/sanitized local figure
+inventory and caption drafts.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,19 @@ LVOT_FILE = "lvot_vti_test_predictions_figure_ready.csv"
 TAPSE_FILE = "tapse_test_predictions_figure_ready.csv"
 MANIFEST_FILE = "phase2_figure_ready_export_manifest.json"
 
+COLORS = {
+    "lvot": "#2563EB",
+    "tapse": "#059669",
+    "identity": "#2D3748",
+    "calibration": "#C2410C",
+    "bias": "#111827",
+    "loa": "#B45309",
+    "null": "#9CA3AF",
+    "ridge": "#2563EB",
+    "roc_18": "#2563EB",
+    "roc_20": "#7C3AED",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -28,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--figure-dir", type=Path, required=True)
     parser.add_argument("--format", default="png,pdf")
     parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--random-seed", type=int, default=20260624)
     parser.add_argument(
         "--metrics-json",
         type=Path,
@@ -88,14 +102,22 @@ def setup_matplotlib() -> Any:
         {
             "figure.dpi": 120,
             "savefig.bbox": "tight",
+            "savefig.facecolor": "white",
             "axes.spines.top": False,
             "axes.spines.right": False,
             "axes.grid": True,
-            "grid.alpha": 0.22,
-            "font.size": 10,
-            "axes.titlesize": 12,
-            "axes.labelsize": 10,
+            "grid.alpha": 0.18,
+            "grid.linewidth": 0.7,
+            "font.family": "DejaVu Sans",
+            "font.size": 9.5,
+            "axes.titlesize": 10.5,
+            "axes.labelsize": 9.5,
+            "xtick.labelsize": 8.5,
+            "ytick.labelsize": 8.5,
+            "legend.fontsize": 8.5,
             "legend.frameon": False,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
         }
     )
     return plt
@@ -103,77 +125,152 @@ def setup_matplotlib() -> Any:
 
 def save_figure(fig: Any, figure_dir: Path, stem: str, formats: list[str], dpi: int) -> list[str]:
     paths: list[str] = []
+    safe_metadata = {"Creator": "Echo_Cardio_VLM Phase 2", "Title": stem}
     for fmt in formats:
         path = figure_dir / f"{stem}.{fmt}"
-        if fmt == "png":
-            fig.savefig(path, dpi=dpi, metadata={"Software": "Echo_Cardio_VLM Phase 2", "Title": stem})
-        else:
-            fig.savefig(path, dpi=dpi, metadata={"Creator": "Echo_Cardio_VLM Phase 2", "Title": stem})
+        fig.savefig(path, dpi=dpi, metadata=safe_metadata)
         paths.append(path.name)
     return paths
 
 
-def observed_vs_predicted(
-    plt: Any,
+def finite_xy(observed: pd.Series, predicted: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    obs = pd.to_numeric(observed, errors="coerce").to_numpy(float)
+    pred = pd.to_numeric(predicted, errors="coerce").to_numpy(float)
+    keep = np.isfinite(obs) & np.isfinite(pred)
+    return obs[keep], pred[keep]
+
+
+def metric_value(metric_info: dict[str, Any], key: str, default: float | None = None) -> float | None:
+    value = metric_info.get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def computed_r2(observed: np.ndarray, predicted: np.ndarray) -> float:
+    denom = float(np.sum((observed - np.mean(observed)) ** 2))
+    if denom <= 0:
+        return float("nan")
+    return 1.0 - float(np.sum((observed - predicted) ** 2)) / denom
+
+
+def metric_annotation(
+    observed: np.ndarray,
+    predicted: np.ndarray,
+    metric_info: dict[str, Any],
+    unit: str,
+) -> str:
+    mae = metric_value(metric_info, "ridge_mae")
+    r2 = metric_value(metric_info, "ridge_r2")
+    if mae is None:
+        mae = float(np.mean(np.abs(predicted - observed)))
+    if r2 is None:
+        r2 = computed_r2(observed, predicted)
+    return f"n={len(observed):,}\nMAE={mae:.2f} {unit}\nR$^2$={r2:.3f}"
+
+
+def add_panel_label(ax: Any, label: str | None) -> None:
+    if not label:
+        return
+    ax.text(
+        -0.12,
+        1.08,
+        label,
+        transform=ax.transAxes,
+        fontsize=13,
+        fontweight="bold",
+        va="top",
+        ha="left",
+    )
+
+
+def observed_vs_predicted_panel(
+    ax: Any,
     observed: np.ndarray,
     predicted: np.ndarray,
     target_label: str,
     unit: str,
-    stem: str,
-    figure_dir: Path,
-    formats: list[str],
-    dpi: int,
-) -> list[str]:
+    color: str,
+    metric_info: dict[str, Any],
+    panel_label: str | None = None,
+) -> None:
     low = float(np.nanmin([observed.min(), predicted.min()]))
     high = float(np.nanmax([observed.max(), predicted.max()]))
-    pad = 0.05 * (high - low if high > low else 1.0)
-    fig, ax = plt.subplots(figsize=(5.2, 4.6))
-    ax.scatter(observed, predicted, s=18, alpha=0.55, edgecolors="none", color="#2B6CB0")
-    ax.plot([low - pad, high + pad], [low - pad, high + pad], color="#333333", linewidth=1.2, linestyle="--", label="Identity")
+    pad = 0.06 * (high - low if high > low else 1.0)
+    axis_low = low - pad
+    axis_high = high + pad
+
+    ax.scatter(observed, predicted, s=17, alpha=0.42, edgecolors="none", color=color)
+    ax.plot(
+        [axis_low, axis_high],
+        [axis_low, axis_high],
+        color=COLORS["identity"],
+        linewidth=1.0,
+        linestyle="--",
+        label="Identity",
+    )
     if len(observed) >= 3 and np.nanstd(observed) > 0:
         slope, intercept = np.polyfit(observed, predicted, deg=1)
-        xx = np.linspace(low - pad, high + pad, 100)
-        ax.plot(xx, slope * xx + intercept, color="#C05621", linewidth=1.4, label="Fitted line")
-    ax.set_xlim(low - pad, high + pad)
-    ax.set_ylim(low - pad, high + pad)
+        xx = np.linspace(axis_low, axis_high, 100)
+        ax.plot(xx, slope * xx + intercept, color=COLORS["calibration"], linewidth=1.4, label="Calibration")
+
+    ax.set_xlim(axis_low, axis_high)
+    ax.set_ylim(axis_low, axis_high)
+    ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel(f"Observed {target_label} ({unit})")
     ax.set_ylabel(f"Predicted {target_label} ({unit})")
-    ax.set_title(f"{target_label}: observed vs predicted")
-    ax.legend(loc="best")
-    paths = save_figure(fig, figure_dir, stem, formats, dpi)
-    plt.close(fig)
-    return paths
+    ax.set_title("Observed vs predicted", loc="left", pad=8)
+    ax.text(
+        0.04,
+        0.96,
+        metric_annotation(observed, predicted, metric_info, unit),
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=8.5,
+        bbox={"boxstyle": "round,pad=0.28", "facecolor": "white", "edgecolor": "#CBD5E1", "alpha": 0.92},
+    )
+    ax.legend(loc="lower right", handlelength=1.7)
+    add_panel_label(ax, panel_label)
 
 
-def bland_altman(
-    plt: Any,
+def bland_altman_panel(
+    ax: Any,
     observed: np.ndarray,
     predicted: np.ndarray,
     target_label: str,
     unit: str,
-    stem: str,
-    figure_dir: Path,
-    formats: list[str],
-    dpi: int,
-) -> list[str]:
+    color: str,
+    panel_label: str | None = None,
+) -> None:
     mean_values = (observed + predicted) / 2.0
     diff = predicted - observed
     bias = float(np.mean(diff))
     sd = float(np.std(diff, ddof=1)) if len(diff) > 1 else float("nan")
     lower = bias - 1.96 * sd
     upper = bias + 1.96 * sd
-    fig, ax = plt.subplots(figsize=(5.2, 4.6))
-    ax.scatter(mean_values, diff, s=18, alpha=0.55, edgecolors="none", color="#2F855A")
-    ax.axhline(bias, color="#1A202C", linewidth=1.2, label=f"Bias {bias:.2f}")
-    ax.axhline(lower, color="#C05621", linewidth=1.1, linestyle="--", label=f"Lower LOA {lower:.2f}")
-    ax.axhline(upper, color="#C05621", linewidth=1.1, linestyle="--", label=f"Upper LOA {upper:.2f}")
-    ax.set_xlabel(f"Mean observed/predicted {target_label} ({unit})")
+
+    ax.scatter(mean_values, diff, s=17, alpha=0.42, edgecolors="none", color=color)
+    ax.axhline(bias, color=COLORS["bias"], linewidth=1.2)
+    ax.axhline(lower, color=COLORS["loa"], linewidth=1.0, linestyle="--")
+    ax.axhline(upper, color=COLORS["loa"], linewidth=1.0, linestyle="--")
+    ax.set_xlabel(f"Mean of observed and predicted {target_label} ({unit})")
     ax.set_ylabel(f"Prediction minus observed ({unit})")
-    ax.set_title(f"{target_label}: Bland-Altman")
-    ax.legend(loc="best")
-    paths = save_figure(fig, figure_dir, stem, formats, dpi)
-    plt.close(fig)
-    return paths
+    ax.set_title("Bland-Altman", loc="left", pad=8)
+    ax.text(
+        0.04,
+        0.96,
+        f"Bias {bias:+.2f} {unit}\nLOA {lower:+.2f} to {upper:+.2f} {unit}",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=8.5,
+        bbox={"boxstyle": "round,pad=0.28", "facecolor": "white", "edgecolor": "#CBD5E1", "alpha": 0.92},
+    )
+    add_panel_label(ax, panel_label)
 
 
 def roc_points(y_true: np.ndarray, score: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
@@ -191,59 +288,162 @@ def roc_points(y_true: np.ndarray, score: np.ndarray) -> tuple[np.ndarray, np.nd
     return fpr, tpr, auc
 
 
-def roc_curves(
+def roc_panel(ax: Any, lvot: pd.DataFrame, panel_label: str | None = None) -> None:
+    score = -pd.to_numeric(lvot["predicted_lvot_vti_cm"], errors="coerce").to_numpy(float)
+    thresholds = [
+        ("LVOT VTI <18 cm", "low_vti_lt_18", COLORS["roc_18"]),
+        ("LVOT VTI <20 cm", "low_vti_lt_20", COLORS["roc_20"]),
+    ]
+    for label, col, color in thresholds:
+        y_true = pd.to_numeric(lvot[col], errors="coerce").fillna(0).to_numpy(int)
+        fpr, tpr, auc = roc_points(y_true, score)
+        ax.plot(fpr, tpr, linewidth=1.7, color=color, label=f"{label} (AUROC {auc:.3f})")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="#6B7280", linewidth=1.0)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_xlabel("False positive rate")
+    ax.set_ylabel("True positive rate")
+    ax.set_title("Exploratory low-VTI ROC", loc="left", pad=8)
+    ax.legend(loc="lower right")
+    add_panel_label(ax, panel_label)
+
+
+def mae_ci(metric_info: dict[str, Any], prefix: str, value: float) -> tuple[float, float] | None:
+    low = metric_value(metric_info, f"{prefix}_mae_ci_low")
+    high = metric_value(metric_info, f"{prefix}_mae_ci_high")
+    if low is None or high is None:
+        return None
+    return max(0.0, value - low), max(0.0, high - value)
+
+
+def mae_comparison_panel(
+    ax: Any,
+    metric_info: dict[str, Any],
+    target_label: str,
+    unit: str,
+    panel_label: str | None = None,
+) -> bool:
+    null_mae = metric_value(metric_info, "null_mae")
+    ridge_mae = metric_value(metric_info, "ridge_mae")
+    if null_mae is None or ridge_mae is None:
+        return False
+
+    labels = ["Null median", "Ridge"]
+    values = [null_mae, ridge_mae]
+    prefixes = ["null", "ridge"]
+    colors = [COLORS["null"], COLORS["ridge"]]
+    x = np.array([0.0, 1.0])
+
+    for idx, (value, prefix, color) in enumerate(zip(values, prefixes, colors)):
+        ci = mae_ci(metric_info, prefix, value)
+        yerr = None if ci is None else np.array([[ci[0]], [ci[1]]])
+        ax.errorbar(
+            [x[idx]],
+            [value],
+            yerr=yerr,
+            fmt="o",
+            markersize=6.5,
+            color=color,
+            ecolor="#1F2937",
+            elinewidth=1.2,
+            capsize=4 if ci is not None else 0,
+            zorder=3,
+        )
+        ax.text(x[idx], value + max(values) * 0.045, f"{value:.2f}", ha="center", va="bottom", fontsize=8.5)
+
+    ax.plot(x, values, color="#CBD5E1", linewidth=1.0, zorder=1)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_xlim(-0.45, 1.45)
+    ax.set_ylim(0, max(values) * 1.35)
+    ax.set_ylabel(f"Test MAE ({unit})")
+    ax.set_title("Null vs Ridge MAE", loc="left", pad=8)
+    ax.text(
+        0.04,
+        0.96,
+        "95% CI shown\nwhen available",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=8.0,
+        color="#4B5563",
+    )
+    add_panel_label(ax, panel_label)
+    return True
+
+
+def plot_individual(
     plt: Any,
-    lvot: pd.DataFrame,
+    panel_func: Any,
     stem: str,
     figure_dir: Path,
     formats: list[str],
     dpi: int,
+    figsize: tuple[float, float],
+    *args: Any,
 ) -> list[str]:
-    score = -lvot["predicted_lvot_vti_cm"].to_numpy(float)
-    fig, ax = plt.subplots(figsize=(5.0, 4.6))
-    for label, col in [("LVOT VTI <18 cm", "low_vti_lt_18"), ("LVOT VTI <20 cm", "low_vti_lt_20")]:
-        y_true = lvot[col].to_numpy(int)
-        fpr, tpr, auc = roc_points(y_true, score)
-        ax.plot(fpr, tpr, linewidth=1.6, label=f"{label} (AUROC {auc:.3f})")
-    ax.plot([0, 1], [0, 1], linestyle="--", color="#4A5568", linewidth=1.0)
-    ax.set_xlabel("False positive rate")
-    ax.set_ylabel("True positive rate")
-    ax.set_title("Exploratory low LVOT VTI ROC")
-    ax.legend(loc="lower right")
+    fig, ax = plt.subplots(figsize=figsize)
+    panel_func(ax, *args)
+    fig.tight_layout()
     paths = save_figure(fig, figure_dir, stem, formats, dpi)
     plt.close(fig)
     return paths
 
 
-def mae_comparison(
+def plot_individual_mae(
     plt: Any,
     metric_info: dict[str, Any],
     target_label: str,
+    unit: str,
     stem: str,
     figure_dir: Path,
     formats: list[str],
     dpi: int,
 ) -> list[str] | None:
-    if not metric_info:
+    fig, ax = plt.subplots(figsize=(4.2, 3.8))
+    ok = mae_comparison_panel(ax, metric_info, target_label, unit)
+    if not ok:
+        plt.close(fig)
         return None
-    unit = metric_info.get("unit", "")
-    null_mae = metric_info.get("null_mae")
-    ridge_mae = metric_info.get("ridge_mae")
-    if null_mae is None or ridge_mae is None:
-        return None
-    values = [float(null_mae), float(ridge_mae)]
-    labels = ["Null median", "Ridge"]
-    low = metric_info.get("ridge_mae_ci_low")
-    high = metric_info.get("ridge_mae_ci_high")
-    yerr = [[0.0, values[1] - float(low) if low is not None else 0.0], [0.0, float(high) - values[1] if high is not None else 0.0]]
-    fig, ax = plt.subplots(figsize=(4.7, 4.4))
-    ax.bar(labels, values, color=["#A0AEC0", "#2B6CB0"], width=0.58)
-    ax.errorbar(labels, values, yerr=yerr, fmt="none", ecolor="#1A202C", capsize=5, linewidth=1.1)
-    ax.set_ylabel(f"Test MAE ({unit})" if unit else "Test MAE")
-    ax.set_title(f"{target_label}: null vs Ridge MAE")
-    for idx, value in enumerate(values):
-        ax.text(idx, value, f"{value:.2f}", ha="center", va="bottom", fontsize=9)
+    fig.tight_layout()
     paths = save_figure(fig, figure_dir, stem, formats, dpi)
+    plt.close(fig)
+    return paths
+
+
+def lvot_composite(
+    plt: Any,
+    lvot: pd.DataFrame,
+    metric_info: dict[str, Any],
+    figure_dir: Path,
+    formats: list[str],
+    dpi: int,
+) -> list[str]:
+    observed, predicted = finite_xy(lvot["observed_lvot_vti_cm"], lvot["predicted_lvot_vti_cm"])
+    fig, axes = plt.subplots(2, 2, figsize=(10.2, 8.4), constrained_layout=True)
+    observed_vs_predicted_panel(axes[0, 0], observed, predicted, "LVOT VTI", "cm", COLORS["lvot"], metric_info, "A")
+    bland_altman_panel(axes[0, 1], observed, predicted, "LVOT VTI", "cm", COLORS["lvot"], "B")
+    mae_comparison_panel(axes[1, 0], metric_info, "LVOT VTI", "cm", "C")
+    roc_panel(axes[1, 1], lvot, "D")
+    paths = save_figure(fig, figure_dir, "figure1_lvot_vti_primary_composite", formats, dpi)
+    plt.close(fig)
+    return paths
+
+
+def tapse_composite(
+    plt: Any,
+    tapse: pd.DataFrame,
+    metric_info: dict[str, Any],
+    figure_dir: Path,
+    formats: list[str],
+    dpi: int,
+) -> list[str]:
+    observed, predicted = finite_xy(tapse["observed_tapse_mm"], tapse["predicted_tapse_mm"])
+    fig, axes = plt.subplots(1, 3, figsize=(13.0, 4.0), constrained_layout=True)
+    observed_vs_predicted_panel(axes[0], observed, predicted, "TAPSE", "mm", COLORS["tapse"], metric_info, "A")
+    bland_altman_panel(axes[1], observed, predicted, "TAPSE", "mm", COLORS["tapse"], "B")
+    mae_comparison_panel(axes[2], metric_info, "TAPSE", "mm", "C")
+    paths = save_figure(fig, figure_dir, "figureS1_tapse_secondary_composite", formats, dpi)
     plt.close(fig)
     return paths
 
@@ -256,15 +456,15 @@ def write_captions(path: Path, inventory: list[dict[str, Any]]) -> None:
     lines = [
         "# Phase 2 Local Figure Caption Drafts",
         "",
-        "These figures were rendered from minimal deidentified figure-ready CSVs. The input CSVs remain restricted derived row-level data and must not be committed, uploaded, or shared outside approved storage.",
+        "These figures were rendered from minimal deidentified figure-ready CSVs. The input CSVs remain restricted derived row-level data and must not be committed, uploaded, pasted into chat, or shared outside approved secure storage.",
         "",
-        "## Figure 1. LVOT VTI Primary Model Performance",
+        "## Main Figure 1. LVOT VTI Primary Model Performance",
         "",
-        "Frozen EchoPrime study embeddings were used to predict structured LVOT VTI on the held-out subject-level test split. Ridge regression used train-fit feature standardization, the numerically stable `svd` solver, and validation-only alpha selection. Observed-versus-predicted and Bland-Altman panels summarize continuous LVOT VTI predictions. Null-versus-Ridge MAE is shown with subject-level bootstrap 95% confidence intervals when aggregate metrics are available. Exploratory ROC curves for LVOT VTI <18 cm and <20 cm are thresholded summaries of the continuous predictions, not separately trained classifiers.",
+        "Frozen EchoPrime study embeddings were used to predict structured LVOT VTI on a held-out subject-level test split. Ridge regression used train-fit feature standardization, the numerically stable `svd` solver, and validation-only alpha selection. Observed-versus-predicted and Bland-Altman panels summarize continuous LVOT VTI predictions. Null-versus-Ridge MAE is shown with subject-level bootstrap 95% confidence intervals when available from the aggregate manifest. ROC curves for LVOT VTI <18 cm and <20 cm are exploratory thresholded summaries of continuous predictions, not separately trained classifiers. Limits of agreement remain wide, so these results support an imaging-only estimation and risk-stratification signal rather than replacement of clinical Doppler LVOT VTI measurement.",
         "",
         "## Supplementary Figure S1. TAPSE Secondary Endpoint Performance",
         "",
-        "Frozen EchoPrime study embeddings were used to predict structured TAPSE on the held-out subject-level test split. TAPSE is a cautious secondary endpoint because the test set is smaller and the selected alpha indicates strong regularization.",
+        "Frozen EchoPrime study embeddings were used to predict structured TAPSE on the held-out subject-level test split with the same stable-v2 Ridge configuration. TAPSE was evaluated as a cautious secondary endpoint; the smaller test set and selected alpha of 1000 indicate strong regularization. These results should not be framed as measurement-grade TAPSE automation.",
         "",
         "## Inventory",
         "",
@@ -289,30 +489,120 @@ def main() -> int:
     lvot_path = args.figure_ready_dir / LVOT_FILE
     if lvot_path.exists():
         lvot = pd.read_csv(lvot_path)
-        observed = pd.to_numeric(lvot["observed_lvot_vti_cm"], errors="coerce").to_numpy(float)
-        predicted = pd.to_numeric(lvot["predicted_lvot_vti_cm"], errors="coerce").to_numpy(float)
-        files = observed_vs_predicted(plt, observed, predicted, "LVOT VTI", "cm", "fig1_lvot_observed_vs_predicted", args.figure_dir, formats, args.dpi)
-        record(inventory, "fig1_lvot_observed_vs_predicted", files, LVOT_FILE, "No identifiers or point labels.")
-        files = bland_altman(plt, observed, predicted, "LVOT VTI", "cm", "fig1_lvot_bland_altman", args.figure_dir, formats, args.dpi)
-        record(inventory, "fig1_lvot_bland_altman", files, LVOT_FILE, "Prediction minus observed.")
-        files = roc_curves(plt, lvot, "fig1_lvot_low_vti_roc", args.figure_dir, formats, args.dpi)
+        observed, predicted = finite_xy(lvot["observed_lvot_vti_cm"], lvot["predicted_lvot_vti_cm"])
+        lvot_metrics = metrics.get("lvot_all_clips", {})
+        files = plot_individual(
+            plt,
+            observed_vs_predicted_panel,
+            "fig1_lvot_observed_vs_predicted",
+            args.figure_dir,
+            formats,
+            args.dpi,
+            (4.7, 4.2),
+            observed,
+            predicted,
+            "LVOT VTI",
+            "cm",
+            COLORS["lvot"],
+            lvot_metrics,
+            None,
+        )
+        record(inventory, "fig1_lvot_observed_vs_predicted", files, LVOT_FILE, "No identifiers or point labels; includes identity and calibration lines.")
+        files = plot_individual(
+            plt,
+            bland_altman_panel,
+            "fig1_lvot_bland_altman",
+            args.figure_dir,
+            formats,
+            args.dpi,
+            (4.9, 4.2),
+            observed,
+            predicted,
+            "LVOT VTI",
+            "cm",
+            COLORS["lvot"],
+            None,
+        )
+        record(inventory, "fig1_lvot_bland_altman", files, LVOT_FILE, "Prediction minus observed; bias and limits of agreement shown.")
+        files = plot_individual(
+            plt,
+            roc_panel,
+            "fig1_lvot_low_vti_roc",
+            args.figure_dir,
+            formats,
+            args.dpi,
+            (4.6, 4.2),
+            lvot,
+            None,
+        )
         record(inventory, "fig1_lvot_low_vti_roc", files, LVOT_FILE, "Exploratory threshold summaries of continuous predictions.")
-        mae_files = mae_comparison(plt, metrics.get("lvot_all_clips", {}), "LVOT VTI", "fig1_lvot_mae_comparison", args.figure_dir, formats, args.dpi)
+        mae_files = plot_individual_mae(
+            plt,
+            lvot_metrics,
+            "LVOT VTI",
+            "cm",
+            "fig1_lvot_mae_comparison",
+            args.figure_dir,
+            formats,
+            args.dpi,
+        )
         if mae_files:
-            record(inventory, "fig1_lvot_mae_comparison", mae_files, MANIFEST_FILE, "Aggregate null-vs-Ridge MAE.")
+            record(inventory, "fig1_lvot_mae_comparison", mae_files, MANIFEST_FILE, "Aggregate null-vs-Ridge MAE; CI whiskers shown when available.")
+        files = lvot_composite(plt, lvot, lvot_metrics, args.figure_dir, formats, args.dpi)
+        record(inventory, "figure1_lvot_vti_primary_composite", files, "local figure panels", "2x2 manuscript composite: observed-vs-predicted, Bland-Altman, MAE, ROC.")
 
     tapse_path = args.figure_ready_dir / TAPSE_FILE
     if tapse_path.exists():
         tapse = pd.read_csv(tapse_path)
-        observed = pd.to_numeric(tapse["observed_tapse_mm"], errors="coerce").to_numpy(float)
-        predicted = pd.to_numeric(tapse["predicted_tapse_mm"], errors="coerce").to_numpy(float)
-        files = observed_vs_predicted(plt, observed, predicted, "TAPSE", "mm", "figS1_tapse_observed_vs_predicted", args.figure_dir, formats, args.dpi)
-        record(inventory, "figS1_tapse_observed_vs_predicted", files, TAPSE_FILE, "No identifiers or point labels.")
-        files = bland_altman(plt, observed, predicted, "TAPSE", "mm", "figS1_tapse_bland_altman", args.figure_dir, formats, args.dpi)
-        record(inventory, "figS1_tapse_bland_altman", files, TAPSE_FILE, "Prediction minus observed.")
-        mae_files = mae_comparison(plt, metrics.get("tapse_all_clips", {}), "TAPSE", "figS1_tapse_mae_comparison", args.figure_dir, formats, args.dpi)
+        observed, predicted = finite_xy(tapse["observed_tapse_mm"], tapse["predicted_tapse_mm"])
+        tapse_metrics = metrics.get("tapse_all_clips", {})
+        files = plot_individual(
+            plt,
+            observed_vs_predicted_panel,
+            "figS1_tapse_observed_vs_predicted",
+            args.figure_dir,
+            formats,
+            args.dpi,
+            (4.7, 4.2),
+            observed,
+            predicted,
+            "TAPSE",
+            "mm",
+            COLORS["tapse"],
+            tapse_metrics,
+            None,
+        )
+        record(inventory, "figS1_tapse_observed_vs_predicted", files, TAPSE_FILE, "No identifiers or point labels; includes identity and calibration lines.")
+        files = plot_individual(
+            plt,
+            bland_altman_panel,
+            "figS1_tapse_bland_altman",
+            args.figure_dir,
+            formats,
+            args.dpi,
+            (4.9, 4.2),
+            observed,
+            predicted,
+            "TAPSE",
+            "mm",
+            COLORS["tapse"],
+            None,
+        )
+        record(inventory, "figS1_tapse_bland_altman", files, TAPSE_FILE, "Prediction minus observed; bias and limits of agreement shown.")
+        mae_files = plot_individual_mae(
+            plt,
+            tapse_metrics,
+            "TAPSE",
+            "mm",
+            "figS1_tapse_mae_comparison",
+            args.figure_dir,
+            formats,
+            args.dpi,
+        )
         if mae_files:
-            record(inventory, "figS1_tapse_mae_comparison", mae_files, MANIFEST_FILE, "Aggregate null-vs-Ridge MAE.")
+            record(inventory, "figS1_tapse_mae_comparison", mae_files, MANIFEST_FILE, "Aggregate null-vs-Ridge MAE; CI whiskers shown when available.")
+        files = tapse_composite(plt, tapse, tapse_metrics, args.figure_dir, formats, args.dpi)
+        record(inventory, "figureS1_tapse_secondary_composite", files, "local figure panels", "1x3 manuscript composite: observed-vs-predicted, Bland-Altman, MAE.")
 
     inventory_df = pd.DataFrame(inventory)
     inventory_df.to_csv(args.figure_dir / "phase2_local_figure_inventory.csv", index=False)
