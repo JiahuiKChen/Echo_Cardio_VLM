@@ -333,9 +333,11 @@ def mae_comparison_panel(
     prefixes = ["null", "ridge"]
     colors = [COLORS["null"], COLORS["ridge"]]
     x = np.array([0.0, 1.0])
+    ci_available: dict[str, bool] = {}
 
     for idx, (value, prefix, color) in enumerate(zip(values, prefixes, colors)):
         ci = mae_ci(metric_info, prefix, value)
+        ci_available[prefix] = ci is not None
         yerr = None if ci is None else np.array([[ci[0]], [ci[1]]])
         ax.errorbar(
             [x[idx]],
@@ -358,16 +360,25 @@ def mae_comparison_panel(
     ax.set_ylim(0, max(values) * 1.35)
     ax.set_ylabel(f"Test MAE ({unit})")
     ax.set_title("Null vs Ridge MAE", loc="left", pad=8)
-    ax.text(
-        0.04,
-        0.96,
-        "95% CI shown\nwhen available",
-        transform=ax.transAxes,
-        va="top",
-        ha="left",
-        fontsize=8.0,
-        color="#4B5563",
-    )
+    if ci_available.get("null") and ci_available.get("ridge"):
+        ci_note = "Whiskers show 95% CI"
+    elif ci_available.get("ridge"):
+        ci_note = "Ridge whisker shows 95% CI"
+    elif ci_available.get("null"):
+        ci_note = "Null whisker shows 95% CI"
+    else:
+        ci_note = ""
+    if ci_note:
+        ax.text(
+            0.04,
+            0.96,
+            ci_note,
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8.0,
+            color="#4B5563",
+        )
     add_panel_label(ax, panel_label)
     return True
 
