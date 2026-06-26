@@ -18,11 +18,22 @@ Revision note: converted the prior internal synthesis into manuscript-style sect
 - Do not claim measurement-grade LVOT VTI or TAPSE automation.
 - Do not claim replacement of clinical Doppler LVOT VTI measurement.
 - Do not claim direct extraction of LVOT VTI from spectral Doppler traces.
+- Do not claim direct extraction of TAPSE from M-mode or tricuspid-annular motion clips.
+- Do not describe Phase 2 as EchoPrime fine-tuning; EchoPrime was used as a frozen feature extractor.
+- Do not imply that all DICOM objects were used; the all-clips embeddings came from successfully processed multiframe cine clips.
 - Do not claim clinical deployment readiness.
 - Do not claim ECHOVIEW-filtered results prove superior view selection.
 - Do not claim the A5C-only ECHOVIEW sensitivity was negative; it was skipped as underpowered.
 - Do not describe binary low-VTI summaries as separately optimized classifiers.
 - Do not overstate TAPSE precision given the smaller test set and selected alpha of 1000.
+
+## Provenance Positioning Notes
+
+- Use "mean-pooled all-clips study-level EchoPrime embeddings" for the primary imaging input.
+- Define "frozen" as fixed EchoPrime encoder weights and fixed generated embeddings during downstream Ridge training.
+- The trained Phase 2 model component was Ridge regression, not EchoPrime.
+- If reviewers ask about Doppler or M-mode, the current code supports saying these were not explicitly localized or selected for the primary analysis. Exact retention of spectral Doppler or M-mode clips requires a separate DICOM/view audit.
+- Keep `docs/phase2_embedding_provenance.md` aligned with any future Methods revision.
 
 ## Reviewer-Risk Notes
 
@@ -31,3 +42,4 @@ Revision note: converted the prior internal synthesis into manuscript-style sect
 - ECHOVIEW analyses are best framed as limited subset sensitivities because of their smaller denominator and uncertainty.
 - TAPSE is positive but secondary, smaller, and strongly regularized.
 - Binary low-VTI AUROC values are exploratory and should be paired with the reported operating-point sensitivity and specificity.
+- Future-work language should point to measurement-view localization, Doppler-specific LVOT VTI processing, TAPSE M-mode/RV-focused clip processing, and raw-DICOM or clip-level modeling as separate next steps.

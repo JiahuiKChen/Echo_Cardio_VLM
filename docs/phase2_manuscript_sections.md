@@ -4,9 +4,9 @@
 
 ### Data Sources and Cohort
 
-This analysis used MIMIC-IV-ECHO as the source of echocardiography DICOMs and structured echocardiographic measurements. The imaging cohort was defined from the processed MIMIC-IV-ECHO DICOM subset available through the project pipeline, rather than the entire structured-measurement denominator. Structured report measurements were used as labels. LVOT VTI was specified as the primary measurement target, and TAPSE was specified as a secondary measurement target.
+This analysis used MIMIC-IV-ECHO as the source of echocardiography DICOMs and structured echocardiographic measurements. The imaging cohort was defined from the processed MIMIC-IV-ECHO DICOM subset available through the project pipeline, rather than the entire structured-measurement denominator. The project pipeline selected linked studies, downloaded DICOMs, extracted successfully processed multiframe cine clips, generated EchoPrime encoder embeddings for those clips, and aggregated clip embeddings to study-level vectors. Structured report measurements were used as labels. LVOT VTI was specified as the primary measurement target, and TAPSE was specified as a secondary measurement target.
 
-EchoPrime was used to derive frozen study-level echocardiography embeddings. The primary analysis used all-clips study-level EchoPrime embeddings. ECHOVIEW view classifications were used only for view-filtered sensitivity analyses and were not used to define the primary modeling denominator.
+EchoPrime was used as a frozen feature extractor. In this context, frozen means that the pretrained EchoPrime encoder weights and generated embedding matrices were fixed during downstream model training. EchoPrime weights were not updated, and the Phase 2 analyses did not fine-tune EchoPrime. The primary analysis used mean-pooled all-clips study-level EchoPrime embeddings, aggregated from successfully embedded clip-level representations. ECHOVIEW view classifications were used only for view-filtered sensitivity analyses and were not used to define the primary modeling denominator.
 
 ### Cohort Construction
 
@@ -16,7 +16,9 @@ Splits were deterministic and subject-level, with no subject overlap between tra
 
 ### Model Development and Evaluation
 
-Frozen EchoPrime study embeddings were used as predictors. For each target, Ridge regression models were fit on the training split. Features were standardized with a `StandardScaler` fit on the training data only; the fitted transformation was then applied to validation and test data. Ridge models used the numerically stable `svd` solver. Regularization strength was selected on the validation split only from the prespecified alpha grid 0.01, 0.03, 0.1, 0.3, 1, 3, 10, 30, 100, 300, and 1000. A train-median null model was evaluated as the reference baseline.
+Frozen EchoPrime study embeddings were used as predictors. For each target, Ridge regression models were fit on the training split. The trained model component was the downstream Ridge regression model; the embedding extractor was not updated. Features were standardized with a `StandardScaler` fit on the training data only; the fitted transformation was then applied to validation and test data. Ridge models used the numerically stable `svd` solver. Regularization strength was selected on the validation split only from the prespecified alpha grid 0.01, 0.03, 0.1, 0.3, 1, 3, 10, 30, 100, 300, and 1000. A train-median null model was evaluated as the reference baseline.
+
+The model was trained to predict structured report measurements from study-level imaging embeddings. It was not designed to directly extract LVOT VTI from spectral Doppler traces or TAPSE from M-mode or tricuspid-annular motion clips.
 
 The primary evaluation metric was mean absolute error (MAE). Secondary continuous metrics included root mean squared error, R2, Pearson correlation, Spearman correlation, and Bland-Altman bias and limits of agreement. Subject-level bootstrap resampling was used to estimate 95% confidence intervals for key test-set metrics.
 
@@ -60,15 +62,17 @@ For LVOT VTI <18 cm, test-set prevalence was 0.191 and AUROC was 0.846. At the r
 
 The primary LVOT VTI model showed a moderate imaging-only estimation signal using frozen EchoPrime study-level embeddings. Compared with the train-median null baseline, Ridge regression reduced MAE by approximately 0.90 cm and achieved positive test-set R2. The low-VTI ROC findings suggest potential utility for exploratory risk stratification, but these analyses were thresholded summaries of continuous predictions and were not separately optimized classifiers.
 
-The error distribution places important constraints on interpretation. Bland-Altman limits of agreement remained wide, indicating that the model should not be presented as a replacement for clinical Doppler LVOT VTI measurement. The analysis predicts structured report measurements and does not constitute independently adjudicated manual measurement or direct extraction of LVOT VTI from spectral Doppler traces.
+The error distribution places important constraints on interpretation. Bland-Altman limits of agreement remained wide, indicating that the model should not be presented as a replacement for clinical Doppler LVOT VTI measurement. The analysis predicts structured report measurements from fixed study-level embeddings and does not constitute independently adjudicated manual measurement, EchoPrime fine-tuning, or direct extraction of LVOT VTI from spectral Doppler traces.
 
 The hard-extreme robustness analysis produced results similar to the primary LVOT VTI analysis, indicating that the primary result was not materially altered by excluding hard-extreme target values. ECHOVIEW-filtered LVOT VTI analyses were smaller and had weaker performance than the all-clips analysis. These findings support treating ECHOVIEW-filtered analyses as sensitivity analyses rather than as a competing primary modeling denominator or evidence of superior view selection.
 
 TAPSE showed a secondary imaging-only signal under the same modeling framework. However, the TAPSE test set was smaller than the LVOT VTI test set, and the selected alpha of 1000 indicates strong regularization. TAPSE should therefore be interpreted as a secondary endpoint requiring additional validation.
 
+Future work should evaluate whether measurement-view-specific models improve interpretability and precision relative to all-clips study embeddings. For LVOT VTI, this would require explicitly identifying or processing relevant Doppler spectral clips. For TAPSE, this would require evaluating RV-focused, A4C, M-mode, or other tricuspid-annular motion-relevant clips. Raw-DICOM, clip-level, or pixel-level measurement automation would be a separate study from the current frozen-embedding Ridge baseline.
+
 ## Limitations
 
-This was a retrospective single-dataset analysis from a MIMIC-IV-ECHO derived cohort. Labels were structured report measurements, without independent manual remeasurement or adjudication. Label noise and measurement heterogeneity may therefore affect the reported performance. LVOT VTI is Doppler-derived and may not be directly visible in all all-clips study embeddings. ECHOVIEW analyses used a limited derived view-classification subset rather than the full DICOM denominator. The TAPSE analysis had a smaller sample size and selected a strongly regularized model. Binary low-VTI analyses were exploratory thresholded summaries of continuous predictions. External validation is needed before clinical generalization.
+This was a retrospective single-dataset analysis from a MIMIC-IV-ECHO derived cohort. Labels were structured report measurements, without independent manual remeasurement or adjudication. Label noise and measurement heterogeneity may therefore affect the reported performance. The primary imaging inputs were mean-pooled study-level embeddings from successfully processed multiframe clips, not measurement-specific Doppler or M-mode clips. LVOT VTI is Doppler-derived and may not be directly visible in all all-clips study embeddings. ECHOVIEW analyses used a limited derived view-classification subset rather than the full DICOM denominator. The TAPSE analysis had a smaller sample size and selected a strongly regularized model. Binary low-VTI analyses were exploratory thresholded summaries of continuous predictions. External validation is needed before clinical generalization.
 
 ## Figure Caption Text
 

@@ -13,6 +13,7 @@
 - Added aggregate-only verification tooling that reads manuscript-safe aggregate outputs and excludes patient-level prediction files.
 - Added restricted figure workflow tooling, including SCC-only figure generation and local plotting from minimal restricted derived figure-ready CSVs.
 - Added manuscript-ready sections, internal notes, canonical Markdown/CSV table sources, and a DOCX table packet.
+- Added EchoPrime embedding provenance documentation clarifying that Phase 2 used fixed study-level all-clips embeddings aggregated from successfully processed multiframe cine clips, with downstream Ridge regression as the trained model component.
 
 ## 3. Verified Primary Result: LVOT VTI
 
@@ -54,6 +55,7 @@ Committed table/manuscript assets:
 
 - `docs/phase2_manuscript_sections.md`
 - `docs/phase2_internal_notes.md`
+- `docs/phase2_embedding_provenance.md`
 - `docs/tables/phase2/table1_main_continuous_performance.{md,csv}`
 - `docs/tables/phase2/tableS1_hard_extreme_robustness.{md,csv}`
 - `docs/tables/phase2/tableS2_echoview_sensitivity.{md,csv}`
@@ -83,6 +85,10 @@ Minimal local figure-ready CSVs remain restricted derived row-level data. They s
 - Leakage-safe clinical covariate baseline.
 - Additional calibration analysis.
 - Expanded denominator documentation for each target and sensitivity subset.
+- Measurement-view localization audit comparing all-clips study embeddings with selected measurement-relevant clips.
+- Doppler-specific LVOT VTI pipeline that explicitly identifies or processes spectral Doppler clips.
+- TAPSE-focused clip pipeline using RV-focused, A4C, M-mode, or other tricuspid-annular motion-relevant clips where available.
+- Raw-DICOM, clip-level, or pixel-level model for direct measurement automation as a separate study.
 - External validation if data access permits.
 - Model comparison beyond Ridge only if scientifically justified and leakage-safe.
 
