@@ -1,7 +1,5 @@
 # Phase 2 Manuscript Sections: Imaging-Only LVOT VTI and TAPSE Baselines
 
-Revision note: converted the prior internal synthesis into manuscript-style sections; moved interpretation from Results to Discussion; expanded Methods to define MIMIC-IV-ECHO, EchoPrime, ECHOVIEW, cohort construction, splits, model development, and sensitivity analyses.
-
 ## Methods
 
 ### Data Sources and Cohort
@@ -72,17 +70,6 @@ TAPSE showed a secondary imaging-only signal under the same modeling framework. 
 
 This was a retrospective single-dataset analysis from a MIMIC-IV-ECHO derived cohort. Labels were structured report measurements, without independent manual remeasurement or adjudication. Label noise and measurement heterogeneity may therefore affect the reported performance. LVOT VTI is Doppler-derived and may not be directly visible in all all-clips study embeddings. ECHOVIEW analyses used a limited derived view-classification subset rather than the full DICOM denominator. The TAPSE analysis had a smaller sample size and selected a strongly regularized model. Binary low-VTI analyses were exploratory thresholded summaries of continuous predictions. External validation is needed before clinical generalization.
 
-## Figure and Table Callout Map
-
-| Manuscript element | Recommended callout | Purpose |
-|---|---|---|
-| Primary LVOT VTI model performance | Figure 1 | Main visual summary of observed-versus-predicted LVOT VTI, Bland-Altman agreement, MAE comparison, and exploratory low-VTI ROC curves. |
-| Main continuous performance metrics | Table 1 | Primary LVOT VTI and secondary TAPSE all-clips stable-v2 results. |
-| TAPSE secondary endpoint | Supplementary Figure S1 | Visual summary of TAPSE observed-versus-predicted, Bland-Altman, and MAE comparison panels. |
-| Hard-extreme robustness | Supplementary Table S1 | Robustness analyses after hard-extreme target exclusion. |
-| ECHOVIEW view-filtered sensitivities | Supplementary Table S2 | Limited subset LVOT VTI sensitivity analyses using ECHOVIEW view-filtered embeddings. |
-| Exploratory binary low-VTI analyses | Supplementary Table S3 | Thresholded binary summaries derived from continuous LVOT VTI predictions. |
-
 ## Figure Caption Text
 
 ### Figure 1. Primary LVOT VTI Imaging-Only Model Performance
@@ -92,22 +79,3 @@ Frozen EchoPrime study embeddings were used to predict structured LVOT VTI on a 
 ### Supplementary Figure S1. TAPSE Secondary Endpoint Imaging-Only Model Performance
 
 Frozen EchoPrime study embeddings were used to predict structured TAPSE on the held-out subject-level test split using the same stable-v2 Ridge configuration. Panel A shows observed versus predicted TAPSE with identity and calibration lines. Panel B shows Bland-Altman agreement. Panel C compares null median versus Ridge test MAE. TAPSE was evaluated as a cautious secondary endpoint because of the smaller test set and strong regularization, and should not be interpreted as measurement-grade automation.
-
-## Claims To Avoid
-
-- Do not claim measurement-grade LVOT VTI or TAPSE automation.
-- Do not claim replacement of clinical Doppler LVOT VTI measurement.
-- Do not claim direct extraction of LVOT VTI from spectral Doppler traces.
-- Do not claim clinical deployment readiness.
-- Do not claim ECHOVIEW-filtered results prove superior view selection.
-- Do not claim the A5C-only ECHOVIEW sensitivity was negative; it was skipped as underpowered.
-- Do not describe binary low-VTI summaries as separately optimized classifiers.
-- Do not overstate TAPSE precision given the smaller test set and selected alpha of 1000.
-
-## Reviewer-Risk Notes
-
-- Results should remain numerical and avoid clinical interpretation beyond the reported metrics.
-- Discussion should acknowledge the wide Bland-Altman limits when interpreting LVOT VTI performance.
-- ECHOVIEW analyses are best framed as limited subset sensitivities because of their smaller denominator and uncertainty.
-- TAPSE is positive but secondary, smaller, and strongly regularized.
-- Binary low-VTI AUROC values are exploratory and should be paired with the reported operating-point sensitivity and specificity.
