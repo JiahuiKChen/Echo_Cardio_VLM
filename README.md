@@ -18,6 +18,14 @@ Reproducible echocardiography ML pipeline for MIMIC-IV-ECHO with an EchoPrime em
 - `docs/`: PRD, project plan, and EchoPrime repo audit
 - `docker/`: GPU container definition and smoke-test script
 
+## Phase 2 TAPSE/LVOT VTI Assets
+
+Phase 2 imaging-only baseline documentation is organized under `docs/`:
+
+- `docs/phase2_status_and_roadmap.md`: current Phase 2 status, verified results, governance notes, and remaining roadmap.
+- `docs/phase2_manuscript_sections.md`: manuscript-style Methods, Results, Discussion, Limitations, and figure caption text.
+- `docs/tables/phase2/`: canonical Markdown/CSV table sources and a DOCX table packet for manuscript drafting.
+
 ## Quick Start
 
 1. Run preflight checks:
@@ -61,4 +69,3 @@ Reproducible echocardiography ML pipeline for MIMIC-IV-ECHO with an EchoPrime em
 
 - Do not commit DUA-governed data, raw/derived patient-level outputs, or downloaded imaging assets.
 - This repo is for code, SQL, configs, and documentation only.
-
