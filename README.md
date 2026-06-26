@@ -22,6 +22,7 @@ Reproducible echocardiography ML pipeline for MIMIC-IV-ECHO with an EchoPrime em
 
 Phase 2 imaging-only baseline documentation is organized under `docs/`:
 
+- `docs/phase2_reviewer_handoff.md`: collaborator-facing start-here summary for PR #1.
 - `docs/phase2_status_and_roadmap.md`: current Phase 2 status, verified results, governance notes, and remaining roadmap.
 - `docs/phase2_manuscript_sections.md`: manuscript-style Methods, Results, Discussion, Limitations, and figure caption text.
 - `docs/tables/phase2/`: canonical Markdown/CSV table sources and a DOCX table packet for manuscript drafting.
