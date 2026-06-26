@@ -21,6 +21,7 @@ This branch adds the Phase 1/Phase 2 infrastructure and manuscript assets for im
 - Restricted and local figure-generation workflows.
 - Manuscript-style Methods, Results, Discussion, Limitations, figure captions, internal notes, and canonical table sources.
 - DOCX table packet generated from canonical Markdown/CSV table sources.
+- EchoPrime embedding provenance and manuscript-claim boundary documentation.
 
 ## Key Verified Results
 
@@ -42,6 +43,15 @@ Sensitivity analyses:
 - LVOT hard-extreme exclusion: MAE 3.62 cm; R2 0.376.
 - TAPSE hard-extreme exclusion: MAE 3.17 mm; R2 0.284.
 - ECHOVIEW analyses are limited subset sensitivities; A5C-only 0.70 was skipped/underpowered.
+
+## Provenance and Claim Boundary
+
+- EchoPrime was used as a frozen feature extractor. Encoder weights and generated embeddings were fixed during Phase 2 downstream modeling.
+- The trained supervised component was downstream Ridge regression, not EchoPrime fine-tuning.
+- Clip-level 512-dimensional EchoPrime encoder embeddings were mean-pooled into study-level all-clips embeddings for the primary analyses.
+- The embedding pipeline used successfully processed multiframe cine clips; still-frame DICOMs were excluded by the multiframe cine filter.
+- Doppler and M-mode inclusion is only partially verifiable from the current code audit. The code does not explicitly exclude readable multiframe Doppler or M-mode DICOMs, but exact retention requires a future metadata or DICOM audit.
+- Manuscript language explicitly avoids claims of direct LVOT VTI extraction from spectral Doppler traces, direct TAPSE extraction from M-mode/tricuspid-annular motion clips, measurement-grade automation, or clinical deployment readiness.
 
 ## Files Added or Changed
 
@@ -71,6 +81,8 @@ Tracked-file name audit did not identify committed patient-level outputs or rest
 - Decide whether binary low-VTI summaries stay in main text or supplement.
 - Integrate Phase 2 sections into the full manuscript.
 - Confirm final journal-specific figure and table formatting.
+- Consider a Doppler/M-mode retention audit if measurement-view claims become important.
+- Consider measurement-view localization or raw-DICOM/clip-level direct measurement studies as future work.
 - Decide whether a leakage-safe clinical covariate baseline is needed before submission.
 - Obtain coauthor review of the final figure/table interpretation.
 
@@ -79,6 +91,7 @@ Tracked-file name audit did not identify committed patient-level outputs or rest
 - Confirm no restricted data artifacts are committed.
 - Review stable-v2 modeling defaults and validation-only alpha selection.
 - Review table values against verified aggregate outputs.
+- Review EchoPrime provenance wording and confirm no fine-tuning or direct measurement claims are implied.
 - Review manuscript language for avoiding measurement-replacement claims.
 - Review ECHOVIEW analyses as limited subset sensitivities rather than primary denominators.
 - Review whether the DOCX table packet should remain tracked or be regenerated during manuscript packaging.

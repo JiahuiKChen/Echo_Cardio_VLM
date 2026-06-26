@@ -85,6 +85,7 @@ Minimal local figure-ready CSVs remain restricted derived row-level data. They s
 - Leakage-safe clinical covariate baseline.
 - Additional calibration analysis.
 - Expanded denominator documentation for each target and sensitivity subset.
+- Doppler/M-mode retention audit to quantify whether relevant acquisitions are retained among successfully embedded multiframe clips.
 - Measurement-view localization audit comparing all-clips study embeddings with selected measurement-relevant clips.
 - Doppler-specific LVOT VTI pipeline that explicitly identifies or processes spectral Doppler clips.
 - TAPSE-focused clip pipeline using RV-focused, A4C, M-mode, or other tricuspid-annular motion-relevant clips where available.
