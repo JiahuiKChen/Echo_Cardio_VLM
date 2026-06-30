@@ -717,7 +717,7 @@ def main() -> int:
                     )
 
         for tier, (x, numeric_cols, categorical_cols, skip_reason) in feature_specs.items():
-            if skip_reason and (tier == "demographics" or tier == "imaging_plus_demographics"):
+            if skip_reason:
                 target_summary["baseline_summaries"].append(
                     {
                         "baseline_tier": tier,
