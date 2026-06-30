@@ -1,0 +1,10 @@
+# Supplementary Table S4. Leakage-Conservative Study/Acquisition-Metadata Baseline
+
+Study/acquisition-metadata Ridge baseline using only the number of DICOMs and successfully embedded clips per study.
+
+| Target | Baseline | Test N | Predictors | Null MAE | Null R2 | Baseline MAE | Baseline MAE 95% CI | Baseline R2 | Baseline R2 95% CI | Imaging Ridge MAE | Imaging Ridge R2 | Note |
+|---|---|---:|---|---:|---:|---:|---|---:|---|---:|---:|---|
+| LVOT VTI | Study/acquisition metadata Ridge | 555 | `n_clips`, `n_dicoms` | 4.54 cm | -0.005 | 4.58 cm | 4.28 to 4.89 cm | 0.008 | -0.012 to 0.025 | 3.64 cm | 0.372 | Metadata-only baseline performed near null. |
+| TAPSE | Study/acquisition metadata Ridge | 160 | `n_clips`, `n_dicoms` | 3.79 mm | approximately 0 | 3.77 mm | 3.35 to 4.19 mm | 0.0004 | -0.046 to 0.012 | 3.17 mm | 0.284 | Metadata-only baseline performed near null. |
+
+Footnote: The study/acquisition-metadata baseline used only the number of DICOMs and successfully embedded clips per study. Demographics-only baselines were not evaluated because an approved demographics file was not available for this run.

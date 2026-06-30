@@ -22,13 +22,15 @@ The model was trained to predict structured report measurements from study-level
 
 The primary evaluation metric was mean absolute error (MAE). Secondary continuous metrics included root mean squared error, R2, Pearson correlation, Spearman correlation, and Bland-Altman bias and limits of agreement. Subject-level bootstrap resampling was used to estimate 95% confidence intervals for key test-set metrics.
 
-Exploratory binary low-VTI summaries were derived from continuous LVOT VTI predictions at thresholds of LVOT VTI <18 cm and <20 cm. These binary analyses were thresholded summaries of continuous predictions and were not separately trained classifiers.
+Exploratory binary threshold summaries were derived from continuous predictions. LVOT VTI thresholds were <18 cm and <20 cm. TAPSE was also summarized at <17 mm, a commonly used abnormal RV systolic function threshold. These binary analyses were thresholded summaries of continuous predictions and were not separately trained classifiers.
 
 ### Sensitivity Analyses
 
 Hard-extreme target exclusion was evaluated as a robustness check for both LVOT VTI and TAPSE. This sensitivity analysis excluded only hard invalid or extreme target values according to prespecified target rules and did not remove borderline physiologic outliers.
 
 LVOT VTI ECHOVIEW-filtered sensitivity analyses used view-filtered embeddings from ECHOVIEW-labeled clips. Prespecified view policies included A5C-or-other, other-only, and A5C-only at probability threshold 0.70, with an additional A5C-or-other threshold ladder at 0.80, 0.90, and 0.95. These analyses were interpreted as limited subset analyses rather than the primary denominator because ECHOVIEW covers a derived view-classification subset.
+
+A leakage-conservative study/acquisition-metadata baseline was evaluated as a reviewer follow-up analysis. This baseline used only the number of DICOMs and successfully embedded clips per study (`n_dicoms` and `n_clips`) and did not use EchoPrime embeddings, report text, diagnoses, indications, other echocardiographic measurements, or qualitative echo findings. Demographics-only baselines were not evaluated because an approved demographics file was not available for this run.
 
 ## Results
 
@@ -54,9 +56,15 @@ In the held-out TAPSE test set of 160 studies, the null median baseline had MAE 
 
 Bland-Altman analysis showed prediction-minus-observed bias +0.22 mm, with limits of agreement from -7.52 to +7.96 mm. The hard-extreme sensitivity produced the same test-set size and similar performance, with MAE 3.17 mm and R2 0.284 (Supplementary Table S1).
 
-### Exploratory Binary Low-VTI Summaries
+### Study/Acquisition-Metadata Baseline
+
+A leakage-conservative study/acquisition-metadata baseline using only the number of DICOMs and successfully embedded clips per study performed near the train-median null model for both targets. For LVOT VTI, the metadata Ridge model achieved test MAE 4.58 cm and R2 0.008, compared with 4.54 cm and R2 -0.005 for the null model. For TAPSE, the metadata Ridge model achieved test MAE 3.77 mm and R2 0.0004, compared with 3.79 mm and approximately zero R2 for the null model (Supplementary Table S4). Demographics-only baselines were not evaluated because an approved demographics file was not available for this run.
+
+### Exploratory Binary Threshold Summaries
 
 For LVOT VTI <18 cm, test-set prevalence was 0.191 and AUROC was 0.846. At the reported operating point, sensitivity was 0.358 and specificity was 0.960. For LVOT VTI <20 cm, prevalence was 0.332 and AUROC was 0.812, with sensitivity 0.478 and specificity 0.911 (Supplementary Table S3).
+
+For TAPSE <17 mm, the held-out test set included 36 positive cases among 160 studies, corresponding to prevalence 0.225. The thresholded summary derived from continuous TAPSE predictions had AUROC 0.789 and average precision 0.638. At the operating point defined by predicted TAPSE <17 mm, sensitivity was 0.472 and specificity was 0.944 (Supplementary Table S3).
 
 ## Discussion
 
@@ -68,11 +76,15 @@ The hard-extreme robustness analysis produced results similar to the primary LVO
 
 TAPSE showed a secondary imaging-only signal under the same modeling framework. However, the TAPSE test set was smaller than the LVOT VTI test set, and the selected alpha of 1000 indicates strong regularization. TAPSE should therefore be interpreted as a secondary endpoint requiring additional validation.
 
+The study/acquisition-metadata baseline performed near the train-median null model for both LVOT VTI and TAPSE. This strengthens the interpretation that the imaging-embedding results were not explained by simple acquisition-volume metadata such as the number of DICOMs or successfully embedded clips. Because demographics-only inputs were not available for this run, the result should be described as a study/acquisition-metadata comparison rather than a demographics baseline.
+
+The TAPSE <17 mm thresholded analysis provides an exploratory supplementary summary of the continuous TAPSE model. The operating point had high specificity and lower sensitivity, and it was not derived from a separately trained classifier. This result can be used as a supplementary descriptor of the regression model but should not be framed as a validated binary TAPSE classifier.
+
 Future work should evaluate whether measurement-view-specific models improve interpretability and precision relative to all-clips study embeddings. For LVOT VTI, this would require explicitly identifying or processing relevant Doppler spectral clips. For TAPSE, this would require evaluating RV-focused, A4C, M-mode, or other tricuspid-annular motion-relevant clips. Raw-DICOM, clip-level, or pixel-level measurement automation would be a separate study from the current frozen-embedding Ridge baseline.
 
 ## Limitations
 
-This was a retrospective single-dataset analysis from a MIMIC-IV-ECHO derived cohort. Labels were structured report measurements, without independent manual remeasurement or adjudication. Label noise and measurement heterogeneity may therefore affect the reported performance. The primary imaging inputs were mean-pooled study-level embeddings from successfully processed multiframe clips, not measurement-specific Doppler or M-mode clips. LVOT VTI is Doppler-derived and may not be directly visible in all all-clips study embeddings. ECHOVIEW analyses used a limited derived view-classification subset rather than the full DICOM denominator. The TAPSE analysis had a smaller sample size and selected a strongly regularized model. Binary low-VTI analyses were exploratory thresholded summaries of continuous predictions. External validation is needed before clinical generalization.
+This was a retrospective single-dataset analysis from a MIMIC-IV-ECHO derived cohort. Labels were structured report measurements, without independent manual remeasurement or adjudication. Label noise and measurement heterogeneity may therefore affect the reported performance. The primary imaging inputs were mean-pooled study-level embeddings from successfully processed multiframe clips, not measurement-specific Doppler or M-mode clips. LVOT VTI is Doppler-derived and may not be directly visible in all all-clips study embeddings. An aggregate Doppler/M-mode retention audit found that available DICOM metadata fields were insufficient to reliably classify retained clips as Doppler, M-mode, or 2D/cine, so absence of keyword matches should not be interpreted as absence of Doppler or M-mode content. ECHOVIEW analyses used a limited derived view-classification subset rather than the full DICOM denominator. The TAPSE analysis had a smaller sample size and selected a strongly regularized model. Binary LVOT VTI and TAPSE threshold analyses were exploratory summaries of continuous predictions. Demographics-only baselines were not evaluated because an approved demographics file was not available for this run. External validation is needed before clinical generalization.
 
 ## Figure Caption Text
 

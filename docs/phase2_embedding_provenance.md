@@ -97,14 +97,21 @@ The code does not support the following claims:
 
 ## Doppler and M-Mode Verification Status
 
-The Phase 2 all-clips code does not explicitly exclude Doppler or M-mode DICOMs if they are readable multiframe DICOMs that pass extraction and embedding. However, the current repository audit does not confirm how many spectral Doppler or M-mode acquisitions were retained, excluded, or failed during preprocessing.
+The Phase 2 all-clips code does not explicitly exclude Doppler or M-mode DICOMs if they are readable multiframe DICOMs that pass extraction and embedding. A reviewer follow-up aggregate retention audit summarized the processed full-scale pipeline as follows:
+
+- downloaded/readable DICOM audit rows: 311,043;
+- single-frame or still DICOMs: 140,443;
+- multiframe candidates: 170,600;
+- successfully extracted clips: 170,600;
+- successfully embedded clips: 191,993;
+- study embeddings: 4,696.
+
+However, the available metadata fields were insufficient to classify retained clips reliably as Doppler, spectral Doppler, color Doppler, M-mode, or 2D/cine. Keyword matching over available fields yielded zero category matches, with records assigned to `keyword_unknown_or_unmatched`. This should be interpreted as an insufficiency of the available metadata fields, not as evidence that Doppler or M-mode content was absent.
 
 For manuscript language, it is safest to say that the primary model used all successfully processed multiframe DICOM clips and did not apply Doppler- or M-mode-specific localization. Do not claim direct processing of the specific LVOT VTI spectral trace or TAPSE M-mode measurement clip unless a future audit confirms this from DICOM metadata, view labels, or manual review.
 
 ## Open TODOs
 
 - Verify the exact MIMIC-IV-ECHO release/version string used for the full-scale SCC pipeline.
-- Summarize full-scale DICOM audit counts: total DICOMs, readable DICOMs, multiframe candidates, still frames, and failed/unsupported files.
-- Audit whether spectral Doppler and M-mode DICOMs are represented among successfully embedded multiframe clips.
-- Confirm whether any DICOM modality or vendor-specific fields can identify Doppler/M-mode retention without inspecting patient-level content.
+- Determine whether additional DICOM metadata fields, vendor-specific tags, ECHOVIEW labels, or manual review can identify Doppler/M-mode retention without exporting row-level restricted data.
 - If measurement-view claims become central, run a separate measurement-view localization audit rather than relying on all-clips study embeddings.

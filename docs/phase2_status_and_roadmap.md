@@ -15,6 +15,7 @@
 - Added manuscript-ready sections, internal notes, canonical Markdown/CSV table sources, and a DOCX table packet.
 - Added EchoPrime embedding provenance documentation clarifying that Phase 2 used fixed study-level all-clips embeddings aggregated from successfully processed multiframe cine clips, with downstream Ridge regression as the trained model component.
 - Added reviewer follow-up tooling for leakage-safe non-image baselines, TAPSE `<17 mm` aggregate binary summaries, and aggregate-only Doppler/M-mode retention auditing.
+- Completed aggregate-only reviewer follow-up summaries: study/acquisition metadata performed near null, TAPSE `<17 mm` binary summary was extracted, and available DICOM metadata were insufficient to classify Doppler/M-mode retention reliably.
 
 ## 3. Verified Primary Result: LVOT VTI
 
@@ -40,6 +41,10 @@ Interpretation status: primary manuscript-facing imaging-only baseline. The resu
 - Ridge R2: 0.284
 - Ridge MAE 95% CI: 2.80-3.56 mm
 - Ridge R2 95% CI: 0.13-0.40
+- Exploratory TAPSE `<17 mm` summary:
+  - test positives 36 of 160; prevalence 0.225
+  - AUROC 0.789; average precision 0.638
+  - operating-point sensitivity 0.472; specificity 0.944
 
 Interpretation status: cautious secondary endpoint. The selected alpha was 1000, so the manuscript should describe TAPSE as strongly regularized and avoid precision overclaims.
 
@@ -49,6 +54,10 @@ Interpretation status: cautious secondary endpoint. The selected alpha was 1000,
 - TAPSE hard-extreme exclusion: Ridge MAE 3.17 mm; R2 0.284.
 - ECHOVIEW LVOT VTI analyses are limited subset analyses, not competing primary denominators.
 - ECHOVIEW A5C-only 0.70 was skipped/underpowered because of insufficient training data and should not be interpreted as a negative result.
+- Study/acquisition metadata baseline using only `n_clips` and `n_dicoms` performed near null:
+  - LVOT VTI: MAE 4.58 cm; R2 0.008.
+  - TAPSE: MAE 3.77 mm; R2 0.0004.
+- Doppler/M-mode retention audit summarized 311,043 readable DICOM audit rows, 170,600 multiframe candidates, 170,600 successfully extracted clips, 191,993 successfully embedded clips, and 4,696 study embeddings. Available metadata keyword fields did not reliably classify Doppler, spectral Doppler, color Doppler, M-mode, or 2D/cine categories, so absence of keyword matches should not be interpreted as absence of those acquisition types.
 
 ## 6. Figures and Tables
 
@@ -62,6 +71,7 @@ Committed table/manuscript assets:
 - `docs/tables/phase2/tableS1_hard_extreme_robustness.{md,csv}`
 - `docs/tables/phase2/tableS2_echoview_sensitivity.{md,csv}`
 - `docs/tables/phase2/tableS3_binary_low_vti.{md,csv}`
+- `docs/tables/phase2/tableS4_nonimage_metadata_baseline.{md,csv}`
 - `docs/tables/phase2/phase2_tables_for_manuscript.docx`
 
 Local/generated figure assets are intentionally not committed. Final reviewed figures exist outside the repository and should be handled as manuscript-export artifacts, not source-control assets, unless explicitly approved later.
@@ -75,10 +85,10 @@ Minimal local figure-ready CSVs remain restricted derived row-level data. They s
 ## 8. Remaining Manuscript Tasks
 
 - Decide whether TAPSE remains in the main table or moves fully to the supplement.
-- Decide whether binary low-VTI AUROC stays in the main text or supplement.
-- Run reviewer-suggested leakage-safe non-image baselines and decide whether the imaging-only claim needs to be strengthened or weakened relative to metadata-only performance.
-- Extract TAPSE `<17 mm` exploratory binary summaries from aggregate outputs and decide whether they belong in the supplement.
-- Run the aggregate-only Doppler/M-mode retention audit if measurement-view localization questions remain central before submission.
+- Decide whether exploratory binary threshold AUROC summaries stay in the main text or supplement.
+- Decide whether the study/acquisition-metadata baseline belongs in the main supplement table sequence or an appendix.
+- Decide whether TAPSE `<17 mm` exploratory binary summaries belong in Supplementary Table S3 or a separate binary threshold table.
+- Regenerate the optional DOCX table packet from canonical Markdown/CSV sources after final table placement is decided.
 - Integrate Phase 2 methods/results into the full manuscript.
 - Confirm journal-specific table and figure formatting requirements.
 - Obtain coauthor review of figures, tables, and interpretation.
@@ -88,11 +98,10 @@ Minimal local figure-ready CSVs remain restricted derived row-level data. They s
 ## 9. Optional Future Analyses
 
 - Leakage-safe clinical covariate baseline.
-- Reviewer-suggested demographics-only and study-metadata baseline comparison.
-- TAPSE `<17 mm` exploratory binary threshold summary.
+- Demographics-only baseline if an approved demographics file becomes available.
 - Additional calibration analysis.
 - Expanded denominator documentation for each target and sensitivity subset.
-- Doppler/M-mode retention audit to quantify whether relevant acquisitions are retained among successfully embedded multiframe clips.
+- Additional Doppler/M-mode retention audit using richer metadata, view labels, or manual review if measurement-view claims become central.
 - Measurement-view localization audit comparing all-clips study embeddings with selected measurement-relevant clips.
 - Doppler-specific LVOT VTI pipeline that explicitly identifies or processes spectral Doppler clips.
 - TAPSE-focused clip pipeline using RV-focused, A4C, M-mode, or other tricuspid-annular motion-relevant clips where available.
@@ -103,9 +112,9 @@ Minimal local figure-ready CSVs remain restricted derived row-level data. They s
 ## 10. Recommended Next Decision Points
 
 1. Choose final placement for TAPSE: main text, supplement, or hybrid.
-2. Choose final placement for binary low-VTI summaries.
+2. Choose final placement for exploratory binary threshold summaries.
 3. Decide whether the current Ridge baseline is sufficient for manuscript submission or whether a clinical covariate baseline is required.
-4. Run coauthor review of Figure 1, Supplementary Figure S1, Table 1, and Supplementary Tables S1-S3.
+4. Run coauthor review of Figure 1, Supplementary Figure S1, Table 1, and Supplementary Tables S1-S4.
 5. Freeze data-governance language before exporting final manuscript packages.
 
 ## Suggested GitHub Issues
