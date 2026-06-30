@@ -49,6 +49,7 @@ DEFAULT_SPLIT_MAP = DEFAULT_FULLSCALE_ROOT / "manifests" / "subject_split_map_v1
 DEFAULT_SELECTED_STUDIES = DEFAULT_FULLSCALE_ROOT / "manifests" / "all_eligible_studies.csv"
 
 DEMOGRAPHIC_NUMERIC_CANDIDATES = [
+    "age_at_echo_approx",
     "age",
     "anchor_age",
     "patient_age",
@@ -74,13 +75,14 @@ STUDY_METADATA_NUMERIC_CANDIDATES = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fullscale-root", type=Path, default=DEFAULT_FULLSCALE_ROOT)
     parser.add_argument("--output-root", type=Path, default=None, help="Phase 2 restricted output root.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Directory for aggregate-only outputs.")
-    parser.add_argument("--structured-measurements-csv", type=Path, default=DEFAULT_STRUCTURED)
-    parser.add_argument("--study-embedding-npz", type=Path, default=DEFAULT_STUDY_EMB_NPZ)
-    parser.add_argument("--study-embedding-manifest", type=Path, default=DEFAULT_STUDY_EMB_MANIFEST)
-    parser.add_argument("--subject-split-map-csv", type=Path, default=DEFAULT_SPLIT_MAP)
-    parser.add_argument("--selected-studies-csv", type=Path, default=DEFAULT_SELECTED_STUDIES)
+    parser.add_argument("--structured-measurements-csv", type=Path, default=None)
+    parser.add_argument("--study-embedding-npz", type=Path, default=None)
+    parser.add_argument("--study-embedding-manifest", type=Path, default=None)
+    parser.add_argument("--subject-split-map-csv", type=Path, default=None)
+    parser.add_argument("--selected-studies-csv", type=Path, default=None)
     parser.add_argument(
         "--demographics-csv",
         type=Path,
@@ -121,6 +123,21 @@ def parse_args() -> argparse.Namespace:
         help="Permit aggregate output inside the git worktree for synthetic tests only.",
     )
     return parser.parse_args()
+
+
+def apply_fullscale_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    root = args.fullscale_root
+    if args.structured_measurements_csv is None:
+        args.structured_measurements_csv = root / "manifests" / "structured_measurements.csv"
+    if args.study_embedding_npz is None:
+        args.study_embedding_npz = root / "study_embeddings_512" / "study_embeddings_512.npz"
+    if args.study_embedding_manifest is None:
+        args.study_embedding_manifest = root / "study_embeddings_512" / "study_embedding_manifest.csv"
+    if args.subject_split_map_csv is None:
+        args.subject_split_map_csv = root / "manifests" / "subject_split_map_v1.csv"
+    if args.selected_studies_csv is None:
+        args.selected_studies_csv = root / "manifests" / "all_eligible_studies.csv"
+    return args
 
 
 def parse_csv_list(text: str) -> list[str]:
@@ -231,6 +248,9 @@ def build_demographics_features(frame: pd.DataFrame, demographics: pd.DataFrame)
     cols = ["subject_id_str"] + numeric + categorical
     merged = frame[["subject_id_str"]].merge(demo[cols].drop_duplicates("subject_id_str"), on="subject_id_str", how="left")
     x = merged[numeric + categorical].copy()
+    for col in categorical:
+        x[col] = x[col].astype("string").fillna("Unknown")
+        x[col] = x[col].str.strip().replace({"": "Unknown", "<NA>": "Unknown"}).fillna("Unknown")
     if not numeric and not categorical:
         return x, [], [], "no_supported_demographic_columns"
     return x, numeric, categorical, ""
@@ -604,7 +624,7 @@ def run_feature_baseline(
 
 
 def main() -> int:
-    args = parse_args()
+    args = apply_fullscale_defaults(parse_args())
     if not args.aggregate_only:
         raise RuntimeError("This script supports aggregate-only outputs only.")
     output_dir = resolve_output_dir(args)

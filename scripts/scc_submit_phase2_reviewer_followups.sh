@@ -11,16 +11,18 @@ Submit Phase 2 reviewer follow-up analyses as an SCC batch job.
 
 This wrapper avoids SCC login-node interactive CPU limits. It submits aggregate-only
 follow-up analyses for:
+  - restricted demographics feature extraction,
   - leakage-safe non-image baselines,
   - stable-v2 aggregate verifier refresh for TAPSE <17 mm binary summaries,
   - aggregate-only Doppler/M-mode retention audit.
 
 Usage:
   ./scripts/scc_submit_phase2_reviewer_followups.sh \
-    [--run nonimage|verify|audit|all] \
+    [--run demographics|nonimage|verify|audit|all] \
     [--output-root /restricted/project/mimicecho/outputs/tapse_lvot_vti_phase2_stable_v2] \
     [--fullscale-root outputs/cloud_cohorts/fullscale_all] \
     [--demographics-csv /restricted/project/mimicecho/metadata/approved_demographics.csv] \
+    [--include-race true|false] \
     [--h-rt 8:00:00] \
     [--cores 4] \
     [--mem-per-core 4G] \
@@ -36,6 +38,7 @@ RUN_MODE="all"
 OUTPUT_ROOT="/restricted/project/mimicecho/outputs/tapse_lvot_vti_phase2_stable_v2"
 FULLSCALE_ROOT="outputs/cloud_cohorts/fullscale_all"
 DEMOGRAPHICS_CSV=""
+INCLUDE_RACE="false"
 H_RT="8:00:00"
 CORES="4"
 MEM_PER_CORE="4G"
@@ -48,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --output-root) OUTPUT_ROOT="$2"; shift 2 ;;
     --fullscale-root) FULLSCALE_ROOT="$2"; shift 2 ;;
     --demographics-csv) DEMOGRAPHICS_CSV="$2"; shift 2 ;;
+    --include-race) INCLUDE_RACE="$2"; shift 2 ;;
     --h-rt) H_RT="$2"; shift 2 ;;
     --cores) CORES="$2"; shift 2 ;;
     --mem-per-core) MEM_PER_CORE="$2"; shift 2 ;;
@@ -63,9 +67,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${RUN_MODE}" in
-  nonimage|verify|audit|all) ;;
+  demographics|nonimage|verify|audit|all) ;;
   *)
-    echo "[error] --run must be one of: nonimage, verify, audit, all" >&2
+    echo "[error] --run must be one of: demographics, nonimage, verify, audit, all" >&2
+    exit 1
+    ;;
+esac
+
+case "$(printf '%s' "${INCLUDE_RACE}" | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes|y) INCLUDE_RACE="true" ;;
+  false|0|no|n) INCLUDE_RACE="false" ;;
+  *)
+    echo "[error] --include-race must be true or false" >&2
     exit 1
     ;;
 esac
@@ -102,6 +115,7 @@ set -euo pipefail
 
 if command -v module >/dev/null 2>&1; then
   module load python3/3.10.12
+  module load google-cloud-sdk/455.0.0 || true
 fi
 
 if [[ -f ./scc_env.sh ]]; then
@@ -113,22 +127,37 @@ OUT="${OUTPUT_ROOT}"
 FULLSCALE_ROOT="${FULLSCALE_ROOT}"
 RUN_MODE="${RUN_MODE}"
 DEMOGRAPHICS_CSV="${DEMOGRAPHICS_CSV}"
+INCLUDE_RACE="${INCLUDE_RACE}"
 
 mkdir -p "\${OUT}/review_packets"
+mkdir -p "\${OUT}/nonimage_baselines"
+
+DEFAULT_DEMOGRAPHICS_CSV="\${OUT}/nonimage_baselines/phase2_demographics_features_restricted.csv"
+
+if [[ "\${RUN_MODE}" == "demographics" || "\${RUN_MODE}" == "all" ]]; then
+  echo "=== Phase 2 reviewer follow-up: restricted demographics features ==="
+  RACE_ARGS=()
+  if [[ "\${INCLUDE_RACE}" == "true" ]]; then
+    RACE_ARGS=(--include-race)
+  fi
+  "\${PYTHON_BIN}" scripts/build_phase2_demographics_features.py \\
+    --output-root "\${OUT}" \\
+    --selected-studies-csv "\${FULLSCALE_ROOT}/manifests/all_eligible_studies.csv" \\
+    --allow-restricted-derived-export \\
+    "\${RACE_ARGS[@]}"
+fi
 
 if [[ "\${RUN_MODE}" == "nonimage" || "\${RUN_MODE}" == "all" ]]; then
   echo "=== Phase 2 reviewer follow-up: non-image baselines ==="
   DEMO_ARGS=()
   if [[ -n "\${DEMOGRAPHICS_CSV}" ]]; then
     DEMO_ARGS=(--demographics-csv "\${DEMOGRAPHICS_CSV}")
+  elif [[ -f "\${DEFAULT_DEMOGRAPHICS_CSV}" ]]; then
+    DEMO_ARGS=(--demographics-csv "\${DEFAULT_DEMOGRAPHICS_CSV}")
   fi
   "\${PYTHON_BIN}" scripts/run_phase2_nonimage_baselines.py \\
     --output-root "\${OUT}" \\
-    --structured-measurements-csv "\${FULLSCALE_ROOT}/manifests/structured_measurements.csv" \\
-    --study-embedding-npz "\${FULLSCALE_ROOT}/study_embeddings_512/study_embeddings_512.npz" \\
-    --study-embedding-manifest "\${FULLSCALE_ROOT}/study_embeddings_512/study_embedding_manifest.csv" \\
-    --subject-split-map-csv "\${FULLSCALE_ROOT}/manifests/subject_split_map_v1.csv" \\
-    --selected-studies-csv "\${FULLSCALE_ROOT}/manifests/all_eligible_studies.csv" \\
+    --fullscale-root "\${FULLSCALE_ROOT}" \\
     --targets lvot_vti,tapse \\
     --aggregate-only \\
     "\${DEMO_ARGS[@]}"
