@@ -449,9 +449,10 @@ def run_record(run_dir: Path, root: Path, warnings: list[dict[str, Any]]) -> tup
     }
 
     binary_rows: list[dict[str, Any]] = []
-    if label == "lvot_all_clips" and not binary_df.empty:
+    if label in {"lvot_all_clips", "tapse_all_clips"} and not binary_df.empty:
+        expected_target = "lvot_vti" if label == "lvot_all_clips" else "tapse"
         ridge_binary = binary_df[
-            (binary_df.get("target", pd.Series(dtype=str)) == "lvot_vti")
+            (binary_df.get("target", pd.Series(dtype=str)) == expected_target)
             & (binary_df.get("split", pd.Series(dtype=str)) == "test")
             & (binary_df.get("model", pd.Series(dtype=str)) == "ridge")
         ]
@@ -635,16 +636,17 @@ def write_markdown_summary(
             )
         )
     lines.append("")
-    lines.append("## Supplementary Table S3. Exploratory Binary Low-VTI Results")
+    lines.append("## Supplementary Table S3. Exploratory Binary Threshold Results")
     lines.append("")
     if binary_df.empty:
-        lines.append("Exact binary low-VTI metrics were not available in the aggregate files.")
+        lines.append("Exact binary threshold metrics were not available in the aggregate files.")
     else:
-        lines.append("| Threshold | Test N | Prevalence | Predicted positive rate | AUROC | Average precision | Sensitivity | Specificity | PPV | NPV | F1 | TP | FP | TN | FN |")
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("| Target | Threshold | Test N | Prevalence | Predicted positive rate | AUROC | Average precision | Sensitivity | Specificity | PPV | NPV | F1 | TP | FP | TN | FN |")
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for _, row in binary_df.iterrows():
             lines.append(
-                "| {threshold} | {n} | {prev} | {ppr} | {auroc} | {ap} | {sens} | {spec} | {ppv} | {npv} | {f1} | {tp} | {fp} | {tn} | {fn} |".format(
+                "| {target} | {threshold} | {n} | {prev} | {ppr} | {auroc} | {ap} | {sens} | {spec} | {ppv} | {npv} | {f1} | {tp} | {fp} | {tn} | {fn} |".format(
+                    target="LVOT VTI" if row.get("target") == "lvot_vti" else "TAPSE",
                     threshold=row.get("threshold_label"),
                     n=int(row["n"]) if pd.notna(row.get("n")) else "",
                     prev=fmt(row.get("prevalence"), 3),

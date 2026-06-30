@@ -14,6 +14,7 @@
 - Added restricted figure workflow tooling, including SCC-only figure generation and local plotting from minimal restricted derived figure-ready CSVs.
 - Added manuscript-ready sections, internal notes, canonical Markdown/CSV table sources, and a DOCX table packet.
 - Added EchoPrime embedding provenance documentation clarifying that Phase 2 used fixed study-level all-clips embeddings aggregated from successfully processed multiframe cine clips, with downstream Ridge regression as the trained model component.
+- Added reviewer follow-up tooling for leakage-safe non-image baselines, TAPSE `<17 mm` aggregate binary summaries, and aggregate-only Doppler/M-mode retention auditing.
 
 ## 3. Verified Primary Result: LVOT VTI
 
@@ -56,6 +57,7 @@ Committed table/manuscript assets:
 - `docs/phase2_manuscript_sections.md`
 - `docs/phase2_internal_notes.md`
 - `docs/phase2_embedding_provenance.md`
+- `docs/phase2_reviewer_followup_runbook.md`
 - `docs/tables/phase2/table1_main_continuous_performance.{md,csv}`
 - `docs/tables/phase2/tableS1_hard_extreme_robustness.{md,csv}`
 - `docs/tables/phase2/tableS2_echoview_sensitivity.{md,csv}`
@@ -74,6 +76,9 @@ Minimal local figure-ready CSVs remain restricted derived row-level data. They s
 
 - Decide whether TAPSE remains in the main table or moves fully to the supplement.
 - Decide whether binary low-VTI AUROC stays in the main text or supplement.
+- Run reviewer-suggested leakage-safe non-image baselines and decide whether the imaging-only claim needs to be strengthened or weakened relative to metadata-only performance.
+- Extract TAPSE `<17 mm` exploratory binary summaries from aggregate outputs and decide whether they belong in the supplement.
+- Run the aggregate-only Doppler/M-mode retention audit if measurement-view localization questions remain central before submission.
 - Integrate Phase 2 methods/results into the full manuscript.
 - Confirm journal-specific table and figure formatting requirements.
 - Obtain coauthor review of figures, tables, and interpretation.
@@ -83,6 +88,8 @@ Minimal local figure-ready CSVs remain restricted derived row-level data. They s
 ## 9. Optional Future Analyses
 
 - Leakage-safe clinical covariate baseline.
+- Reviewer-suggested demographics-only and study-metadata baseline comparison.
+- TAPSE `<17 mm` exploratory binary threshold summary.
 - Additional calibration analysis.
 - Expanded denominator documentation for each target and sensitivity subset.
 - Doppler/M-mode retention audit to quantify whether relevant acquisitions are retained among successfully embedded multiframe clips.

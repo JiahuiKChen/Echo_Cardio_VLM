@@ -12,6 +12,8 @@ Revision note: converted the prior internal synthesis into manuscript-style sect
 | Hard-extreme robustness | Supplementary Table S1 | Robustness analyses after hard-extreme target exclusion. |
 | ECHOVIEW view-filtered sensitivities | Supplementary Table S2 | Limited subset LVOT VTI sensitivity analyses using ECHOVIEW view-filtered embeddings. |
 | Exploratory binary low-VTI analyses | Supplementary Table S3 | Thresholded binary summaries derived from continuous LVOT VTI predictions. |
+| Exploratory TAPSE <17 mm analysis | Supplementary Table S3 or S4 | Thresholded binary summary derived from continuous TAPSE predictions if aggregate counts are adequate. |
+| Leakage-safe non-image baselines | Supplementary table pending | Demographics-only and study-metadata baselines for reviewer comparison against imaging-only Ridge. |
 
 ## Claims To Avoid
 
@@ -43,3 +45,13 @@ Revision note: converted the prior internal synthesis into manuscript-style sect
 - TAPSE is positive but secondary, smaller, and strongly regularized.
 - Binary low-VTI AUROC values are exploratory and should be paired with the reported operating-point sensitivity and specificity.
 - Future-work language should point to measurement-view localization, Doppler-specific LVOT VTI processing, TAPSE M-mode/RV-focused clip processing, and raw-DICOM or clip-level modeling as separate next steps.
+
+## Reviewer Follow-Up Decision Logic
+
+- If demographics-only performance is much worse than imaging-only, the manuscript can say the embedding model outperformed a leakage-safe non-image baseline.
+- If demographics-only performance is similar to imaging-only, weaken imaging-specific language and frame the result as not clearly above simple metadata.
+- Study/acquisition metadata baselines must be reported separately from demographics-only because clip counts and extraction success are image-pipeline metadata.
+- If TAPSE `<17 mm` has adequate positive cases and reasonable AUROC, include it as a supplementary exploratory binary result.
+- If TAPSE `<17 mm` is underpowered, mention it only in supplement or internal notes and do not imply a negative result.
+- If Doppler/M-mode retention cannot be verified from aggregate metadata, keep current limitation language.
+- If Doppler/M-mode clips are retained, clarify that all-clips embeddings may include measurement-relevant clips but were not localized to measurement traces.
