@@ -2,9 +2,57 @@
 
 This runbook covers reviewer-suggested aggregate-only follow-up analyses for PR #1. These commands should be run on SCC against restricted project storage. Do not copy row-level predictions, figure-ready CSVs, raw embeddings, DICOM manifests, or logs into the repository.
 
+Important SCC note: these analyses can exceed the login-node interactive CPU limit. Use the batch wrapper below for production runs. Direct Python commands are useful only for short smoke tests or when already inside a scheduled batch session.
+
+## 0. Recommended Batch Submission
+
+Submit all reviewer follow-up analyses as a CPU batch job:
+
+```bash
+cd /restricted/project/mimicecho/code/Echo_Cardio_VLM
+git fetch origin
+git checkout codex/phase2-stable-imaging-baselines
+git pull origin codex/phase2-stable-imaging-baselines
+
+./scripts/scc_submit_phase2_reviewer_followups.sh \
+  --run all \
+  --output-root /restricted/project/mimicecho/outputs/tapse_lvot_vti_phase2_stable_v2 \
+  --fullscale-root outputs/cloud_cohorts/fullscale_all \
+  --h-rt 8:00:00 \
+  --cores 4 \
+  --mem-per-core 4G
+```
+
+To rerun only the step that was killed on the login node:
+
+```bash
+./scripts/scc_submit_phase2_reviewer_followups.sh \
+  --run nonimage \
+  --output-root /restricted/project/mimicecho/outputs/tapse_lvot_vti_phase2_stable_v2 \
+  --fullscale-root outputs/cloud_cohorts/fullscale_all \
+  --h-rt 8:00:00 \
+  --cores 4 \
+  --mem-per-core 4G
+```
+
+If an approved demographics file is available, add:
+
+```bash
+  --demographics-csv /restricted/project/mimicecho/metadata/<approved_demographics_file>.csv
+```
+
+Monitor with:
+
+```bash
+qstat -u "$(whoami)"
+tail -f outputs/scc_jobs/echo_p2_followups.o*
+```
+
 ## 1. Leakage-Safe Non-Image Baselines
 
 The non-image baseline runner uses the same structured targets, embedding-available study denominator, and subject-level train/validation/test split as the Phase 2 imaging baseline. It writes aggregate metrics only by default.
+
+Run this direct command only inside a scheduled batch job or for a deliberately short smoke test. For production use, prefer `./scripts/scc_submit_phase2_reviewer_followups.sh --run nonimage`.
 
 ```bash
 cd /restricted/project/mimicecho/code/Echo_Cardio_VLM
