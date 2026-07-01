@@ -42,7 +42,7 @@ The primary LVOT VTI all-clips cohort included 3,782 target-positive studies wit
 
 In the held-out LVOT VTI test set of 555 studies, the null median baseline had MAE 4.54 cm. The Ridge model selected alpha 0.3 and achieved MAE 3.64 cm, RMSE 4.66 cm, and R2 0.372 (Figure 1; Table 1). The subject-level bootstrap 95% CI was 3.41 to 3.88 cm for Ridge MAE and 0.30 to 0.43 for Ridge R2.
 
-Bland-Altman analysis showed prediction-minus-observed bias +0.28 cm, with limits of agreement from -8.85 to +9.41 cm. For exploratory low-VTI thresholds derived from the continuous predictions, AUROC was 0.846 for LVOT VTI <18 cm and 0.812 for LVOT VTI <20 cm (Supplementary Table S3).
+Bland-Altman analysis showed prediction-minus-observed bias +0.28 cm, with limits of agreement from -8.85 to +9.41 cm. Exploratory low-VTI threshold summaries derived from the continuous predictions are reported in Supplementary Table S3.
 
 ### LVOT VTI Robustness and ECHOVIEW Sensitivity Analyses
 
@@ -70,7 +70,7 @@ For TAPSE <17 mm, the held-out test set included 36 positive cases among 160 stu
 
 ## Discussion
 
-The primary LVOT VTI model showed a moderate imaging-only estimation signal using frozen EchoPrime study-level embeddings. Compared with the train-median null baseline, Ridge regression reduced MAE by approximately 0.90 cm and achieved positive test-set R2. The low-VTI ROC findings suggest potential utility for exploratory risk stratification, but these analyses were thresholded summaries of continuous predictions and were not separately optimized classifiers.
+The primary LVOT VTI model showed a moderate imaging-only estimation signal using frozen EchoPrime study-level embeddings. Compared with the train-median null baseline, Ridge regression reduced MAE by approximately 0.90 cm and achieved positive test-set R2. The low-VTI ROC findings are best interpreted as hypothesis-generating thresholded summaries of continuous predictions and were not separately optimized classifiers.
 
 The error distribution places important constraints on interpretation. Bland-Altman limits of agreement remained wide, indicating that the model should not be presented as a replacement for clinical Doppler LVOT VTI measurement. The analysis predicts structured report measurements from fixed study-level embeddings and does not constitute independently adjudicated manual measurement, EchoPrime fine-tuning, or direct extraction of LVOT VTI from spectral Doppler traces.
 
@@ -92,7 +92,7 @@ This was a retrospective single-dataset analysis from a MIMIC-IV-ECHO derived co
 
 ### Figure 1. Primary LVOT VTI Imaging-Only Model Performance
 
-Frozen EchoPrime study embeddings were used to predict structured LVOT VTI on a held-out subject-level test split. Ridge regression used train-fit feature standardization, the numerically stable `svd` solver, and validation-only alpha selection. Panel A shows observed versus predicted LVOT VTI with identity and calibration lines. Panel B shows Bland-Altman agreement, with bias and limits of agreement. Panel C compares null median versus Ridge test MAE, with 95% confidence intervals shown where available. Panel D shows exploratory ROC curves for LVOT VTI <18 cm and <20 cm derived from the continuous predictions; these were not separately trained classifiers. The wide limits of agreement support an imaging-only estimation and risk-stratification signal rather than replacement of clinical Doppler LVOT VTI measurement.
+Frozen EchoPrime study embeddings were used to predict structured LVOT VTI on a held-out subject-level test split. Ridge regression used train-fit feature standardization, the numerically stable `svd` solver, and validation-only alpha selection. Panel A shows observed versus predicted LVOT VTI with identity and calibration lines. Panel B shows Bland-Altman agreement, with bias and limits of agreement. Panel C compares null median versus Ridge test MAE, with 95% confidence intervals shown where available. Panel D shows exploratory ROC curves for LVOT VTI <18 cm and <20 cm derived from the continuous predictions; these were not separately trained classifiers.
 
 ### Supplementary Figure S1. TAPSE Secondary Endpoint Imaging-Only Model Performance
 
