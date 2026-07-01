@@ -20,7 +20,7 @@ Recommended first files to read:
 - Stable-v2 Ridge baseline workflow with train-fit standardization, `svd` solver, validation-only alpha selection, bootstrap CIs, and restricted-output safeguards.
 - ECHOVIEW LVOT VTI view-filtered sensitivity workflow.
 - Aggregate-only verification workflow for manuscript-safe result extraction.
-- Reviewer follow-up aggregate summaries for a study/acquisition-metadata baseline, TAPSE `<17 mm` thresholding, and Doppler/M-mode retention audit caveats.
+- Reviewer follow-up aggregate summaries for leakage-safe demographics and study/acquisition-metadata baselines, TAPSE `<17 mm` thresholding, and Doppler/M-mode retention audit caveats.
 - Restricted/SCC and local figure-generation workflows with governance boundaries.
 - Manuscript sections, canonical table sources, and a DOCX table packet.
 - EchoPrime embedding provenance and claim-boundary documentation.
@@ -34,6 +34,7 @@ Recommended first files to read:
 - Hard-extreme exclusions did not materially change LVOT VTI or TAPSE results.
 - ECHOVIEW analyses are limited subset sensitivities, not competing primary denominators.
 - A5C-only 0.70 was skipped/underpowered because of insufficient training data.
+- Leakage-safe demographics-only baselines used approximate age at echo and sex. LVOT VTI demographics-only MAE was 4.47 cm with R2 0.043; TAPSE demographics-only MAE was 3.80 mm with R2 -0.024.
 - Study/acquisition metadata using only `n_clips` and `n_dicoms` performed near null for both LVOT VTI and TAPSE, below the EchoPrime embedding models.
 - TAPSE `<17 mm` exploratory threshold summary: test N 160, positives 36, AUROC 0.789, sensitivity 0.472, specificity 0.944.
 
@@ -46,7 +47,7 @@ Recommended first files to read:
 - This is not direct LVOT VTI extraction from spectral Doppler traces.
 - This is not direct TAPSE extraction from M-mode or tricuspid-annular motion clips.
 - Avoid measurement-grade automation and clinical-deployment claims.
-- Do not call the `n_clips`/`n_dicoms` metadata baseline a demographics baseline; demographics were not evaluated because an approved demographics file was unavailable.
+- Keep demographics-only, study/acquisition-metadata-only, and combined non-image baselines distinct. Race/ethnicity was not included in the default leakage-safe demographics baseline.
 - The aggregate Doppler/M-mode retention audit could not classify retained clips reliably from available metadata, so it supports cautious limitation language rather than stronger measurement-view claims.
 
 ## Governance
@@ -63,8 +64,8 @@ Recommended first files to read:
 - Review whether TAPSE belongs in the main table or supplement.
 - Review whether exploratory binary threshold results belong in main text or supplement.
 - Review whether TAPSE `<17 mm` belongs in Supplementary Table S3 or a separate supplementary table.
-- Review whether the study/acquisition-metadata baseline should be included as Supplementary Table S4.
-- Decide whether a leakage-safe clinical covariate baseline is needed before submission.
+- Review whether the non-image baseline table should be included as Supplementary Table S4.
+- Decide whether broader leakage-safe clinical covariates beyond age and sex are needed before submission.
 - Decide whether richer Doppler/M-mode retention audit or measurement-view localization is needed before submission or can be future work.
 
 ## Known Remaining Decisions
@@ -72,9 +73,8 @@ Recommended first files to read:
 - TAPSE placement.
 - Exploratory binary threshold placement.
 - TAPSE `<17 mm` exploratory binary placement.
-- Study/acquisition-metadata baseline placement.
-- Clinical covariate baseline.
-- Demographics-only baseline if an approved demographics file becomes available.
+- Non-image baseline table placement.
+- Broader clinical covariate baseline beyond age and sex.
 - Richer Doppler/M-mode retention audit.
 - Measurement-view localization future work.
 - External validation feasibility.

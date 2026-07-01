@@ -12,7 +12,7 @@ Revision note: converted the prior internal synthesis into manuscript-style sect
 | Hard-extreme robustness | Supplementary Table S1 | Robustness analyses after hard-extreme target exclusion. |
 | ECHOVIEW view-filtered sensitivities | Supplementary Table S2 | Limited subset LVOT VTI sensitivity analyses using ECHOVIEW view-filtered embeddings. |
 | Exploratory binary threshold analyses | Supplementary Table S3 | Thresholded binary summaries derived from continuous LVOT VTI and TAPSE predictions. |
-| Leakage-safe study/acquisition-metadata baseline | Supplementary Table S4 | Metadata-only Ridge baseline using `n_clips` and `n_dicoms`, reported separately from unavailable demographics-only baseline. |
+| Leakage-safe non-image baselines | Supplementary Table S4 | Demographics-only, study/acquisition-metadata-only, and combined non-image Ridge baselines. |
 
 ## Claims To Avoid
 
@@ -45,12 +45,13 @@ Revision note: converted the prior internal synthesis into manuscript-style sect
 - TAPSE is positive but secondary, smaller, and strongly regularized.
 - Binary threshold AUROC values are exploratory and should be paired with the reported operating-point sensitivity and specificity.
 - TAPSE `<17 mm` has 36 positive test cases and can be included as an exploratory supplementary thresholded summary, not as a separately trained classifier.
+- Demographics-only baselines used approximate age at echo and sex; race/ethnicity was not included. LVOT VTI demographics-only performance was modestly above null but below imaging-only Ridge, while TAPSE demographics-only performance was near null.
 - The `n_clips`/`n_dicoms` baseline performed near null for both LVOT VTI and TAPSE; this supports saying the embedding result was not explained by simple acquisition-volume metadata.
 - Future-work language should point to measurement-view localization, Doppler-specific LVOT VTI processing, TAPSE M-mode/RV-focused clip processing, and raw-DICOM or clip-level modeling as separate next steps.
 
 ## Reviewer Follow-Up Decision Logic
 
-- Demographics-only performance remains unknown because no approved demographics file was available for this run.
-- Study/acquisition metadata baselines must be reported separately from demographics-only because clip counts and extraction success are image-pipeline metadata.
+- Keep demographics-only, study/acquisition-metadata-only, and combined non-image baselines distinct because clip counts and extraction success are image-pipeline metadata.
+- Broader clinical covariates beyond age and sex remain optional future work if reviewers ask for a stronger non-image comparator.
 - Include TAPSE `<17 mm` as a supplementary exploratory binary result, with sensitivity/specificity and a note that it was derived from continuous predictions.
 - Keep current Doppler/M-mode limitation language because aggregate metadata could not classify retention reliably.

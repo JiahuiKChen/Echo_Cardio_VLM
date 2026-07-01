@@ -22,7 +22,7 @@ This branch adds the Phase 1/Phase 2 infrastructure and manuscript assets for im
 - Manuscript-style Methods, Results, Discussion, Limitations, figure captions, internal notes, and canonical table sources.
 - DOCX table packet generated from canonical Markdown/CSV table sources.
 - EchoPrime embedding provenance and manuscript-claim boundary documentation.
-- Reviewer follow-up summaries for study/acquisition-metadata baselines, exploratory TAPSE `<17 mm` thresholding, and aggregate Doppler/M-mode retention auditing.
+- Reviewer follow-up summaries for leakage-safe demographics and study/acquisition-metadata baselines, exploratory TAPSE `<17 mm` thresholding, and aggregate Doppler/M-mode retention auditing.
 
 ## Key Verified Results
 
@@ -44,7 +44,14 @@ Sensitivity analyses:
 - LVOT hard-extreme exclusion: MAE 3.62 cm; R2 0.376.
 - TAPSE hard-extreme exclusion: MAE 3.17 mm; R2 0.284.
 - ECHOVIEW analyses are limited subset sensitivities; A5C-only 0.70 was skipped/underpowered.
-- Study/acquisition-metadata Ridge baseline using only `n_clips` and `n_dicoms` performed near null: LVOT VTI MAE 4.58 cm, R2 0.008; TAPSE MAE 3.77 mm, R2 0.0004.
+- Leakage-safe non-image baselines:
+  - Demographics-only used approximate age at echo and sex; race/ethnicity was not included.
+  - LVOT VTI demographics-only: MAE 4.47 cm, R2 0.043.
+  - LVOT VTI study/acquisition metadata only (`n_clips`, `n_dicoms`): MAE 4.58 cm, R2 0.008.
+  - LVOT VTI demographics + study/acquisition metadata: MAE 4.48 cm, R2 0.048.
+  - TAPSE demographics-only: MAE 3.80 mm, R2 -0.024.
+  - TAPSE study/acquisition metadata only: MAE 3.77 mm, R2 0.0004.
+  - TAPSE demographics + study/acquisition metadata: MAE 3.79 mm, R2 -0.018.
 - Exploratory TAPSE `<17 mm` threshold summary: 36 positives among 160 test studies, AUROC 0.789, average precision 0.638, sensitivity 0.472, specificity 0.944.
 
 ## Provenance and Claim Boundary
@@ -65,13 +72,14 @@ Sensitivity analyses:
 
 ## Governance Checks
 
-Committed files are source code, runbooks, aggregate-only manuscript/table summaries, and manuscript text. The branch intentionally excludes patient-level prediction CSVs, restricted figure-ready CSVs, generated figures, SCC output directories, raw embeddings, logs, restricted manifests, and DUA-governed data.
+Committed files are source code, runbooks, aggregate-only manuscript/table summaries, and manuscript text. The branch intentionally excludes patient-level prediction CSVs, restricted demographics feature CSVs, restricted figure-ready CSVs, generated figures, SCC output directories, raw embeddings, logs, restricted manifests, and DUA-governed data.
 
 Tracked-file name audit did not identify committed patient-level outputs or restricted artifacts. Source files may contain terms such as `prediction`, `subject_id`, or `dicom` in code and safety checks; those are not data artifacts.
 
 ## Intentionally Not Included
 
 - Patient-level predictions.
+- Restricted row-level demographics feature CSVs.
 - Figure-ready restricted derived CSVs.
 - Generated PNG/PDF figure packets.
 - SCC logs or raw outputs.
@@ -84,10 +92,9 @@ Tracked-file name audit did not identify committed patient-level outputs or rest
 - Decide whether exploratory binary threshold summaries stay in main text or supplement.
 - Integrate Phase 2 sections into the full manuscript.
 - Confirm final journal-specific figure and table formatting.
-- Consider demographics-only baseline if an approved demographics file becomes available.
+- Decide whether broader clinical covariates beyond age and sex are needed before submission.
 - Consider richer Doppler/M-mode retention or measurement-view localization audit if measurement-view claims become important.
 - Consider measurement-view localization or raw-DICOM/clip-level direct measurement studies as future work.
-- Decide whether a leakage-safe clinical covariate baseline is needed before submission.
 - Obtain coauthor review of the final figure/table interpretation.
 
 ## Suggested Reviewer Checklist
@@ -98,7 +105,7 @@ Tracked-file name audit did not identify committed patient-level outputs or rest
 - Review EchoPrime provenance wording and confirm no fine-tuning or direct measurement claims are implied.
 - Review manuscript language for avoiding measurement-replacement claims.
 - Review ECHOVIEW analyses as limited subset sensitivities rather than primary denominators.
-- Review study/acquisition-metadata baseline wording and confirm it is not described as a demographics baseline.
+- Review non-image baseline wording and confirm demographics, acquisition metadata, and combined non-image baselines are kept distinct.
 - Review TAPSE `<17 mm` threshold summary as exploratory and supplementary.
 - Review Doppler/M-mode audit caveat and confirm direct measurement-view claims remain excluded.
 - Review whether the DOCX table packet should remain tracked or be regenerated during manuscript packaging.
