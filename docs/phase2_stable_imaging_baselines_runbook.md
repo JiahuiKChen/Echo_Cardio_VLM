@@ -25,6 +25,7 @@ Aggregate outputs that may be manuscript-review candidates:
 - `imaging_baseline_binary_metrics.csv`
 - `imaging_baseline_ridge_alpha_selection.csv`
 - `imaging_baseline_bootstrap_ci.csv`
+- `test_correlation_metrics.csv`
 - `imaging_baseline_warnings.json`
 - `imaging_baseline_summary.json`
 

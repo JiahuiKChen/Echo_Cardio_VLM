@@ -615,6 +615,93 @@ def bootstrap_ci(
     return rows
 
 
+def percentile_ci(values: list[float]) -> tuple[float, float]:
+    clean = np.asarray([value for value in values if np.isfinite(value)], dtype=float)
+    if clean.size == 0:
+        return np.nan, np.nan
+    return float(np.percentile(clean, 2.5)), float(np.percentile(clean, 97.5))
+
+
+def bootstrap_correlation_ci(
+    frame: pd.DataFrame,
+    model_name: str,
+    statistic: str,
+    n_bootstrap: int,
+    seed: int,
+) -> tuple[float, float]:
+    """Study-level bootstrap CI for observed-vs-predicted test correlations."""
+    if n_bootstrap <= 0 or frame.empty:
+        return np.nan, np.nan
+    units = frame["study_id_str"].drop_duplicates().to_numpy()
+    if len(units) < 5:
+        return np.nan, np.nan
+    y_true_all = frame["target_value"].to_numpy(dtype=np.float32)
+    y_pred_all = frame[f"pred_{model_name}"].to_numpy(dtype=np.float32)
+    grouped_indices = {
+        unit: np.asarray(indices, dtype=int)
+        for unit, indices in frame.groupby("study_id_str", sort=False).indices.items()
+    }
+    rng = np.random.default_rng(seed)
+    values: list[float] = []
+    for _ in range(n_bootstrap):
+        sampled_units = rng.choice(units, size=len(units), replace=True)
+        sample_idx = np.concatenate([grouped_indices[unit] for unit in sampled_units])
+        y_true = y_true_all[sample_idx]
+        y_pred = y_pred_all[sample_idx]
+        value = safe_corr(y_true, y_pred, statistic)
+        if value is not None and pd.notna(value):
+            values.append(float(value))
+    return percentile_ci(values)
+
+
+def test_correlation_rows(
+    frame: pd.DataFrame,
+    target: str,
+    analysis_label: str,
+    model_names: list[str],
+    n_bootstrap: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    test_frame = frame[frame["split"] == "test"].copy()
+    rows: list[dict[str, Any]] = []
+    for model_name in model_names:
+        pred_col = f"pred_{model_name}"
+        y_true = test_frame["target_value"].to_numpy(dtype=np.float32)
+        y_pred = test_frame[pred_col].to_numpy(dtype=np.float32)
+        pearson_seed = stable_seed(seed, target, analysis_label, model_name, "pearson_test_correlation")
+        spearman_seed = stable_seed(seed, target, analysis_label, model_name, "spearman_test_correlation")
+        pearson_low, pearson_high = bootstrap_correlation_ci(
+            test_frame,
+            model_name,
+            "pearson",
+            n_bootstrap,
+            pearson_seed,
+        )
+        spearman_low, spearman_high = bootstrap_correlation_ci(
+            test_frame,
+            model_name,
+            "spearman",
+            n_bootstrap,
+            spearman_seed,
+        )
+        rows.append(
+            {
+                "target": target,
+                "model_name": model_name,
+                "n_test": int(len(test_frame)),
+                "pearson_r": safe_corr(y_true, y_pred, "pearson"),
+                "pearson_r_ci_low": pearson_low,
+                "pearson_r_ci_high": pearson_high,
+                "spearman_rho": safe_corr(y_true, y_pred, "spearman"),
+                "spearman_rho_ci_low": spearman_low,
+                "spearman_rho_ci_high": spearman_high,
+                "bootstrap_n": int(n_bootstrap),
+                "bootstrap_seed": int(seed),
+            }
+        )
+    return rows
+
+
 def run_target(
     target: str,
     measures: pd.DataFrame,
@@ -624,7 +711,15 @@ def run_target(
     splits: pd.DataFrame,
     args: argparse.Namespace,
     split_warnings: list[str],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[str, Any],
+]:
     target_df, target_summary = extract_target(measures, target, args.exclude_hard_extremes)
     frame, x, join_warnings = join_model_frame(target_df, embeddings, emb_manifest, idx_col, splits)
     y = frame["target_value"].to_numpy(dtype=np.float32)
@@ -667,6 +762,7 @@ def run_target(
         }
         return (
             pd.DataFrame([skip_row]),
+            pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
@@ -735,6 +831,14 @@ def run_target(
                 stable_seed(random_seed, target, args.analysis_label, model_name, "bootstrap"),
             )
         )
+    corr_rows = test_correlation_rows(
+        frame,
+        target,
+        args.analysis_label,
+        ["null_median", "ridge"],
+        args.n_bootstrap,
+        random_seed,
+    )
 
     summary["ridge_alpha_selected"] = selected_alpha
     summary["train_target_iqr"] = train_iqr
@@ -749,6 +853,7 @@ def run_target(
         pd.DataFrame(binary_rows),
         alpha_selection,
         pd.DataFrame(ci_rows),
+        pd.DataFrame(corr_rows),
         frame,
         summary,
     )
@@ -779,11 +884,12 @@ def main() -> int:
     binary_frames: list[pd.DataFrame] = []
     alpha_frames: list[pd.DataFrame] = []
     ci_frames: list[pd.DataFrame] = []
+    corr_frames: list[pd.DataFrame] = []
     prediction_frames: list[pd.DataFrame] = []
     summaries: list[dict[str, Any]] = []
 
     for target in targets:
-        metrics, binary, alpha_selection, bootstrap_ci_df, preds, summary = run_target(
+        metrics, binary, alpha_selection, bootstrap_ci_df, correlations_df, preds, summary = run_target(
             target,
             measures,
             embeddings,
@@ -797,6 +903,7 @@ def main() -> int:
         binary_frames.append(binary)
         alpha_frames.append(alpha_selection)
         ci_frames.append(bootstrap_ci_df)
+        corr_frames.append(correlations_df)
         if write_patient_predictions:
             prediction_cols = [
                 "target",
@@ -827,6 +934,7 @@ def main() -> int:
     binary_path = args.output_dir / "imaging_baseline_binary_metrics.csv"
     alpha_path = args.output_dir / "imaging_baseline_ridge_alpha_selection.csv"
     ci_path = args.output_dir / "imaging_baseline_bootstrap_ci.csv"
+    corr_path = args.output_dir / "test_correlation_metrics.csv"
     predictions_path = args.output_dir / "imaging_baseline_predictions.csv"
     summary_path = args.output_dir / "imaging_baseline_summary.json"
     warnings_path = args.output_dir / "imaging_baseline_warnings.json"
@@ -835,12 +943,14 @@ def main() -> int:
     binary_df = pd.concat(binary_frames, ignore_index=True, sort=False) if binary_frames else pd.DataFrame()
     alpha_df = pd.concat(alpha_frames, ignore_index=True, sort=False) if alpha_frames else pd.DataFrame()
     ci_df = pd.concat(ci_frames, ignore_index=True, sort=False) if ci_frames else pd.DataFrame()
+    corr_df = pd.concat(corr_frames, ignore_index=True, sort=False) if corr_frames else pd.DataFrame()
     predictions_df = pd.concat(prediction_frames, ignore_index=True, sort=False) if prediction_frames else pd.DataFrame()
 
     metrics_df.to_csv(metrics_path, index=False)
     binary_df.to_csv(binary_path, index=False)
     alpha_df.to_csv(alpha_path, index=False)
     ci_df.to_csv(ci_path, index=False)
+    corr_df.to_csv(corr_path, index=False)
     if write_patient_predictions:
         predictions_df.to_csv(predictions_path, index=False)
 
@@ -894,6 +1004,7 @@ def main() -> int:
             str(binary_path),
             str(alpha_path),
             str(ci_path),
+            str(corr_path),
             str(warnings_path),
             str(summary_path),
         ],
@@ -902,6 +1013,7 @@ def main() -> int:
             str(binary_path),
             str(alpha_path),
             str(ci_path),
+            str(corr_path),
             str(warnings_path),
             str(summary_path),
         ],
@@ -920,6 +1032,7 @@ def main() -> int:
     print(f"[written] {binary_path.resolve()}")
     print(f"[written] {alpha_path.resolve()}")
     print(f"[written] {ci_path.resolve()}")
+    print(f"[written] {corr_path.resolve()}")
     print(f"[written] {warnings_path.resolve()}")
     if write_patient_predictions:
         print(f"[written] {predictions_path.resolve()}")

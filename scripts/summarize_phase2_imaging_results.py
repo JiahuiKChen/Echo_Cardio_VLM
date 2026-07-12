@@ -25,6 +25,7 @@ ALLOWED_AGGREGATE_FILES = {
     "imaging_baseline_ridge_alpha_selection.csv",
     "imaging_baseline_bootstrap_ci.csv",
     "imaging_baseline_binary_metrics.csv",
+    "test_correlation_metrics.csv",
 }
 
 REQUIRED_AGGREGATE_FILES = sorted(ALLOWED_AGGREGATE_FILES)
