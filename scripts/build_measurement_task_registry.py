@@ -62,6 +62,8 @@ AUTO_CANONICAL_RULES: list[tuple[str, str]] = [
     (r"\b(av peak gradient|aortic valve peak gradient)\b", "aortic_valve_peak_gradient"),
     (r"\b(av mean gradient|aortic valve mean gradient)\b", "aortic_valve_mean_gradient"),
     (r"\b(av area|aortic valve area)\b", "aortic_valve_area"),
+    (r"\b(lvot vti|lvot velocity time integral|left ventricular outflow tract velocity time integral)\b", "lvot_vti"),
+    (r"\b(av vti|aortic valve vti|aortic valve velocity time integral)\b", "aortic_valve_velocity_time_integral"),
     (r"\b(mv mean gradient|mitral valve mean gradient)\b", "mitral_valve_mean_gradient"),
     (r"\b(mv area|mitral valve area)\b", "mitral_valve_area"),
     (r"\b(tapse)\b", "tricuspid_annular_plane_systolic_excursion"),

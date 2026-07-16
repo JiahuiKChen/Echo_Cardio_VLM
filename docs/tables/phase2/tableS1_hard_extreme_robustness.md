@@ -1,0 +1,10 @@
+# Supplementary Table S1. Hard-Extreme Robustness Analyses
+
+Robustness analyses using the same stable-v2 modeling configuration after excluding hard invalid or extreme target values according to prespecified target rules.
+
+| Target | Sensitivity analysis | Test N | Ridge MAE | Ridge R2 | Comparison with primary analysis | Interpretation note |
+|---|---|---:|---:|---:|---|---|
+| LVOT VTI | Hard-extreme exclusion | 555 | 3.62 cm | 0.376 | Primary: MAE 3.64 cm; R2 0.372 | Similar to primary analysis |
+| TAPSE | Hard-extreme exclusion | 160 | 3.17 mm | 0.284 | Primary: MAE 3.17 mm; R2 0.284 | No material change |
+
+Footnote: Hard-extreme exclusion was a robustness check and was not treated as a co-primary analysis.
