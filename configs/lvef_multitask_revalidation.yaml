@@ -1,0 +1,117 @@
+schema_version: 1
+analysis_version: phase1a-v1.0
+status: pre_revalidation_design_lock
+base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
+branch: codex/lvef-multitask-revalidation
+
+authority:
+  accepted_abstract: docs/lvef_multitask/accepted_abstract_version10_verbatim.txt
+  accepted_abstract_sha256: 2955bff68198083f80eb48e811cc597eefef1678f3d8880ba8404df1d1c69abb
+  historical_snapshot: docs/results_snapshot/2026-04-01_fullscale
+  historical_binary_lvef_threshold_percent: 40.0
+
+cohort:
+  primary_policy: one_study_per_subject
+  split_authority: restricted_subject_split_map_v1
+  required_splits: [train, val, test]
+  require_zero_subject_overlap: true
+  require_identical_modality_ids: true
+  require_identical_targets: true
+  repeated_studies_in_primary: false
+
+panels:
+  historical: legacy29
+  strict:
+    version: strict21-v1
+    targets:
+      - tricuspid_regurgitant_peak_velocity
+      - left_ventricular_end_systolic_diameter
+      - left_ventricular_end_diastolic_diameter
+      - av_pk_vel
+      - sept_e_prime
+      - la_4ch_length
+      - ra_length
+      - la_dimen
+      - sinus_diam
+      - inf_lat_thickness
+      - mv_peak_a
+      - mv_peak_e
+      - septal_thickness
+      - lvot_vti
+      - ascending_aorta_diameter
+      - rv_diam
+      - lvot_diam
+      - tricuspid_annular_plane_systolic_excursion
+      - arch_diam
+      - ivc_diam
+      - lat_e_prime
+    unresolved_relationship_policy: fail_closed
+  pragmatic:
+    version: pragmatic26-v1
+    add_targets: [body_surface_area, height_cm, resting_hr, resting_dbp, resting_sbp]
+    allow_non_algebraic_same_report_correlates_after_review: true
+  formula_only_targets: [fs, tr_mmhg]
+  merge_targets:
+    mitral_e_velocity: mv_peak_e
+
+masking_order:
+  - identify_observed_target
+  - remove_exact_target_and_aliases
+  - remove_disallowed_dependency_family
+  - freeze_predictor_availability
+  - train_only_feature_eligibility
+  - train_only_imputation
+  - train_only_scaling
+  - validation_only_selection
+  - locked_test_evaluation
+
+models:
+  modalities: [vision_only, structured_only, early_fusion]
+  regression_model: ridge
+  ridge_alpha_grid: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+  alpha_selection_split: val
+  alpha_tie_break: larger_alpha
+  refit_train_plus_val: false
+  classification_model: class_weighted_logistic_regression
+
+metrics:
+  lvef_primary: mae_ef_percentage_points
+  multitask_primary: mae_divided_by_training_iqr
+  secondary: [rmse, r2, pearson_correlation, spearman_correlation, calibration_intercept, calibration_slope, clinical_tolerance_rate]
+  binary_secondary: [auroc, average_precision, brier_score, calibration_intercept, calibration_slope]
+
+paired_bootstrap:
+  unit: subject
+  replicates: 10000
+  seed: 20260801
+  interval: percentile_95
+  contrasts:
+    - early_fusion_minus_vision_only
+    - early_fusion_minus_structured_only
+    - structured_only_minus_vision_only
+  reuse_subject_draw_across_modalities: true
+  reuse_subject_draw_across_tasks: true
+
+multiplicity:
+  primary_contrasts: holm_familywise_0.05
+  per_task: exploratory_bh_fdr_if_tested
+
+missingness:
+  observed_label_conditioning: true
+  required_simulations: [single_target, whole_target_family]
+  secondary_random_mask_rates: [0.10, 0.30, 0.50]
+  empirical_masks_learned_from: train_only
+  natural_missing_label_accuracy_claim_allowed: false
+
+optional_extensions:
+  selective_prediction: after_primary_revalidation_only
+  all_study_expansion: deferred
+  learned_pooling: excluded
+  generative_modeling: excluded
+
+governance:
+  aggregate_only_git_exports: true
+  restricted_outputs_outside_repo: true
+  require_sha256_manifest: true
+  allow_patient_level_git_outputs: false
+  allow_test_tuned_changes: false
