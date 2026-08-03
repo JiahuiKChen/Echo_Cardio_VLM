@@ -2,69 +2,55 @@
 
 ## Decision status
 
-**No embedding regeneration is authorized.** The historical merged clip and study stores remain blocked as confirmatory authorities because 32 selected-cohort clip keys are duplicated and the inspected historical metadata does not establish checkpoint/environment linkage.
+**No deduplication, re-extraction, re-embedding, pooling, download, or confirmatory use is authorized.** The Phase 1D audits are model-independent decision inputs. They do not mutate the historical stores and cannot promote an embedding authority by themselves.
 
-The preferred future authority is **Path C: a clean selected-cohort-only EchoPrime embedding store**, conditional on validating the canonical extracted cine clips and their source mapping. Path A is acceptable only if the restricted audit proves all 32 groups are exact/content-identical duplicates and governance explicitly accepts reuse of the otherwise historical component vectors. Path B is required if any duplicate is nonidentical, key-colliding, or affected by a component-level defect. The owner must authorize the chosen path after the restricted audit; none may be selected from downstream model performance.
+The historical merged clip and study stores remain blocked because 32 selected-cohort clip keys are duplicated and the historical checkpoint/environment linkage is incomplete. Phase 1D separates physical-source evidence availability, duplicate classification, proposed resolution, and selected-cohort clip availability. Vector equality is corroborating evidence only and never independently permits deduplication.
 
 ## Nonnegotiable authority contract
 
 Any future confirmatory vision input must:
 
-- contain only the 4,525 imaging-eligible selected-cohort studies, subject to a fresh exact audit;
-- exclude all 171 Stage-D studies outside the selected one-study-per-subject cohort;
-- contain exactly one canonical row for each physical extracted cine clip;
-- preserve the selected study-to-subject ownership mapping and deterministic split map without exposing identifiers to Git;
-- use 512-dimensional encoder-only clip vectors and one float32 mean-pooled 512-dimensional study vector per imaging-eligible study;
-- use checkpoint SHA-256 `7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b` unless an independently verified official checkpoint is explicitly chosen and documented before the run;
-- capture command, config, source commit, checkpoint, Python, PyTorch, scikit-learn, CUDA/cuDNN, scheduler/job, device, timestamp, and input/output checksums;
-- create fresh clip- and study-level manifests and pass shape, index, finite-value, uniqueness, ownership, selected-containment, and aggregate-safety gates;
-- avoid outcomes, labels, predictions, and confirmatory performance throughout embedding construction and QC.
+- contain only the imaging-eligible studies from the selected one-study-per-subject cohort and exclude all 171 prior/nonselected Stage-D studies;
+- contain one canonical row per adjudicated physical source clip, with every excluded, deduplicated, or quarantined row accounted for;
+- preserve selected subject-study ownership and deterministic splits without exporting identifiers to Git;
+- use 512-dimensional encoder-only clip vectors and one finite float32 mean-pooled 512-dimensional vector per imaging-eligible study;
+- use checkpoint SHA-256 `7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b` unless a different official checkpoint is independently verified and frozen before execution;
+- capture source commit, exact commands, config, checkpoint, Python, PyTorch, scikit-learn, CUDA/cuDNN, GPU, scheduler/job, timestamps, and input/output checksums;
+- issue fresh clip-, study-, environment-, command-, and preservation manifests using safe relative paths; and
+- avoid outcomes, labels, predictions, and confirmatory performance throughout construction and quality control.
 
-Raw DICOM re-download or re-extraction is reserved for clips whose extracted authority is absent, unreadable, content-inconsistent, or inadequately mapped. A full DICOM restart is not the default and requires separate evidence and authorization.
+## Five candidate paths
 
-## Path comparison
+| Path | Prerequisites and duplicate handling | Source availability and denominator | Compute, storage, and queue/I/O | Checkpoint, environment, manifests, and checksums | Advantages, limits, and manuscript-grade provenance |
+|---|---|---|---|---|---|
+| **A. Deterministic deduplication and repooling of existing component vectors** | Every affected group must be `EXACT_REPEATED_MANIFEST_ROW_CONFIRMED`, or a separately proven `MERGE_OR_INDEX_REWRITE_ONLY` defect. Physical-source hashes, ownership, component/merged correspondence, stored/recomputed L2 checks, and the selected-only canonical inventory must pass. Retain one prespecified component row; never select by vector value or downstream performance. | Existing component vectors survive and exactly align to manifests. Build only the common imaging-eligible selected denominator; exclude 171 nonselected studies and every unresolved/quarantined group. | No GPU. Stream about 0.4 GB of float32 clip vectors; reserve roughly 2–5 GB for rebuilt arrays, manifests, checksums, and audit scratch. Usually under one hour after adjudication, excluding queue and review. | Historical checkpoint/environment use remains unproven. Fresh source/command/output checksums and pooling manifests are still required. | Fastest and least resource intensive. Manuscript-grade only as a conditionally reconstructed historical representation with an explicit historical-environment limitation; it is not an exact historical-reproduction claim. Any vector-only or locator-only inference disqualifies A. |
+| **B. Affected-batch re-extraction and re-embedding** | Use when an affected group is a same-source vector disagreement, physical/key collision, or component/merge defect whose scope is bounded. Repair the key/source mapping, quarantine ambiguity, re-extract when needed, and re-embed a coherent affected scope. | Requires retained authoritative source DICOMs or validated extracted clips for the whole affected scope. The final denominator remains selected and imaging eligible. A batch-wide fault means the batch, not only 32 rows, is the minimum repair unit. | For `batch_000` scale, historical throughput suggests under one GPU-hour for encoding, but allow roughly 2–8 hours for validation and I/O. Retained DICOM/extracted staging may require tens to about 130 GB. | Pin one checkpoint/environment for every regenerated vector and issue fresh affected-input, clip, merge, study, and preservation manifests. Mixing newly generated vectors with unverifiable historical vectors requires an explicit comparability justification and sensitivity boundary. | Repairs a bounded defect without a full restart. Provenance is weaker than C1–C3 because it can mix environments; manuscript-grade only if affected scope is proven complete and the mixed-store limitation is accepted prospectively. |
+| **C1. Full selected-only re-embedding from surviving canonical extracted clips** | The canonical inventory must first show file-availability compatibility for every proposed selected physical source, zero unresolved/quarantined groups, exact 4,525-study coverage, and a deterministic one-row-per-source proposal. A separate cohort-wide NPZ readability, required-array/schema, and content-hash validation must then pass before C1 can be authorized. Re-embed every selected canonical clip, not only duplicates. | No source DICOM access is required for encoding after extracted authority is validated, although source mapping must remain traceable. Denominator is the 4,525 imaging-eligible selected studies; the five no-cine studies remain excluded from every primary modality. | Historical estimates imply up to roughly 288 GB if approximately 192k extracted clips average 1.5 MB. Pure encoder extrapolation is about 2.2 hours; request 4–8 GPU wall hours and plan 0.5–2 days including checksum I/O, validation, and queue. | Use one pinned checkpoint and fully captured new environment. Create fresh selected-only clip and study arrays, ordered manifests, input/content/output checksums, and a complete post-run preservation manifest. | Preferred when all extracted clips survive and subsequently validate. Strong prospective, manuscript-grade provenance with uniform representation generation and no inherited duplicate weighting. It does not reconstruct the historical environment; it creates a new revalidation authority. |
+| **C2. Full selected-only re-extraction from retained source DICOMs, then re-embedding** | Use when extracted NPZs are missing or invalid but every proposed physical source has an authoritative retained DICOM locator/file. Resolve all collisions first, then re-extract and re-embed the complete selected canonical source set under one specification. | Requires complete retained DICOM coverage for all imaging-eligible selected physical sources; no redownload. Denominator and five-study rule are identical to C1. | CPU/I/O and temporary storage exceed C1. Historical planning used roughly 130 GB raw staging per 500-study batch and up to about 288 GB for extracted clips; GPU request remains about 4–8 hours after extraction. Plan staged jobs and verify quota first. | Pin extraction parameters, checkpoint, and full software/hardware environment. Hash DICOM inputs, extracted arrays, clip vectors, pooled study vectors, commands, and manifests. | Stronger source-to-vector lineage than C1 when DICOMs are retained, at higher I/O cost. Manuscript-grade if source completeness, extraction determinism, and all preservation checks pass. |
+| **C3. Selected-only redownload and clean extraction/embedding restart** | Use only when required source DICOMs are absent or the retained/extracted authority cannot be validated. Reconstruct the selected imaging-eligible source set from the public release, then run clean audit, extraction, embedding, pooling, and preservation stages. | Requires authorized data access and redownload for all missing sources; a full selected-only restart is favored when missingness is broad or mapping trust is lost. Denominator remains selected and imaging eligible; repeated/all-study expansion is outside this path. | Historical planning estimated roughly 1.2 TB total raw transfer for 4,525 studies with about 130 GB staged per 500 studies, plus extracted storage. End-to-end planning range was 24–36 hours plus scheduler, transfer, and validation time; verify current SCC quota and network policy. | Strongest end-to-end prospective capture: release identity, download manifest, source hashes, extraction environment, pinned checkpoint, clip/study manifests, and second-pass preservation verification. | Highest cost and operational risk, but clearest manuscript-grade provenance when prior source authority is inadequate. Requires separate explicit authorization for download and processing. |
 
-| Path | Work | Scientific strengths | Main risks | Resolution evidence required |
-|---|---|---|---|---|
-| A. Deterministically deduplicate and rebuild from existing clip vectors | Classify the 32 groups, retain one canonical row for each proven exact/content-identical physical clip, exclude nonselected studies, concatenate validated component vectors, then mean-pool anew | Fast; no GPU; removes duplicate contribution and nonselected studies while preserving historical representations | Does not recover historical checkpoint/environment provenance; unsafe if duplicate rows differ in clip content or vector; component stores still need complete checksums and ownership validation | All 32 groups `EXACT_REPEATED_MANIFEST_ROW` or `SAME_CLIP_EMBEDDED_TWICE`; extracted/content or other sufficient physical-identity evidence; exact component-vector/manifest alignment; owner accepts historical-environment limitation |
-| B. Re-extract/re-embed affected clips or batch | Correct the key/source mapping and reprocess the affected physical clips; rebuild merge and study pool | Repairs nonidentical duplicates/collisions without necessarily repeating the whole cohort | Mixed old/new embedding environments can create a new comparability problem; targeted source DICOM or clip cache may be absent; a batch-wide defect may be larger than 32 keys | Classification as collision/nonidentity or batch defect; validated affected source mapping; one pinned environment/checkpoint for every regenerated clip; explicit policy on whether unaffected historical vectors may be mixed |
-| C. Rebuild clean selected-only store from canonical extracted clips | Validate selected extracted cine authority, deduplicate by physical content/source mapping, re-embed every canonical selected clip with one pinned environment/checkpoint, then mean-pool | Strongest prospective provenance; removes 171 nonselected studies; uniform checkpoint/environment; simplest manuscript claim boundary | Extracted clips may have been purged by historical batch workflow; requires storage/GPU and a new authorized run; cannot proceed until selected clip authority is proven | Complete selected-cohort extraction manifest; accessible and checksum-valid clip files; zero unresolved physical duplicates/collisions; adequate SCC storage; pinned run manifest; owner authorization |
+## Decision rule after the aggregate-only audits
 
-## Recommended path
+1. Consider **A** only when physical/file evidence—not vector equality—confirms every duplicate eligible for deduplication and the canonical inventory otherwise passes.
+2. Consider **B** when defects are nonidentical but demonstrably bounded to an affected batch or coherent processing unit and retained sources are sufficient.
+3. Prefer **C1** when every selected canonical extracted clip is file-available and a separate cohort-wide readability/schema/content validation passes.
+4. Use **C2** when extracted clips are incomplete but retained source DICOM coverage is complete.
+5. Use **C3** when required source DICOMs are absent, mapping authority fails, or a clean restart is otherwise necessary.
+6. If different conditions occur in different components, choose the highest-provenance coherent path that avoids mixing unverifiable historical and new vectors. Do not assemble a hybrid merely because it is faster.
 
-Choose **Path C** if the selected-cohort extracted clips exist and pass source-to-extracted mapping and content-hash validation. It offers the cleanest authority: a uniform checkpoint and environment, a selected-only estimand, no inherited duplicate weighting, and a fully prospective preservation manifest.
+The aggregate inventory may identify availability-compatible paths, but the owner must select and authorize one after resource review. Path choice may not use model performance.
 
-If the historical batch-and-purge workflow removed most extracted cine files, do not silently convert Path C into a full DICOM restart. First determine whether a separate canonical clip cache exists. If not, report the storage/runtime implications and ask for specific authorization. Path A then remains a scientifically defensible fallback only if every duplicate is proven benign and all component embedding stores pass fresh independent checks.
+## Required evidence before any path can be promoted
 
-Path B is a repair path, not the default. If any affected clip must be re-embedded, the project should prefer re-embedding a coherent unit with the same pinned environment rather than mixing unverifiable historical and new vectors without a written comparability justification.
-
-## Resource estimates
-
-These are planning ranges, not scheduler guarantees. The measured historical anchor is 21,393 Stage-D clips embedded in 867 seconds (14.5 minutes) on GPU. The historical merged manifest has 191,993 rows; the unique-key count is 191,961 before selected-only filtering. Historical planning estimated approximately 1.5 MB per extracted clip and about 130 GB of raw DICOM staging per 500-study batch.
-
-| Path | GPU | CPU/I/O | Restricted storage | Practical wall-time range |
-|---|---|---|---|---|
-| A | None | Stream/read roughly 0.4 GB of float32 clip vectors, validate/deduplicate manifests, rewrite selected-only clip store, mean-pool studies, checksum outputs | Low; reserve 2–5 GB for old/new NPZs, manifests, checksums, and audit scratch | Usually under one hour after the 32-key audit, excluding human review |
-| B, 32 affected clips only | Under one GPU-hour; pure encoder time is minutes | Hash/re-extract affected clips and rebuild merge/pool | 2–10 GB if source clips/DICOMs are already local | Several hours including validation and queue/I/O |
-| B, all of `batch_000` | Pure encoder extrapolation for approximately 20,582 clips is about 15 minutes; request up to one GPU-hour plus queue/I/O | Batch source validation, possible extraction, full downstream rebuild | Embeddings are small; extracted/raw staging can require tens to roughly 130 GB | Roughly 2–8 hours depending on clip/DICOM availability |
-| C, validated extracted clips reused | Pure GPU extrapolation is about 2.2 hours at the measured Stage-D throughput; practical request 4–8 GPU wall hours and no more than the standard 12-hour job until piloted | Hash/inventory up to roughly 192k clips, selected filtering, embedding I/O, pooling, independent verification | Approximately 288 GB if all extracted clips occupy 1.5 MB each, plus low-single-digit GB for embeddings/manifests and safety headroom | One or more staged jobs; roughly 0.5–2 days including validation/queue, not model fitting |
-| C with DICOM restart | Not estimated from encoder time alone | Download and extract about 4,525 studies in batches; historical raw estimate is roughly 1.2 TB total with approximately 130 GB staged per 500 studies | Verify current SCC free space; retain only approved canonical derivatives and preservation artifacts | Historical full download→extract→embed planning range was 24–36 hours plus queue and validation; requires separate authorization |
-
-Before Path B or C, capture `df`/quota information in restricted logs and run a small, outcome-blind throughput pilot. Neither storage inspection nor a pilot authorizes confirmatory modeling.
-
-## Required aggregate evidence before promotion
-
-The future embedding packet may be promoted only when aggregate checks show:
+The selected path must eventually demonstrate:
 
 1. exact selected-cohort containment and zero outside-selected studies;
-2. zero missing or duplicate canonical clip keys;
-3. one subject per study and one selected study per subject;
-4. clip-manifest row count equals the first dimension of the clip array;
-5. all indices are unique, integral, in range, and map to the intended vector;
-6. all vectors are finite float32 with dimension 512;
-7. one mean-pooled study vector per imaging-eligible selected study and no others;
-8. deterministic rerun equality for a prespecified canary subset without outcomes;
-9. complete preservation and environment manifests with second-pass checksum validation;
-10. aggregate export safety gate passes with zero identifier-level output.
+2. one canonical row per physical source and explicit counts for deduplicated, excluded, and quarantined rows;
+3. zero unresolved ownership, source-locator, or key-collision failures;
+4. exact manifest/array row-index correspondence and finite float32 width-512 vectors;
+5. one mean-pooled study vector per imaging-eligible selected study and no others;
+6. deterministic canary equality under the chosen new pipeline where regeneration occurs;
+7. complete source, command, environment, checkpoint, clip, study, and preservation manifests with second-pass checksums; and
+8. a passing aggregate export safety gate with no identifier-level Git output.
 
-Only after these checks, the denominator, clinical, statistical, config-checksum, and owner-authorization gates must still pass. Embedding authority alone does not open confirmatory access.
+Embedding authority alone does not open confirmatory test access. Clinical, denominator, statistical, config-checksum, and explicit owner-authorization gates remain separate.

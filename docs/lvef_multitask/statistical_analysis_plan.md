@@ -5,9 +5,10 @@
 - Branch: `codex/lvef-multitask-revalidation`
 - Historical base commit: `23c74ccfd145ab9a423b6942a431a1894a34ab67`
 - Phase 1C starting commit: `ccc6b54e5a9138a23ac2cd756e5483217abc11b3`
+- Phase 1D starting commit: `a2ccfb2914546ebd4b7a1f1d369a3e8bc54ad241`
 - Status: **model-independent specifications recorded; final SAP lock and all confirmatory access remain closed**
 
-This document prespecifies the statistical design without using new confirmatory performance. It is not permission to fit a model, regenerate a prediction, or inspect test metrics. The final run manifest may cite this version only after the provenance, duplicate-key, clinical metadata, dependency-registry, panel, common-denominator, config-checksum, safety, and owner-authorization gates in `phase1c_pre_revalidation_lock.md` have passed. A later change must be versioned with a reason that does not depend on test performance and must precede test access.
+This document prespecifies the statistical design without using new confirmatory performance. It is not permission to fit a model, regenerate a prediction, or inspect test metrics. The final run manifest may cite this version only after the provenance, duplicate-key, canonical-clip, clinical metadata, dependency-registry, panel, common-denominator, config-checksum, safety, and owner-authorization gates in `phase1d_pre_embedding_lock.md` have passed. A later change must be versioned with a reason that does not depend on test performance and must precede test access.
 
 ## 1. Authority and question
 
@@ -109,7 +110,9 @@ Both approaches are prespecified, with different roles:
 - **Primary binary analysis:** a separately trained class-weighted logistic regression. This preserves the accepted-abstract model estimand—direct prediction of reduced-LVEF status—and supplies probabilities for discrimination and calibration.
 - **Secondary coherence analysis:** threshold the continuous Ridge LVEF prediction at the corresponding EF cutoff. This asks whether continuous report-label completion is directionally consistent with clinical categorization. It does not replace the logistic analysis and is not probability calibrated.
 
-The historical primary label is `lvef < 40`. Separate, explicitly secondary models use `lvef <= 40` and `lvef < 50`; each uses the same locked specification and its own labels. Before fitting or test-performance access, report `n(lvef == 40.0)` using exact parsed numeric equality after the historical subject/measurement median, by all/train/validation/test for both the selected-preimaging and primary-common-imaging-eligible scopes.
+The historical primary label is `lvef < 40`. Separate, explicitly secondary models use `lvef <= 40` and `lvef < 50`; each uses the same locked specification and its own labels.
+
+The required pre-performance equality audit is complete. Using exact parsed numeric equality after the historical subject/measurement median, selected-preimaging labels equal to 40 were 103/2,836 overall, 71/1,998 train, 12/411 validation, and 20/427 test. In the primary common imaging-eligible cohort they were 103/2,833 overall, 71/1,997 train, 12/410 validation, and 20/426 test. No prediction or model metric was read or computed. Because 103 common labels—and 20 test labels—sit exactly at the boundary, `<40` versus `<=40` is a materially nontrivial inequality sensitivity. It remains secondary and cannot replace the accepted `<40` primary definition based on future results.
 
 The logistic specification is:
 
@@ -250,4 +253,4 @@ Git may receive aggregate counts, suppression-safe tables, task/family metrics, 
 
 ## 14. Remaining lock conditions
 
-The statistical choices in this SAP do not open confirmatory access. The final SAP and config remain unlocked until `phase1c_pre_revalidation_lock.md` documents passage of every required provenance, duplicate-key, canonical-clip, imaging-eligibility, common-denominator, raw metadata, clinical dependency, panel, margin, safety, checksum, and owner-authorization gate.
+The statistical choices in this SAP do not open confirmatory access. The final SAP and config remain unlocked until `phase1d_pre_embedding_lock.md` documents passage of every required interpreter, provenance, duplicate-key, canonical-clip, source-availability, imaging-eligibility, common-denominator, raw metadata, clinical dependency, panel, margin, safety, checksum, and owner-authorization gate.

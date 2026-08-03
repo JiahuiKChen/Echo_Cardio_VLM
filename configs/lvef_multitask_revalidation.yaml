@@ -1,10 +1,11 @@
-schema_version: 3
-analysis_version: phase1c-prefit-v1.0
-status: blocked_pending_phase1c_pre_revalidation_lock
+schema_version: 4
+analysis_version: phase1d-remediation-v1.0
+status: blocked_pending_phase1d_pre_embedding_lock
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
 phase1c_starting_commit: ccc6b54e5a9138a23ac2cd756e5483217abc11b3
+phase1d_starting_commit: a2ccfb2914546ebd4b7a1f1d369a3e8bc54ad241
 branch: codex/lvef-multitask-revalidation
 
 execution_authority:
@@ -14,6 +15,7 @@ execution_authority:
   embedding_regeneration_authorized: false
   raw_dicom_reextraction_authorized: false
   aggregate_prefit_diagnostics_authorized: true
+  phase1d_remediation_audits_authorized: true
   model_independent_statistical_spec_recorded: true
   clinical_panel_locked: false
   final_sap_locked: false
@@ -36,6 +38,23 @@ authority:
   scc_preservation_pack_checksum_comparable_entries: 0
   scc_preservation_pack_absence_of_byte_mismatch_proven: false
   scc_preservation_pack_is_future_revalidation_authority: false
+
+phase1c_scc_execution:
+  transcript_authority_received: true
+  starting_commit: a2ccfb2914546ebd4b7a1f1d369a3e8bc54ad241
+  selected_batch_partition_passed: true
+  duplicate_audit_completed_blocking: true
+  exact_40_audit_passed: true
+  provenance_and_threshold_outputs_remain_valid: true
+  clinical_metadata_packet_generated: false
+  clinical_metadata_failure: unsupported_python_interpreter
+  clinical_metadata_failure_cause: bare_python3_bypassed_runbook_python_bin
+  clinical_metadata_error: future_feature_annotations_is_not_defined
+  parent_shell_terminated_by_sourced_nonzero_under_errexit: true
+  model_fitting_performed: false
+  predictions_read: false
+  test_performance_computed: false
+  embeddings_generated: false
 
 provenance:
   embedding_authority:
@@ -82,6 +101,16 @@ provenance:
     serialization_and_index_rewrites_scientifically_blocking: false
     unique_blocking_duplicate_clip_keys: 32
     duplicate_keys_restricted_adjudication_complete: false
+    phase1c_duplicate_audit_executed: true
+    duplicate_groups_selected: 32
+    duplicate_groups_batch_000: 32
+    duplicate_groups_with_complete_extracted_hashes: 0
+    duplicate_groups_other_unresolved: 32
+    phase1c_classification: OTHER_UNRESOLVED
+    phase1c_proposed_resolution: QUARANTINE_AND_REVIEW_OR_REPROCESS_AFFECTED_CLIPS
+    phase1c_aggregate_safety_gate_passed: true
+    v2_evidence_availability_audit_complete: false
+    v2_duplicate_classification_complete: false
     provenance_valid: false
 
 cohort:
@@ -137,10 +166,24 @@ lvef:
     - {operator: "<=", threshold_percent: 40.0, rationale: guideline_classification_sensitivity}
     - {operator: "<", threshold_percent: 50.0, rationale: guideline_classification_sensitivity}
   exact_40_label_counts_required_before_test_access: true
-  exact_40_label_counts_recorded: false
+  exact_40_label_counts_recorded: true
   exact_40_count_rule: exact_parsed_numeric_equality_after_historical_subject_measurement_median
   exact_40_count_scopes: [selected_preimaging, primary_common_imaging_eligible]
   exact_40_count_splits: [all, train, val, test]
+  exact_40_counts:
+    selected_preimaging:
+      all: {n_observed: 2836, n_equal_40: 103}
+      train: {n_observed: 1998, n_equal_40: 71}
+      val: {n_observed: 411, n_equal_40: 12}
+      test: {n_observed: 427, n_equal_40: 20}
+    primary_common_imaging_eligible:
+      all: {n_observed: 2833, n_equal_40: 103}
+      train: {n_observed: 1997, n_equal_40: 71}
+      val: {n_observed: 410, n_equal_40: 12}
+      test: {n_observed: 426, n_equal_40: 20}
+  exact_40_audit_read_predictions: false
+  exact_40_audit_computed_performance: false
+  inequality_distinction_materially_nontrivial: true
 
 target_support:
   locked: true
@@ -373,13 +416,23 @@ subgroups:
 
 prefit_gates:
   historical_freeze_disposition_documented: true
+  phase1c_batch_partition_reverified: true
+  phase1c_exact_40_audit_passed: true
+  scc_supported_interpreter_resolver_validated: false
+  audit_subprocess_parent_shell_survival_validated: false
   clip_component_union_provenance_valid: false
+  duplicate_evidence_availability_v2_complete: false
   duplicate_clip_key_resolution_complete: false
+  canonical_selected_clip_inventory_complete: false
+  surviving_extracted_clip_availability_established: false
+  surviving_source_dicom_availability_established: false
   selected_cohort_canonical_clip_authority_valid: false
   embedding_regeneration_path_authorized: false
   five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false
   future_environment_capture_specified: true
+  clinical_metadata_packet_complete: false
+  raw_alias_and_unit_review_complete: false
   clinical_dependency_adjudication_complete: false
   panel_membership_and_units_locked: false
   lvef_expert_inference_margins_prespecified: true
@@ -389,7 +442,9 @@ prefit_gates:
   validation_operating_point_criterion_locked: true
   structured_feature_eligibility_rule_locked: true
   structured_missing_indicator_rule_locked: true
-  equality_at_40_counts_recorded: false
+  equality_at_40_counts_recorded: true
+  targeted_openevidence_prompt_generated_if_justified: false
+  clinician_signoff_recorded: false
   common_denominator_dry_run_passed: false
   target_family_exclusion_audit_passed: false
   aggregate_export_safety_required: true

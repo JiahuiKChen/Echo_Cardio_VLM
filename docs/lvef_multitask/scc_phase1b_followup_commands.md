@@ -10,7 +10,7 @@ Do not paste either restricted `stderr` file. If a command fails, inspect its re
 set -euo pipefail
 
 for required_var in \
-  PYTHON_BIN \
+  LVEF_SCC_PYTHON_RESOLVED \
   FREEZE_ROOT \
   FULLSCALE_ROOT \
   SELECTED_STUDIES \
@@ -44,7 +44,7 @@ mkdir -p "$PHASE1B_AGGREGATE_DIR" "$PHASE1B_RESTRICTED_DIR"
 
 # Freeze SHA manifest: global status counts, but filenames only from the
 # hardcoded safe allowlist already exported by Phase 1A.
-"$PYTHON_BIN" - "$FREEZE_ROOT" "$PHASE1B_AGGREGATE_DIR" \
+"$LVEF_SCC_PYTHON_RESOLVED" - "$FREEZE_ROOT" "$PHASE1B_AGGREGATE_DIR" \
   >"$PHASE1B_AGGREGATE_DIR/freeze_manifest_followup.summary.json" \
   2>"$PHASE1B_RESTRICTED_DIR/freeze_manifest_followup.stderr.txt" <<'PY'
 import csv
@@ -179,7 +179,7 @@ phase1b_run_environment() {
 # Environment and checkpoint provenance: only hardcoded safe meta-relative
 # names, hashes, byte counts, and keyword-presence counts are exported. Raw
 # metadata content and operational paths remain unexported.
-"$PYTHON_BIN" - "$FREEZE_ROOT" "$ECHOPRIME_ENCODER" "$PHASE1B_AGGREGATE_DIR" \
+"$LVEF_SCC_PYTHON_RESOLVED" - "$FREEZE_ROOT" "$ECHOPRIME_ENCODER" "$PHASE1B_AGGREGATE_DIR" \
   >"$PHASE1B_AGGREGATE_DIR/environment_checkpoint_followup.summary.json" \
   2>"$PHASE1B_RESTRICTED_DIR/environment_checkpoint_followup.stderr.txt" <<'PY'
 import csv
@@ -319,7 +319,7 @@ PY
 phase1b_run_final_gate() {
 # Final allowlist gate. It checks every CSV written by this block, controlled
 # row vocabularies, and the only permitted relative filenames.
-"$PYTHON_BIN" - "$PHASE1B_AGGREGATE_DIR" \
+"$LVEF_SCC_PYTHON_RESOLVED" - "$PHASE1B_AGGREGATE_DIR" \
   >"$PHASE1B_AGGREGATE_DIR/aggregate_followup_safety_gate.json" \
   2>"$PHASE1B_RESTRICTED_DIR/aggregate_followup_safety_gate.stderr.txt" <<'PY'
 import csv
@@ -720,7 +720,7 @@ for item in "${BATCH_EXTRACTION_MANIFESTS[@]}"; do
   FIVE_EXTRACTION_ARGS+=(--extraction-manifest "$item")
 done
 
-"$PYTHON_BIN" - \
+"$LVEF_SCC_PYTHON_RESOLVED" - \
   --output-csv "$PHASE1B_AGGREGATE_DIR/selected_without_embedding_attrition_counts.csv" \
   --selected-studies "$SELECTED_STUDIES" \
   --structured-measurements "$STRUCTURED_MEASUREMENTS" \
@@ -944,7 +944,7 @@ PY
 # Clip-union provenance: identifier and locator values remain in memory. The
 # only durable output is grouped counts by reason, source component, selected
 # scope, last successful stage, and provenance implication.
-"$PYTHON_BIN" - \
+"$LVEF_SCC_PYTHON_RESOLVED" - \
   "$PHASE1B_AGGREGATE_DIR" \
   "$SELECTED_STUDIES" \
   "$MERGED_CLIP_MANIFEST" \

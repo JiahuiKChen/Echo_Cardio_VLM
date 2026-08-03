@@ -46,14 +46,18 @@ The primary modality-comparison cohort is formed by intersecting the selected on
 | Stage | All | Train | Validation | Test | Status |
 |---|---:|---:|---:|---:|---|
 | Selected cohort | 4,530 | 3,171 | 679 | 680 | Phase 1A split-map authority; zero duplicate/overlap/invalid split rows |
-| Selected numeric LVEF before imaging | 2,836 | Not exported | Not exported | Not exported | Phase 1A derived from exact raw name `lvef`, numeric median by subject/measurement ID |
+| Selected numeric LVEF before imaging | 2,836 | 1,998 | 411 | 427 | Phase 1C threshold audit; exact raw name `lvef`, numeric median by subject/measurement ID |
 | Numeric LVEF plus study embedding | 2,833 | 1,997 | 410 | 426 | Phase 1A proven |
+| Selected pre-imaging LVEF exactly 40 | 103 | 71 | 12 | 20 | Phase 1C aggregate label-only audit; no prediction or performance access |
+| Common imaging-eligible LVEF exactly 40 | 103 | 71 | 12 | 20 | Phase 1C aggregate label-only audit; `103/2,833` overall and `20/426` test |
 | Historical LVEF manifest | 2,833 | 1,997 | 410 | 426 | Phase 1A proven; values agree with the structured derivation on the intersection |
 | Vision-only historical predictions | 2,833 | 1,997 | 410 | 426 | Exact IDs/labels agree with the LVEF manifest |
 | Structured-only historical predictions | 2,833 | 1,997 | 410 | 426 | Exact IDs/labels agree with the LVEF manifest |
 | Early-fusion historical predictions | Not preserved | Not preserved | Not preserved | Not preserved | Three-way paired historical inference blocked |
 
 The historical statement “LVEF missing embeddings = 0” applies to a manifest constructed after image linkage. It does not describe the pre-imaging label funnel: 2,836 selected studies have numeric LVEF, and three are lost at the imaging intersection.
+
+The Phase 1C exact-threshold audit establishes that 103 of 2,833 common imaging-eligible labels, including 20 of 426 test labels, equal exactly 40%. The difference between the historical primary `lvef < 40` definition and mandatory secondary `lvef <= 40` sensitivity is therefore materially nontrivial. These counts were computed from labels before any prediction or performance access and do not authorize a change to the accepted endpoint.
 
 ## Historical 29-task available-case denominators
 

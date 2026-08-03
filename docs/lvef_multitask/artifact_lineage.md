@@ -16,7 +16,7 @@ The Phase 1A packet used here has SHA-256 `2cdb8dbf01ab37b6ba199db41c8ed45a696b4
 | Historical implementation | Scripts at base commit `23c74ccfd145ab9a423b6942a431a1894a34ab67` | Reconstruct intended methods and identify implementation gaps; not proof of the command or artifact instance used |
 | Restricted SCC source authority | Split map, manifests, mappings, predictions, embedding stores, environment records, and checkpoint | Resolve lineage and support an authorized revalidation after all gates pass |
 | Phase 1A aggregate packet | Aggregate schemas, checksums, counts, equality flags, and discrepancy counts | Audit evidence only; no row-level authority and no confirmatory performance |
-| Future revalidation snapshot | A new dated, checksum-manifested aggregate-only result set plus a restricted preservation manifest | Poster/manuscript evidence only after the Phase 1C lock and separately authorized run |
+| Future revalidation snapshot | A new dated, checksum-manifested aggregate-only result set plus a restricted preservation manifest | Poster/manuscript evidence only after the Phase 1D remediation lock and separately authorized run |
 
 The accepted abstract and Git historical aggregate snapshot remain immutable historical authorities. The failed checksum applies to the separate SCC preservation pack, not to the Git snapshot. Phase 1A findings annotate limitations; they do not overwrite either source.
 
@@ -78,7 +78,9 @@ The Stage-D-plus-nine-batch union was evaluated over all 10 expected component m
 
 Phase 1B reproduced those 9,605 mismatches and found zero residual full-row tuple mismatches after the declared normalization. The differences are concentrated in numeric serialization of `embedding_l2_norm`; merged `embedding_idx` rewrites are expected. Numeric serialization and index rewriting are therefore no longer scientific blockers.
 
-The remaining defect is exactly 32 duplicated selected-cohort keys, all in `batch_000` and present in both the component union and merged manifest. Key omission, multiplicity disagreement, component order, and subject/study ownership are ruled out. What remains unresolved is whether each duplicate is an exact row repeat, the same physical clip embedded twice, two different clips sharing a nonunique key, a merge/reindex defect, or another cause. The restricted 32-key diagnostic must close that question before historical merged or study embeddings can be promoted to confirmatory authority.
+The remaining defect is exactly 32 duplicated selected-cohort keys, all in `batch_000` and present in both the component union and merged manifest. Key omission, multiplicity disagreement, component order, and subject/study ownership are ruled out. The Phase 1C restricted duplicate audit completed safely, but zero of the 32 groups had complete extracted-file hashes and every group remained `OTHER_UNRESOLVED`. This does not prove that source artifacts were purged, corrupt, identical, or different. It shows that the v1 physical-identity evidence was incomplete. A Phase 1D audit must separately report locator/hash/file availability, retained manifest and extraction evidence, vector correspondence, classification, and resolution before historical merged or study embeddings can be promoted to confirmatory authority.
+
+The same Phase 1C SCC execution reverified the selected partition: 329 of 500 Stage-D studies are selected, 171 are outside selection, and the remaining 4,201 selected studies occur exactly once across batches 000–008 with no ownership disagreement.
 
 ## Five selected studies without embeddings
 
@@ -97,6 +99,16 @@ All 4,530 selected studies appear in both download and readable-DICOM stages. On
 Phase 1B assigns `NO_MULTIFRAME_CINE_CANDIDATE` to all five: three train, one validation, and one test. Every study has a readable DICOM and at least one `legacy29` label; three have numeric exact-raw LVEF before imaging linkage. They are provisionally imaging-ineligible under the historical multiframe-cine rule, not unexplained extraction, embedding, or aggregation failures. This does not independently prove that a different future imaging-usability definition would reject every source DICOM.
 
 Primary vision-only, structured-only, and fusion comparisons must exclude the same five studies before target-specific availability filtering. A structured-only full-availability sensitivity may retain them only as a visibly different, unpaired denominator. Historical accepted results remain historical and are not silently rewritten.
+
+## Exact-threshold label authority
+
+The Phase 1C SCC label-only audit passed without reading predictions or computing performance. In the selected pre-imaging cohort, labels exactly equal to 40 numbered 103/2,836 overall, 71/1,998 train, 12/411 validation, and 20/427 test. In the primary common imaging-eligible cohort, they numbered 103/2,833 overall, 71/1,997 train, 12/410 validation, and 20/426 test.
+
+These counts are endpoint-provenance evidence. They establish that `<40` and `<=40` differ materially, but they do not authorize changing the accepted strict-inequality endpoint or imply anything about model performance.
+
+## Phase 1C clinical-metadata execution failure
+
+The Phase 1C clinical metadata packet was not generated. Its command document used bare `python3` for both project invocations instead of the runbook's validated `PYTHON_BIN`, thereby selecting an unsupported older SCC system interpreter. That interpreter raised `SyntaxError: future feature annotations is not defined` at `from __future__ import annotations`. The future import remains valid and unchanged; Phase 1D must select and validate Python 3.10 or newer before any packet output is created. Because the audit body was sourced under `set -e`, its nonzero status terminated the parent interactive SSH shell. Earlier completed provenance and threshold outputs remain valid.
 
 ## Environment and checkpoint provenance
 

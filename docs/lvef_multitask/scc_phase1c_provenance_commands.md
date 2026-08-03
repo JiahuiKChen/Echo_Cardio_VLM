@@ -2,13 +2,13 @@
 
 These commands run only the 32-key restricted diagnostic and the aggregate exact-LVEF-40 count. They do not fit models, regenerate embeddings or predictions, calculate performance, inspect outcomes beyond the prespecified LVEF label-definition count, modify historical artifacts, or print identifiers and locators.
 
-Run the block from the dedicated SCC worktree in the same Bash shell after sections 1–3 of `scc_revalidation_runbook.md`. Those sections define `PYTHON_BIN`, selected/structured/split/LVEF authorities, merged clip files, Stage-D clip files, and the nine batch arrays. The block creates a fresh directory and refuses reuse. Restricted detail and stderr remain on SCC.
+Run the block from the dedicated SCC worktree in the same Bash shell after sections 1–3 of `scc_revalidation_runbook.md`. Those sections define the resolver-validated `LVEF_SCC_PYTHON_RESOLVED`, selected/structured/split/LVEF authorities, merged clip files, Stage-D clip files, and the nine batch arrays. The block creates a fresh directory and refuses reuse. Restricted detail and stderr remain on SCC.
 
 ```bash
 set -euo pipefail
 
 for required_var in \
-  PYTHON_BIN \
+  LVEF_SCC_PYTHON_RESOLVED \
   SELECTED_STUDIES \
   STRUCTURED_MEASUREMENTS \
   LVEF_LABELS \
@@ -50,7 +50,7 @@ for index in {0..8}; do
 done
 
 set +e
-"$PYTHON_BIN" scripts/audit_duplicate_clip_keys.py \
+"$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_duplicate_clip_keys.py \
   "${COMPONENT_MANIFEST_ARGS[@]}" \
   "${COMPONENT_EMBEDDING_ARGS[@]}" \
   --merged-manifest "$MERGED_CLIP_MANIFEST" \
@@ -76,7 +76,7 @@ test "$DUPLICATE_AUDIT_STATUS" -eq 1
 
 # LVEF_LABELS is used here only as the historical observed-LVEF-plus-imaging
 # intersection authority. No prediction or metric file is opened.
-"$PYTHON_BIN" scripts/audit_lvef_threshold_counts.py \
+"$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_lvef_threshold_counts.py \
   --selected-studies "$SELECTED_STUDIES" \
   --structured-measurements "$STRUCTURED_MEASUREMENTS" \
   --imaging-eligible-studies "$LVEF_LABELS" \
@@ -86,7 +86,7 @@ test "$DUPLICATE_AUDIT_STATUS" -eq 1
   >"$PHASE1C_PROVENANCE_RESTRICTED/lvef_threshold_count.stdout.txt" \
   2>"$PHASE1C_PROVENANCE_RESTRICTED/lvef_threshold_count.stderr.txt"
 
-"$PYTHON_BIN" - \
+"$LVEF_SCC_PYTHON_RESOLVED" - \
   "$PHASE1C_PROVENANCE_AGGREGATE" \
   >"$PHASE1C_PROVENANCE_AGGREGATE/phase1c_provenance_safety_gate.json" \
   2>"$PHASE1C_PROVENANCE_RESTRICTED/phase1c_provenance_safety_gate.stderr.txt" <<'PY'

@@ -11,6 +11,7 @@ The ePoster must remain faithful to the accepted abstract while clearly labeling
 - Reconcile the selected cohort and embedding-store denominator.
 - Preserve the accepted title, presentation number A1122, session, date/time, and presentation format.
 - Use the historical LVEF <40% definition.
+- If the endpoint sensitivity is shown, state that 103/2,833 common imaging-eligible labels and 20/426 common test labels equal exactly 40%. These are label-only audit counts, not performance; `<40` remains primary and `<=40` is the mandatory secondary sensitivity.
 - If displaying new results, identify them as `post-acceptance revalidation` or `sensitivity analysis`.
 - Use `numerically highest` rather than `statistically superior` unless paired intervals support the stronger statement.
 

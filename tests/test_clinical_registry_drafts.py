@@ -39,6 +39,19 @@ def test_threshold_draft_covers_every_target_and_preserves_endpoint_inequalities
     assert secondary.loc["secondary_lt50", "operator"] == "<"
     assert float(secondary.loc["secondary_lt50", "value"]) == 50.0
 
+    exact_common = secondary.loc["exact_40_label_count_common"]
+    assert exact_common["operator"] == "=="
+    assert float(exact_common["value"]) == 40.0
+    assert exact_common["evidence_status"] == "VERIFIED_PHASE1C_AGGREGATE_LABEL_AUDIT"
+    assert "n=2833" in exact_common["conditions"]
+    assert "103 labels" in exact_common["notes"]
+
+    exact_test = secondary.loc["exact_40_label_count_common_test"]
+    assert exact_test["operator"] == "=="
+    assert float(exact_test["value"]) == 40.0
+    assert "n=426" in exact_test["conditions"]
+    assert "20 test labels" in exact_test["notes"]
+
 
 def test_margin_draft_marks_all_lvef_candidate_values_as_expert_inference() -> None:
     frame = load("clinical_margin_registry_draft.csv")

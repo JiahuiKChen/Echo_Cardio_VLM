@@ -88,13 +88,17 @@ test "$(git branch --show-current)" = "$LVEF_BRANCH"
 test -z "$(git status --porcelain)"
 git merge-base --is-ancestor 23c74cc HEAD
 
-PYTHON_BIN=python3
-if [[ -x /restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python ]]; then
-  PYTHON_BIN=/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python
-fi
+PYTHON_RESOLUTION_ROOT="$(
+  mktemp -d /restricted/project/mimicecho/audits/lvef_python_resolution_XXXXXX
+)"
+LVEF_SCC_PYTHON_RESOLVED="$(
+  scripts/resolve_lvef_scc_python.sh \
+    --record-json "$PYTHON_RESOLUTION_ROOT/lvef_scc_python_environment.json"
+)"
+readonly LVEF_SCC_PYTHON_RESOLVED
 
-"$PYTHON_BIN" -c 'import numpy, pandas; print("phase1a_python_dependencies=OK")'
-"$PYTHON_BIN" scripts/run_phase1a_tests.py
+cat "$PYTHON_RESOLUTION_ROOT/lvef_scc_python_environment.json"
+"$LVEF_SCC_PYTHON_RESOLVED" scripts/run_phase1a_tests.py
 ```
 
 ### 2. Define portable file listing, real roots, and a unique audit directory
@@ -261,7 +265,7 @@ if [[ -f "$STAGE_D_SELECTED" ]]; then
   PRIOR_STAGE_PARTITION_ARGS+=(--prior-stage-studies "$STAGE_D_SELECTED")
 fi
 run_audit batch_study_partition \
-  "$PYTHON_BIN" scripts/audit_batch_study_partition.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_batch_study_partition.py \
   --selected-studies "$SELECTED_STUDIES" \
   "${PRIOR_STAGE_PARTITION_ARGS[@]}" \
   --batch-manifest "$BATCH_MANIFEST" \
@@ -418,7 +422,7 @@ if [[ "$STAGE_D_COMPLETE" == true ]]; then
   )
 fi
 
-"$PYTHON_BIN" scripts/inspect_artifact_schemas.py \
+"$LVEF_SCC_PYTHON_RESOLVED" scripts/inspect_artifact_schemas.py \
   "${SCHEMA_ARGS[@]}" \
   "${EMBEDDING_PAIR_ARGS[@]}" \
   --embedding-width 512 \
@@ -477,7 +481,7 @@ if [[ "$STAGE_D_COMPLETE" == true ]]; then
 fi
 
 run_audit artifact_audit \
-  "$PYTHON_BIN" scripts/audit_lvef_multitask_artifacts.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_lvef_multitask_artifacts.py \
   --selected-studies "$SELECTED_STUDIES" \
   "${ARTIFACT_STAGE_ARGS[@]}" \
   --clip-embeddings "$MERGED_CLIP_MANIFEST" \
@@ -502,7 +506,7 @@ run_audit artifact_audit \
   --restricted-output-dir "$PHASE1_RESTRICTED_DIR/artifact_audit"
 
 run_audit embedding_overlap \
-  "$PYTHON_BIN" scripts/audit_embedding_eligibility_overlap.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_embedding_eligibility_overlap.py \
   --selected-studies "$SELECTED_STUDIES" \
   --study-embeddings "$STUDY_EMBEDDING_MANIFEST" \
   "${OVERLAP_STAGE_ARGS[@]}" \
@@ -512,14 +516,14 @@ run_audit embedding_overlap \
   --restricted-output-dir "$PHASE1_RESTRICTED_DIR/embedding_overlap"
 
 run_audit selected_split_coverage \
-  "$PYTHON_BIN" scripts/audit_subject_splits_and_denominators.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_subject_splits_and_denominators.py \
   --split-map "$SPLIT_MAP" \
   --exact-split-cohort "selected_studies=$SELECTED_STUDIES" \
   --output-dir "$PHASE1_AGGREGATE_DIR/selected_split_coverage" \
   --restricted-output-dir "$PHASE1_RESTRICTED_DIR/selected_split_coverage"
 
 run_audit lvef_split_denominators \
-  "$PYTHON_BIN" scripts/audit_subject_splits_and_denominators.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_subject_splits_and_denominators.py \
   --split-map "$SPLIT_MAP" \
   --cohort "lvef_labels=$LVEF_LABELS" \
   --cohort "vision_predictions=$LVEF_VISION_STUDY_PREDICTIONS" \
@@ -528,7 +532,7 @@ run_audit lvef_split_denominators \
   --restricted-output-dir "$PHASE1_RESTRICTED_DIR/lvef_split_denominators"
 
 run_audit multitask_split_denominators \
-  "$PYTHON_BIN" scripts/audit_subject_splits_and_denominators.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/audit_subject_splits_and_denominators.py \
   --split-map "$SPLIT_MAP" \
   --cohort "vision_predictions=$MT_VISION_PREDICTIONS" \
   --cohort "structured_predictions=$MT_STRUCTURED_PREDICTIONS" \
@@ -546,7 +550,7 @@ The LVEF split audit intentionally omits fusion. Supplying the aggregate fusion 
 
 ```bash
 run_audit lvef_partial_common_denominators \
-  "$PYTHON_BIN" scripts/build_common_evaluation_denominators.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/build_common_evaluation_denominators.py \
   --modality "vision=$LVEF_VISION_STUDY_PREDICTIONS" \
   --modality "structured=$LVEF_STRUCTURED_PREDICTIONS" \
   --label-authority-csv "$LVEF_LABELS" \
@@ -557,7 +561,7 @@ run_audit lvef_partial_common_denominators \
   --restricted-output-dir "$PHASE1_RESTRICTED_DIR/lvef_partial_common_denominators"
 
 run_audit multitask_common_denominators \
-  "$PYTHON_BIN" scripts/build_common_evaluation_denominators.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/build_common_evaluation_denominators.py \
   --modality "vision=$MT_VISION_PREDICTIONS" \
   --modality "structured=$MT_STRUCTURED_PREDICTIONS" \
   --modality "fusion=$MT_FUSION_PREDICTIONS" \
@@ -576,14 +580,14 @@ These commands compute unique row-key, subject-study ownership, subject-split, i
 
 ```bash
 run_audit train_missingness \
-  "$PYTHON_BIN" scripts/analyze_measurement_missingness.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/analyze_measurement_missingness.py \
   --panel-csv "$STRICT_PANEL" \
   --analysis-split train \
   --min-pattern-count 10 \
   --output-dir "$PHASE1_AGGREGATE_DIR/train_missingness"
 
 run_audit dependency_registry \
-  "$PYTHON_BIN" scripts/build_target_dependency_registry.py \
+  "$LVEF_SCC_PYTHON_RESOLVED" scripts/build_target_dependency_registry.py \
   --historical-task-csv "$STRICT_TASKS" \
   --mapping-csv "$RAW_CANONICAL_MAPPING" \
   --task-metadata-csv "$STRICT_TASK_METADATA" \
@@ -596,7 +600,7 @@ The dependency registry contains raw measurement names and remains restricted. T
 ### 9. Aggregate packet safety gate
 
 ```bash
-"$PYTHON_BIN" - "$PHASE1_AGGREGATE_DIR" <<'PY'
+"$LVEF_SCC_PYTHON_RESOLVED" - "$PHASE1_AGGREGATE_DIR" <<'PY'
 import csv
 import json
 import sys

@@ -22,6 +22,10 @@ Among one-study-per-subject MIMIC-IV-ECHO studies with observed quantitative rep
 
 The former provisional labels `strict21-v1` and `pragmatic26-v1` are superseded hypotheses retained only in the historical OpenEvidence prompts. They are not current panel authorities.
 
+## LVEF endpoint hierarchy
+
+The accepted primary binary definition remains `lvef < 40`. Mandatory secondary sensitivity uses `lvef <= 40`; the additional guideline-category sensitivity uses `lvef < 50`. A Phase 1C label-only audit found that 103/2,833 common imaging-eligible labels, including 20/426 common test labels, equal exactly 40%. The inequality distinction is therefore materially nontrivial, but neither sensitivity was selected from model results and neither may replace the historical primary based on future performance.
+
 ## Required claim boundaries
 
 The study may evaluate frozen-representation utility, multimodal incremental value, observed quantitative report-label prediction, and simulated report completion.
