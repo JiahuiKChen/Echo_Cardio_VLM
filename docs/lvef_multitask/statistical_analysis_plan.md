@@ -1,221 +1,253 @@
 # Statistical analysis plan: LVEF/multitask revalidation
 
-- SAP draft: `phase1b-draft-v1.1`
+- SAP version: `phase1c-prefit-v1.0`
 - Date: 2026-08-03
 - Branch: `codex/lvef-multitask-revalidation`
 - Historical base commit: `23c74ccfd145ab9a423b6942a431a1894a34ab67`
-- Phase 1A audit commit: `62c982bb9fee602cdb7699a6cbebaab3c9852d1c`
-- Status: **not locked; confirmatory fitting and test-performance access are prohibited**
+- Phase 1C starting commit: `ccc6b54e5a9138a23ac2cd756e5483217abc11b3`
+- Status: **model-independent specifications recorded; final SAP lock and all confirmatory access remain closed**
 
-This document is a prospective draft informed only by aggregate, non-performance Phase 1A audits. It preserves the intended analysis while making the remaining lock conditions explicit. It is not a run authorization. A final SAP version/date must be issued after clinical adjudication, artifact/provenance resolution, cohort lock, and approval of clinical margins. Any later amendment must document its reason without using new test performance and must precede the confirmatory run.
+This document prespecifies the statistical design without using new confirmatory performance. It is not permission to fit a model, regenerate a prediction, or inspect test metrics. The final run manifest may cite this version only after the provenance, duplicate-key, clinical metadata, dependency-registry, panel, common-denominator, config-checksum, safety, and owner-authorization gates in `phase1c_pre_revalidation_lock.md` have passed. A later change must be versioned with a reason that does not depend on test performance and must precede test access.
 
-## 1. Historical analysis versus confirmatory revalidation
+## 1. Authority and question
 
-The accepted version-10 abstract and `docs/results_snapshot/2026-04-01_fullscale/` are immutable historical authorities. Historical values will not be overwritten. The Phase 1A aggregate packet is audit evidence, not a new results snapshot and not confirmatory performance.
+The accepted version-10 ASA abstract and `docs/results_snapshot/2026-04-01_fullscale/` remain immutable historical authorities. The historical binary endpoint is exact `lvef < 40`; it will not be rewritten to match a guideline inequality. A new revalidation will receive a distinct dated result set and preservation manifest.
 
-Separately, the complete `SHA256SUMS` check of the restricted SCC `freeze_fullscale_...` preservation pack currently fails. Selected duplicate pairs are byte-identical, but this does not validate that whole SCC pack. The check was not performed against the Git directory `docs/results_snapshot/2026-04-01_fullscale/`. The new revalidation, if authorized, will use a new dated result set with distinct configs, commands, aggregate outputs, hashes, and claim boundaries.
+The primary scientific anchor is continuous LVEF report-label agreement. The broader question is whether frozen whole-study imaging representations, leakage-minimized observed structured context, or their early fusion improve quantitative structured report-label completion on identical held-out subjects. This is agreement with observed report labels, not direct caliper/trace localization, physiological ground truth, or accuracy for naturally unreported labels.
 
-## 2. Provisional primary question
+## 2. Estimand, cohort, and split
 
-Among one-study-per-subject MIMIC-IV-ECHO studies with observed quantitative report labels and a usable frozen whole-study video representation, does adding leakage-minimized, realistically masked structured measurements to the representation—or adding the representation to structured measurements—improve held-out quantitative report completion on identical subjects?
+- Primary estimand: performance among the deterministic one-study-per-subject selected cohort that is imaging-eligible and has the target label observed.
+- Selected cohort authority candidate: 4,530 studies from 4,530 subjects.
+- Split-map authority candidate: the restricted subject split map, with 3,171 train, 679 validation, and 680 test subjects. Its checksum and ownership gates must pass before use.
+- The five readable-DICOM studies with reason `NO_MULTIFRAME_CINE_CANDIDATE` are provisionally imaging-ineligible. They are excluded from **all three modalities** in every primary paired comparison.
+- A structured-only full-availability sensitivity may retain those five studies. It is a different available-case estimand, must report its own denominators, and cannot support a paired modality or incremental-value claim.
+- Repeated studies are excluded. A future repeated-study analysis requires a separate subject-clustered SAP.
 
-The exact primary panel, task families, and clinical equivalence margins are not yet locked. This question becomes confirmatory only after external clinical/formula adjudication is reviewed and incorporated without reference to model performance.
+For every target and split, the primary common denominator is the intersection of:
 
-## 3. Cohort and split estimand
+1. the selected one-study-per-subject cohort;
+2. the locked imaging-eligibility rule;
+3. the deterministic split assignment;
+4. an observed, valid target after locked raw/canonical and unit handling; and
+5. every prespecified modality prerequisite.
 
-- Primary population: the historical 4,530-patient selected cohort, with one deterministic study per patient.
-- Imaging-evaluable population: selected studies with a usable study embedding under a prespecified imaging-usability rule. Phase 1A finds 4,525 such studies; the root cause for five exclusions must be resolved before lock.
-- Split authority candidate: the restricted 4,530-subject split map (3,171 train, 679 validation, 680 test), after final checksum/provenance confirmation.
-- No subject may appear in more than one split.
-- The target-specific common cohort is the intersection of observed target, usable study representation, and all prespecified modality prerequisites.
-- Vision-only, structured-only, and early fusion must use identical ordered subject-study-target rows and identical target values for training, validation, and test comparisons.
-- Equal counts are insufficient; restricted-memory set, pair, ownership, split, and target equality must be checked, with aggregate flags and discrepancy counts exported.
-- Repeated-study expansion is excluded from this SAP.
+Vision-only, structured-only, and fusion use the same ordered subject-study-target rows and exactly equal target values in train, validation, and test. Construction occurs before fitting. Equal counts are insufficient: restricted checks must establish exact equality of subject IDs, study IDs, subject-study pairs, split labels, target names, target values, and row multiplicities, then export only aggregate flags, counts, and checksums. A discrepancy blocks all three modalities for that target; rows are never trimmed post hoc to make metrics agree.
 
-Phase 1A establishes that the historical multitask structured-only tables include up to five studies that vision-only and fusion omit. Those historical cross-modality results are not a valid paired common-denominator analysis. This discrepancy must be corrected by constructing the common cohort before any new fitting, not by post hoc metric adjustment.
+An observed non-target structured predictor is not a row-level eligibility requirement. Once a study is imaging-eligible and its target is observed, a row with every allowed structured predictor missing remains in all modalities and is represented through the locked training medians and eligible missingness indicators. This prevents the structured modality from silently defining a more favorable denominator. The target-specific training feature set itself must still pass the support rules below.
 
-## 4. Candidate analysis panels—not yet clinical authorities
+The historical accepted results retain their original denominators and labels. This revalidation rule does not silently rewrite them.
 
-### Historical panel
+## 3. Panel constructs and target support
 
-`legacy29` denotes the 29 known-unit/support tasks reported in the accepted abstract. The restricted artifact named `strict_tasks` is this historical support panel; its filename must not be interpreted as a leakage-minimized designation. `legacy29` may be reproduced only as a historical sensitivity and may not be called clinically adjudicated or leakage-minimized.
+The historical `legacy29` list is a support/unit panel, not a leakage-minimized clinical panel. It may be shown only as a historical sensitivity. The Phase 1C clinical work will define three different constructs:
 
-### Candidate strict panel
+1. strict leakage-minimized measurement completion;
+2. target-family-masked report completion; and
+3. pragmatic same-report completion.
 
-The working label `strict21-v1` is a **candidate hypothesis**, not a frozen panel. Its current candidate targets are:
+No final membership is asserted here. `lvef` remains a separate anchor and is not included in a multitask macro average. Unresolved aliases, formula relations, units, or family masks fail closed. Context-only patient/report fields are excluded from the primary echo-measurement macro summary.
 
-- LV end-diastolic and end-systolic diameters;
-- septal and inferolateral wall thickness;
-- RV diameter;
-- LA four-chamber length, LA dimension, and RA length;
-- sinus, ascending-aorta, and arch diameters;
-- AV peak velocity;
-- MV peak A and one harmonized MV peak E;
-- septal and lateral e-prime;
-- TR peak velocity;
-- LVOT VTI and LVOT diameter;
-- TAPSE;
-- IVC diameter.
+The family-masked and pragmatic constructs provisionally use the same scoreable echo-measurement targets as the strict construct; they differ in permitted predictor context, not by promoting BSA, height, blood pressure, or heart rate into primary echo-measurement targets. Those five fields are context-only or a separately labeled metadata benchmark. In the pragmatic construct they may become predictors after review, but exact aliases, duplicates, deterministic formulas, and near-deterministic target reconstruction remain prohibited.
 
-For a target, the complete adjudicated dependency family will be removed from structured predictors. Unadjudicated relationships fail closed. External adjudication must determine duplicates/synonyms, deterministic and near-deterministic derivatives, family membership, clinically near-target fields, units, and whether any candidate target is unsuitable. The final panel may change without consulting model performance.
+A target can enter a locked scored panel only if its common cohort has at least 120 train, 40 validation, 40 test, and 250 total observed labels, and its training-target IQR is finite and greater than zero. These historical support floors are prespecified independently of performance. No target may be silently removed after model fitting. If a locked primary-panel target later fails an input or metric gate, the run fails and reports the reason; the macro denominator is not changed after test access.
 
-### Candidate pragmatic panel
+For each binary LVEF definition, train, validation, and test must each contain at least 20 events and 20 nonevents. The primary `<40` analysis blocks if this condition fails. A secondary sensitivity that fails it is not fit and is reported as unsupported, without substitution.
 
-The working label `pragmatic26-v1` is also an unfrozen hypothesis: candidate strict targets plus BSA, height, resting heart rate, resting SBP, and resting DBP. Exact aliases and deterministic or near-deterministic derivations remain prohibited. Clinically related nonalgebraic same-report predictors may be allowed only after adjudication and must be labeled pragmatic, not leakage-minimized.
+## 4. Masking and preprocessing
 
-Fractional shortening and TR gradient are candidate deterministic-calculation controls rather than scored targets. The proposed merge of `mv_peak_e` and `mitral_e_velocity` remains an adjudication hypothesis, not an authority.
+The exact target and every prohibited field are removed from the feature schema, not merely set to missing. For each target and panel construct, the order is binding:
 
-## 5. Target masking and preprocessing order
+1. resolve the target through the locked raw/canonical map and verified unit;
+2. remove the exact target, every verified alias/duplicate, and all prohibited deterministic, near-deterministic, or family fields;
+3. freeze the allowed raw and canonical predictor allowlist;
+4. construct and checksum the common modality denominator;
+5. determine feature eligibility from target-specific training rows only;
+6. fit training-only median imputation and missing-indicator rules;
+7. fit training-only scaling;
+8. fit candidate models on training data only;
+9. select hyperparameters on validation data only;
+10. fit the prespecified validation-only binary calibrator and operating point, where applicable; and
+11. evaluate the frozen specification once on test.
 
-For each observed target:
+Masked fields cannot affect eligibility, imputation, scaling, or missing indicators. Structured and fusion models use the same target-specific structured feature list and transformations. Vision and fusion use the same imaging vector and vision transformation.
 
-1. Identify the target from the locked raw/canonical mapping.
-2. Remove the exact target and all adjudicated raw/canonical aliases.
-3. Remove deterministic ancestors/descendants and, for strict analysis, the entire adjudicated target family.
-4. Freeze allowed predictor names and the availability-mask definition.
-5. Determine feature eligibility from training data only.
-6. Fit imputation on training data only.
-7. Apply a fixed, prespecified missing-indicator rule and fit scaling on training data only.
-8. Fit candidate models on training data only.
-9. Select hyperparameters and any operating rule using validation data only.
-10. Evaluate the selected specification once on the locked test set.
+### Structured feature eligibility
 
-Target/family removal must occur before imputation, missing-indicator creation, scaling, or any other transform. A masked field may not influence feature eligibility or preprocessing statistics. The exact training-support/availability rule for feature eligibility and the exact rule for creating, retaining, or suppressing missing indicators remain unresolved and must be locked before fitting.
+An allowed numeric predictor is eligible only if, among target-specific training rows, it has:
 
-## 6. Predictors and models
+- at least `max(20, ceil(0.05 * n_train))` finite observed values; and
+- at least two distinct finite values.
 
-- Vision-only: 512-dimensional study mean of frozen EchoPrime video-encoder clip embeddings.
-- Structured-only: allowed structured measurements after the applicable mask, training-only feature eligibility, median imputation, prespecified missing indicators, and standardization.
-- Early fusion: concatenated vision and allowed structured blocks, using the same target-specific cohort and structured preprocessing path.
-- Candidate primary model: Ridge regression.
-- Binary LVEF sensitivity: candidate class-weighted logistic regression. The penalty/C grid, compatible solver, class-weight rule, validation selection metric, and tie-break remain unresolved.
-- Learned pooling, transformers, end-to-end pixel models, modality gating, and generative models are excluded.
+The 5% rule preserves the historical minimum-coverage convention; the absolute floor prevents unstable medians in smaller target cohorts. Eligibility is not recomputed in validation or test. The exact ordered feature list, exclusions, availability counts, and checksum are recorded for each target and construct.
 
-The current `echo_prime_encoder.pt` checkpoint has SHA-256 `7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b`, but Phase 1A does not prove that it generated the historical embeddings. Checkpoint-to-embedding provenance is a pre-run gate.
+### Imputation, indicators, and scaling
 
-Probability calibration is not yet specified. Before fitting, the final SAP must state whether calibration is omitted or uses a prespecified method, which non-test data fit it, and how calibration is kept separate from hyperparameter selection. Likewise, any reported sensitivity/specificity/PPV/NPV requires a validation-only operating-point criterion and tie-break fixed before test access.
+- Continuous structured features: training median imputation, then training mean/standard-deviation scaling.
+- Vision dimensions: training mean/standard-deviation scaling.
+- Primary structured and fusion models: add one binary missingness indicator for each eligible structured predictor that has both observed and missing values in the target-specific training set. Indicators are not scaled.
+- No indicator is created for a prohibited field, a training-complete field, or an ineligible field.
+- A mandatory secondary sensitivity repeats structured and fusion analyses without missingness indicators on the same common denominator.
+- For simulated masking of an otherwise allowed field, its indicator changes consistently. Target/family-prohibited fields remain absent and cannot leave an indicator.
 
-## 7. Validation-only model selection
+These indicators may capture clinical workflow as well as physiology. Their contribution supports report-completion prediction only and is not a causal claim.
 
-Candidate Ridge alpha grid: `0.001, 0.01, 0.1, 1, 10, 100, 1000`.
+## 5. Models and validation-only selection
 
-For each target and modality, select alpha by minimum validation loss using the target's prespecified primary metric. Ties select the larger alpha. No test metric may influence alpha, feature eligibility, panel membership, masking, threshold, calibration, margin, or exclusion.
+### Continuous outcomes
 
-The selected train-only fit will be evaluated on test without train-plus-validation refitting in the primary analysis. Any refit analysis must be separately prespecified before test access.
+All modalities use Ridge regression with alpha grid:
 
-Before this section can be locked, the binary model must have a fixed penalty/C grid, solver compatibility rule, class-weight rule, selection metric, and tie-break. The structured path must have a fixed training-only feature-eligibility threshold and missing-indicator policy. Calibration and operating-point policies must state their validation-only data flow and must not reuse test outcomes.
+`0.001, 0.01, 0.1, 1, 10, 100, 1000`
 
-## 8. Estimands and metrics
+Use `fit_intercept = true`, solver `lsqr`, tolerance `1e-8`, and `max_iter = 10000`. For each target, construct, and modality, select the alpha with the lowest full-precision validation MAE. An exact tie selects the larger alpha. The same grid and tie rule apply to vision, structured, and fusion. The selected training-only model is not refit on train plus validation for the primary analysis.
 
-### LVEF regression anchor
+### Binary LVEF choice
 
-- Primary candidate metric: MAE in EF percentage points.
-- Secondary: RMSE, R-squared, Pearson and Spearman correlation, continuous calibration intercept/slope, and externally adjudicated absolute-tolerance rates.
+Both approaches are prespecified, with different roles:
+
+- **Primary binary analysis:** a separately trained class-weighted logistic regression. This preserves the accepted-abstract model estimand—direct prediction of reduced-LVEF status—and supplies probabilities for discrimination and calibration.
+- **Secondary coherence analysis:** threshold the continuous Ridge LVEF prediction at the corresponding EF cutoff. This asks whether continuous report-label completion is directionally consistent with clinical categorization. It does not replace the logistic analysis and is not probability calibrated.
+
+The historical primary label is `lvef < 40`. Separate, explicitly secondary models use `lvef <= 40` and `lvef < 50`; each uses the same locked specification and its own labels. Before fitting or test-performance access, report `n(lvef == 40.0)` using exact parsed numeric equality after the historical subject/measurement median, by all/train/validation/test for both the selected-preimaging and primary-common-imaging-eligible scopes.
+
+The logistic specification is:
+
+- L2 penalty;
+- solver `liblinear`;
+- `max_iter = 5000`;
+- tolerance `1e-4`, `fit_intercept = true`, and random seed `20260801`;
+- training-derived `class_weight = balanced`;
+- C grid `0.001, 0.01, 0.1, 1, 10, 100, 1000` for every modality;
+- select maximum full-precision validation AUROC;
+- exact tie selects the smaller C (stronger regularization).
+
+No model or grid is changed after viewing test results.
+
+## 6. Binary calibration and operating point
+
+Post-hoc probability calibration is fixed as Platt sigmoid scaling of the selected model's decision score. The base classifier is fit on training only. After C selection, the unweighted sigmoid calibrator is fit on validation labels only and then frozen. No method comparison is performed. This deliberately reuses the validation set after C selection; calibration is therefore secondary, conditional on the selected model, and potentially optimistic because the validation cohort is limited. It remains preferable to fitting or choosing calibration on test, but it does not provide an independent calibration-validation sample. Uncalibrated and calibrated test probabilities are retained on SCC; AUROC/AP use the selected base score, while Brier score and probability-calibration summaries use calibrated probabilities. If validation has one class or calibration fails a prespecified numerical check, that endpoint fails rather than falling back silently.
+
+Threshold-dependent summaries use a validation-only operating point. Candidate cutoffs are the unique calibrated validation probabilities plus boundary cutoffs. Select the cutoff maximizing Youden's J (`sensitivity + specificity - 1`); ties select greater sensitivity, then greater specificity, then the larger cutoff among classifications that remain identical. Freeze the cutoff before test access. This equal-weights rule is a reproducible research operating point, not a deployment utility threshold. A fixed probability cutoff of 0.5 is secondary and descriptive.
+
+For thresholded continuous regression, the prespecified EF cutoff itself determines the predicted class; there is no learned operating threshold.
+
+## 7. Outcome hierarchy
+
+### Continuous LVEF anchor
+
+1. Primary metric: MAE in EF percentage points.
+2. Key secondary: proportion with absolute error `<=5` EF points.
+3. Secondary agreement: RMSE, mean signed error, R-squared, Pearson correlation, Spearman correlation, and continuous calibration intercept/slope.
+4. Sensitivity tolerance coverage: absolute error `<=4` and `<=8` EF points.
+5. Descriptive threshold-band analyses: all cases remain in the primary analysis; report strata inside versus outside 35%–45%, repeat with 37%–43%, and optionally repeat binary summaries after excluding the prespecified band.
+
+The 5-point tolerance, 4/8-point sensitivities, paired-MAE margin of 1.0 point, 0.5/2.0-point margin sensitivities, and 35%–45% or 37%–43% bands are `EXPERT_INFERENCE`. They are not guideline clinical equivalence, MCID, or physiological truth.
 
 ### Multitask report completion
 
-- Per-task primary candidate metric: MAE divided by the training-target IQR.
-- Also report native-unit MAE, RMSE, R-squared, correlation, continuous calibration, and externally adjudicated tolerance rates.
-- Candidate panel summary: unweighted mean normalized MAE across every task retained in the final locked strict panel, with all tasks shown.
-- Secondary summaries: median/IQR across tasks, family-balanced means, negative-R-squared count, worst-task results, and win/loss/tie counts using predeclared clinical tie margins.
+- Per-task primary: native-unit MAE.
+- Cross-task standardized summary: MAE divided by the training-target IQR.
+- Primary locked-panel macro summary: unweighted mean normalized MAE across every prespecified included task, with the fixed task denominator shown.
+- Secondary per-task: RMSE, R-squared, Pearson/Spearman correlation, mean signed error, and continuous calibration intercept/slope.
+- Secondary summaries: median/IQR normalized MAE, family-balanced means, negative-R-squared count, worst-task table, and win/tie/loss counts only where an endpoint-specific margin has been independently locked.
 
-Mean normalized MAE and mean R-squared alone are insufficient because task support and missingness are heterogeneous. Task-level denominators and uncertainty remain visible; no undefined task may be silently removed from a macro summary.
+Native-unit results and denominators remain visible for every task. Normalized MAE and MAE/train-IQR support cross-task description but do not replace native-unit reporting. No shared native-unit margin is inferred across heterogeneous families.
 
-### Binary endpoints
+### Binary LVEF
 
-- Historical reduced LVEF remains `<40%` and will not be silently changed.
-- Primary candidate discrimination measure: AUROC.
-- Secondary: average precision, Brier score, calibration intercept/slope, and performance at validation-selected operating points.
-- A probability threshold of 0.5 is not clinically interpreted without calibration.
-- LVEF `<50%` is allowed only if external adjudication supports it as an explicitly secondary sensitivity and it is locked before test access.
+1. Primary discrimination metric for separately trained logistic regression: AUROC for `lvef < 40`.
+2. Key secondary: average precision, calibrated Brier score, calibration intercept/slope, and calibration plot summaries.
+3. Threshold-dependent secondary: sensitivity, specificity, PPV, NPV, F1, and balanced accuracy at the frozen validation-selected operating point, with prevalence and confusion-matrix counts.
+4. Coherence secondary: AUROC/AP using negative continuous predicted LVEF as a score and classification at the exact EF cutoff.
+5. Endpoint sensitivities: repeat the prespecified binary framework for `lvef <= 40` and `lvef < 50`; neither can replace `<40` based on results.
 
-Clinical absolute-error/equivalence margins and task-specific binary thresholds remain unresolved pending external adjudication. They must not be selected from historical or confirmatory model performance.
+## 8. Paired contrasts and bootstrap inference
 
-## 9. Paired contrasts and uncertainty
+For every applicable metric, effect orientation is reported explicitly. Calculate all three modality contrasts:
 
-For each target and applicable panel summary, calculate:
+- fusion minus vision;
+- fusion minus structured;
+- structured minus vision.
 
-- early fusion minus vision-only;
-- early fusion minus structured-only;
-- structured-only minus vision-only.
+The two fusion contrasts are the incremental-value contrasts. Structured minus vision is secondary comparative context.
 
-Use 10,000 paired subject-level bootstrap replicates. Resample held-out subjects with replacement once per replicate and apply the same draw to all modalities and, for panel summaries, all tasks. Report percentile 95% intervals, seed, valid-replicate count, and undefined-metric frequency. The primary cohort has one study per subject; any future repeated-study analysis would carry every eligible study for each sampled subject.
+Use 10,000 nonstratified paired subject bootstrap replicates with seed `20260801`. Models, preprocessing, calibrators, and operating points remain fixed. For LVEF, draw from the locked common LVEF test subjects. For panel summaries, draw once per replicate from the locked imaging-eligible test-subject roster and reuse that subject multiplicity across all modalities and tasks; each task is evaluated only where its label is observed. Thus modality pairing and cross-task missingness dependence are preserved. A panel-macro replicate is invalid if any locked panel task is undefined; it is never recomputed over fewer tasks. Report percentile 95% intervals, valid-replicate count, and undefined/one-class replicate frequency. No metric is silently replaced when a replicate is undefined.
 
-Intervals are conditional on fixed selected models unless a separately labeled refitting bootstrap is prespecified. Statistical superiority must not be claimed from separately generated model-specific intervals. It requires the paired interval for the prespecified contrast to exclude the null in the favorable direction and compliance with multiplicity rules.
+For a prespecified superiority test, let `d` be the observed paired contrast and `d*` the valid bootstrap replicate contrasts. Use a null-centered, two-sided bootstrap p-value: `(1 + count(|d* - d| >= |d|)) / (B_valid + 1)`, capped at one. Keep the percentile confidence interval separate. Report the unadjusted p-value and apply the prespecified Holm procedure within its family. This centered-bootstrap test and percentile interval are approximate inference conditional on the fixed selected models; neither substitutes for an independently replicated study.
 
-## 10. Multiplicity
+These intervals are conditional on the selected fitted models; they do not include model-training variability. Statistical superiority cannot be inferred from separate model-specific intervals. It requires the paired contrast interval and the multiplicity rule below.
 
-- The two candidate primary strict-panel contrasts—fusion versus vision and fusion versus structured—use Holm familywise adjustment at two-sided alpha 0.05.
-- LVEF is a prespecified clinical anchor reported with paired intervals; avoid a separate binary significance claim unless explicitly placed in the final hierarchy.
-- Per-task contrasts are secondary/exploratory. If tests are supplied, report adjusted false-discovery-rate q-values while retaining effect estimates and intervals.
-- Clinical win/tie/loss margins must be externally adjudicated and locked before test access.
+## 9. Multiplicity and practical-equivalence language
 
-These rules become binding only when the final panel and estimands are locked.
+The hierarchy is fixed:
 
-## 11. Missingness and masking analyses
+1. One core confirmatory family contains four fusion incremental-value claims: continuous-LVEF MAE for fusion versus vision and fusion versus structured, plus locked strict-panel mean normalized MAE for fusion versus vision and fusion versus structured. Apply Holm familywise two-sided alpha 0.05 across all four. This provides global FWER control across the manuscript's two core outcomes. The family cannot activate until a genuinely locked strict panel exists.
+2. Binary `<40` logistic AUROC fusion contrasts form a separate, explicitly secondary two-contrast Holm family. It is not part of the core global-FWER claim.
+3. Structured-versus-vision, alternative metrics/endpoints, pragmatic/family-masked constructs, indicator sensitivity, threshold bands, and subgroup analyses are secondary or exploratory with effect estimates and paired intervals.
+4. If task-level inferential p-values are reported, apply Benjamini-Hochberg FDR separately within the prespecified panel and contrast for native-unit MAE; all task estimates and intervals remain visible. No FDR result changes panel membership.
 
-- Primary evaluation is conditional on the target being observed in the historical report.
-- Single-target and whole-family masking are required candidates.
-- Random 10%, 30%, and 50% structured-field masking and empirically sampled joint masks are secondary candidates.
-- Empirical availability/mask distributions are learned from training reports only.
-- Report by structured-information burden and prespecified pattern strata, with suppression of rare patterns.
-- Natural missingness is plausibly informative/MNAR. No accuracy claim is permitted for truly missing labels without independent reference remeasurement.
-- Missing indicators may encode workflow and provenance; analyses with and without them must be distinguished.
+For LVEF paired-MAE differences, the primary expert-inference practical-equivalence margin is `delta = 1.0` EF point; repeat at 0.5 and 2.0 points. With lower MAE favorable:
 
-Phase 1A training data show task missingness from 0.47% (BSA) to 75.12% (TAPSE), with IVC diameter, height, fractional shortening, arch diameter, tissue-Doppler e-prime, and LV end-systolic diameter among the more incomplete fields. The training-only pattern distribution may define realistic simulations but cannot establish what an unreported value truly was.
+- margin-exceeding lower error under the expert-inference margin: the whole 95% paired interval is below `-delta`;
+- statistically lower error but magnitude not established: the interval is below zero but not wholly below `-delta`;
+- practical equivalence under this research margin: the whole interval lies within `[-delta, +delta]`;
+- margin-exceeding higher error under the expert-inference margin: the whole interval is above `+delta`;
+- otherwise: indeterminate.
 
-## 12. Calibration and selective prediction
+Use the phrase “practical equivalence under an expert-inference margin,” not clinical equivalence, MCID, or noninferiority. Non-LVEF win/tie/loss categories remain unavailable until each target's definition, unit, and margin are locked.
 
-Optional only after the primary revalidation specification is locked:
+## 10. Missingness and masking analyses
 
-- validation-calibrated conformal intervals for continuous targets;
-- validation-fixed abstention rules;
-- risk-coverage curves;
-- interval coverage/width by target family and missingness burden.
+- The primary estimand conditions on the target being observed in the report.
+- Strict exact-target/alias masking and the appropriate dependency or target-family mask are part of the feature definition, not missing-data imputation.
+- Single-field and whole-target-family masking are required constructs where clinically defined.
+- Random 10%, 30%, and 50% masking of otherwise allowed structured fields and training-empirical joint-pattern masking are secondary simulations.
+- Empirical mask patterns and any information-burden strata are learned from training reports only, then frozen.
+- Report primary results with missing indicators and the mandatory no-indicator sensitivity.
+- Report performance by prespecified structured-information burden and suppression-safe common missingness patterns.
 
-No threshold, interval, or coverage rule may be tuned on test.
+Natural report missingness is plausibly informative/MNAR. No analysis can estimate accuracy for a naturally unobserved target without independent reference remeasurement. Simulated masking among observed targets estimates recovery of deliberately withheld recorded labels and must not be relabeled as validation on naturally missing truth.
 
-## 13. Pre-fit failure rules
+## 11. Subgroup and fairness reporting
 
-Fail before model fitting if any of the following is unresolved:
+Subgroups are chosen without performance inspection. If authorized, linkable source fields exist and aggregate cell-size rules pass, report the continuous-LVEF primary metric, `<40` discrimination/calibration, target availability, and structured-information burden by:
 
-- worktree commit/config mismatch with the run manifest;
-- unresolved SCC preservation-pack checksum or required input-artifact authority failure;
-- unresolved checkpoint-to-embedding provenance or missing new-run environment capture;
-- unresolved clip-component non-index payload mismatch;
-- unresolved root cause or exclusion rule for the five selected studies without cine candidates;
-- split overlap, duplicate assignment, or invalid subject-study ownership;
-- nonidentical modality IDs, subject-study pairs, split assignments, or target values;
-- target, alias, deterministic derivative, or prohibited family member surviving the mask;
-- preprocessing fitted outside training data;
-- unresolved binary logistic penalty/C grid, solver, class-weight, selection metric, or tie-break;
-- unresolved probability-calibration policy or validation operating-point criterion;
-- unresolved structured feature-eligibility or missing-indicator rule;
-- unresolved unit, raw/canonical mapping, clinical family, or equivalence margin for an included target;
-- target support below the prespecified minimum in train, validation, or test;
-- nonfinite inputs after declared preprocessing;
-- restricted output resolving inside the Git repository;
-- unlogged design change after new test results exist.
+- recorded administrative sex categories; and
+- age 18–64, 65–79, and at least 80 years.
 
-Model failures and undefined metrics remain visible in aggregate failure tables and macro-summary denominators.
+Race/ethnicity is exploratory only after the source coding, missing/unknown handling, category mapping, and governance acceptability are locked before test access. It is omitted with an explicit feasibility statement if those conditions fail. No subgroup is merged or dropped because its results appear unfavorable.
 
-## 14. Phase 1B lock requirements
+Suppress a subgroup metric when `n < 40`; suppress a binary metric when either class has fewer than 10 subjects. Report denominators and uncertainty, but do not make powered fairness-equivalence claims or use subgroup results for model selection. Formal interaction tests and intersectional analyses are exploratory and require a separate multiplicity statement before test access.
 
-Before issuing a final SAP and authorizing confirmatory test access:
+## 12. Pre-fit failure rules
 
-1. Classify the complete SCC preservation-pack checksum failure without modifying the pack or the Git historical snapshot.
-2. Classify the 9,605 clip-key payload mismatches and establish whether they alter scientific content.
-3. Resolve the five-study cine-stage attrition and lock the imaging-usability exclusion/reprocessing rule.
-4. Establish the checkpoint-to-embedding link or approve explicit limitation language and a defensible alternative.
-5. Capture the exact environment for the future run.
-6. Review external clinical/formula adjudication; version the dependency registry and lock raw-name family exclusions.
-7. Lock strict/pragmatic panel membership, units, minimum support, families, thresholds, and clinical margins without performance selection.
-8. Lock the binary logistic penalty/C grid, solver, class-weight rule, selection metric/tie-break, probability-calibration policy, validation operating-point criterion, structured feature-eligibility rule, and missing-indicator rule.
-9. Generate an aggregate common-cohort dry run that passes every exact identity gate for all modalities and targets.
-10. Record governance approval for any deterministic regeneration of missing historical predictions; none is currently authorized.
+Fail before fitting if any of the following is unresolved or false:
 
-## 15. Aggregate-only export policy
+- source commit, final config checksum, command checksum, or run-manifest mismatch;
+- selected-cohort canonical clip authority or duplicate-key resolution;
+- embedding-regeneration decision, checkpoint identity, or new-run environment capture;
+- subject split, one-study ownership, imaging eligibility, or exact common-denominator identity;
+- raw target definition/unit, alias handling, dependency registry, applicable family mask, or final panel membership;
+- target support or binary class-support minimum;
+- prohibited field or its missing indicator survives masking;
+- structured/fusion feature-list or transformation mismatch;
+- preprocessing learned outside training;
+- nonfinite values after the declared transform;
+- hyperparameter, calibration, operating-point, bootstrap, or multiplicity specification mismatch;
+- equality-at-40 aggregate count not recorded before test access;
+- required aggregate safety output fails or a restricted output path resolves inside Git;
+- a design change is proposed using new test performance; or
+- explicit owner authorization is absent.
 
-Git may receive aggregate counts, suppression-safe missingness tables, task/family metrics, paired-delta intervals, configuration, environment/checkpoint hashes, and code. Subject/study IDs, labels, predictions, embeddings, DICOM paths, manifests, logs, and restricted discrepancy files remain on SCC.
+Model failures and undefined metrics remain visible in aggregate failure tables. No post-test target, row, model, replicate, or metric removal is allowed unless a predeclared rule applies.
 
-Every future aggregate snapshot requires SHA-256 checksums, source commit, config checksum, command log, data-release identity, environment metadata, checkpoint checksum, and explicit historical-versus-revalidation labeling.
+## 13. Preservation and aggregate-only output
+
+The immutable historical SCC freeze is not a future preservation authority. Every authorized revalidation must create a new safe-relative-path manifest recording file sizes and SHA-256 values; source commit; command/config/checkpoint checksums; Python, PyTorch, scikit-learn, CUDA, and cuDNN versions; scheduler/job identity; timestamp; cohort/split/panel/model versions; and aggregate safety-gate result.
+
+Git may receive aggregate counts, suppression-safe tables, task/family metrics, paired intervals, configs, environment/checkpoint hashes, and code. Subject, study, clip, and DICOM identifiers; labels; predictions; embeddings; locators; manifests containing restricted rows; and restricted logs remain on SCC.
+
+## 14. Remaining lock conditions
+
+The statistical choices in this SAP do not open confirmatory access. The final SAP and config remain unlocked until `phase1c_pre_revalidation_lock.md` documents passage of every required provenance, duplicate-key, canonical-clip, imaging-eligibility, common-denominator, raw metadata, clinical dependency, panel, margin, safety, checksum, and owner-authorization gate.

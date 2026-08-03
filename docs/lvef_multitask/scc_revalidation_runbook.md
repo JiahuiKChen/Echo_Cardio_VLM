@@ -688,9 +688,11 @@ Paste or attach only these aggregate outputs:
 
 Also report the SCC Git commit shown by `git rev-parse HEAD`. Do not paste subject/study IDs, row-level labels or predictions, raw dependency registry rows, embeddings, DICOM paths, or anything from the restricted audit directory.
 
-The unresolved freeze-manifest, clip-component, five-study attrition, and environment/checkpoint diagnostics are isolated in [SCC Phase 1B aggregate-only follow-up commands](scc_phase1b_followup_commands.md). Run that block only after reviewing the Phase 1A packet; it writes to a fresh Phase 1B audit root and has its own final allowlist gate.
+The then-unresolved freeze-manifest, clip-component, five-study attrition, and environment/checkpoint diagnostics are isolated in [SCC Phase 1B aggregate-only follow-up commands](scc_phase1b_followup_commands.md). Run that block only after reviewing the Phase 1A packet; it writes to a fresh Phase 1B audit root and has its own final allowlist gate. The completed follow-up is adjudicated in `phase1b_scc_followup_findings.md`: the 9,605 serialization/index findings and provisional five-study imaging-eligibility rule are no longer open scientific questions, while the 32 duplicate keys and historical environment linkage remain unresolved.
 
-## Phase 1B lock blockers
+## Historical Phase 1B lock blockers
+
+This checklist records the pre-follow-up gate. Where it conflicts with later findings, `phase1b_scc_followup_findings.md` and `phase1c_pre_revalidation_lock.md` control.
 
 Do not proceed to confirmatory revalidation until all of the following are resolved:
 

@@ -31,13 +31,15 @@ The 4,696-study embedding store is not a one-study-per-subject selected-cohort s
 |---|---:|---|
 | Download failure | 0 | Ruled out at study level |
 | No readable DICOM | 0 | Ruled out at study level |
-| No recorded cine candidate | 5 | Proven stage of loss; root cause unresolved |
+| No multiframe cine candidate | 5 | Phase 1B reason classification: `NO_MULTIFRAME_CINE_CANDIDATE`; provisionally imaging-ineligible under the historical cine rule |
 | Cine extraction failure after candidacy | 0 | Ruled out at study level |
 | Clip-embedding failure after extraction | 0 | Ruled out at study level |
 | Study-aggregation failure after clip embedding | 0 | Ruled out at study level |
 | Indeterminate downstream loss | 0 | No later attrition |
 
-The five cannot yet be labeled a principled exclusion. Restricted aggregate diagnostics must distinguish a true lack of usable multiframe cine from manifest or processing omission. Three of the five have numeric LVEF labels. If no usable cine exists under a prespecified imaging-usability definition, exclude them from all imaging comparisons and report the attrition; if processing was incomplete, deterministically reprocess before cohort lock. A sensitivity analysis may compare the selected-label cohort with and without the imaging-usability restriction, but cannot manufacture an imaging prediction for a study without usable input.
+The Phase 1B restricted diagnostic assigns all five the same reason: readable DICOM was the last successful stage and no multiframe cine candidate exists under the historical candidacy rule. The split distribution is three train, one validation, and one test. All five have at least one `legacy29` label, and three have numeric exact-raw LVEF before imaging linkage. They are therefore provisionally imaging-ineligible rather than unexplained extraction, embedding, or aggregation failures. This classification does not independently reread source pixels or establish that a different future imaging-usability definition would reject every DICOM.
+
+The primary modality-comparison cohort is formed by intersecting the selected one-study-per-subject cohort with the locked imaging-eligibility rule **before** target availability and before any modality-specific preprocessing. Vision-only, structured-only, and fusion receive the identical imaging-eligible subject-study rows; the five are excluded from all three. A structured-only full-availability sensitivity may retain them only with a separate denominator label and no paired modality or incremental-value claim. The accepted abstract's historical denominators and results remain historical and are not silently rewritten.
 
 ## LVEF funnel
 
@@ -79,6 +81,15 @@ On the common rows:
 The common-denominator audit nevertheless records 344 identity failures because panel/structured sources include up to five imaging-ineligible studies that vision/fusion omit across target, split, and identifier-level comparisons. At test, only six tasks already have exact equality across all sources (`arch_diam`, `fs`, `height_cm`, `ivc_diam`, `left_ventricular_end_systolic_diameter`, and `mv_peak_a`); the remaining 23 have one structured/panel study outside the common set. This is an input-availability denominator difference, not a continuous-label or ownership disagreement.
 
 Historical cross-modality multitask summaries therefore cannot be interpreted as paired incremental-value estimates. Confirmatory revalidation must construct the observed-target-plus-embedding common cohort first and feed the same ordered subject-study-target rows to every modality.
+
+## Locked primary versus sensitivity denominators
+
+| Analysis | Imaging eligibility | Structured-label availability | Permitted inference |
+|---|---|---|---|
+| Primary LVEF vision/structured/fusion | Required identically for every modality | Exact numeric LVEF observed; identical subject-study rows and label values | Paired modality contrasts and common-resample inference after every remaining lock passes |
+| Primary multitask vision/structured/fusion | Required identically for every modality | Target-specific observed label after common imaging intersection | Paired per-target and macro contrasts on explicitly reported common denominators |
+| Structured-only full-availability sensitivity | Not required; may include the five imaging-ineligible studies | Target-specific observed label | Structured-only descriptive/sensitivity result; no paired cross-modality or incremental-value claim |
+| Accepted historical analysis | Historical post-linkage denominators | As preserved in version 10/snapshot | Historical fidelity only; not rewritten by the new design |
 
 ## Comparator identity lock
 

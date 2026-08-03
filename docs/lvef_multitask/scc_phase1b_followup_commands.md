@@ -1334,6 +1334,8 @@ phase1b_run_final_gate
 
 ## Interpretation boundaries
 
+These bullets preserve the conservative pre-run interpretation used to design the diagnostic. The completed results are adjudicated in `phase1b_scc_followup_findings.md`: zero residual normalized full-row tuple mismatches close the 9,605 serialization/index finding, and all five no-cine studies are provisionally imaging-ineligible. The 32 duplicate keys remain unresolved and require the Phase 1C restricted diagnostic.
+
 - The verified Phase 1A aggregate reports `clip_keys_complete = True`; missing-key checks above are defensive and must not be described as an observed defect. The unresolved observed clip-union findings are 32 duplicate-key excess rows on each side and 9,605 non-index full-row payload-mismatch keys.
 - The follow-up first reproduces the original full row-payload tuple multiset and explicitly checks whether it recovers all 9,605 mismatch keys. Per-column marginal checks are secondary: duplicate-key rows can swap values across columns while preserving every marginal multiset. Any `FULL_ROW_TUPLE_RESIDUAL_MISMATCH` therefore remains blocking.
 - A payload mismatch may reflect raw formatting of a key-associated field because key preparation strips/normalizes locator values while payload comparison retains original values. `TEXT_NORMALIZATION_REVIEW__*` and `NUMERIC_SERIALIZATION_REVIEW__*` are not automatically excused. They retain `REVIEW_REQUIRED` status until an explicit normalization/tolerance policy is declared and rerun.

@@ -14,10 +14,13 @@ Among one-study-per-subject MIMIC-IV-ECHO studies with observed quantitative rep
 
 1. Historical LVEF result, preserved as accepted context.
 2. Confirmatory LVEF revalidation with target-family leakage controls and paired uncertainty.
-3. Primary `strict21-v1` leakage-minimized echo panel.
-4. Secondary `pragmatic26-v1` same-report completion panel.
-5. Simulated single-target and target-family masking.
-6. Optional validation-calibrated selective prediction after primary revalidation.
+3. Primary strict leakage-minimized measurement construct using the final clinically adjudicated panel; the current 21-target list is provisional and has no locked version name.
+4. Secondary target-family-masked report-completion construct using the same final scored targets and a broader prespecified predictor mask.
+5. Secondary pragmatic same-report completion construct using the same final scored echo targets; context/metadata targets remain outside the primary echo macro.
+6. Simulated single-target and target-family masking.
+7. Optional validation-calibrated selective prediction after primary revalidation.
+
+The former provisional labels `strict21-v1` and `pragmatic26-v1` are superseded hypotheses retained only in the historical OpenEvidence prompts. They are not current panel authorities.
 
 ## Required claim boundaries
 

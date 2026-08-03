@@ -22,7 +22,7 @@ The historical snapshot must never be overwritten or backfilled. New results bel
 
 ## Current gate
 
-Phase 1A aggregate SCC findings are recorded in `phase1a_scc_findings.md`. The decision checklist in `phase1b_pre_revalidation_lock.md` is not passed: model fitting, historical prediction regeneration, and new test-performance access remain unauthorized. The OpenEvidence requests are split between dependency/leakage adjudication and clinical thresholds/variability/margins; neither response will become authority until its sources are checked and clinician review is documented.
+Phase 1A aggregate findings are recorded in `phase1a_scc_findings.md`, and the Phase 1B provenance follow-up is interpreted in `phase1b_scc_followup_findings.md`. `embedding_authority_decision.md` defines the three permissible remediation paths; none is yet authorized. The decision checklists in `phase1b_pre_revalidation_lock.md` and `phase1c_pre_revalidation_lock.md` are not passed: model fitting, historical prediction regeneration, embedding regeneration, and new test-performance access remain unauthorized. OpenEvidence responses remain evidence inputs rather than registry authority until identifiers are normalized, claims are checked against supplied sources, and restricted metadata plus clinician review are documented.
 
 ## Terminology
 
@@ -31,7 +31,7 @@ New documents use:
 - `vision-only`: frozen EchoPrime video-encoder study representation;
 - `structured-only`: allowed structured measurements after the applicable mask;
 - `early fusion`: concatenated vision and structured predictors;
-- an explicit panel version, such as `legacy29`, `strict21-v1`, or `pragmatic26-v1`;
+- an explicit construct and panel version: historical `legacy29`, strict leakage-minimized measurement, target-family-masked report completion, or pragmatic same-report completion;
 - an explicit model/config version.
 
 The E1/E2a/E2b/E3/E5 development labels are historical and should not appear in new scientific claims.

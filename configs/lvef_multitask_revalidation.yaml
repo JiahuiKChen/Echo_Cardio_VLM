@@ -1,16 +1,20 @@
-schema_version: 2
-analysis_version: phase1b-draft-v1.1
-status: blocked_pending_phase1b_pre_revalidation_lock
+schema_version: 3
+analysis_version: phase1c-prefit-v1.0
+status: blocked_pending_phase1c_pre_revalidation_lock
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
+phase1c_starting_commit: ccc6b54e5a9138a23ac2cd756e5483217abc11b3
 branch: codex/lvef-multitask-revalidation
 
 execution_authority:
   confirmatory_model_fitting_authorized: false
   historical_prediction_regeneration_authorized: false
   confirmatory_test_performance_access_authorized: false
+  embedding_regeneration_authorized: false
+  raw_dicom_reextraction_authorized: false
   aggregate_prefit_diagnostics_authorized: true
+  model_independent_statistical_spec_recorded: true
   clinical_panel_locked: false
   final_sap_locked: false
 
@@ -24,9 +28,22 @@ authority:
   phase1a_aggregate_packet_sha256: 2cdb8dbf01ab37b6ba199db41c8ed45a696b45a6ec32c91189b525bb80ff4c41
   phase1a_packet_is_performance_authority: false
   scc_preservation_pack: restricted_freeze_fullscale_directory
-  scc_preservation_pack_checksum_status: failed_unresolved
+  scc_preservation_pack_checksum_status: invalid_relative_paths_and_incomplete_inventory
+  scc_preservation_pack_manifest_lines: 14
+  scc_preservation_pack_invalid_relative_paths: 14
+  scc_preservation_pack_unlisted_files: 13
+  scc_preservation_pack_observed_byte_mismatches: 0
+  scc_preservation_pack_checksum_comparable_entries: 0
+  scc_preservation_pack_absence_of_byte_mismatch_proven: false
+  scc_preservation_pack_is_future_revalidation_authority: false
 
 provenance:
+  embedding_authority:
+    status: blocked_pending_32_key_adjudication_and_regeneration_authorization
+    preferred_path: selected_cohort_only_rebuild_from_validated_canonical_extracted_cines
+    preferred_path_authorized: false
+    exclude_prior_nonselected_studies: 171
+    require_one_canonical_row_per_physical_clip: true
   checkpoint:
     filename: echo_prime_encoder.pt
     sha256: 7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b
@@ -61,7 +78,10 @@ provenance:
     clip_key_multiplicity_mismatches: 0
     duplicate_clip_key_rows_each: 32
     non_index_payload_mismatch_clip_keys: 9605
-    row_payload_multisets_equal: false
+    normalized_full_row_tuple_residual_mismatch_clip_keys: 0
+    serialization_and_index_rewrites_scientifically_blocking: false
+    unique_blocking_duplicate_clip_keys: 32
+    duplicate_keys_restricted_adjudication_complete: false
     provenance_valid: false
 
 cohort:
@@ -76,7 +96,19 @@ cohort:
   selected_with_study_embedding: 4525
   selected_without_study_embedding: 5
   selected_without_embedding_first_missing_stage: cine_candidates
-  selected_without_embedding_root_cause_resolved: false
+  selected_without_embedding_reason: NO_MULTIFRAME_CINE_CANDIDATE
+  selected_without_embedding_split_counts: {train: 3, val: 1, test: 1}
+  selected_without_embedding_have_legacy29_label: 5
+  selected_without_embedding_have_numeric_exact_raw_lvef: 3
+  selected_without_embedding_provisional_classification: imaging_ineligible
+  imaging_eligibility_primary_rule: at_least_one_validated_canonical_multiframe_cine_clip
+  primary_modality_comparison_excludes_from_all_modalities: true
+  primary_common_denominator_required_across_modalities: true
+  observed_non_target_structured_predictor_required_for_row: false
+  fully_missing_allowed_structured_row_retained_after_masking: true
+  structured_full_availability_sensitivity_may_retain: true
+  structured_full_availability_sensitivity_supports_paired_claim: false
+  historical_results_rewritten: false
   embeddings_outside_selected: 171
   embedding_store_studies: 4696
   embedding_store_subjects: 4525
@@ -97,6 +129,29 @@ lvef:
     test: 426
   historical_fusion_prediction_table_available: false
   three_way_historical_paired_inference_available: false
+  primary_continuous_anchor: true
+  historical_primary_binary_definition:
+    operator: "<"
+    threshold_percent: 40.0
+  secondary_binary_sensitivities:
+    - {operator: "<=", threshold_percent: 40.0, rationale: guideline_classification_sensitivity}
+    - {operator: "<", threshold_percent: 50.0, rationale: guideline_classification_sensitivity}
+  exact_40_label_counts_required_before_test_access: true
+  exact_40_label_counts_recorded: false
+  exact_40_count_rule: exact_parsed_numeric_equality_after_historical_subject_measurement_median
+  exact_40_count_scopes: [selected_preimaging, primary_common_imaging_eligible]
+  exact_40_count_splits: [all, train, val, test]
+
+target_support:
+  locked: true
+  min_train_observed: 120
+  min_val_observed: 40
+  min_test_observed: 40
+  min_total_observed: 250
+  require_positive_finite_train_iqr: true
+  binary_min_events_per_split: 20
+  binary_min_nonevents_per_split: 20
+  no_postfit_target_removal: true
 
 panels:
   locked: false
@@ -107,7 +162,7 @@ panels:
     role: historical_sensitivity_only
     clinically_adjudicated: false
   strict:
-    version: strict21-v1
+    version: strict_measurement_candidate21-draft-v1
     status: candidate_not_locked
     candidate_targets:
       - tricuspid_regurgitant_peak_velocity
@@ -133,10 +188,18 @@ panels:
       - lat_e_prime
     unresolved_relationship_policy: fail_closed
   pragmatic:
-    version: pragmatic26-v1
+    version: pragmatic_same_report_draft_v1
     status: candidate_not_locked
-    candidate_add_targets: [body_surface_area, height_cm, resting_hr, resting_dbp, resting_sbp]
+    provisional_scored_echo_targets_same_as_strict: true
+    context_only_not_primary_echo_targets: [body_surface_area, height_cm, resting_hr, resting_dbp, resting_sbp]
+    context_fields_may_be_allowed_as_predictors_after_review: true
     allow_non_algebraic_same_report_correlates_after_review: true
+    exact_alias_duplicate_formula_and_near_deterministic_reconstruction_prohibited: true
+  family_masked:
+    version: target_family_masked_draft_v1
+    status: candidate_not_locked
+    provisional_scored_echo_targets_same_as_strict: true
+    distinction_from_strict_is_predictor_mask: true
   formula_only_target_hypotheses: [fs, tr_mmhg]
   merge_hypotheses:
     mitral_e_velocity: mv_peak_e
@@ -151,52 +214,101 @@ masking_order:
   - train_only_imputation
   - train_only_scaling
   - validation_only_selection
+  - validation_only_binary_calibration
+  - validation_only_operating_point
   - locked_test_evaluation
 
 models:
-  status: candidate_specification_not_authorized_to_run
+  status: prespecified_not_authorized_to_run
   modalities: [vision_only, structured_only, early_fusion]
   regression_model: ridge
   ridge_alpha_grid: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+  ridge_solver: lsqr
+  ridge_tolerance: 1.0e-8
+  ridge_max_iter: 10000
+  ridge_fit_intercept: true
   alpha_selection_split: val
+  alpha_selection_metric: mae
   alpha_tie_break: larger_alpha
   refit_train_plus_val: false
-  classification_model: class_weighted_logistic_regression
+  use_identical_grid_across_modalities: true
+  binary_primary_model: separately_trained_class_weighted_logistic_regression
+  binary_secondary_model: thresholded_continuous_ridge_prediction
   binary_logistic:
-    locked: false
-    penalty_grid: null
-    c_grid: null
-    compatible_solver: null
-    class_weight_rule: null
-    validation_selection_metric: null
-    selection_tie_break: null
+    locked: true
+    penalty: l2
+    c_grid: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+    solver: liblinear
+    max_iter: 5000
+    tolerance: 1.0e-4
+    fit_intercept: true
+    random_seed: 20260801
+    class_weight_rule: balanced_from_training_labels
+    validation_selection_metric: auroc
+    selection_tie_break: smaller_c
+    separate_model_per_binary_definition: true
   probability_calibration:
-    locked: false
-    policy: null
-    fitting_split: null
-    note: must_prespecify_none_or_method_and_non_test_data_flow
+    locked: true
+    policy: platt_sigmoid_on_selected_model_decision_score
+    base_model_fitting_split: train
+    calibrator_fitting_split: val
+    calibrator_weighting: unweighted
+    method_selection_permitted: false
+    validation_reused_after_c_selection: true
+    role: secondary_conditional_calibration
+    independent_calibration_validation_sample: false
+    optimism_limitation_must_be_reported: true
+    no_silent_fallback: true
   validation_operating_point:
-    locked: false
+    locked: true
     selection_split: val
-    criterion: null
-    tie_break: null
+    probability_source: calibrated_probability
+    criterion: maximize_youden_j
+    tie_break: [greater_sensitivity, greater_specificity, larger_cutoff]
+    fixed_probability_0_5_role: secondary_descriptive
+    clinical_utility_claim_allowed: false
 
 structured_preprocessing:
-  locked: false
+  locked: true
+  prohibited_fields_removed_before_all_transforms: true
   feature_eligibility_learned_from: train_only
-  feature_eligibility_rule: null
-  missing_indicator_rule: null
-  note: eligibility_and_indicator_rules_must_be_fixed_before_fitting
+  minimum_finite_observed_rule: max_20_or_5_percent_of_target_specific_training_rows
+  require_two_distinct_finite_values: true
+  imputation: training_median
+  continuous_scaling: training_mean_and_standard_deviation
+  vision_scaling: training_mean_and_standard_deviation
+  missing_indicator_rule: create_for_eligible_allowed_predictor_with_observed_and_missing_training_values
+  missing_indicators_scaled: false
+  missing_indicator_primary_analysis: true
+  no_missing_indicator_sensitivity_required: true
+  identical_structured_features_and_transforms_for_structured_and_fusion: true
+  ordered_feature_lists_and_checksums_required: true
 
 metrics:
-  status: candidate_pending_clinical_margin_lock
+  status: lvef_prespecified_non_lvef_native_margins_pending
   lvef_primary: mae_ef_percentage_points
-  multitask_primary: mae_divided_by_training_iqr
-  secondary: [rmse, r2, pearson_correlation, spearman_correlation, calibration_intercept, calibration_slope, clinical_tolerance_rate]
-  binary_secondary: [auroc, average_precision, brier_score, calibration_intercept, calibration_slope]
-  clinical_absolute_error_margins_locked: false
-  clinical_equivalence_margins_locked: false
-  additional_binary_thresholds_locked: false
+  lvef_key_secondary: absolute_error_within_5_ef_points
+  lvef_secondary: [rmse, mean_signed_error, r2, pearson_correlation, spearman_correlation, calibration_intercept, calibration_slope]
+  lvef_tolerance_points:
+    primary: 5.0
+    sensitivity: [4.0, 8.0]
+    evidence_tier: EXPERT_INFERENCE
+  lvef_paired_mae_tie_margin_points:
+    primary: 1.0
+    sensitivity: [0.5, 2.0]
+    evidence_tier: EXPERT_INFERENCE
+  lvef_threshold_descriptive_bands:
+    primary: [35.0, 45.0]
+    sensitivity: [37.0, 43.0]
+    exclude_from_primary_analysis: false
+    evidence_tier: EXPERT_INFERENCE
+  multitask_per_task_primary: native_unit_mae
+  multitask_cross_task_primary: mae_divided_by_training_iqr
+  binary_primary: auroc_separately_trained_logistic_lvef_lt_40
+  binary_secondary: [average_precision, calibrated_brier_score, calibration_intercept, calibration_slope, sensitivity, specificity, ppv, npv, f1, balanced_accuracy]
+  thresholded_regression_binary_role: secondary_coherence
+  non_lvef_native_unit_margins_locked: false
+  normalized_mae_replaces_native_unit_reporting: false
 
 paired_bootstrap:
   unit: subject
@@ -209,11 +321,29 @@ paired_bootstrap:
     - structured_only_minus_vision_only
   reuse_subject_draw_across_modalities: true
   reuse_subject_draw_across_tasks: true
+  resampling: nonstratified_with_replacement
+  fixed_fitted_models_and_preprocessing: true
+  panel_sampling_roster: locked_imaging_eligible_test_subjects
+  panel_macro_replicate_requires_every_locked_task_defined: true
+  retain_undefined_replicate_counts: true
+  two_sided_pvalue: centered_bootstrap_plus_one_count_abs_dstar_minus_d_ge_abs_d_over_valid_b_plus_one
+  inference_scope: conditional_on_fixed_selected_models
 
 multiplicity:
-  status: candidate_until_primary_panel_lock
-  primary_contrasts: holm_familywise_0.05
-  per_task: exploratory_bh_fdr_if_tested
+  status: locked_hierarchy_panel_membership_still_pending
+  core_global_family:
+    method: holm_familywise_two_sided_0.05
+    hypotheses:
+      - lvef_mae_early_fusion_minus_vision_only
+      - lvef_mae_early_fusion_minus_structured_only
+      - locked_strict_panel_mean_normalized_mae_early_fusion_minus_vision_only
+      - locked_strict_panel_mean_normalized_mae_early_fusion_minus_structured_only
+    activation_requires_locked_strict_panel: true
+  binary_lvef_lt_40_auroc_fusion_contrasts: holm_familywise_two_sided_0.05
+  binary_family_role: explicitly_secondary_not_part_of_core_global_fwer_claim
+  structured_minus_vision: secondary
+  per_task_native_mae: exploratory_bh_fdr_within_panel_and_contrast_if_tested
+  other_metrics: effect_estimates_and_intervals_without_superiority_claim
 
 missingness:
   authority_split: train
@@ -224,26 +354,47 @@ missingness:
   required_simulations: [single_target, whole_target_family]
   secondary_random_mask_rates: [0.10, 0.30, 0.50]
   empirical_masks_learned_from: train_only
+  missing_indicator_primary: true
+  no_indicator_sensitivity_required: true
   natural_missingness_plausibly_mnar: true
   natural_missing_label_accuracy_claim_allowed: false
+  simulated_masking_claim_boundary: deliberately_withheld_observed_report_labels_only
+
+subgroups:
+  performance_driven_selection_allowed: false
+  prespecified_if_authorized_and_linkable:
+    - recorded_administrative_sex
+    - age_18_64_65_79_ge_80
+  race_ethnicity_status: exploratory_pending_source_mapping_and_governance_lock
+  minimum_n_for_metric: 40
+  minimum_binary_class_n: 10
+  support_and_missingness_reported: true
+  formal_fairness_equivalence_claim_allowed: false
 
 prefit_gates:
-  scc_preservation_pack_integrity_resolved: false
+  historical_freeze_disposition_documented: true
   clip_component_union_provenance_valid: false
-  five_study_attrition_rule_locked: false
+  duplicate_clip_key_resolution_complete: false
+  selected_cohort_canonical_clip_authority_valid: false
+  embedding_regeneration_path_authorized: false
+  five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false
   future_environment_capture_specified: true
   clinical_dependency_adjudication_complete: false
   panel_membership_and_units_locked: false
-  clinical_margins_locked: false
-  binary_logistic_spec_locked: false
-  probability_calibration_policy_locked: false
-  validation_operating_point_criterion_locked: false
-  structured_feature_eligibility_rule_locked: false
-  structured_missing_indicator_rule_locked: false
+  lvef_expert_inference_margins_prespecified: true
+  non_lvef_native_margins_locked_or_explicitly_unresolved: false
+  binary_logistic_spec_locked: true
+  probability_calibration_policy_locked: true
+  validation_operating_point_criterion_locked: true
+  structured_feature_eligibility_rule_locked: true
+  structured_missing_indicator_rule_locked: true
+  equality_at_40_counts_recorded: false
   common_denominator_dry_run_passed: false
   target_family_exclusion_audit_passed: false
   aggregate_export_safety_required: true
+  final_config_checksum_recorded: false
+  owner_authorization_recorded: false
   all_required_gates_passed: false
 
 optional_extensions:
@@ -260,3 +411,24 @@ governance:
   allow_test_tuned_changes: false
   allow_historical_snapshot_modification: false
   allow_scc_preservation_pack_modification: false
+  future_preservation_manifest:
+    safe_relative_paths_required: true
+    fields:
+      - file_size_bytes
+      - sha256
+      - source_commit
+      - command_checksum
+      - config_checksum
+      - checkpoint_checksum
+      - python_version
+      - pytorch_version
+      - scikit_learn_version
+      - cuda_version
+      - cudnn_version
+      - scheduler_job_identity
+      - run_timestamp_utc
+      - cohort_version
+      - split_version
+      - panel_version
+      - model_version
+      - aggregate_safety_gate_result
