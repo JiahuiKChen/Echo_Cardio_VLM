@@ -688,20 +688,21 @@ Paste or attach only these aggregate outputs:
 
 Also report the SCC Git commit shown by `git rev-parse HEAD`. Do not paste subject/study IDs, row-level labels or predictions, raw dependency registry rows, embeddings, DICOM paths, or anything from the restricted audit directory.
 
+The unresolved freeze-manifest, clip-component, five-study attrition, and environment/checkpoint diagnostics are isolated in [SCC Phase 1B aggregate-only follow-up commands](scc_phase1b_followup_commands.md). Run that block only after reviewing the Phase 1A packet; it writes to a fresh Phase 1B audit root and has its own final allowlist gate.
+
 ## Phase 1B lock blockers
 
 Do not proceed to confirmatory revalidation until all of the following are resolved:
 
-- freeze checksum and proposed duplicate-pair status;
-- exact two-file `meta/*` interpretation and checkpoint/package provenance;
-- Stage-D manifest completeness or an explicit incomplete-lineage adjudication;
-- successful merged clip-manifest equality to the Stage-D-plus-nine-batch component union;
-- exact selected-minus-prior partition by the nine batch-study manifests;
-- selected-study versus embedding-store overlap and reasons for every discrepancy;
-- subject split integrity and task-specific denominator reconciliation;
-- common strict multitask modality denominators and label identity;
-- absence of historical LVEF fusion predictions, with a prespecified deterministic regeneration plan;
-- target-family clinical adjudication and frozen strict/pragmatic masks;
-- validation-only hyperparameter selection and paired subject-level bootstrap SAP;
-- aggregate packet safety gate;
-- separate authorization for any model-only regeneration.
+- classify the failed SCC preservation-pack checksum at per-entry level and independently verify every input authority used for revalidation;
+- reconcile the 32 duplicate clip-key excess rows on each side and 9,605 full-row non-index payload mismatches, including any normalization-only versus scientific-content distinction;
+- classify the five selected studies that stop at cine candidacy and lock a principled exclusion, deterministic-reprocessing, sensitivity, or unresolved-missingness disposition;
+- pass a pre-fit common-denominator dry run with zero subject, study, ownership, split, target-definition, and label-identity failures for every locked multitask target and modality;
+- independently adjudicate and version raw aliases, formulas, dependency families, strict/pragmatic target panels, units, minimum support, thresholds, and clinical error/equivalence margins;
+- lock the binary logistic penalty/C grid, compatible solver, class-weight rule, validation selection metric and tie-break, probability-calibration policy, and validation-only operating-point criterion;
+- lock training-only structured feature-eligibility thresholds and missing-indicator creation, retention, and suppression rules, then pass the target-family masking audit;
+- resolve or formally disposition historical checkpoint-to-embedding linkage and historical environment limitations, while fully specifying new-run checkpoint/environment capture;
+- obtain separate owner authorization for any deterministic LVEF early-fusion prediction regeneration, which remains necessary for historical three-way paired LVEF denominators and deltas;
+- version and checksum the final SAP/config with no post-test design change, pass the aggregate-only export gate, and record explicit owner authorization for the confirmatory run.
+
+The selected Stage-D-plus-nine-batch partition, Stage-D lineage presence, one-study-per-subject integrity, selected-subject split structure, stage-level location of the five-study loss, and vision/structured LVEF identity are no longer listed as open gates; their passed or narrowed status is documented in `phase1a_scc_findings.md` and `phase1b_pre_revalidation_lock.md`.

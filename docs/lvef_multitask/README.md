@@ -20,6 +20,10 @@ The one-study-per-subject cohort is primary. The historical LVEF <40% endpoint r
 
 The historical snapshot must never be overwritten or backfilled. New results belong under a new dated snapshot directory after the statistical analysis plan is locked.
 
+## Current gate
+
+Phase 1A aggregate SCC findings are recorded in `phase1a_scc_findings.md`. The decision checklist in `phase1b_pre_revalidation_lock.md` is not passed: model fitting, historical prediction regeneration, and new test-performance access remain unauthorized. The OpenEvidence requests are split between dependency/leakage adjudication and clinical thresholds/variability/margins; neither response will become authority until its sources are checked and clinician review is documented.
+
 ## Terminology
 
 New documents use:

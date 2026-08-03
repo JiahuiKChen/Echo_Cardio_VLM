@@ -540,6 +540,46 @@ def test_merged_clip_manifest_rejects_duplicate_clip_keys_even_when_multisets_ma
     )
 
 
+def test_merged_clip_manifest_detects_swapped_payload_combinations_with_equal_column_multisets(
+) -> None:
+    component = pd.concat(
+        [_synthetic_clip_manifest("SYN_SUBJECT", "100", "clip_a")] * 2,
+        ignore_index=True,
+    )
+    component["embedding_idx"] = [0, 1]
+    component["view_id"] = [1, 2]
+    component["embedding_l2_norm"] = [10.0, 20.0]
+    merged = component.copy()
+    merged["embedding_l2_norm"] = [20.0, 10.0]
+
+    for column in ("view_id", "embedding_l2_norm"):
+        assert sorted(component[column].tolist()) == sorted(merged[column].tolist())
+    assert sorted(zip(component["view_id"], component["embedding_l2_norm"])) != sorted(
+        zip(merged["view_id"], merged["embedding_l2_norm"])
+    )
+
+    row, restricted = audit_merged_clip_manifest_union(
+        merged, [component], expected_components=1
+    )
+    assert row["clip_key_multisets_equal"] is True
+    assert row["row_payload_multisets_equal"] is False
+    assert row["n_clip_keys_with_row_payload_mismatch"] == 1
+    assert row["component_union_provenance_valid"] is False
+    assert {
+        "subject_id",
+        "study_id",
+        "clip_key",
+        "dicom_filepath",
+        "npz_path",
+    }.isdisjoint(row)
+    assert "SYN_SUBJECT" not in repr(row)
+    assert "clip_a" not in repr(row)
+    assert any(
+        item["warning_type"] == "CLIP_ROW_PAYLOAD_MISMATCH"
+        for item in restricted
+    )
+
+
 def test_merged_clip_manifest_gate_does_not_evaluate_incomplete_lineage() -> None:
     manifest = _synthetic_clip_manifest("SYN_A", "100", "clip_a")
     row, restricted = audit_merged_clip_manifest_union(

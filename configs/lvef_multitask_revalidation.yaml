@@ -1,29 +1,115 @@
-schema_version: 1
-analysis_version: phase1a-v1.0
-status: pre_revalidation_design_lock
+schema_version: 2
+analysis_version: phase1b-draft-v1.1
+status: blocked_pending_phase1b_pre_revalidation_lock
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
+historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
+phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
 branch: codex/lvef-multitask-revalidation
+
+execution_authority:
+  confirmatory_model_fitting_authorized: false
+  historical_prediction_regeneration_authorized: false
+  confirmatory_test_performance_access_authorized: false
+  aggregate_prefit_diagnostics_authorized: true
+  clinical_panel_locked: false
+  final_sap_locked: false
 
 authority:
   accepted_abstract: docs/lvef_multitask/accepted_abstract_version10_verbatim.txt
   accepted_abstract_sha256: 2955bff68198083f80eb48e811cc597eefef1678f3d8880ba8404df1d1c69abb
   historical_snapshot: docs/results_snapshot/2026-04-01_fullscale
+  historical_snapshot_mutable: false
+  historical_snapshot_was_target_of_scc_preservation_checksum: false
   historical_binary_lvef_threshold_percent: 40.0
+  phase1a_aggregate_packet_sha256: 2cdb8dbf01ab37b6ba199db41c8ed45a696b45a6ec32c91189b525bb80ff4c41
+  phase1a_packet_is_performance_authority: false
+  scc_preservation_pack: restricted_freeze_fullscale_directory
+  scc_preservation_pack_checksum_status: failed_unresolved
+
+provenance:
+  checkpoint:
+    filename: echo_prime_encoder.pt
+    sha256: 7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b
+    bytes: 138642379
+    current_file_identity_verified: true
+    historical_embedding_use_proven: false
+  environment:
+    historical_package_environment_proven: false
+    future_run_environment_capture_required: true
+    future_run_environment_captured: false
+    required_fields:
+      - operating_system
+      - python
+      - numpy
+      - pandas
+      - scipy
+      - scikit_learn
+      - torch
+      - torchvision
+      - cuda
+      - cudnn
+      - gpu
+  clip_component_union:
+    expected_component_manifests: 10
+    component_count_matches: true
+    source_success_rows: 191993
+    merged_success_rows: 191993
+    clip_key_sets_equal: true
+    clip_key_multisets_equal: true
+    source_only_clip_keys: 0
+    merged_only_clip_keys: 0
+    clip_key_multiplicity_mismatches: 0
+    duplicate_clip_key_rows_each: 32
+    non_index_payload_mismatch_clip_keys: 9605
+    row_payload_multisets_equal: false
+    provenance_valid: false
 
 cohort:
   primary_policy: one_study_per_subject
   split_authority: restricted_subject_split_map_v1
+  selected_studies: 4530
+  selected_subjects: 4530
+  split_counts:
+    train: 3171
+    val: 679
+    test: 680
+  selected_with_study_embedding: 4525
+  selected_without_study_embedding: 5
+  selected_without_embedding_first_missing_stage: cine_candidates
+  selected_without_embedding_root_cause_resolved: false
+  embeddings_outside_selected: 171
+  embedding_store_studies: 4696
+  embedding_store_subjects: 4525
   required_splits: [train, val, test]
   require_zero_subject_overlap: true
   require_identical_modality_ids: true
+  require_identical_subject_study_pairs: true
+  require_identical_split_assignments: true
   require_identical_targets: true
   repeated_studies_in_primary: false
 
+lvef:
+  selected_numeric_before_imaging: 2836
+  selected_numeric_plus_embedding: 2833
+  common_historical_vision_structured_splits:
+    train: 1997
+    val: 410
+    test: 426
+  historical_fusion_prediction_table_available: false
+  three_way_historical_paired_inference_available: false
+
 panels:
-  historical: legacy29
+  locked: false
+  external_clinical_adjudication_required: true
+  performance_may_influence_membership: false
+  historical:
+    version: legacy29
+    role: historical_sensitivity_only
+    clinically_adjudicated: false
   strict:
     version: strict21-v1
-    targets:
+    status: candidate_not_locked
+    candidate_targets:
       - tricuspid_regurgitant_peak_velocity
       - left_ventricular_end_systolic_diameter
       - left_ventricular_end_diastolic_diameter
@@ -48,11 +134,13 @@ panels:
     unresolved_relationship_policy: fail_closed
   pragmatic:
     version: pragmatic26-v1
-    add_targets: [body_surface_area, height_cm, resting_hr, resting_dbp, resting_sbp]
+    status: candidate_not_locked
+    candidate_add_targets: [body_surface_area, height_cm, resting_hr, resting_dbp, resting_sbp]
     allow_non_algebraic_same_report_correlates_after_review: true
-  formula_only_targets: [fs, tr_mmhg]
-  merge_targets:
+  formula_only_target_hypotheses: [fs, tr_mmhg]
+  merge_hypotheses:
     mitral_e_velocity: mv_peak_e
+  formula_and_merge_hypotheses_adjudicated: false
 
 masking_order:
   - identify_observed_target
@@ -66,6 +154,7 @@ masking_order:
   - locked_test_evaluation
 
 models:
+  status: candidate_specification_not_authorized_to_run
   modalities: [vision_only, structured_only, early_fusion]
   regression_model: ridge
   ridge_alpha_grid: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
@@ -73,12 +162,41 @@ models:
   alpha_tie_break: larger_alpha
   refit_train_plus_val: false
   classification_model: class_weighted_logistic_regression
+  binary_logistic:
+    locked: false
+    penalty_grid: null
+    c_grid: null
+    compatible_solver: null
+    class_weight_rule: null
+    validation_selection_metric: null
+    selection_tie_break: null
+  probability_calibration:
+    locked: false
+    policy: null
+    fitting_split: null
+    note: must_prespecify_none_or_method_and_non_test_data_flow
+  validation_operating_point:
+    locked: false
+    selection_split: val
+    criterion: null
+    tie_break: null
+
+structured_preprocessing:
+  locked: false
+  feature_eligibility_learned_from: train_only
+  feature_eligibility_rule: null
+  missing_indicator_rule: null
+  note: eligibility_and_indicator_rules_must_be_fixed_before_fitting
 
 metrics:
+  status: candidate_pending_clinical_margin_lock
   lvef_primary: mae_ef_percentage_points
   multitask_primary: mae_divided_by_training_iqr
   secondary: [rmse, r2, pearson_correlation, spearman_correlation, calibration_intercept, calibration_slope, clinical_tolerance_rate]
   binary_secondary: [auroc, average_precision, brier_score, calibration_intercept, calibration_slope]
+  clinical_absolute_error_margins_locked: false
+  clinical_equivalence_margins_locked: false
+  additional_binary_thresholds_locked: false
 
 paired_bootstrap:
   unit: subject
@@ -93,15 +211,40 @@ paired_bootstrap:
   reuse_subject_draw_across_tasks: true
 
 multiplicity:
+  status: candidate_until_primary_panel_lock
   primary_contrasts: holm_familywise_0.05
   per_task: exploratory_bh_fdr_if_tested
 
 missingness:
+  authority_split: train
+  authority_rows: 3171
   observed_label_conditioning: true
+  minimum_observed_rate: 0.2488174077578051
+  maximum_observed_rate: 0.9952696310312204
   required_simulations: [single_target, whole_target_family]
   secondary_random_mask_rates: [0.10, 0.30, 0.50]
   empirical_masks_learned_from: train_only
+  natural_missingness_plausibly_mnar: true
   natural_missing_label_accuracy_claim_allowed: false
+
+prefit_gates:
+  scc_preservation_pack_integrity_resolved: false
+  clip_component_union_provenance_valid: false
+  five_study_attrition_rule_locked: false
+  checkpoint_to_embedding_link_proven_or_dispositioned: false
+  future_environment_capture_specified: true
+  clinical_dependency_adjudication_complete: false
+  panel_membership_and_units_locked: false
+  clinical_margins_locked: false
+  binary_logistic_spec_locked: false
+  probability_calibration_policy_locked: false
+  validation_operating_point_criterion_locked: false
+  structured_feature_eligibility_rule_locked: false
+  structured_missing_indicator_rule_locked: false
+  common_denominator_dry_run_passed: false
+  target_family_exclusion_audit_passed: false
+  aggregate_export_safety_required: true
+  all_required_gates_passed: false
 
 optional_extensions:
   selective_prediction: after_primary_revalidation_only
@@ -115,3 +258,5 @@ governance:
   require_sha256_manifest: true
   allow_patient_level_git_outputs: false
   allow_test_tuned_changes: false
+  allow_historical_snapshot_modification: false
+  allow_scc_preservation_pack_modification: false
