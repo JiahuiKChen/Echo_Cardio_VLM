@@ -2,10 +2,9 @@
 """Shared utilities for aggregate-safe LVEF/multitask audit scripts."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Sequence
 
 import pandas as pd
 
@@ -19,13 +18,26 @@ FORBIDDEN_AGGREGATE_COLUMNS = {
     "person_id",
     "study_id",
     "dicom_study_id",
+    "subject",
+    "study",
+    "identifier",
+    "hadm_id",
+    "stay_id",
+    "mrn",
     "y_true",
     "y_pred",
     "label",
     "prediction",
+    "pred_lvef",
+    "pred_reduced_prob",
     "embedding",
     "path",
     "file_path",
+    "absolute_path",
+    "dicom_filepath",
+    "dicom_abs_path",
+    "keyframe_path",
+    "npz_path",
 }
 
 
@@ -48,6 +60,16 @@ def load_table(path: Path) -> pd.DataFrame:
             return pd.DataFrame(payload["records"])
         raise ValueError(f"JSON table must be a list or contain a records list: {path}")
     raise ValueError(f"Unsupported table format for {path}; use CSV, TSV, Parquet, or JSON-lines")
+
+
+def load_tables(paths: Sequence[Path]) -> pd.DataFrame:
+    """Load and concatenate one or more tables from the same pipeline stage."""
+    frames = [load_table(path) for path in paths]
+    if not frames:
+        return pd.DataFrame()
+    if len(frames) == 1:
+        return frames[0]
+    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def resolve_column(
@@ -73,11 +95,6 @@ def normalized_ids(series: pd.Series) -> set[str]:
     return set(values[values != ""].tolist())
 
 
-def id_set_hash(values: Iterable[str]) -> str:
-    payload = "\n".join(sorted(set(str(value) for value in values))).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 def entity_counts(frame: pd.DataFrame) -> dict[str, int | None]:
     subject_col = resolve_column(frame, SUBJECT_COLUMNS)
     study_col = resolve_column(frame, STUDY_COLUMNS)
@@ -94,6 +111,19 @@ def assert_aggregate_safe_columns(frame: pd.DataFrame) -> None:
         raise ValueError(f"Aggregate output contains identifier/patient-level columns: {unsafe}")
 
 
+def assert_aggregate_safe_json(payload: object, location: str = "root") -> None:
+    """Recursively reject identifier/prediction keys from aggregate JSON."""
+    if isinstance(payload, dict):
+        unsafe = [key for key in payload if str(key).lower() in FORBIDDEN_AGGREGATE_COLUMNS]
+        if unsafe:
+            raise ValueError(f"Aggregate JSON contains identifier/patient-level keys at {location}: {unsafe}")
+        for key, value in payload.items():
+            assert_aggregate_safe_json(value, f"{location}.{key}")
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            assert_aggregate_safe_json(value, f"{location}[{index}]")
+
+
 def write_aggregate_csv(frame: pd.DataFrame, path: Path) -> None:
     assert_aggregate_safe_columns(frame)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +131,7 @@ def write_aggregate_csv(frame: pd.DataFrame, path: Path) -> None:
 
 
 def write_json(payload: object, path: Path) -> None:
+    assert_aggregate_safe_json(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
@@ -127,3 +158,22 @@ def parse_named_path(value: str) -> tuple[str, Path]:
     if not name:
         raise ValueError(f"Artifact/cohort name is empty: {value}")
     return name, Path(raw_path).expanduser()
+
+
+def run_guarded(main_function: Callable[[], int]) -> int:
+    """Convert unexpected input/schema/tooling exceptions to blocking exit 2."""
+    try:
+        return int(main_function())
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "BLOCKED_AUDIT_EXCEPTION",
+                    "error_type": type(exc).__name__,
+                    "exception_message_emitted": False,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2

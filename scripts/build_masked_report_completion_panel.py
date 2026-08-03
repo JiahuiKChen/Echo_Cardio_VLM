@@ -15,7 +15,13 @@ from typing import Any
 
 import pandas as pd
 
-from lvef_multitask_audit_utils import load_table, require_restricted_path, write_aggregate_csv, write_json
+from lvef_multitask_audit_utils import (
+    load_table,
+    require_restricted_path,
+    run_guarded,
+    write_aggregate_csv,
+    write_json,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +42,24 @@ def normalize_name(value: Any) -> str:
     if text.startswith("task__"):
         text = text[len("task__") :]
     return re.sub(r"_+", "_", re.sub(r"[^a-zA-Z0-9]+", "_", text)).strip("_").lower()
+
+
+def resolve_targets(
+    panel_targets: set[str], registry_targets: set[str], requested_targets: list[str]
+) -> list[str]:
+    """Fail closed unless every frozen-panel target has registry coverage."""
+    missing_registry_coverage = panel_targets - registry_targets
+    if missing_registry_coverage:
+        raise ValueError(
+            f"Dependency registry lacks coverage for {len(missing_registry_coverage)} panel target(s)"
+        )
+    if requested_targets:
+        normalized_requested = [normalize_name(target) for target in requested_targets]
+        unavailable = set(normalized_requested) - panel_targets
+        if unavailable:
+            raise ValueError(f"Requested {len(unavailable)} target(s) outside the frozen panel")
+        return sorted(set(normalized_requested))
+    return sorted(panel_targets)
 
 
 def mask_columns_for_target(
@@ -100,7 +124,16 @@ def main() -> int:
         return 2
     panel = load_table(args.panel_csv)
     registry = load_table(args.registry_csv)
-    targets = args.target or sorted(registry["target"].dropna().map(normalize_name).unique().tolist())
+    panel_targets = {
+        normalize_name(column)
+        for column in panel.columns
+        if str(column).startswith(args.task_prefix)
+    }
+    registry_targets = set(registry["target"].dropna().map(normalize_name).unique().tolist())
+    targets = resolve_targets(panel_targets, registry_targets, args.target)
+    if not targets:
+        print(json.dumps({"status": "BLOCKED_NO_COMMON_TARGETS"}, indent=2))
+        return 2
     modes = ("strict", "pragmatic") if args.mode == "both" else (args.mode,)
     restricted_dir = None
     if args.write_restricted_panels:
@@ -149,4 +182,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_guarded(main))

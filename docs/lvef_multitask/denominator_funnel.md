@@ -42,6 +42,6 @@ The historical `LVEF missing embeddings = 0` check is not a pre-image denominato
 
 ## Comparator identity rule
 
-For each target and split, vision-only, structured-only, and early fusion must use identical study IDs, subject IDs, and target values. Equal counts are necessary but insufficient. The audit must compare sorted identifier sets and cryptographic hashes of restricted ID lists.
+For each target and split, vision-only, structured-only, and early fusion must use identical study IDs, subject IDs, and target values. Equal counts are necessary but insufficient. The audit must compare exact identifier sets in restricted memory and export only aggregate equality flags and discrepancy counts.
 
 No identifier list or hash-to-ID lookup table may be committed to Git.

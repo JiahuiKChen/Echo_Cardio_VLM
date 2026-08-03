@@ -6,7 +6,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from build_masked_report_completion_panel import apply_mask_before_preprocessing
+from build_masked_report_completion_panel import apply_mask_before_preprocessing, resolve_targets
 
 
 def test_target_removed_before_any_future_preprocessing() -> None:
@@ -40,3 +40,15 @@ def test_target_removed_before_any_future_preprocessing() -> None:
     assert target.tolist() == [30.0, 40.0]
     assert summary["direct_target_removed_before_preprocessing"] is True
     assert summary["execution_order"].startswith("RAW_TARGET_AND_FAMILY_REMOVAL")
+
+
+def test_default_masking_fails_if_registry_omits_a_frozen_panel_target() -> None:
+    try:
+        resolve_targets({"fs", "lvidd"}, {"fs", "lvef"}, [])
+    except ValueError:
+        return
+    raise AssertionError("Incomplete dependency registry coverage was accepted")
+
+
+def test_default_masking_uses_all_panel_targets_and_allows_registry_only_lvef() -> None:
+    assert resolve_targets({"fs", "lvidd"}, {"fs", "lvidd", "lvef"}, []) == ["fs", "lvidd"]

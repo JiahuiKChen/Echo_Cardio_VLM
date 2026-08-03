@@ -23,7 +23,7 @@ Among one-study-per-subject MIMIC-IV-ECHO studies with observed quantitative rep
 - No subject may appear in more than one split.
 - The common evaluation cohort for a target is the intersection of observed target, usable study embedding, and all modality prerequisites.
 - Vision-only, structured-only, and early fusion must use identical train, validation, and test IDs and identical target values for every paired comparison.
-- Equal counts are insufficient; sorted restricted ID-set hashes and exact set equality are required.
+- Equal counts are insufficient; exact set equality must be evaluated in restricted memory, with only aggregate equality flags and discrepancy counts exported.
 - Repeated-study expansion is excluded from the primary SAP.
 
 ## 4. Analysis panels

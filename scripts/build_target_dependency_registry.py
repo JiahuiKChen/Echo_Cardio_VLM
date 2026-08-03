@@ -7,13 +7,21 @@ script does not use model performance to adjudicate clinical relationships.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from lvef_multitask_audit_utils import load_table, resolve_column, write_aggregate_csv
+from lvef_multitask_audit_utils import (
+    load_table,
+    require_restricted_path,
+    resolve_column,
+    repository_root,
+    run_guarded,
+    write_aggregate_csv,
+)
 
 
 RELATIONSHIP_CATEGORIES = {
@@ -135,18 +143,29 @@ def normalize_task(value: Any) -> str:
 
 
 def historical_tasks(path: Path | None) -> list[str]:
-    if path is None or not path.exists():
+    if path is None:
         return PRIMARY_ANCHOR_TARGETS + HISTORICAL_TASKS.copy()
+    if not path.exists():
+        raise FileNotFoundError("Explicit historical task input is missing")
     frame = load_table(path)
     task_col = resolve_column(frame, ("task_col", "task", "canonical_measurement"), required=True)
     assert task_col is not None
-    tasks = [normalize_task(value) for value in frame[task_col].dropna().tolist()]
+    source_values = frame[task_col].astype("string")
+    if source_values.isna().any():
+        raise ValueError("Explicit historical task input contains missing task names")
+    tasks = [normalize_task(value) for value in source_values.tolist()]
+    if any(not task for task in tasks):
+        raise ValueError("Explicit historical task input contains blank normalized task names")
+    if len(tasks) != len(set(tasks)):
+        raise ValueError("Explicit historical task input contains duplicate normalized targets")
     return list(dict.fromkeys(PRIMARY_ANCHOR_TARGETS + tasks))
 
 
 def candidate_predictors(tasks: list[str], mapping_path: Path | None, metadata_path: Path | None) -> pd.DataFrame:
     rows = [{"predictor": task, "raw_name": task, "canonical_name": task, "unit": "UNKNOWN"} for task in tasks]
-    if mapping_path is not None and mapping_path.exists():
+    if mapping_path is not None:
+        if not mapping_path.exists():
+            raise FileNotFoundError("Explicit raw-to-canonical mapping input is missing")
         mapping = load_table(mapping_path)
         raw_col = resolve_column(mapping, ("measurement", "raw_name", "raw_measurement"), required=True)
         canonical_col = resolve_column(mapping, ("canonical_measurement", "canonical_name", "task"), required=True)
@@ -163,21 +182,28 @@ def candidate_predictors(tasks: list[str], mapping_path: Path | None, metadata_p
                     "unit": str(row[unit_col]) if unit_col and pd.notna(row[unit_col]) else "UNKNOWN",
                 }
             )
-    if metadata_path is not None and metadata_path.exists():
+    if metadata_path is not None:
+        if not metadata_path.exists():
+            raise FileNotFoundError("Explicit task metadata input is missing")
         metadata = load_table(metadata_path)
-        canonical_col = resolve_column(metadata, ("canonical_measurement", "canonical_name", "task_col", "task"))
+        canonical_col = resolve_column(
+            metadata,
+            ("canonical_measurement", "canonical_name", "task_col", "task"),
+            required=True,
+            label="task metadata canonical measurement",
+        )
         unit_col = resolve_column(metadata, ("recommended_canonical_unit", "preferred_unit", "unit"))
-        if canonical_col:
-            for _, row in metadata.iterrows():
-                canonical = normalize_task(row[canonical_col])
-                rows.append(
-                    {
-                        "predictor": canonical,
-                        "raw_name": canonical,
-                        "canonical_name": canonical,
-                        "unit": str(row[unit_col]) if unit_col and pd.notna(row[unit_col]) else "UNKNOWN",
-                    }
-                )
+        assert canonical_col is not None
+        for _, row in metadata.iterrows():
+            canonical = normalize_task(row[canonical_col])
+            rows.append(
+                {
+                    "predictor": canonical,
+                    "raw_name": canonical,
+                    "canonical_name": canonical,
+                    "unit": str(row[unit_col]) if unit_col and pd.notna(row[unit_col]) else "UNKNOWN",
+                }
+            )
     return pd.DataFrame(rows).drop_duplicates(["raw_name", "canonical_name", "unit"]).reset_index(drop=True)
 
 
@@ -248,6 +274,19 @@ def evidence_row(task: str) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
+    supplied_inputs = (args.historical_task_csv, args.mapping_csv, args.task_metadata_csv)
+    n_missing_inputs = sum(path is not None and not path.is_file() for path in supplied_inputs)
+    if n_missing_inputs:
+        print(json.dumps({"status": "BLOCKED_MISSING_INPUT", "n_missing_inputs": n_missing_inputs}))
+        return 2
+    if args.mapping_csv is not None:
+        output_parent = args.output_registry_csv.expanduser().resolve().parent
+        root = repository_root()
+        if output_parent == root or root in output_parent.parents:
+            raise ValueError(
+                "A registry expanded from raw SCC mappings is restricted and cannot be written inside the repository."
+            )
+        require_restricted_path(output_parent)
     tasks = historical_tasks(args.historical_task_csv)
     predictors = candidate_predictors(tasks, args.mapping_csv, args.task_metadata_csv)
     registry_rows: list[dict[str, Any]] = []
@@ -288,4 +327,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run_guarded(main))
