@@ -143,6 +143,7 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
     _require(
         payloads["source_manifest_summary"],
         status="PASS",
+        schema_version=2,
         n_selected_subjects=4530,
         n_selected_studies=4530,
         n_source_studies=4530,
@@ -151,7 +152,13 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         source_paths_safe_and_normalized=True,
         source_ownership_exact=True,
         source_objects_unique=True,
-        source_object_counts_match_selected_authority=True,
+        raw_source_row_counts_match_selected_n_dicoms_authority=True,
+        source_locator_conflict_gate_passed=True,
+        n_source_locator_conflict_groups=0,
+        source_object_key_bijection_gate_passed=True,
+        historical_clip_deduplication_performed=False,
+        cross_construct_equality_not_assumed=True,
+        gcs_preflight_still_required=True,
         all_selected_objects_have_release_sha256=False,
         release_sha256_authority_available=False,
         historical_object_sha256_imported=False,
@@ -187,7 +194,49 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         restricted_input_authority_hash_gate_passed=True,
         locked_split_counts_gate_passed=True,
         gcs_exact_object_metadata_gate_required=True,
+        source_locator_conflict_gate_passed=True,
+        source_locator_reconciliation_recorded=True,
+        raw_n_dicoms_reconciliation_gate_passed=True,
     )
+    source_summary = payloads["source_manifest_summary"]
+    raw_rows = source_summary.get("n_source_manifest_input_rows")
+    unique_objects = source_summary.get("n_source_objects")
+    duplicate_groups = source_summary.get("n_source_locator_duplicate_groups")
+    collapsed_rows = source_summary.get("n_source_manifest_rows_collapsed")
+    duplicate_rows_total = source_summary.get("n_source_duplicate_rows_total")
+    maximum_multiplicity = source_summary.get("maximum_source_record_multiplicity")
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        for value in (
+            raw_rows,
+            unique_objects,
+            duplicate_groups,
+            collapsed_rows,
+            duplicate_rows_total,
+            maximum_multiplicity,
+        )
+    ):
+        raise SafetyGateError("Source reconciliation counts are invalid")
+    if raw_rows != unique_objects + collapsed_rows:
+        raise SafetyGateError("Source reconciliation counts do not balance")
+    if duplicate_groups > collapsed_rows:
+        raise SafetyGateError("Source duplicate groups exceed collapsed rows")
+    if (duplicate_groups == 0) != (collapsed_rows == 0):
+        raise SafetyGateError("Source duplicate groups and collapsed rows disagree")
+    if collapsed_rows == 0 and (duplicate_rows_total != 0 or maximum_multiplicity != 1):
+        raise SafetyGateError("No-duplicate source reconciliation metadata is inconsistent")
+    if collapsed_rows > 0 and (
+        duplicate_rows_total != duplicate_groups + collapsed_rows
+        or maximum_multiplicity < 2
+    ):
+        raise SafetyGateError("Duplicate source reconciliation metadata is inconsistent")
+    expected_status = (
+        "IDENTICAL_OBJECT_AUTHORITY_ROWS_COLLAPSED"
+        if collapsed_rows
+        else "NO_REPEATED_OBJECT_AUTHORITY_ROWS"
+    )
+    if source_summary.get("source_locator_reconciliation_status") != expected_status:
+        raise SafetyGateError("Source reconciliation status disagrees with counts")
     download = payloads["download"]
     _require(
         download,

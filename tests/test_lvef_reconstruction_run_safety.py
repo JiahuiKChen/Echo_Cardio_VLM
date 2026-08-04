@@ -14,6 +14,7 @@ import audit_lvef_reconstruction_smoke_run as gate
 def _payloads() -> dict[str, dict]:
     source = {
         "status": "PASS",
+        "schema_version": 2,
         "n_selected_subjects": 4530,
         "n_selected_studies": 4530,
         "n_source_studies": 4530,
@@ -22,7 +23,20 @@ def _payloads() -> dict[str, dict]:
         "source_paths_safe_and_normalized": True,
         "source_ownership_exact": True,
         "source_objects_unique": True,
-        "source_object_counts_match_selected_authority": True,
+        "raw_source_row_counts_match_selected_n_dicoms_authority": True,
+        "source_locator_conflict_gate_passed": True,
+        "n_source_locator_conflict_groups": 0,
+        "n_source_manifest_input_rows": 4,
+        "n_source_objects": 4,
+        "n_source_locator_duplicate_groups": 0,
+        "n_source_manifest_rows_collapsed": 0,
+        "n_source_duplicate_rows_total": 0,
+        "maximum_source_record_multiplicity": 1,
+        "source_locator_reconciliation_status": "NO_REPEATED_OBJECT_AUTHORITY_ROWS",
+        "source_object_key_bijection_gate_passed": True,
+        "historical_clip_deduplication_performed": False,
+        "cross_construct_equality_not_assumed": True,
+        "gcs_preflight_still_required": True,
         "all_selected_objects_have_release_sha256": False,
         "release_sha256_authority_available": False,
         "historical_object_sha256_imported": False,
@@ -52,6 +66,9 @@ def _payloads() -> dict[str, dict]:
         "restricted_input_authority_hash_gate_passed": True,
         "locked_split_counts_gate_passed": True,
         "gcs_exact_object_metadata_gate_required": True,
+        "source_locator_conflict_gate_passed": True,
+        "source_locator_reconciliation_recorded": True,
+        "raw_n_dicoms_reconciliation_gate_passed": True,
     }
     download = {
         "status": "PASS",
@@ -228,6 +245,20 @@ def test_complete_cross_stage_aggregate_gate_passes() -> None:
         assert result["aggregate_safety_gate_passed"] is True
 
 
+def test_complete_cross_stage_gate_accepts_balanced_exact_source_row_collapse() -> None:
+    payloads = _payloads()
+    source = payloads["source_manifest_summary"]
+    source["n_source_manifest_input_rows"] = 5
+    source["n_source_locator_duplicate_groups"] = 1
+    source["n_source_manifest_rows_collapsed"] = 1
+    source["n_source_duplicate_rows_total"] = 2
+    source["maximum_source_record_multiplicity"] = 2
+    source["source_locator_reconciliation_status"] = (
+        "IDENTICAL_OBJECT_AUTHORITY_ROWS_COLLAPSED"
+    )
+    gate.validate(payloads)
+
+
 def test_cross_stage_denominator_mismatch_fails_closed() -> None:
     payloads = _payloads()
     payloads["run_b_extraction"]["n_requested_cines"] = 2
@@ -266,6 +297,30 @@ def test_cross_stage_gcs_metadata_and_local_hash_gates_fail_closed() -> None:
         except gate.SafetyGateError:
             continue
         raise AssertionError(f"Cross-stage integrity mutation passed: {artifact}.{key}")
+
+
+def test_source_object_reconciliation_mutations_fail_closed() -> None:
+    mutations = (
+        ("n_source_manifest_input_rows", 5),
+        ("n_source_locator_duplicate_groups", 1),
+        ("n_source_duplicate_rows_total", 2),
+        ("maximum_source_record_multiplicity", 2),
+        (
+            "source_locator_reconciliation_status",
+            "IDENTICAL_OBJECT_AUTHORITY_ROWS_COLLAPSED",
+        ),
+        ("historical_clip_deduplication_performed", True),
+        ("cross_construct_equality_not_assumed", False),
+        ("gcs_preflight_still_required", False),
+    )
+    for key, value in mutations:
+        payloads = _payloads()
+        payloads["source_manifest_summary"][key] = value
+        try:
+            gate.validate(payloads)
+        except gate.SafetyGateError:
+            continue
+        raise AssertionError(f"Source reconciliation mutation passed: {key}")
 
 
 def test_identifier_alias_keys_are_rejected() -> None:

@@ -230,6 +230,231 @@ def test_unsafe_source_path_fails_before_outputs() -> None:
         assert not (root / "restricted" / "selected_source_manifest_restricted.csv").exists()
 
 
+def test_exact_repeated_source_rows_are_collapsed_before_object_authority() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        selected, split, records, candidates, n_selected = _fixture(root)
+        batch_path = records["batch_000"]
+        batch = pd.read_csv(batch_path, dtype=str)
+        pd.concat([batch, batch.iloc[[0]]], ignore_index=True).to_csv(
+            batch_path, index=False
+        )
+        selected_frame = pd.read_csv(selected, dtype=str)
+        selected_frame.loc[
+            selected_frame["study_id"].eq(batch.iloc[0]["study_id"]), "n_dicoms"
+        ] = "2"
+        selected_frame.to_csv(selected, index=False)
+        summary = execute(
+            selected_path=selected,
+            split_path=split,
+            record_components=records,
+            candidate_evidence=candidates,
+            restricted_output_dir=root / "restricted",
+            aggregate_output_dir=root / "aggregate",
+            expected_selected_sha256=None,
+            expected_selected_studies=n_selected,
+        )
+        source = pd.read_csv(
+            root / "restricted" / "selected_source_manifest_restricted.csv",
+            dtype=str,
+        )
+        assert source["source_relative_path"].is_unique
+        assert summary["n_source_manifest_input_rows"] == len(EXPECTED_COMPONENTS) + 1
+        assert summary["n_source_objects"] == len(EXPECTED_COMPONENTS)
+        assert summary["n_source_locator_duplicate_groups"] == 1
+        assert summary["n_source_manifest_rows_collapsed"] == 1
+        assert summary["n_source_duplicate_rows_total"] == 2
+        assert summary["maximum_source_record_multiplicity"] == 2
+        assert (
+            summary["source_locator_reconciliation_status"]
+            == "IDENTICAL_OBJECT_AUTHORITY_ROWS_COLLAPSED"
+        )
+        assert summary["source_locator_conflict_gate_passed"] is True
+        assert summary["schema_version"] == 2
+        assert summary["source_object_key_bijection_gate_passed"] is True
+        assert summary["historical_clip_deduplication_performed"] is False
+        assert summary["cross_construct_equality_not_assumed"] is True
+        assert summary["gcs_preflight_still_required"] is True
+        components = pd.read_csv(
+            root / "aggregate" / "reconstruction_source_manifest_by_component.csv"
+        )
+        assert int(components["n_source_manifest_input_rows"].sum()) == summary[
+            "n_source_manifest_input_rows"
+        ]
+        assert int(components["n_source_objects"].sum()) == summary[
+            "n_source_objects"
+        ]
+        assert int(components["n_source_locator_duplicate_groups"].sum()) == 1
+        assert int(components["n_source_manifest_rows_collapsed"].sum()) == 1
+        smoke_manifest = (
+            root / "restricted" / "technical_smoke_source_manifest_restricted.csv"
+        )
+        download_objects = load_source_manifest(smoke_manifest)
+        assert len({item.relative_path for item in download_objects}) == len(
+            download_objects
+        )
+        validated = _validate_source_manifest(
+            pd.read_csv(smoke_manifest, low_memory=False)
+        )
+        assert validated["source_relative_path"].is_unique
+
+
+def test_conflicting_repeated_source_locator_fails_before_outputs() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        selected, split, records, candidates, n_selected = _fixture(root)
+        batch_path = records["batch_000"]
+        batch = pd.read_csv(batch_path, dtype=str)
+        batch["object_size_bytes"] = "100"
+        conflicting = batch.iloc[[0]].copy()
+        conflicting["object_size_bytes"] = "101"
+        pd.concat([batch, conflicting], ignore_index=True).to_csv(
+            batch_path, index=False
+        )
+        selected_frame = pd.read_csv(selected, dtype=str)
+        selected_frame.loc[
+            selected_frame["study_id"].eq(batch.iloc[0]["study_id"]), "n_dicoms"
+        ] = "2"
+        selected_frame.to_csv(selected, index=False)
+        try:
+            execute(
+                selected_path=selected,
+                split_path=split,
+                record_components=records,
+                candidate_evidence=candidates,
+                restricted_output_dir=root / "restricted",
+                aggregate_output_dir=root / "aggregate",
+                expected_selected_sha256=None,
+                expected_selected_studies=n_selected,
+            )
+        except ValueError as exc:
+            assert "conflicting manifest metadata" in str(exc)
+        else:
+            raise AssertionError("Conflicting source-locator rows were accepted")
+        assert not (
+            root / "restricted" / "selected_source_manifest_restricted.csv"
+        ).exists()
+
+
+def test_missing_versus_recorded_duplicate_size_fails_before_outputs() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        selected, split, records, candidates, n_selected = _fixture(root)
+        batch_path = records["batch_000"]
+        batch = pd.read_csv(batch_path, dtype=str)
+        batch["object_size_bytes"] = ""
+        conflicting = batch.iloc[[0]].copy()
+        conflicting["object_size_bytes"] = "100"
+        pd.concat([batch, conflicting], ignore_index=True).to_csv(
+            batch_path, index=False
+        )
+        selected_frame = pd.read_csv(selected, dtype=str)
+        selected_frame.loc[
+            selected_frame["study_id"].eq(batch.iloc[0]["study_id"]), "n_dicoms"
+        ] = "2"
+        selected_frame.to_csv(selected, index=False)
+        try:
+            execute(
+                selected_path=selected,
+                split_path=split,
+                record_components=records,
+                candidate_evidence=candidates,
+                restricted_output_dir=root / "restricted",
+                aggregate_output_dir=root / "aggregate",
+                expected_selected_sha256=None,
+                expected_selected_studies=n_selected,
+            )
+        except ValueError as exc:
+            assert "conflicting manifest metadata" in str(exc)
+        else:
+            raise AssertionError("Missing-versus-recorded size conflict was accepted")
+
+
+def test_same_public_locator_across_components_fails_before_outputs() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        selected, split, records, candidates, n_selected = _fixture(root)
+        first = pd.read_csv(records["batch_000"], dtype=str).iloc[[0]]
+        other_path = records["batch_001"]
+        other = pd.read_csv(other_path, dtype=str)
+        pd.concat([other, first], ignore_index=True).to_csv(other_path, index=False)
+        selected_frame = pd.read_csv(selected, dtype=str)
+        selected_frame.loc[
+            selected_frame["study_id"].eq(first.iloc[0]["study_id"]), "n_dicoms"
+        ] = "2"
+        selected_frame.to_csv(selected, index=False)
+        try:
+            execute(
+                selected_path=selected,
+                split_path=split,
+                record_components=records,
+                candidate_evidence=candidates,
+                restricted_output_dir=root / "restricted",
+                aggregate_output_dir=root / "aggregate",
+                expected_selected_sha256=None,
+                expected_selected_studies=n_selected,
+            )
+        except ValueError as exc:
+            assert "more than one source component" in str(exc)
+        else:
+            raise AssertionError("Cross-component source locator was accepted")
+
+
+def test_raw_record_count_must_match_selected_n_dicoms_before_collapse() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        selected, split, records, candidates, n_selected = _fixture(root)
+        batch_path = records["batch_000"]
+        batch = pd.read_csv(batch_path, dtype=str)
+        pd.concat([batch, batch.iloc[[0]]], ignore_index=True).to_csv(
+            batch_path, index=False
+        )
+        try:
+            execute(
+                selected_path=selected,
+                split_path=split,
+                record_components=records,
+                candidate_evidence=candidates,
+                restricted_output_dir=root / "restricted",
+                aggregate_output_dir=root / "aggregate",
+                expected_selected_sha256=None,
+                expected_selected_studies=n_selected,
+            )
+        except ValueError as exc:
+            assert "Raw source row counts" in str(exc)
+        else:
+            raise AssertionError("Raw record/n_dicoms mismatch was accepted")
+
+
+def test_conflicting_dual_locator_columns_fail_before_outputs() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        selected, split, records, candidates, n_selected = _fixture(root)
+        batch_path = records["batch_000"]
+        batch = pd.read_csv(batch_path, dtype=str)
+        subject_id = batch.iloc[0]["subject_id"]
+        study_id = batch.iloc[0]["study_id"]
+        batch["gcs_object_path"] = (
+            f"p10/p{subject_id}/s{study_id}/{study_id}_different.dcm"
+        )
+        batch.to_csv(batch_path, index=False)
+        try:
+            execute(
+                selected_path=selected,
+                split_path=split,
+                record_components=records,
+                candidate_evidence=candidates,
+                restricted_output_dir=root / "restricted",
+                aggregate_output_dir=root / "aggregate",
+                expected_selected_sha256=None,
+                expected_selected_studies=n_selected,
+            )
+        except ValueError as exc:
+            assert "locator columns disagree" in str(exc)
+        else:
+            raise AssertionError("Conflicting dual source locators were accepted")
+
+
 def test_builder_smoke_output_is_accepted_end_to_end_by_both_consumers() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

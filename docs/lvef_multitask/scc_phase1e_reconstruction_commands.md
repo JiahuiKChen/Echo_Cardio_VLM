@@ -105,7 +105,7 @@ The dependency-light suite must exit zero. Any failure blocks source constructio
 
 ## 2. Selected source manifest and GCS tooling
 
-The MIMIC-IV-ECHO bucket root has no `SHA256SUMS.txt` object. The selected-source builder therefore records the expected exact GCS object locators but does not import or synthesize release SHA-256 values. It verifies exact `n_dicoms` counts against the 4,530-study authority and derives the four technical roles from restricted Phase 1D provenance without reading outcomes, predictions, performance, or embedding arrays. Exact-object GCS size, MD5, CRC32C, and generation are obtained in the next preflight block.
+The MIMIC-IV-ECHO bucket root has no `SHA256SUMS.txt` object. The selected-source builder therefore records the expected exact GCS object locators but does not import or synthesize release SHA-256 values. It first verifies raw hash-locked record-row counts against each selected study's `n_dicoms` authority. If the same normalized public object is repeated, it collapses the request only when locator, derived key, ownership, split, component, GCS URI, and recorded size (including missingness) are identical; any conflict blocks. This prospective public-object reconciliation is not historical clip-key deduplication and does not alter the 32-group quarantine. The builder derives the four technical roles from restricted Phase 1D provenance without reading outcomes, predictions, performance, or embedding arrays. Exact-object GCS size, MD5, CRC32C, and generation are obtained in the next preflight block and remain authoritative.
 
 ```bash
 if ! command -v gsutil >/dev/null 2>&1; then
@@ -148,6 +148,39 @@ print(value)
 ' "$RUN_ROOT/aggregate/source/reconstruction_source_manifest.summary.json"
 )"
 test "$(sha256sum "$SMOKE_SOURCE" | awk '{print $1}')" = "$EXPECTED_SMOKE_SOURCE_SHA256"
+
+"$PYTHON" -c '
+import json, sys
+summary = json.load(open(sys.argv[1], encoding="utf-8"))
+safety = json.load(open(sys.argv[2], encoding="utf-8"))
+assert summary["status"] == "PASS"
+assert summary["schema_version"] == 2
+assert summary["n_selected_subjects"] == summary["n_selected_studies"] == 4530
+assert summary["n_source_studies"] == 4530
+assert summary["raw_source_row_counts_match_selected_n_dicoms_authority"] is True
+assert summary["source_objects_unique"] is True
+assert summary["source_locator_conflict_gate_passed"] is True
+assert summary["n_source_locator_conflict_groups"] == 0
+assert summary["source_object_key_bijection_gate_passed"] is True
+assert summary["historical_clip_deduplication_performed"] is False
+assert summary["cross_construct_equality_not_assumed"] is True
+assert summary["gcs_preflight_still_required"] is True
+assert summary["n_source_manifest_input_rows"] == (
+    summary["n_source_objects"] + summary["n_source_manifest_rows_collapsed"]
+)
+assert summary["n_source_duplicate_rows_total"] == (
+    summary["n_source_locator_duplicate_groups"]
+    + summary["n_source_manifest_rows_collapsed"]
+)
+assert summary["technical_smoke_source_manifest_sha256"] == sys.argv[3]
+assert safety["status"] == "PASS"
+assert safety["source_locator_conflict_gate_passed"] is True
+assert safety["source_locator_reconciliation_recorded"] is True
+assert safety["raw_n_dicoms_reconciliation_gate_passed"] is True
+' \
+  "$RUN_ROOT/aggregate/source/reconstruction_source_manifest.summary.json" \
+  "$RUN_ROOT/aggregate/source/reconstruction_source_manifest_safety_gate.json" \
+  "$EXPECTED_SMOKE_SOURCE_SHA256"
 ```
 
 The selected-source manifest is restricted even though it contains public object locators. Never copy it, the smoke manifest, an exact-object stat record, or a metadata-linked source row into Git.
@@ -175,10 +208,32 @@ import json, re, sys
 source = json.load(open(sys.argv[1], encoding="utf-8"))
 preflight = json.load(open(sys.argv[2], encoding="utf-8"))
 assert source["status"] == "PASS"
+assert source["schema_version"] == 2
 assert source["n_selected_subjects"] == 4530
 assert source["n_selected_studies"] == 4530
 assert source["n_source_studies"] == 4530
-assert source["source_object_counts_match_selected_authority"] is True
+assert source["raw_source_row_counts_match_selected_n_dicoms_authority"] is True
+assert source["source_objects_unique"] is True
+assert source["source_locator_conflict_gate_passed"] is True
+assert source["n_source_locator_conflict_groups"] == 0
+assert source["source_object_key_bijection_gate_passed"] is True
+assert source["historical_clip_deduplication_performed"] is False
+assert source["cross_construct_equality_not_assumed"] is True
+assert source["gcs_preflight_still_required"] is True
+assert source["n_source_manifest_input_rows"] == (
+    source["n_source_objects"] + source["n_source_manifest_rows_collapsed"]
+)
+assert source["n_source_locator_duplicate_groups"] <= source["n_source_manifest_rows_collapsed"]
+assert source["n_source_duplicate_rows_total"] == (
+    source["n_source_locator_duplicate_groups"]
+    + source["n_source_manifest_rows_collapsed"]
+)
+assert source["maximum_source_record_multiplicity"] >= 1
+assert source["source_locator_reconciliation_status"] == (
+    "IDENTICAL_OBJECT_AUTHORITY_ROWS_COLLAPSED"
+    if source["n_source_manifest_rows_collapsed"]
+    else "NO_REPEATED_OBJECT_AUTHORITY_ROWS"
+)
 assert source["release_sha256_authority_available"] is False
 assert source["all_selected_objects_have_release_sha256"] is False
 assert source["historical_object_sha256_imported"] is False

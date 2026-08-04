@@ -282,11 +282,6 @@ def load_record_components(
         if not {"subject_id", "study_id"}.issubset(header):
             raise ValueError("Record component lacks required ownership columns")
         locator_columns = [column for column in LOCATOR_COLUMNS if column in header]
-        canonical_locator_columns = [
-            column for column in locator_columns if column != "gcs_object_path"
-        ]
-        if canonical_locator_columns:
-            locator_columns = canonical_locator_columns
         if not locator_columns:
             raise ValueError("Record component is missing a source locator column")
         size_column = _single_present(header, SIZE_COLUMNS, "size", False)
@@ -355,22 +350,103 @@ def load_record_components(
     source = pd.DataFrame(rows)
     if source.empty:
         raise ValueError("No source objects were supplied")
-    if source.duplicated(["source_relative_path"]).any() or source.duplicated(["source_object_key"]).any():
-        raise ValueError("Source objects are not unique")
-    component_count = source.groupby("study_id")["component"].nunique()
-    if (component_count != 1).any():
+    input_rows = int(len(source))
+    raw_component_count = source.groupby("study_id")["component"].nunique()
+    if (raw_component_count != 1).any():
         raise ValueError("A selected study occurs in more than one source component")
     if set(source["study_id"]) != set(selected["study_id"]):
         raise ValueError("Source records do not exactly cover the selected cohort")
-    observed_counts = source.groupby("study_id").size()
+    raw_observed_counts = source.groupby("study_id").size()
     expected_counts = selected.set_index("study_id")["n_dicoms"]
-    if not observed_counts.reindex(expected_counts.index).eq(expected_counts).all():
-        raise ValueError("Source object counts disagree with selected n_dicoms authority")
+    if not raw_observed_counts.reindex(expected_counts.index).eq(expected_counts).all():
+        raise ValueError("Raw source row counts disagree with selected n_dicoms authority")
+    path_key_pairs = source[["source_relative_path", "source_object_key"]].drop_duplicates()
+    if (
+        path_key_pairs["source_relative_path"].duplicated().any()
+        or path_key_pairs["source_object_key"].duplicated().any()
+    ):
+        raise ValueError("Source locator and object-key identities disagree")
+
+    duplicate_mask = source.duplicated(["source_relative_path"], keep=False)
+    duplicate_rows = source.loc[duplicate_mask]
+    duplicate_groups = int(duplicate_rows["source_relative_path"].nunique())
+    maximum_multiplicity = int(
+        duplicate_rows.groupby("source_relative_path", sort=False).size().max()
+    ) if duplicate_groups else 1
+    if duplicate_groups:
+        invariant_columns = [
+            "release_id",
+            "source_bucket",
+            "component",
+            "subject_id",
+            "study_id",
+            "split",
+            "source_relative_path",
+            "gcs_uri",
+            "expected_size_bytes",
+            "expected_sha256",
+            "source_object_key",
+        ]
+        invariant_counts = duplicate_rows.groupby(
+            "source_relative_path", sort=False, dropna=False
+        )[invariant_columns].nunique(dropna=False)
+        if invariant_counts.gt(1).any().any():
+            raise ValueError("Duplicate source locators have conflicting manifest metadata")
+        source = source.drop_duplicates(invariant_columns, keep="first").reset_index(drop=True)
+
+    rows_collapsed = input_rows - int(len(source))
+    if (
+        source["source_relative_path"].duplicated().any()
+        or source["source_object_key"].duplicated().any()
+    ):
+        raise ValueError("Source objects remain nonunique after exact-row reconciliation")
+    component_count = source.groupby("study_id")["component"].nunique()
+    if (component_count != 1).any():
+        raise ValueError("A selected study occurs in more than one source component after reconciliation")
+    if set(source["study_id"]) != set(selected["study_id"]):
+        raise ValueError("Reconciled source objects do not cover the selected cohort")
     component_order = {name: index for index, name in enumerate(EXPECTED_COMPONENTS)}
+    input_component_counts = {
+        component: int(sum(row["component"] == component for row in rows))
+        for component in EXPECTED_COMPONENTS
+    }
+    unique_component_counts = {
+        component: int(source["component"].eq(component).sum())
+        for component in EXPECTED_COMPONENTS
+    }
+    duplicate_component_groups = {
+        component: int(
+            duplicate_rows.loc[
+                duplicate_rows["component"].eq(component), "source_relative_path"
+            ].nunique()
+        )
+        for component in EXPECTED_COMPONENTS
+    }
     source["_component_order"] = source["component"].map(component_order)
-    return source.sort_values(
+    reconciled = source.sort_values(
         ["_component_order", "study_id", "source_relative_path"]
     ).drop(columns="_component_order").reset_index(drop=True)
+    reconciled.attrs["source_reconciliation"] = {
+        "n_source_manifest_input_rows": input_rows,
+        "n_source_locator_duplicate_groups": duplicate_groups,
+        "n_source_manifest_rows_collapsed": rows_collapsed,
+        "n_source_duplicate_rows_total": int(len(duplicate_rows)),
+        "maximum_source_record_multiplicity": maximum_multiplicity,
+        "n_unique_source_objects": int(len(reconciled)),
+        "n_source_locator_conflict_groups": 0,
+        "raw_source_row_counts_match_selected_n_dicoms_authority": True,
+        "source_locator_reconciliation_status": (
+            "IDENTICAL_OBJECT_AUTHORITY_ROWS_COLLAPSED"
+            if rows_collapsed
+            else "NO_REPEATED_OBJECT_AUTHORITY_ROWS"
+        ),
+        "source_locator_conflict_gate_passed": True,
+        "source_object_key_bijection_gate_passed": True,
+        "component_input_rows": input_component_counts,
+        "component_unique_objects": unique_component_counts,
+        "component_duplicate_groups": duplicate_component_groups,
+    }
+    return reconciled
 
 
 def load_candidate_tables(named_paths: Mapping[str, Path], selected: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -714,9 +790,12 @@ def build_aggregate_outputs(
     smoke: pd.DataFrame,
     chosen: Sequence[Mapping[str, object]],
 ) -> tuple[dict[str, object], pd.DataFrame, pd.DataFrame, dict[str, object]]:
+    reconciliation = source.attrs.get("source_reconciliation")
+    if not isinstance(reconciliation, dict):
+        raise ValueError("Source reconciliation metadata is absent")
     summary: dict[str, object] = {
         "status": "PASS",
-        "schema_version": 1,
+        "schema_version": 2,
         "source_release": SOURCE_RELEASE,
         "source_bucket": SOURCE_BUCKET,
         "selected_authority_checksum_match": True,
@@ -730,7 +809,37 @@ def build_aggregate_outputs(
         "source_paths_safe_and_normalized": True,
         "source_ownership_exact": True,
         "source_objects_unique": True,
-        "source_object_counts_match_selected_authority": True,
+        "raw_source_row_counts_match_selected_n_dicoms_authority": True,
+        "n_source_manifest_input_rows": int(
+            reconciliation["n_source_manifest_input_rows"]
+        ),
+        "n_source_locator_duplicate_groups": int(
+            reconciliation["n_source_locator_duplicate_groups"]
+        ),
+        "n_source_manifest_rows_collapsed": int(
+            reconciliation["n_source_manifest_rows_collapsed"]
+        ),
+        "n_source_duplicate_rows_total": int(
+            reconciliation["n_source_duplicate_rows_total"]
+        ),
+        "maximum_source_record_multiplicity": int(
+            reconciliation["maximum_source_record_multiplicity"]
+        ),
+        "source_locator_reconciliation_status": str(
+            reconciliation["source_locator_reconciliation_status"]
+        ),
+        "source_locator_conflict_gate_passed": bool(
+            reconciliation["source_locator_conflict_gate_passed"]
+        ),
+        "n_source_locator_conflict_groups": int(
+            reconciliation["n_source_locator_conflict_groups"]
+        ),
+        "source_object_key_bijection_gate_passed": bool(
+            reconciliation["source_object_key_bijection_gate_passed"]
+        ),
+        "historical_clip_deduplication_performed": False,
+        "cross_construct_equality_not_assumed": True,
+        "gcs_preflight_still_required": True,
         "smoke_n_roles": int(smoke["smoke_role"].nunique()),
         "smoke_n_studies": int(smoke["study_id"].nunique()),
         "smoke_n_objects": int(len(smoke)),
@@ -755,6 +864,16 @@ def build_aggregate_outputs(
                 "component": component,
                 "n_source_studies": int(group["study_id"].nunique()),
                 "n_source_objects": int(len(group)),
+                "n_source_manifest_input_rows": int(
+                    reconciliation["component_input_rows"][component]
+                ),
+                "n_source_locator_duplicate_groups": int(
+                    reconciliation["component_duplicate_groups"][component]
+                ),
+                "n_source_manifest_rows_collapsed": int(
+                    reconciliation["component_input_rows"][component]
+                    - reconciliation["component_unique_objects"][component]
+                ),
                 "n_objects_with_known_bytes": int(group["expected_size_bytes"].notna().sum()),
                 "total_expected_bytes_if_complete": _complete_sum(group["expected_size_bytes"]),
             }
@@ -786,6 +905,9 @@ def build_aggregate_outputs(
         "restricted_outputs_outside_repository": True,
         "smoke_hard_caps_passed": True,
         "outcome_blind_selection_passed": True,
+        "source_locator_conflict_gate_passed": True,
+        "source_locator_reconciliation_recorded": True,
+        "raw_n_dicoms_reconciliation_gate_passed": True,
     }
     assert_aggregate_safe_json(summary)
     assert_aggregate_safe_columns(components)

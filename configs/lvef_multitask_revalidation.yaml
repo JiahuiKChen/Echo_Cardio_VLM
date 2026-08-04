@@ -167,7 +167,13 @@ phase1e_a_reconstruction_smoke:
     selected_studies_expected: 4530
     selected_subjects_expected: 4530
     require_exact_selected_study_ownership: true
-    require_expected_object_count_per_study: true
+    require_raw_record_count_per_study_equals_selected_n_dicoms: true
+    exact_normalized_public_object_row_reconciliation_permitted: true
+    duplicate_reconciliation_requires_identical_ownership_component_locator_key_and_size: true
+    duplicate_reconciliation_conflicts_permitted: false
+    canonical_public_object_counts_locked_before_direct_record_audit: false
+    historical_clip_deduplication_performed: false
+    exact_gcs_prefix_and_stat_preflight_remains_required: true
     require_unique_safe_relative_object_paths: true
     require_zero_outside_selected_studies: true
     locked_split_counts: {train: 3171, val: 679, test: 680}
