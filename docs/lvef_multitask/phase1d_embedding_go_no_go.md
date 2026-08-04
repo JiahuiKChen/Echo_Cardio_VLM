@@ -2,7 +2,7 @@
 
 ## Current ruling
 
-**NO-GO.** The restricted Phase 1D audits are complete enough to rule out deterministic deduplication and the retained-artifact C1/C2 paths. They identify C3 as the only operationally clean prospective path, but do not authorize it. No deduplication, download, re-extraction, re-embedding, pooling, model fitting, outcome access, prediction generation, or confirmatory performance review is authorized.
+**NO-GO for the historical store and full C3 execution.** The restricted Phase 1D audits are complete enough to rule out deterministic deduplication and the retained-artifact C1/C2 paths. They identify C3 as the only operationally clean prospective path, but do not authorize it. A later Phase 1E-A decision permitted one bounded four-training-study technical smoke; it did not authorize historical-store repair, full-cohort download/re-extraction/re-embedding, model fitting, outcome access, prediction generation, or confirmatory performance review.
 
 The historical merged clip and study stores remain unsuitable as confirmatory embedding authority. The audits did not find a vector or normalized-manifest disagreement among the 32 duplicate groups; they found that the physical source evidence needed to prove exact duplication had been purged.
 
@@ -48,6 +48,12 @@ Counts are aggregate provenance findings, not authorization to create a canonica
 | **C3. Selected-only clean prospective reconstruction** | `OPERATIONALLY_COMPATIBLE_UNAUTHORIZED` | Validate the surviving Stage D NPZ authority, redownload and re-extract the canonical selected sources for `batch_000`–`batch_008`, then re-embed the entire selected imaging-eligible clip set under one pinned checkpoint/environment and rebuild study vectors. |
 
 C3 is a provenance recommendation, not an execution decision. If Stage D NPZ validation fails or cannot establish source mapping, its corresponding DICOMs must also be redownloaded and re-extracted. Raw DICOM retrieval must remain limited to the selected imaging-eligible source set; repeated/all-study expansion is out of scope.
+
+## Phase 1E-A bounded-smoke result
+
+The prospective implementation smoke subsequently passed at commit `022d7581eee4cd0278b29c9213e4b65bdc6161b2`: 252 exact public objects were transport-verified and DICOM-header readable, 123 multiframe candidates were pixel-decoded, extracted, and encoded twice, three study vectors were pooled twice, all five required reproducibility comparisons were exact, and the second-pass preservation pack passed. See [the aggregate-only smoke findings](phase1e_reconstruction_smoke_findings.md).
+
+This changes the preservation contract from `SPECIFIED_NOT_EXECUTED` to `PASSED_FOR_FOUR-STUDY_CANARY` only. It does not change the C3 disposition from `OPERATIONALLY_COMPATIBLE_UNAUTHORIZED`, and it does not resolve or supersede the historical duplicate-key findings.
 
 ## Aggregate-only packet contract
 

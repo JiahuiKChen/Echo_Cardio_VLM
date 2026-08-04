@@ -31,7 +31,7 @@ Selection may read selected membership, subject split, component, public record 
 
 - The branch and starting commit are exact and the SCC worktree is clean.
 - Accepted-abstract and frozen-snapshot authorities are unchanged.
-- The restricted all-selected source authority uses dual accounting. Raw hash-locked record rows must match each selected study's historical `n_dicoms` count before reconciliation. Repeated rows may then be collapsed only when their normalized public locator, derived object key, ownership, split, component, GCS URI, and recorded size (including missingness) are identical. Any conflict blocks before output. The resulting download manifest must contain exactly 4,530 selected studies and subjects, one safe unique MIMIC-IV-ECHO 1.0 relative path per public object, and zero outside-selected studies.
+- The restricted all-selected source-request manifest candidate uses dual accounting. Raw hash-locked record rows must match each selected study's historical `n_dicoms` count before reconciliation. Repeated rows may then be collapsed only when their normalized public locator, derived object key, ownership, split, component, GCS URI, and recorded size (including missingness) are identical. Any conflict blocks before output. The resulting request manifest must contain exactly 4,530 selected studies and subjects, one safe unique MIMIC-IV-ECHO 1.0 relative path per proposed public object, and zero outside-selected studies. It is not promoted to full public-object authority until exact listing/stat verification covers every requested object.
 - This is prospective public-object request reconciliation, not retrospective deduplication of the 32 quarantined historical clip keys. It does not restore historical embedding authority. Exact GCS prefix listing and exact-object stat metadata remain required to confirm the smoke object's public-source authority.
 - The selected-study, split, historical-study, duplicate-resolution, canonical-inventory, Stage-D, and batch 000–008 inputs must match the SHA-256 authorities locked in the Phase 1E-A config before any row is read. The split must additionally contain exactly 3,171 train, 679 validation, and 680 test subjects.
 - The smoke manifest contains exactly four train studies and four subjects, one role apiece, and no outcome-bearing columns.
@@ -44,7 +44,7 @@ Selection may read selected membership, subject split, component, public record 
 
 ## Technical contract
 
-All public DICOM objects for each smoke study are downloaded; there is no within-study sampling. Each observed local object must correspond to exactly one expected safe path, match the exact remote byte count and MD5 returned by GCS, and receive a local SHA-256. The remote CRC32C and generation are preserved with the object record. Missing metadata, missing objects, extra objects, ownership conflicts, size or MD5 disagreement, symlinks, unsafe paths, or unreadable DICOMs fail closed.
+All public DICOM objects for each smoke study are downloaded; there is no within-study sampling. Each observed local object must correspond to exactly one expected safe path, match the exact remote byte count and MD5 returned by GCS, and receive a local SHA-256. The remote CRC32C and generation are preserved with the object record. Missing metadata, missing objects, extra objects, ownership conflicts, size or MD5 disagreement, symlinks, unsafe paths, or a DICOM-header read failure fail closed. Pixel decoding is subsequently required and audited for every multiframe candidate; single-frame and negative-control objects are not claimed to be pixel-decoded.
 
 Every multiframe candidate is extracted. Extraction requires pydicom 3 raw-pixel decoding, an explicit named plugin for a compressed transfer syntax, exact 8-bit stored pixels, and a supported photometric interpretation. Stored YBR is converted to RGB exactly once; RGB is preserved; monochrome is directly replicated (and MONOCHROME1 inverted) without a YUV/BGR transform. Aggregate-only photometric, transfer-syntax, decoder, and color-transform counts are preserved.
 
@@ -54,7 +54,7 @@ EchoPrime inference is encoder-only. It uses the pinned `echo_prime_encoder.pt`,
 
 Two independent clean output roots must execute extraction, embedding, and pooling from the same verified DICOM root under the same pinned accelerator and environment. Normalized manifests, extracted internal arrays, clip vectors, and study vectors must agree exactly. NPZ container bytes are not themselves an exactness gate because ZIP metadata can vary; internal array-content hashes are the authority. Cross-accelerator comparison is optional engineering information and cannot qualify or mix an alternate device.
 
-The three positive controls are expected to produce at least one cine, clip embedding, and study vector. The negative control is expected to remain DICOM-readable while producing zero multiframe cines, clip embeddings, and study vectors. Any different result fails the versioned smoke expectation and is investigated without substituting another study.
+The three positive controls are expected to produce at least one successfully pixel-decoded multiframe candidate, clip embedding, and study vector. The negative control is expected to remain DICOM-header readable while producing zero multiframe candidates, clip embeddings, and study vectors. Any different result fails the versioned smoke expectation and is investigated without substituting another study.
 
 ## Preservation and claim boundary
 
@@ -63,3 +63,13 @@ The restricted preservation pack records safe relative paths, file sizes, local 
 A passing smoke run establishes only that the prospective implementation and provenance controls work on the prespecified four-study technical cohort. It cannot establish complete selected-cohort coverage, validate all Stage-D retained NPZs, estimate scientific performance, support modality comparisons, or authorize full C3 execution.
 
 Before full C3 authorization, the multiframe cine-candidacy definition must be adjudicated beyond `NumberOfFrames > 1`, and extraction/embedding must be operationalized in bounded deterministic component batches rather than one cohort-wide in-memory job. The repository-compatible temporal sampler is intentionally not claimed to be identical to the released EchoPrime reference transform; that choice also remains a pre-C3 scientific lock item.
+
+## Observed execution disposition
+
+The prespecified smoke executed at commit `022d7581eee4cd0278b29c9213e4b65bdc6161b2` on 2026-08-04 and passed its aggregate safety gate and independent preservation second pass. The observed aggregate findings are recorded in [the Phase 1E-A smoke findings](phase1e_reconstruction_smoke_findings.md).
+
+The selected-source builder reconciled 336,016 raw authority rows to 335,984 unique normalized public-object requests. All 32 repeated locator groups were identical authority-row repetitions in `batch_000`, and zero conflicts remained. This was prospective public-object request reconciliation only: it was not historical clip-key deduplication, did not assume equality with the 32 quarantined historical clip-key groups, and did not restore the historical embedding store. Exact listing/stat authority was obtained only for the 252 smoke objects; the other 335,732 requests remain externally unverified.
+
+The bounded run transport-verified all 252 objects in the four training studies, read every DICOM header, found 123 multiframe candidates in the three positive controls and none in the negative control, pixel-decoded, extracted, and embedded all 123 candidates twice, produced three study vectors twice, and obtained exact equality for all five required reproducibility pairs. No model, prediction, or confirmatory performance was accessed.
+
+The status is therefore `PASS_TECHNICAL_SMOKE_ONLY`. The full selected-cohort C3 reconstruction remains unauthorized and the pre-C3 preprocessing, batching, resource, provenance, and owner-authorization gates above remain controlling.

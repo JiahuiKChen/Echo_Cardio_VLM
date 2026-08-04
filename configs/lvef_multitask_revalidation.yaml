@@ -1,6 +1,6 @@
-schema_version: 5
+schema_version: 6
 analysis_version: phase1e-a-prospective-reconstruction-smoke-v1
-status: phase1e_a_smoke_authorized_full_c3_and_confirmatory_access_blocked
+status: phase1e_a_technical_smoke_passed_full_c3_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -22,6 +22,7 @@ execution_authority:
   technical_smoke_dicom_reextraction_authorized: true
   technical_smoke_encoder_embedding_authorized: true
   technical_smoke_study_aggregation_authorized: true
+  technical_smoke_execution_completed: true
   full_selected_cohort_redownload_authorized: false
   full_selected_cohort_extraction_authorized: false
   full_selected_cohort_embedding_authorized: false
@@ -143,14 +144,100 @@ phase1d_scc_execution:
   dicoms_downloaded: false
 
 phase1e_a_reconstruction_smoke:
-  status: authorized_not_yet_executed
+  status: passed_technical_smoke_only
   purpose: prospective_selected_cohort_reconstruction_preflight_and_determinism_only
   may_establish_full_embedding_authority: false
   may_open_confirmatory_access: false
+  observed_execution:
+    source_commit: 022d7581eee4cd0278b29c9213e4b65bdc6161b2
+    execution_date: '2026-08-04'
+    aggregate_safety_gate_passed: true
+    selected_source_request_manifest_candidate:
+      schema_version: 2
+      status: PASS
+      authority_scope: structural_request_reconciliation_only
+      selected_studies: 4530
+      selected_subjects: 4530
+      input_authority_rows: 336016
+      unique_public_object_requests: 335984
+      identical_locator_groups_reconciled: 32
+      collapsed_excess_rows: 32
+      locator_conflict_groups: 0
+      smoke_objects_with_exact_gcs_preflight: 252
+      remaining_objects_without_phase1e_exact_gcs_preflight: 335732
+      full_selected_object_gcs_preflight_passed: false
+      historical_clip_deduplication_performed: false
+      cross_construct_equality_assumed: false
+    smoke_scope:
+      split: train
+      subjects: 4
+      studies: 4
+      technical_roles: 4
+      public_objects: 252
+      remote_and_downloaded_bytes: 1124722942
+    transport:
+      status: PASS
+      authority: GCS_EXACT_OBJECT_STAT
+      remote_metadata_complete: 252
+      remote_md5_verified: 252
+      local_sha256_computed: 252
+      metadata_or_integrity_failures: 0
+    dicom_audit:
+      status: PASS
+      header_readable_objects: 252
+      header_read_failed_objects: 0
+      header_read_used_stop_before_pixels: true
+      multiframe_candidates: 123
+      single_frame_objects: 129
+      studies_with_multiframe_candidate: 3
+      positive_control_gate_passed: true
+      negative_no_multiframe_control_gate_passed: true
+    extraction:
+      independent_runs: 2
+      decoded_and_extracted_multiframe_candidates_per_run: 123
+      failed_candidate_extractions_per_run: 0
+      duplicate_clip_keys_per_run: 0
+      preprocessing_and_signal_gates_passed: true
+    embedding:
+      independent_runs: 2
+      clip_vectors_per_run: 123
+      study_vectors_per_run: 3
+      embedding_width: 512
+      embedding_dtype: float32
+      device_type: cuda
+      encoder_only: true
+      view_classifier_loaded: false
+      torch_version: 2.11.0+cu130
+      torchvision_version: 0.26.0+cu130
+      checkpoint_identity_gate_passed: true
+      independent_official_release_provenance_established: false
+      historical_checkpoint_use_proven: false
+    reproducibility:
+      status: PASS
+      exact_pairs: 5
+      unequal_pairs: 0
+      extraction_internal_arrays_compared: 369
+      npz_container_bytes_used_as_exactness_gate: false
+    preservation:
+      status: PASS
+      files: 566
+      bytes: 1729369859
+      manifest_sha256: 7be4f39e7ce9123d3f59407432cd39257082f13ceebbca8390266979f81fcc8b
+      metadata_sha256: a2d33af15c99ffd12bfbe7e3728cf6f4fc492146f58f2c59e2cfb6f93cdc66f7
+      verification_sha256: 4548d55a1f2e0a777a09f1068700ce7a89f8d264d193fddf2c09011da3965938
+      exact_file_set_and_hashes_passed: true
+      environment_and_job_provenance_recorded: true
+      restricted_snapshot_reconciled: true
+    models_fitted: false
+    predictions_generated: false
+    confirmatory_performance_accessed: false
   selected_cohort_source_manifest:
     restricted_only: true
     release: mimic_iv_echo_1_0
     object_integrity_authority: GCS_EXACT_OBJECT_STAT
+    phase1e_a_smoke_object_gcs_preflight_passed: true
+    phase1e_a_full_selected_object_gcs_preflight_passed: false
+    phase1e_a_full_selected_public_object_authority_valid: false
     bucket_root_sha256sums_authority_available: false
     historical_object_sha256_imported: false
     exact_object_stat_required: true
@@ -313,10 +400,16 @@ provenance:
     bytes: 138642379
     current_file_identity_verified: true
     historical_embedding_use_proven: false
+    phase1e_a_smoke_identity_gate_passed: true
   environment:
     historical_package_environment_proven: false
     future_run_environment_capture_required: true
     future_run_environment_captured: false
+    phase1e_a_smoke_environment_captured: true
+    phase1e_a_smoke_python_version: 3.10.12
+    phase1e_a_smoke_python_executable_sha256: 1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
+    phase1e_a_smoke_torch_version: 2.11.0+cu130
+    phase1e_a_smoke_torchvision_version: 0.26.0+cu130
     phase1d_audit_interpreter:
       python_version: 3.10.12
       executable_sha256: 1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
@@ -712,14 +805,17 @@ prefit_gates:
   phase1e_a_smoke_scope_authorized: true
   phase1e_a_restricted_input_hashes_locked: true
   phase1e_a_smoke_manifest_sealing_implemented: true
-  phase1e_a_selected_source_manifest_valid: false
-  phase1e_a_download_preflight_passed: false
-  phase1e_a_smoke_download_verified: false
-  phase1e_a_dicom_cine_audit_passed: false
-  phase1e_a_extraction_reproducibility_passed: false
-  phase1e_a_embedding_reproducibility_passed: false
-  phase1e_a_study_pooling_reproducibility_passed: false
-  phase1e_a_preservation_second_pass_passed: false
+  phase1e_a_selected_source_manifest_valid: true
+  phase1e_a_selected_source_manifest_scope_limited_to_structural_request_reconciliation: true
+  phase1e_a_full_selected_public_object_authority_valid: false
+  phase1e_a_download_preflight_passed: true
+  phase1e_a_full_selected_download_preflight_passed: false
+  phase1e_a_smoke_download_verified: true
+  phase1e_a_dicom_cine_audit_passed: true
+  phase1e_a_extraction_reproducibility_passed: true
+  phase1e_a_embedding_reproducibility_passed: true
+  phase1e_a_study_pooling_reproducibility_passed: true
+  phase1e_a_preservation_second_pass_passed: true
   five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false
   future_environment_capture_specified: true

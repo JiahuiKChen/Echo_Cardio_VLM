@@ -2,7 +2,7 @@
 
 ## Decision status
 
-**No deduplication, re-extraction, re-embedding, pooling, download, or confirmatory use is authorized.** The Phase 1D audits are model-independent decision inputs. They do not mutate the historical stores and cannot promote an embedding authority by themselves.
+**No historical-store repair, full selected-cohort re-extraction/re-embedding, or confirmatory use is authorized.** The Phase 1D audits are model-independent decision inputs. They do not mutate the historical stores and cannot promote an embedding authority by themselves. A later Phase 1E-A owner authorization permitted one bounded four-training-study technical smoke; that exception did not authorize C3 or alter this historical-store ruling.
 
 The historical merged clip and study stores remain blocked. Restricted adjudication classified all 32 selected-cohort duplicate groups as `SOURCE_ARTIFACT_PURGED`: their vectors, L2 values, normalized manifest/extraction metadata, and component/merged correspondence are concordant, but the source DICOM and extracted NPZ content/hashes needed to establish physical-source identity are unavailable. Zero residual normalized tuple disagreement therefore removes numeric serialization and expected index rewriting as the scientific blocker; it does not prove that any group is an exact repeated physical clip. Vector equality is corroborating evidence only and never independently permits deduplication.
 
@@ -60,6 +60,12 @@ The matrix below records each path's prespecified prerequisites and resource env
 | **C3** | `OPERATIONALLY_CLEAN_UNAUTHORIZED` | It can produce a uniform selected-only representation authority from validated Stage D inputs plus redownloaded/re-extracted batch inputs, with a pinned checkpoint and fully captured environment. |
 
 Only C3 remains technically coherent for a manuscript-grade prospective authority. This is a recommendation for an authorization decision, not authorization itself. It may not begin until the owner approves its exact selected-source scope, resource plan, commands, checkpoint/environment contract, and preservation schema. Path selection and subsequent quality control may not use outcomes or model performance.
+
+## Phase 1E-A technical-smoke evidence
+
+The four-study prospective smoke passed at commit `022d7581eee4cd0278b29c9213e4b65bdc6161b2`. It verified exact-object transport and DICOM-header readability for 252 public objects, successfully pixel-decoded and extracted 123 multiframe candidates across the three positive controls and zero in the no-multiframe negative control, reproduced 123 encoder-only width-512 clip embeddings and three mean-pooled study vectors exactly across two clean runs, and passed the aggregate safety and preservation second-pass gates. Exact new-run checkpoint file identity and strict encoder loading were established, but official-release provenance and historical checkpoint use remain unproven. Full findings are recorded in [the Phase 1E-A smoke report](phase1e_reconstruction_smoke_findings.md).
+
+This establishes bounded operational feasibility for the proposed source-to-vector chain. It does not validate the full 4,530-study source set, decide the final cine/preprocessing specification, establish a canonical selected clip inventory, prove historical checkpoint/environment use, or authorize the full C3 path. The historical 32-group quarantine and 4,524/4,525 non-authority remain unchanged.
 
 ## Required evidence before any path can be promoted
 

@@ -84,6 +84,14 @@ The Phase 1D selected-source inventory found 184,606 selected manifest rows, 7,3
 
 The same Phase 1C SCC execution reverified the selected partition: 329 of 500 Stage-D studies are selected, 171 are outside selection, and the remaining 4,201 selected studies occur exactly once across batches 000–008 with no ownership disagreement.
 
+## Phase 1E-A prospective-smoke lineage
+
+At commit `022d7581eee4cd0278b29c9213e4b65bdc6161b2`, the prospective selected-source builder reconciled 336,016 hash-locked historical record-manifest rows to 335,984 unique normalized public-object requests for exactly 4,530 selected subjects/studies. Thirty-two repeated public-object locator groups in `batch_000` were collapsed only after all ownership, component, locator, key, and recorded-size authority fields agreed; zero conflicts remained. These are source-request rows, not the historical 184,606/184,574 clip construct. No equality between the two constructs was assumed and no historical clip was deduplicated. Exact GCS listing/stat authority covered only the 252 smoke objects; the remaining 335,732 requests were not externally verified in Phase 1E-A.
+
+The bounded training-only smoke then established the following new lineage for four prespecified studies: 252 exact-object GCS metadata records -> 252 locally MD5-verified and SHA-256-hashed DICOMs -> 252 header-readable objects -> 123 multiframe candidates in three positive-control studies and zero in the no-multiframe negative control -> 123 successfully pixel-decoded and deterministically extracted clips per run -> 123 pinned encoder-only width-512 embeddings per run -> three mean-pooled study vectors per run. All five required two-run artifact comparisons were exact, and an independent preservation second pass verified 566 files.
+
+This is prospective canary provenance. It does not prove which checkpoint or environment generated the historical embeddings, establish complete selected-cohort clip authority, characterize cohort-wide DICOM formats, or authorize the full C3 reconstruction. The detailed source, object, DICOM, clip, embedding, environment, and preservation records remain restricted; Git contains only the aggregate interpretation in [the Phase 1E-A smoke findings](phase1e_reconstruction_smoke_findings.md).
+
 ## Five selected studies without embeddings
 
 All 4,530 selected studies appear in both download and readable-DICOM stages. Only 4,525 appear in cine candidacy, and those same 4,525 persist through extraction, clip embedding, and study aggregation. Therefore the aggregate attrition assignment is:

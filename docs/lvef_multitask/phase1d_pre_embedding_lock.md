@@ -8,7 +8,7 @@
 
 ## Decision
 
-**The Phase 1D lock is not passed. EchoPrime embedding execution, DICOM redownload/re-extraction, model fitting, prediction regeneration, and confirmatory test-performance access are not authorized.**
+**The Phase 1D lock was not passed. Full selected-cohort EchoPrime embedding execution, DICOM redownload/re-extraction, model fitting, prediction regeneration, and confirmatory test-performance access were not authorized.** A later Phase 1E-A decision allowed only a bounded four-training-study technical smoke and did not pass this full-run lock.
 
 The SCC interpreter and audit wrapper passed. The duplicate audit reached a scientific no-go for the historical store: all 32 groups were classified `SOURCE_ARTIFACT_PURGED` and quarantined. The canonical inventory also failed closed because 4,525 selected imaging studies were expected and seen but only 4,524 had a proposed canonical clip. Only 14,006 Stage-D extracted NPZ sources survived, 170,568 sources were unavailable, and batches 000–008 require DICOM redownload. Path C3 is therefore the conditional preference, but neither redownload nor re-embedding is authorized.
 
@@ -54,3 +54,9 @@ Status meanings:
 The passed interpreter and clinical-packet safety gates and the completed negative provenance audits do not authorize execution. Embedding execution can be considered only after the 4,524/4,525 canonical discrepancy is resolved, Path C3 scope and resources are locked, checkpoint/environment and safety/checksum requirements are met, and the owner explicitly authorizes DICOM redownload and re-embedding. Confirmatory modeling additionally requires disposition of the missing `lvef` mapping, units, aliases, the dependency registry, task panels, common denominators, clinician signoff, final SAP/config, and separate owner authorization.
 
 No successful Phase 1D audit by itself opens either boundary.
+
+## Phase 1E-A bounded-smoke addendum
+
+The subsequently authorized technical smoke passed at commit `022d7581eee4cd0278b29c9213e4b65bdc6161b2`. Its prospective selected-source request manifest reconciliation, exact-object smoke preflight/download, DICOM-header/multiframe controls, two clean extraction/embedding/pooling runs, exact reproducibility comparison, aggregate safety gate, and independent preservation second pass all passed. Full-cohort exact-object GCS authority was not evaluated. The aggregate-only evidence is recorded in [the Phase 1E-A smoke findings](phase1e_reconstruction_smoke_findings.md).
+
+This addendum closes the implementation-canary gates only. It does not rewrite the Phase 1D historical findings: all 32 historical groups remain `SOURCE_ARTIFACT_PURGED`, the historical 4,524/4,525 canonical discrepancy remains non-authoritative, and the historical checkpoint/environment linkage remains unproven. Full C3 still requires preprocessing and cine-candidacy adjudication, production batching, a full resource and provenance contract, and explicit written owner authorization. Confirmatory modeling additionally remains blocked by Phase 1E-B clinical metadata/signoff, leakage-panel, denominator, SAP/config, and separate access gates.
