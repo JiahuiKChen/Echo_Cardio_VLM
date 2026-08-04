@@ -52,6 +52,7 @@ test "$(stat -c '%s' "$CHECKPOINT")" = "$EXPECTED_CHECKPOINT_BYTES"
 test "$(sha256sum "$CHECKPOINT" | awk '{print $1}')" = "$EXPECTED_CHECKPOINT_SHA256"
 
 if ! command -v gsutil >/dev/null 2>&1; then
+  module load python3/3.10.12 >/dev/null 2>&1
   module load google-cloud-sdk/455.0.0 >/dev/null 2>&1
 fi
 command -v gsutil >/dev/null 2>&1

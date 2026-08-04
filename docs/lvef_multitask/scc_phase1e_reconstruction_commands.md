@@ -109,6 +109,7 @@ This downloads the public release checksum text only. It does not download a DIC
 
 ```bash
 if ! command -v gsutil >/dev/null 2>&1; then
+  module load python3/3.10.12
   module load google-cloud-sdk/455.0.0
 fi
 command -v gsutil >/dev/null 2>&1

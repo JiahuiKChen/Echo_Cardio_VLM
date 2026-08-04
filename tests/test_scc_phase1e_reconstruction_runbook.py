@@ -78,6 +78,12 @@ def test_runbook_uses_committed_pipeline_and_direct_job_submission() -> None:
     assert "--release-checksums" in text
     assert "--expected-source-manifest-sha256" in text
     assert "EXPECTED_SMOKE_SOURCE_SHA256" in text
+    assert text.index("module load python3/3.10.12") < text.index(
+        "module load google-cloud-sdk/455.0.0"
+    )
+    assert runner.index("module load python3/3.10.12") < runner.index(
+        "module load google-cloud-sdk/455.0.0"
+    )
     assert "restricted_input_authority_hash_set_exact" in text
     assert "locked_split_counts_match" in text
     assert "pydicom.__version__" in text
