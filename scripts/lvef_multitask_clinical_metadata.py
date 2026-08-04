@@ -1617,6 +1617,10 @@ def validate_aggregate_outputs(
     aggregate_values = list(_json_leaf_text_values(schema_summary))
     for frame in (ambiguity, unit_summary, alias_summary):
         aggregate_values.extend(_frame_cell_text_values(frame))
+    # Exact canonical identifiers are sanctioned aggregate values.  Their
+    # authority is enforced independently by the unit/alias target-set checks
+    # above; a short raw alias may legitimately be a substring of one of them.
+    aggregate_values = [value for value in aggregate_values if value not in ALLOWED_TARGET_SET]
     sensitive_values = _sensitive_values(restricted_rows)
     if any(
         sensitive_value in aggregate_value

@@ -321,6 +321,24 @@ def test_aggregate_safety_ignores_restricted_strings_only_in_keys_or_headers() -
     assert validate_aggregate_outputs(schema, ambiguity, units, aliases, rows) == []
 
 
+def test_aggregate_safety_sanctions_exact_allowlisted_target_with_raw_alias_substring() -> None:
+    frame = synthetic_mapping()
+    frame.loc[len(frame)] = {
+        "measurement": "diameter",
+        "measurement_description": "Tubular ascending aorta leading-edge diameter at end-diastole",
+        "canonical_measurement": "ascending_aorta_diameter",
+        "canonical_source": "synthetic_manual",
+        "unit": "cm",
+        "unit_norm": "cm",
+        "unit_category": "length",
+    }
+    schema, ambiguity, units, aliases, rows = aggregate_validation_inputs(frame)
+
+    assert "diameter" in set(rows["raw_name"])
+    assert "ascending_aorta_diameter" in set(units["target"])
+    assert validate_aggregate_outputs(schema, ambiguity, units, aliases, rows) == []
+
+
 def test_aggregate_safety_rejects_restricted_secret_in_json_leaf_or_frame_cell() -> None:
     secret = "SYNTHETIC_RESTRICTED_SOURCE_SECRET"
     frame = synthetic_mapping()
