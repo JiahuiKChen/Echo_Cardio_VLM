@@ -1,20 +1,30 @@
-schema_version: 4
-analysis_version: phase1d-remediation-v1.2
-status: blocked_after_phase1d_scc_scientific_no_go
+schema_version: 5
+analysis_version: phase1e-a-prospective-reconstruction-smoke-v1
+status: phase1e_a_smoke_authorized_full_c3_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
 phase1c_starting_commit: ccc6b54e5a9138a23ac2cd756e5483217abc11b3
 phase1d_starting_commit: a2ccfb2914546ebd4b7a1f1d369a3e8bc54ad241
+phase1e_a_starting_commit: bef7b3f47469b0a9ea54045ba9e3edbc6ca8b242
 branch: codex/lvef-multitask-revalidation
 
 execution_authority:
+  broad_regeneration_flags_apply_to_full_selected_cohort_only: true
   confirmatory_model_fitting_authorized: false
   historical_prediction_regeneration_authorized: false
   confirmatory_test_performance_access_authorized: false
   embedding_regeneration_authorized: false
   raw_dicom_reextraction_authorized: false
   raw_dicom_redownload_authorized: false
+  restricted_selected_source_manifest_construction_authorized: true
+  technical_smoke_dicom_redownload_authorized: true
+  technical_smoke_dicom_reextraction_authorized: true
+  technical_smoke_encoder_embedding_authorized: true
+  technical_smoke_study_aggregation_authorized: true
+  full_selected_cohort_redownload_authorized: false
+  full_selected_cohort_extraction_authorized: false
+  full_selected_cohort_embedding_authorized: false
   aggregate_prefit_diagnostics_authorized: true
   phase1d_remediation_audits_authorized: true
   model_independent_statistical_spec_recorded: true
@@ -131,6 +141,133 @@ phase1d_scc_execution:
   test_performance_computed: false
   embeddings_generated: false
   dicoms_downloaded: false
+
+phase1e_a_reconstruction_smoke:
+  status: authorized_not_yet_executed
+  purpose: prospective_selected_cohort_reconstruction_preflight_and_determinism_only
+  may_establish_full_embedding_authority: false
+  may_open_confirmatory_access: false
+  selected_cohort_source_manifest:
+    restricted_only: true
+    release: mimic_iv_echo_1_0
+    selected_studies_expected: 4530
+    selected_subjects_expected: 4530
+    require_exact_selected_study_ownership: true
+    require_expected_object_count_per_study: true
+    require_unique_safe_relative_object_paths: true
+    require_zero_outside_selected_studies: true
+    locked_split_counts: {train: 3171, val: 679, test: 680}
+    input_authority_sha256:
+      selected_studies: 920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1
+      split_map: c5101cea1d76b38c6bb4517edf4b463b338d7505032cfa40bc8f27ca5b97e517
+      historical_study_manifest: feaf0cf7da58ae3d9c8901a583e4319d1b34a8cc26ae57dfcecd309940f81a60
+      duplicate_resolution: 5397deaf57408c87411f518d56c3f11d158a5bf53014c342f732245edff2d087
+      canonical_inventory: be56dba29f646acb01cec631e96b5a62ec42c305a240894bff8451b8ca0c49f2
+      record_stage_d: 5758cd0bf93969c7c2bc32812d1241e106baea90099a26d0919acaf1a1c41329
+      record_batch_000: 37b102da0f7a52234fd186c52e6d8b31016433306bc458b4c2a5359ebb7c74cb
+      record_batch_001: 1214b8a658aa2899809c5fef4961eba7c3953bc84fc33268460c98de270113eb
+      record_batch_002: f86a0c5365237898ffe2d512841bfbbad7f1bf2294f7918fdc0bff5adf60eaaa
+      record_batch_003: 683de4c04b31f8a727def1485ccce2543878b93db7280a34e1947901739c7f69
+      record_batch_004: 9c4eff18f6543d0780b78c8c70ee4bd72e6ccb130953885c9613a6df83c38b5a
+      record_batch_005: 7499051ebe1fc3dc50deaa407d6a73ccc2cb050220f00a3bf2c65ce43e1aeb39
+      record_batch_006: de27d6bbca1b00526541dd667a4a87592e93a79113a4b2f66ae2bef0b69bb0af
+      record_batch_007: f7499f04ec33b96ec5c1b657de9a857a2838a71cf744524db50dfe53b73fa14b
+      record_batch_008: c14cb7042eac85aca4aa6e949f0ceca4fa96310961d916c9961149455fedddde
+  cohort:
+    version: phase1e-a-smoke4-v1
+    exact_studies: 4
+    exact_subjects: 4
+    split: train
+    selection_seed: lvef-multitask-phase1e-a-smoke4-v1
+    selection_method: sha256_rank_within_prespecified_imaging_only_technical_strata
+    outcome_bearing_inputs_permitted: false
+    roles:
+      - batch_000_duplicate_affected_or_prespecified_fallback
+      - batch_001_008_historical_cine_positive
+      - stage_d_historical_cine_positive_with_surviving_npz
+      - historical_no_cine_negative_control
+    silent_role_substitution_permitted: false
+  limits:
+    maximum_public_dicom_objects: 1000
+    maximum_expected_raw_bytes: 5368709120
+    minimum_free_bytes_before_download: 21474836480
+    download_every_object_for_selected_smoke_study: true
+    extract_every_detected_multiframe_cine: true
+    maximum_clips: 0
+    maximum_clips_per_study: 0
+    stop_for_owner_if_limit_exceeded: true
+  extraction:
+    target_frames: 32
+    target_height: 224
+    target_width: 224
+    output_dtype: uint8
+    interpolation: opencv_inter_cubic
+    temporal_sampling: deterministic_uniform_32_then_stride_2_for_encoder
+    temporal_sampling_authority: repository_historical_compatible_custom_transform
+    released_echoprime_preprocessing_equivalence_claimed: false
+    full_c3_preprocessing_adjudication_required: true
+    pydicom_minimum_version: '3.0'
+    stored_color_raw_decode_required: true
+    compressed_transfer_syntax_named_decoder_required: true
+    bits_allocated_required: 8
+    bits_stored_required: 8
+    canonical_color_space: RGB
+    supported_photometric_interpretations:
+      - MONOCHROME1
+      - MONOCHROME2
+      - RGB
+      - YBR_FULL
+      - YBR_FULL_422
+    mask_failure_must_be_explicit: true
+    nonempty_sector_required: true
+    nonzero_retained_pixels_required: true
+    temporal_variation_required: true
+    stable_clip_key_required: true
+  embedding:
+    encoder_only: true
+    embedding_dimension: 512
+    view_classifier_permitted: false
+    checkpoint_sha256: 7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b
+    checkpoint_bytes: 138642379
+    device_policy: one_pinned_cuda_accelerator_for_both_runs
+    deterministic_torch_algorithms_required: true
+    repeat_clean_runs: 2
+    cross_accelerator_result_mixing_permitted: false
+  pooling:
+    method: mean
+    stable_clip_key_order_required: true
+    accumulation_dtype: float64
+    output_dtype: float32
+  same_environment_reproducibility:
+    normalized_manifests_exact: true
+    extracted_array_content_exact: true
+    clip_embedding_array_exact: true
+    study_embedding_array_exact: true
+    compare_npz_internal_arrays_not_container_bytes: true
+  optional_cross_accelerator_screen:
+    authority_gate: false
+    absolute_tolerance: 1.0e-5
+    relative_tolerance: 1.0e-4
+    minimum_cosine_similarity: 0.99999
+  expected_negative_control:
+    readable_dicoms: true
+    multiframe_cine_candidates: 0
+    clip_embeddings: 0
+    study_embeddings: 0
+  preservation:
+    restricted_only: true
+    second_pass_checksum_verification_required: true
+    aggregate_safety_gate_required: true
+    identifiers_in_git_permitted: false
+  prohibitions:
+    - full_selected_cohort_redownload
+    - full_selected_cohort_extraction
+    - full_selected_cohort_embedding
+    - model_fitting
+    - prediction_generation
+    - confirmatory_test_performance_access
+    - performance_based_task_or_pipeline_selection
+    - historical_snapshot_modification
 
 provenance:
   embedding_authority:
@@ -542,6 +679,17 @@ prefit_gates:
   surviving_source_dicom_availability_established: true
   selected_cohort_canonical_clip_authority_valid: false
   embedding_regeneration_path_authorized: false
+  phase1e_a_smoke_scope_authorized: true
+  phase1e_a_restricted_input_hashes_locked: true
+  phase1e_a_smoke_manifest_sealing_implemented: true
+  phase1e_a_selected_source_manifest_valid: false
+  phase1e_a_download_preflight_passed: false
+  phase1e_a_smoke_download_verified: false
+  phase1e_a_dicom_cine_audit_passed: false
+  phase1e_a_extraction_reproducibility_passed: false
+  phase1e_a_embedding_reproducibility_passed: false
+  phase1e_a_study_pooling_reproducibility_passed: false
+  phase1e_a_preservation_second_pass_passed: false
   five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false
   future_environment_capture_specified: true
