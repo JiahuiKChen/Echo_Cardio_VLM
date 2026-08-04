@@ -1,6 +1,6 @@
 schema_version: 4
-analysis_version: phase1d-remediation-v1.0
-status: blocked_pending_phase1d_pre_embedding_lock
+analysis_version: phase1d-remediation-v1.1
+status: blocked_after_phase1d_scc_scientific_no_go
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -14,6 +14,7 @@ execution_authority:
   confirmatory_test_performance_access_authorized: false
   embedding_regeneration_authorized: false
   raw_dicom_reextraction_authorized: false
+  raw_dicom_redownload_authorized: false
   aggregate_prefit_diagnostics_authorized: true
   phase1d_remediation_audits_authorized: true
   model_independent_statistical_spec_recorded: true
@@ -56,10 +57,52 @@ phase1c_scc_execution:
   test_performance_computed: false
   embeddings_generated: false
 
+phase1d_scc_execution:
+  interpreter_resolution_passed: true
+  required_package_imports_passed: true
+  audit_subprocess_parent_shell_survival_passed: true
+  duplicate_v2_audit_completed: true
+  duplicate_v2_scientific_go: false
+  duplicate_v2_classification: SOURCE_ARTIFACT_PURGED
+  duplicate_groups: 32
+  duplicate_groups_quarantined: 32
+  duplicate_groups_deterministic_deduplication_permitted: 0
+  canonical_clip_inventory_completed: true
+  canonical_clip_inventory_status: BLOCKED_SELECTED_IMAGING_STUDY_COUNT_MISMATCH
+  selected_imaging_studies_expected: 4525
+  selected_imaging_studies_seen: 4525
+  selected_imaging_studies_with_proposed_canonical_clip: 4524
+  selected_imaging_studies_without_proposed_canonical_clip: 1
+  stage_d_surviving_extracted_npz_sources: 14006
+  sources_unavailable: 170568
+  components_requiring_dicom_redownload:
+    - batch_000
+    - batch_001
+    - batch_002
+    - batch_003
+    - batch_004
+    - batch_005
+    - batch_006
+    - batch_007
+    - batch_008
+  conditional_preferred_embedding_path: C3
+  preferred_embedding_path_authorized: false
+  clinical_metadata_packet_generated: false
+  clinical_metadata_status: tooling_retry_pending
+  clinical_metadata_blocker: missing_exact_canonical_lvef_mapping_treated_as_fatal
+  exact_40_audit_status: PASS
+  confirmatory_access_open: false
+  model_fitting_performed: false
+  predictions_read: false
+  test_performance_computed: false
+  embeddings_generated: false
+  dicoms_downloaded: false
+
 provenance:
   embedding_authority:
-    status: blocked_pending_32_key_adjudication_and_regeneration_authorization
-    preferred_path: selected_cohort_only_rebuild_from_validated_canonical_extracted_cines
+    status: blocked_phase1d_c3_conditional_unauthorized
+    preferred_path: C3_selected_cohort_rebuild_after_dicom_redownload
+    preferred_path_basis: phase1d_source_artifact_purge_and_canonical_availability_audits
     preferred_path_authorized: false
     exclude_prior_nonselected_studies: 171
     require_one_canonical_row_per_physical_clip: true
@@ -100,7 +143,7 @@ provenance:
     normalized_full_row_tuple_residual_mismatch_clip_keys: 0
     serialization_and_index_rewrites_scientifically_blocking: false
     unique_blocking_duplicate_clip_keys: 32
-    duplicate_keys_restricted_adjudication_complete: false
+    duplicate_keys_restricted_adjudication_complete: true
     phase1c_duplicate_audit_executed: true
     duplicate_groups_selected: 32
     duplicate_groups_batch_000: 32
@@ -109,9 +152,36 @@ provenance:
     phase1c_classification: OTHER_UNRESOLVED
     phase1c_proposed_resolution: QUARANTINE_AND_REVIEW_OR_REPROCESS_AFFECTED_CLIPS
     phase1c_aggregate_safety_gate_passed: true
-    v2_evidence_availability_audit_complete: false
-    v2_duplicate_classification_complete: false
+    v2_evidence_availability_audit_complete: true
+    v2_duplicate_classification_complete: true
+    v2_classification: SOURCE_ARTIFACT_PURGED
+    v2_duplicate_groups_quarantined: 32
+    v2_deterministic_deduplication_permitted_groups: 0
     provenance_valid: false
+  canonical_selected_clip_inventory:
+    audit_complete: true
+    status: BLOCKED_SELECTED_IMAGING_STUDY_COUNT_MISMATCH
+    selected_imaging_studies_expected: 4525
+    selected_imaging_studies_seen: 4525
+    selected_imaging_studies_with_proposed_canonical_clip: 4524
+    selected_imaging_studies_without_proposed_canonical_clip: 1
+    stage_d_surviving_extracted_npz_sources: 14006
+    sources_unavailable: 170568
+    complete_rebuild_from_surviving_extracted_npz_feasible: false
+    complete_rebuild_from_surviving_source_dicom_without_redownload_feasible: false
+    components_requiring_dicom_redownload:
+      - batch_000
+      - batch_001
+      - batch_002
+      - batch_003
+      - batch_004
+      - batch_005
+      - batch_006
+      - batch_007
+      - batch_008
+    conditional_preferred_path: C3
+    conditional_preferred_path_authorized: false
+    selected_cohort_canonical_clip_authority_valid: false
 
 cohort:
   primary_policy: one_study_per_subject
@@ -418,20 +488,23 @@ prefit_gates:
   historical_freeze_disposition_documented: true
   phase1c_batch_partition_reverified: true
   phase1c_exact_40_audit_passed: true
-  scc_supported_interpreter_resolver_validated: false
-  audit_subprocess_parent_shell_survival_validated: false
+  scc_supported_interpreter_resolver_validated: true
+  audit_subprocess_parent_shell_survival_validated: true
   clip_component_union_provenance_valid: false
-  duplicate_evidence_availability_v2_complete: false
+  duplicate_evidence_availability_v2_complete: true
   duplicate_clip_key_resolution_complete: false
-  canonical_selected_clip_inventory_complete: false
-  surviving_extracted_clip_availability_established: false
-  surviving_source_dicom_availability_established: false
+  duplicate_clip_key_scientific_go: false
+  canonical_selected_clip_inventory_complete: true
+  canonical_selected_clip_inventory_count_matches: false
+  surviving_extracted_clip_availability_established: true
+  surviving_source_dicom_availability_established: true
   selected_cohort_canonical_clip_authority_valid: false
   embedding_regeneration_path_authorized: false
   five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false
   future_environment_capture_specified: true
   clinical_metadata_packet_complete: false
+  clinical_metadata_tooling_retry_pending: true
   raw_alias_and_unit_review_complete: false
   clinical_dependency_adjudication_complete: false
   panel_membership_and_units_locked: false

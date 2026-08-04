@@ -483,6 +483,67 @@ def test_cli_separates_restricted_packet_from_exact_aggregate_inventory() -> Non
         assert "RAW_" not in followup_prompt
 
 
+def test_cli_records_missing_exact_lvef_without_inventing_mapping_authority() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory)
+        mapping = temporary / "mapping_without_exact_lvef.csv"
+        restricted = temporary / "restricted_packet"
+        aggregate = temporary / "aggregate_packet"
+        frame = synthetic_mapping()
+        frame = frame[frame["canonical_measurement"] != "lvef"].copy()
+        assert (frame["canonical_measurement"] == "source_specific_simpson_ef").any()
+        frame.to_csv(mapping, index=False)
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "lvef_multitask_clinical_metadata.py"),
+                "--mapping-csv",
+                str(mapping),
+                "--restricted-output-dir",
+                str(restricted),
+                "--aggregate-output-dir",
+                str(aggregate),
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+        schema = json.loads((aggregate / "clinical_metadata_schema_summary.json").read_text())
+        manifest = json.loads((aggregate / "clinical_metadata_review_packet_manifest.json").read_text())
+        for payload in (schema, manifest):
+            assert payload["status"] == "COMPLETE_WITH_MISSING_ALLOWLISTED_TARGETS"
+            assert payload["missing_allowlisted_targets"] == ["lvef"]
+            assert payload["all_allowlisted_targets_present"] is False
+            assert payload["missing_target_mapping_is_registry_authority"] is False
+
+        stdout = json.loads(completed.stdout)
+        assert stdout["status"] == "COMPLETE_WITH_MISSING_ALLOWLISTED_TARGETS"
+        assert manifest["n_allowlisted_targets_present"] == len(ALLOWED_TARGETS) - 1
+
+        restricted_rows = pd.read_csv(
+            restricted / "clinical_metadata_review_rows_restricted.csv",
+            keep_default_na=False,
+        )
+        assert not (restricted_rows["allowlisted_target"] == "lvef").any()
+        candidate = restricted_rows[
+            restricted_rows["canonical_mapping"] == "source_specific_simpson_ef"
+        ]
+        assert len(candidate) == 1
+        assert candidate.iloc[0]["canonical_mapping_status"] == "SOURCE_CANDIDATE_NOT_ALLOWLISTED"
+        assert candidate.iloc[0]["allowlisted_target"] == ""
+
+        alias = pd.read_csv(aggregate / "clinical_metadata_alias_summary.csv").set_index("target")
+        units = pd.read_csv(aggregate / "clinical_metadata_unit_summary.csv").set_index("target")
+        assert int(alias.loc["lvef", "n_source_rows"]) == 0
+        assert alias.loc["lvef", "alias_resolution_status"] == "NO_SOURCE_ROWS"
+        assert int(units.loc["lvef", "n_source_rows"]) == 0
+        assert units.loc["lvef", "unit_resolution_status"] == "NO_SOURCE_ROWS"
+
+
 def test_cli_refuses_to_reuse_either_nonempty_output_directory() -> None:
     with tempfile.TemporaryDirectory() as directory:
         temporary = Path(directory)

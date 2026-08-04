@@ -1636,9 +1636,10 @@ def main() -> int:
     resolved_columns = resolve_metadata_columns(source)
     rows = build_review_rows(source, targets)
     summary = build_canonical_summary(rows, targets)
-    if not set(targets).issubset(set(rows["allowlisted_target"].dropna())):
-        missing = set(targets) - set(rows["allowlisted_target"].dropna())
-        raise ValueError(f"Requested target mappings are missing ({len(missing)})")
+    present_allowlisted_targets = set(
+        rows["allowlisted_target"].replace("", pd.NA).dropna().astype(str)
+    )
+    missing_allowlisted_targets = sorted(set(targets) - present_allowlisted_targets)
 
     unit_summary = build_unit_summary(rows, targets)
     alias_summary = build_alias_summary(rows, targets)
@@ -1648,6 +1649,20 @@ def main() -> int:
     literature_candidates = build_literature_candidates(issues, rows)
     questionnaire = build_clinician_questionnaire(issues, rows)
     schema_summary = build_schema_summary(source, resolved_columns, rows)
+    schema_summary.update(
+        {
+            "status": (
+                "COMPLETE_WITH_MISSING_ALLOWLISTED_TARGETS"
+                if missing_allowlisted_targets
+                else "COMPLETE"
+            ),
+            "n_allowlisted_targets_requested": len(targets),
+            "n_allowlisted_targets_present": len(present_allowlisted_targets),
+            "missing_allowlisted_targets": missing_allowlisted_targets,
+            "all_allowlisted_targets_present": not missing_allowlisted_targets,
+            "missing_target_mapping_is_registry_authority": False,
+        }
+    )
     safety_issues = validate_aggregate_outputs(
         schema_summary,
         ambiguity,
@@ -1687,9 +1702,14 @@ def main() -> int:
         "clinical_metadata_safety_gate.json",
     }
 
+    completion_status = (
+        "COMPLETE_WITH_MISSING_ALLOWLISTED_TARGETS"
+        if missing_allowlisted_targets
+        else "COMPLETE"
+    )
     manifest = {
         "audit": "clinical_metadata_review_packet",
-        "status": "COMPLETE",
+        "status": completion_status,
         "source": {
             "alias": "raw_to_canonical_mapping",
             "bytes": int(args.mapping_csv.stat().st_size),
@@ -1698,7 +1718,10 @@ def main() -> int:
         "allowlist_version": "lvef-plus-legacy29-v1",
         "n_allowlisted_targets_requested": len(targets),
         "n_packet_rows": int(len(rows)),
-        "n_allowlisted_targets_present": int(rows["allowlisted_target"].replace("", pd.NA).nunique()),
+        "n_allowlisted_targets_present": len(present_allowlisted_targets),
+        "missing_allowlisted_targets": missing_allowlisted_targets,
+        "all_allowlisted_targets_present": not missing_allowlisted_targets,
+        "missing_target_mapping_is_registry_authority": False,
         "n_candidate_canonical_mappings_outside_allowlist": int(
             rows.loc[rows["canonical_mapping_status"] == "SOURCE_CANDIDATE_NOT_ALLOWLISTED", "canonical_mapping"].nunique()
         ),

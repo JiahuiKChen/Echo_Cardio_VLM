@@ -2,35 +2,52 @@
 
 ## Current ruling
 
-**NO-GO.** Phase 1D authorizes only model-independent restricted audits of duplicate evidence and canonical selected-clip availability. It does not authorize deduplication, copying or rebuilding arrays, re-extraction, re-embedding, pooling, download, outcome access, model fitting, prediction generation, or confirmatory performance review.
+**NO-GO.** The restricted Phase 1D audits are complete enough to rule out deterministic deduplication and the retained-artifact C1/C2 paths. They identify C3 as the only operationally clean prospective path, but do not authorize it. No deduplication, download, re-extraction, re-embedding, pooling, model fitting, outcome access, prediction generation, or confirmatory performance review is authorized.
 
-## Required gate record
+The historical merged clip and study stores remain unsuitable as confirmatory embedding authority. The audits did not find a vector or normalized-manifest disagreement among the 32 duplicate groups; they found that the physical source evidence needed to prove exact duplication had been purged.
 
-| Gate | Current state | Passing evidence | Consequence while unresolved |
+## Observed SCC adjudication
+
+| Gate | Observed state | Evidence and interpretation | Consequence |
 |---|---|---|---|
-| Duplicate evidence availability | `PENDING_SCC` | `duplicate_clip_evidence_availability.summary.json` and counts show required locator, file, manifest-hash, computable-hash, frame, extraction, ownership, payload, L2, and component/merged evidence for all 32 groups | No duplicate resolution may be accepted |
-| Duplicate adjudication | `PENDING_SCC` | Exactly 32 restricted groups receive one requested v2 category; aggregate reason counts and safety gate pass | Historical merged/study embeddings remain blocked |
-| Physical-source deduplication rule | `LOCKED_FAIL_CLOSED` | Only `EXACT_REPEATED_MANIFEST_ROW_CONFIRMED` can permit deterministic deduplication; that category requires equality after removing only permitted index/L2 rewrites, confirmed physical-source identity, concordant extraction metadata, equal extracted NPZ/frame content evidence, vector/L2 agreement, and merged-component correspondence. `MERGE_OR_INDEX_REWRITE_ONLY` permits only a merge rebuild. Vector equality alone never permits deduplication | Path A unavailable for every group lacking physical/extracted confirmation |
-| Canonical selected clip inventory | `PENDING_SCC` | Ten component rows (`stage_d`, `batch_000`–`batch_008`) account for selected, outside-selected, ownership-mismatch, deduplicated, proposed, and quarantined rows | No selected-only source authority |
-| Selected imaging denominator | `PENDING_SCC_RECHECK` | Exactly 4,525 selected imaging-eligible studies have at least one nonquarantined proposed canonical clip; five no-cine studies remain outside every primary modality | No common vision/structured/fusion denominator |
-| Extracted clip availability | `PENDING_SCC` | Aggregate inventory distinguishes NPZ file existence, retained DICOM without NPZ, and neither for every proposed physical source. File existence is only C1 compatibility evidence; cohort-wide NPZ readability, required-array/schema, and content-hash validation remains a separate pre-execution gate | C1/C2/C3 cannot be selected |
-| Re-extraction/redownload scope | `PENDING_SCC` | Component counts establish whether no re-extraction, only `batch_000`, multiple/all batches, or redownload is required | Storage and scheduler request cannot be finalized |
-| Checkpoint/environment | `BLOCKED_FOR_EXECUTION` | Chosen path pins checkpoint SHA-256, source commit, Python/packages, PyTorch, CUDA/cuDNN, GPU, command, and scheduler identity before execution | No embedding generation or mixed-store promotion |
-| Resource approval | `NOT_REQUESTED` | SCC free-space/quota, CPU/GPU, queue, transfer, and I/O plan approved for one of A/B/C1/C2/C3 | No execution |
-| Preservation contract | `SPECIFIED_NOT_EXECUTED` | Safe-relative-path manifests include file sizes/hashes, source/command/config/checkpoint/environment identities, timestamps, and aggregate safety result | No new authority can be promoted |
-| Owner authorization | `ABSENT` | Written approval names the exact path, source commit, inputs, commands, resources, and gate packet | Every mutating or confirmatory action remains prohibited |
+| Duplicate evidence availability | `COMPLETE_LIMITED` | All 32 groups have concordant stored-vector, L2, manifest/extraction-metadata, and component/merged evidence. Source DICOM and extracted NPZ content/hashes are unavailable, so physical-source identity cannot be confirmed. | Vector and metadata concordance are corroborating evidence only. |
+| Duplicate adjudication | `SOURCE_ARTIFACT_PURGED` for 32/32 groups | Every duplicate group lacks the retained physical artifacts required to distinguish an exact repeated row, the same clip embedded twice, a key collision, or another source-level defect. | The groups remain quarantined; their scientific cause is unresolved. |
+| Physical-source deduplication rule | `FAILED` | No group meets `EXACT_REPEATED_MANIFEST_ROW_CONFIRMED`. Removing only permitted index/L2 serialization differences produces concordance, but does not replace physical/extracted-content confirmation. | Deterministic deduplication and Path A are prohibited. |
+| Canonical selected-clip inventory | `COMPLETE_WITH_ATTRITION` | The aggregate inventory accounts for selected and outside-selected rows, physical-source groups, retained NPZs, missing source artifacts, and quarantines. | It can guide a prospective rebuild but cannot promote the historical store. |
+| Selected imaging denominator | `NOT_READY_FOR_CONFIRMATORY_USE` | Embedding manifests contain 4,525 selected studies; only 4,524 selected studies retain at least one proposed nonquarantined canonical clip. The five separately prespecified no-cine studies remain without embedded clips. | Exact common-denominator authority must be re-established after a clean rebuild. |
+| Extracted/source availability | `PARTIAL` | Stage D retains 14,006 extracted NPZ physical sources. For 170,568 physical sources in `batch_000`–`batch_008`, neither extracted NPZ nor retained DICOM is available. | C1 and C2 are unavailable. Batches 000–008 require authorized DICOM redownload and re-extraction. |
+| Checkpoint/environment | `BLOCKED_FOR_EXECUTION` | The intended checkpoint SHA-256 is known, but historical embedding generation is not linked to a complete Python, PyTorch, scikit-learn, CUDA/cuDNN, hardware, source-commit, command, and scheduler record. | Any prospective embedding run must pin and capture a new complete environment. |
+| Resource approval | `NOT_REQUESTED` | No SCC quota, transfer, CPU/GPU, queue, or I/O plan has been approved. | C3 cannot begin. |
+| Preservation contract | `SPECIFIED_NOT_EXECUTED` | A future authority must use safe relative paths, file sizes and hashes, input/command/config/checkpoint/environment identities, timestamps, and an aggregate safety result. | No new store may be promoted until second-pass preservation verification passes. |
+| Owner authorization | `ABSENT` | No written authorization names C3, its inputs, commands, resources, and gate packet. | Every mutating and confirmatory action remains prohibited. |
 
-## Mechanical path compatibility
+## Canonical inventory counts
 
-The audits may report compatibility, not authorization:
+| Quantity | Aggregate count | Interpretation |
+|---|---:|---|
+| Selected studies seen in embedding manifests | 4,525 | Historical selected-cohort imaging rows exist for these studies. |
+| Selected studies with at least one proposed nonquarantined canonical clip | 4,524 | One selected study loses proposed coverage under the current quarantine; this is not yet a locked confirmatory denominator. |
+| Selected studies with no embedded clips | 5 | These are the prespecified readable-DICOM/no-multiframe-cine studies and remain imaging-ineligible. |
+| Selected embedded manifest rows | 184,606 | Pre-adjudication selected rows. |
+| Outside-selected rows excluded | 7,387 | These rows are outside the one-study-per-subject selected cohort and cannot enter the new authority. |
+| Selected physical-source groups | 184,574 | Physical-source grouping reduces the selected rows by the 32 duplicated-key groups. |
+| Physical sources with surviving extracted NPZ | 14,006 | All are in Stage D and still require cohort-wide readability, schema, and content validation before use. |
+| Physical sources with neither NPZ nor retained DICOM | 170,568 | These are in `batch_000`–`batch_008` and require redownload plus re-extraction for a prospective rebuild. |
+| Quarantined physical-source groups | 32 | All are `SOURCE_ARTIFACT_PURGED`; none may be deterministically deduplicated. |
 
-- **A-compatible:** every duplicated row proposed for removal is physically confirmed and exact; any merge-only defect is separately rebuilt; canonical inventory has no quarantine.
-- **B-compatible:** nonidentical defects are bounded to a coherent affected component/batch and authoritative retained source material exists for that entire scope.
-- **C1 file-availability-compatible:** every selected proposed physical source has an extracted NPZ file and no quarantine remains. This is not C1 authorization until cohort-wide readability/schema/content validation passes.
-- **C2-compatible:** C1 fails only because extracted clips are missing/invalid, while retained authoritative DICOM coverage is complete.
-- **C3-compatible:** required DICOMs are absent, source mapping cannot be validated, or a clean selected-only restart is required.
+Counts are aggregate provenance findings, not authorization to create a canonical row-level manifest. The five no-cine studies remain excluded from every primary vision/structured/fusion comparison; a structured-only full-availability sensitivity, if later authorized, is a different denominator and cannot support paired modality claims.
 
-If more than one condition applies, the project must choose one coherent provenance strategy rather than silently mixing historical and new vectors.
+## Path disposition
+
+| Path | Phase 1D disposition | Reason |
+|---|---|---|
+| **A. Deterministic deduplication and repooling** | `NOT_COMPATIBLE` | All 32 groups lack physical/extracted-content evidence. Vector and metadata concordance cannot establish exact repeated physical clips. |
+| **B. Affected-batch repair** | `NOT_AVAILABLE_AS_RETAINED-SOURCE_REPAIR` | The affected `batch_000` source artifacts were purged. A fresh download would be required, and mixing a newly generated affected batch with incompletely documented legacy batches would not resolve the broader provenance limitation. |
+| **C1. Re-embed all selected clips from retained extracted NPZs** | `NOT_COMPATIBLE` | Only 14,006 Stage D NPZ physical sources survive; 170,568 sources have no retained NPZ. Quarantine also remains. |
+| **C2. Re-extract all selected clips from retained DICOMs** | `NOT_COMPATIBLE` | Retained DICOMs are unavailable for the 170,568 `batch_000`–`batch_008` physical sources. |
+| **C3. Selected-only clean prospective reconstruction** | `OPERATIONALLY_COMPATIBLE_UNAUTHORIZED` | Validate the surviving Stage D NPZ authority, redownload and re-extract the canonical selected sources for `batch_000`–`batch_008`, then re-embed the entire selected imaging-eligible clip set under one pinned checkpoint/environment and rebuild study vectors. |
+
+C3 is a provenance recommendation, not an execution decision. If Stage D NPZ validation fails or cannot establish source mapping, its corresponding DICOMs must also be redownloaded and re-extracted. Raw DICOM retrieval must remain limited to the selected imaging-eligible source set; repeated/all-study expansion is out of scope.
 
 ## Aggregate-only packet contract
 
@@ -48,16 +65,17 @@ The canonical inventory may export exactly:
 2. `canonical_selected_clip_inventory_by_component.csv`; and
 3. `canonical_selected_clip_inventory_safety_gate.json`.
 
-Per-group identifiers, locators, hashes, frame metadata, vector hashes/norms, extraction metadata, and proposed source rows remain restricted. Only the eight aggregate files may be pasted back after both safety gates pass.
+Per-group identifiers, locators, hashes, frame metadata, vector hashes/norms, extraction metadata, and proposed source rows remain restricted. Only the eight aggregate files may be copied into the review packet after both safety gates pass.
 
-## Decision meeting inputs after SCC
+## Required decision inputs before C3 authorization
 
 Before requesting authorization, present:
 
-- the eight safe aggregate files;
-- a restricted reviewer attestation that all per-group classifications follow the prespecified precedence and no vector-only deduplication occurred;
-- the availability-compatible A/B/C1/C2/C3 paths;
-- path-specific storage, CPU/GPU, queue/I/O, and transfer estimates using observed counts; and
-- the proposed source commit, exact commands, checkpoint, environment-capture plan, and preservation manifest schema.
+- the eight safe aggregate audit files and a restricted reviewer attestation;
+- a restricted selected-source manifest construction plan that preserves quarantine and the five-study imaging-ineligibility rule;
+- Stage D cohort-wide NPZ readability, required-array/schema, content-hash, and source-mapping validation;
+- an authorized public-release redownload plan for the selected `batch_000`–`batch_008` sources, with SCC quota, transfer, CPU/GPU, queue, and I/O estimates;
+- the source commit, exact commands, extraction specification, checkpoint SHA-256 `7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b`, environment-capture plan, and preservation-manifest schema; and
+- written owner authorization for the exact prospective path.
 
-Until that review and written owner decision, the status remains **NO-GO**.
+Until those items are approved and all post-run authority checks pass, the status remains **NO-GO** and confirmatory access remains closed.
