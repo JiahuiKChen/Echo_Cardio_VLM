@@ -4,7 +4,7 @@ This runbook is limited to the authorized four-study, training-only Phase 1E-A t
 
 The literal `__PHASE1EA_COMMIT__` below is a fail-closed handoff placeholder. Replace it only after the Phase 1E-A implementation commit has been pushed to `origin/codex/lvef-multitask-revalidation`. Do not substitute a working-tree commit or continue when the SCC worktree is dirty.
 
-All patient-, study-, DICOM-, clip-, checksum-row-, extracted-array-, and embedding-level outputs stay below the new restricted run root. Only the explicitly listed aggregate outputs at the end may be pasted back, and only after both the run-level aggregate safety gate and preservation verification report `PASS`.
+All patient-, study-, DICOM-, clip-, exact-object-metadata-, extracted-array-, and embedding-level outputs stay below the new restricted run root. Only the explicitly listed aggregate outputs at the end may be pasted back, and only after both the run-level aggregate safety gate and preservation verification report `PASS`.
 
 ## 1. Authority, interpreter, and fresh run root
 
@@ -103,9 +103,9 @@ assert callable(getattr(getattr(pydicom, "pixels", None), "pixel_array", None))
 
 The dependency-light suite must exit zero. Any failure blocks source construction and download; do not rely on a hard-coded test count because the committed suite may grow.
 
-## 2. Public release checksum authority and selected source manifest
+## 2. Selected source manifest and GCS tooling
 
-This downloads the public release checksum text only. It does not download a DICOM yet. The builder joins those public SHA-256 values to all selected source rows, verifies exact `n_dicoms` counts against the 4,530-study authority, and derives the four technical roles from restricted Phase 1D provenance without reading outcomes, predictions, performance, or embedding arrays.
+The MIMIC-IV-ECHO bucket root has no `SHA256SUMS.txt` object. The selected-source builder therefore records the expected exact GCS object locators but does not import or synthesize release SHA-256 values. It verifies exact `n_dicoms` counts against the 4,530-study authority and derives the four technical roles from restricted Phase 1D provenance without reading outcomes, predictions, performance, or embedding arrays. Exact-object GCS size, MD5, CRC32C, and generation are obtained in the next preflight block.
 
 ```bash
 if ! command -v gsutil >/dev/null 2>&1; then
@@ -113,14 +113,6 @@ if ! command -v gsutil >/dev/null 2>&1; then
   module load google-cloud-sdk/455.0.0
 fi
 command -v gsutil >/dev/null 2>&1
-
-RELEASE_CHECKSUMS="$RUN_ROOT/restricted/source/SHA256SUMS.txt"
-gsutil -u "$BILLING_PROJECT" cp \
-  "gs://mimic-iv-echo-1.0.physionet.org/SHA256SUMS.txt" \
-  "$RELEASE_CHECKSUMS" \
-  >"$RUN_ROOT/restricted/logs/release_checksum_download.stdout.txt" \
-  2>"$RUN_ROOT/restricted/logs/release_checksum_download.stderr.txt"
-test -s "$RELEASE_CHECKSUMS"
 
 RECORD_ARGS=(--record-component "stage_d=$STAGE_D_RECORDS")
 for index in {0..8}; do
@@ -138,7 +130,6 @@ done
   --historical-study-manifest "$HISTORICAL_STUDY_MANIFEST" \
   --duplicate-resolution "$DUPLICATE_RESOLUTION" \
   --canonical-inventory "$CANONICAL_INVENTORY" \
-  --release-checksums "$RELEASE_CHECKSUMS" \
   --restricted-output-dir "$RUN_ROOT/restricted/source" \
   --aggregate-output-dir "$RUN_ROOT/aggregate/source" \
   >"$RUN_ROOT/restricted/logs/source_manifest.stdout.txt" \
@@ -159,11 +150,11 @@ print(value)
 test "$(sha256sum "$SMOKE_SOURCE" | awk '{print $1}')" = "$EXPECTED_SMOKE_SOURCE_SHA256"
 ```
 
-The selected-source manifest is restricted even though it contains public object locators. Never copy it, the smoke manifest, the release checksum text, or a checksum-linked source row into Git.
+The selected-source manifest is restricted even though it contains public object locators. Never copy it, the smoke manifest, an exact-object stat record, or a metadata-linked source row into Git.
 
-## 3. Exact remote-set and resource preflight
+## 3. Exact remote-set, object-metadata, and resource preflight
 
-The preflight lists the complete DICOM prefix for each of the four deterministically chosen training studies, requires exact equality with the restricted smoke manifest, and enforces the locked limits: exactly four studies/subjects, at most 1,000 objects, at most 5 GiB expected raw transfer, and at least 20 GiB free. It does not download DICOM bytes.
+The preflight lists the complete DICOM prefix for each of the four deterministically chosen training studies, requires exact equality with the restricted smoke manifest, and runs `gsutil stat` on every exact expected object. Each restricted object record must include remote size, MD5, CRC32C, and generation. The preflight also enforces the locked limits: exactly four studies/subjects, at most 1,000 objects, at most 5 GiB expected raw transfer, and at least 20 GiB free. It does not download DICOM bytes.
 
 ```bash
 DOWNLOAD_ROOT="$RUN_ROOT/restricted/downloads"
@@ -175,13 +166,12 @@ DOWNLOAD_ROOT="$RUN_ROOT/restricted/downloads"
   --restricted-report "$RUN_ROOT/restricted/download_preflight_report.json" \
   --aggregate-output "$RUN_ROOT/aggregate/download_preflight.json" \
   --billing-project "$BILLING_PROJECT" \
-  --release-checksums "$RELEASE_CHECKSUMS" \
   --preflight-only \
   >"$RUN_ROOT/restricted/logs/download_preflight.stdout.txt" \
   2>"$RUN_ROOT/restricted/logs/download_preflight.stderr.txt"
 
 "$PYTHON" -c '
-import json, sys
+import json, re, sys
 source = json.load(open(sys.argv[1], encoding="utf-8"))
 preflight = json.load(open(sys.argv[2], encoding="utf-8"))
 assert source["status"] == "PASS"
@@ -189,7 +179,11 @@ assert source["n_selected_subjects"] == 4530
 assert source["n_selected_studies"] == 4530
 assert source["n_source_studies"] == 4530
 assert source["source_object_counts_match_selected_authority"] is True
-assert source["all_selected_objects_have_release_sha256"] is True
+assert source["release_sha256_authority_available"] is False
+assert source["all_selected_objects_have_release_sha256"] is False
+assert source["historical_object_sha256_imported"] is False
+assert source["object_integrity_authority"] == "GCS_EXACT_OBJECT_STAT"
+assert source["gcs_exact_object_metadata_required_for_smoke"] is True
 assert source["candidate_construction_mode"] == "phase1d_restricted_provenance"
 assert source["restricted_input_authority_hash_set_exact"] is True
 assert source["locked_split_counts_match"] is True
@@ -206,8 +200,21 @@ assert preflight["total_remote_bytes"] <= 5 * 1024**3
 assert preflight["free_bytes_before"] >= 20 * 1024**3
 assert preflight["exact_remote_set"] is True
 assert preflight["all_sizes_verified"] is True
+assert preflight["n_requested_objects"] == preflight["n_expected_objects"]
+assert preflight["n_remote_metadata_complete"] == preflight["n_requested_objects"]
+assert preflight["n_remote_md5_present"] == preflight["n_requested_objects"]
+assert preflight["n_remote_crc32c_present"] == preflight["n_requested_objects"]
+assert preflight["n_remote_generation_present"] == preflight["n_requested_objects"]
+assert preflight["n_remote_metadata_mismatches"] == 0
+assert preflight["n_remote_md5_verified_objects"] == 0
+assert preflight["n_local_sha256_computed"] == 0
+assert preflight["remote_metadata_authority"] == "GCS_EXACT_OBJECT_STAT"
+assert preflight["exact_stat_set"] is True
+assert preflight["listing_stat_sizes_match"] is True
+assert preflight["all_remote_md5_present"] is True
 assert preflight["source_manifest_sha256_verified"] is True
 assert preflight["source_manifest_sha256"] == source["technical_smoke_source_manifest_sha256"]
+assert re.fullmatch(r"[0-9a-f]{64}", preflight["restricted_report_sha256"])
 ' \
   "$RUN_ROOT/aggregate/source/reconstruction_source_manifest.summary.json" \
   "$RUN_ROOT/aggregate/download_preflight.json"
@@ -217,11 +224,11 @@ If this block fails, do not substitute another study. Inspect only the restricte
 
 ## 4. Restricted job environment and direct SGE submission
 
-The committed `scripts/scc_run_lvef_reconstruction_smoke.sh` is the only submitted job body. Do not generate or edit a temporary job script. It performs the bounded download, checksum and DICOM audits, two clean runs on the same allocated GPU, the exact five-artifact comparison, aggregate safety gating, environment capture through `scripts/capture_lvef_reconstruction_environment.py`, and second-pass preservation.
+The committed `scripts/scc_run_lvef_reconstruction_smoke.sh` is the only submitted job body. Do not generate or edit a temporary job script. It performs the bounded download, exact-object metadata/local size-and-MD5 audit, DICOM audit, two clean runs on the same allocated GPU, the exact five-artifact comparison, aggregate safety gating, environment capture through `scripts/capture_lvef_reconstruction_environment.py`, and second-pass preservation. Every downloaded object also receives a local SHA-256 for preservation.
 
 Environment capture is fail-closed and restricted. It must record the complete installed-distribution inventory as nonempty `{name, version}` entries, the pinned Python/config/checkpoint/script identities, repository authority, CUDA/cuDNN and allocated-GPU metadata, and SGE metadata. Preservation validates that package-inventory schema and reconciles the scheduler exactly: the captured scheduler must be `SGE`, and its numeric `scheduler_job_id` must equal the `JOB_ID` passed to preservation. A missing or inconsistent inventory, scheduler, or job identity blocks preservation.
 
-The SGE log directory is deliberately outside `RUN_ROOT`; otherwise the preservation verifier could hash a log while SGE is still appending to it. Preservation deliberately repeats several reads of the bounded smoke artifacts: it re-hashes every safety-gated aggregate, rechecks the downloaded objects against the locked release checksums, rereads DICOM headers, and recomputes the normalized manifest/internal-array reproducibility identities. This extra I/O is required to detect mutation after the earlier PASS gates.
+The SGE log directory is deliberately outside `RUN_ROOT`; otherwise the preservation verifier could hash a log while SGE is still appending to it. Preservation deliberately repeats several reads of the bounded smoke artifacts: it re-hashes every safety-gated aggregate, revalidates the saved exact-object GCS stat records, rechecks local size and MD5 against that remote metadata, verifies the preserved local SHA-256 values, rereads DICOM headers, and recomputes the normalized manifest/internal-array reproducibility identities. This extra I/O is required to detect mutation after the earlier PASS gates.
 
 ```bash
 JOB_ENV="$RUN_ROOT/restricted/phase1e_a_job.env"
@@ -234,7 +241,6 @@ test ! -e "$JOB_ENV"
   printf 'BILLING_PROJECT=%q\n' "$BILLING_PROJECT"
   printf 'SMOKE_SOURCE=%q\n' "$SMOKE_SOURCE"
   printf 'EXPECTED_SMOKE_SOURCE_SHA256=%q\n' "$EXPECTED_SMOKE_SOURCE_SHA256"
-  printf 'RELEASE_CHECKSUMS=%q\n' "$RELEASE_CHECKSUMS"
   printf 'DOWNLOAD_ROOT=%q\n' "$DOWNLOAD_ROOT"
   printf 'CONFIG=%q\n' "$CONFIG"
   printf 'CHECKPOINT=%q\n' "$CHECKPOINT"
@@ -274,9 +280,11 @@ Run this only after the batch job has completed successfully. The first command 
 
 ```bash
 "$PYTHON" -c '
-import json, sys
+import json, re, sys
 safety = json.load(open(sys.argv[1], encoding="utf-8"))
 preservation = json.load(open(sys.argv[2], encoding="utf-8"))
+download = json.load(open(sys.argv[3], encoding="utf-8"))
+reproducibility = json.load(open(sys.argv[4], encoding="utf-8"))
 assert safety["status"] == "PASS"
 assert safety["aggregate_safety_gate_passed"] is True
 assert safety["n_aggregate_artifacts"] == 12
@@ -296,9 +304,28 @@ assert preservation["download_audit_recomputed"] is True
 assert preservation["dicom_audit_recomputed"] is True
 assert preservation["reproducibility_recomputed"] is True
 assert preservation["restricted_snapshot_reconciled"] is True
+assert download["status"] == "PASS"
+assert download["remote_metadata_authority"] == "GCS_EXACT_OBJECT_STAT"
+assert download["object_transport_integrity_status"] == "VERIFIED_ALL_OBJECTS"
+assert download["n_requested_objects"] == download["n_expected_objects"]
+assert download["n_remote_metadata_complete"] == download["n_requested_objects"]
+assert download["n_remote_md5_present"] == download["n_requested_objects"]
+assert download["n_remote_crc32c_present"] == download["n_requested_objects"]
+assert download["n_remote_generation_present"] == download["n_requested_objects"]
+assert download["n_remote_md5_verified_objects"] == download["n_requested_objects"]
+assert download["n_local_sha256_computed"] == download["n_requested_objects"]
+assert download["n_remote_metadata_mismatches"] == 0
+assert download["all_local_md5_match"] is True
+assert download["all_local_sha256_computed"] is True
+assert download["total_downloaded_bytes"] == download["total_remote_bytes"]
+assert download["total_downloaded_bytes"] <= 5 * 1024**3
+assert re.fullmatch(r"[0-9a-f]{64}", download["restricted_report_sha256"])
+assert re.fullmatch(r"[0-9a-f]{64}", reproducibility["restricted_details_sha256"])
 ' \
   "$RUN_ROOT/aggregate/phase1e_a_smoke_safety_gate.json" \
-  "$PRESERVATION_AGGREGATE"
+  "$PRESERVATION_AGGREGATE" \
+  "$RUN_ROOT/aggregate/download.json" \
+  "$RUN_ROOT/aggregate/reproducibility.json"
 
 cat "$RUN_ROOT/aggregate/source/reconstruction_source_manifest.summary.json"
 cat "$RUN_ROOT/aggregate/source/reconstruction_source_manifest_by_component.csv"
@@ -318,4 +345,4 @@ cat "$RUN_ROOT/aggregate/phase1e_a_smoke_safety_gate.json"
 cat "$PRESERVATION_AGGREGATE"
 ```
 
-Never paste or copy back any file beneath `restricted/`, `provenance/`, the detailed preservation directory, or the scheduler-log directory. This includes source or smoke manifests, the release checksum text, identifiers, locators, per-object hashes, DICOMs, extracted NPZs, embedding arrays/manifests, detailed download or reproducibility reports, environment JSON, command copies, stdout/stderr, and preservation inventory/metadata. A passing four-study smoke validates only the prospective implementation and reproducibility controls; it does not authorize or establish the full selected-cohort C3 authority or confirmatory modeling.
+Never paste or copy back any file beneath `restricted/`, `provenance/`, the detailed preservation directory, or the scheduler-log directory. This includes source or smoke manifests, exact-object GCS stat records, identifiers, locators, per-object metadata or hashes, DICOMs, extracted NPZs, embedding arrays/manifests, detailed download or reproducibility reports, environment JSON, command copies, stdout/stderr, and preservation inventory/metadata. A passing four-study smoke validates only the prospective implementation and reproducibility controls; it does not authorize or establish the full selected-cohort C3 authority or confirmatory modeling.

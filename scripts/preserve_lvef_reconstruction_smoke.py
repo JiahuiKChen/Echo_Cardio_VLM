@@ -292,10 +292,14 @@ def _assert_frames_equal(
     *,
     error_code: str,
 ) -> None:
+    observed_normalized = observed.reset_index(drop=True).astype(object)
+    expected_normalized = expected.reset_index(drop=True).astype(object)
+    observed_normalized = observed_normalized.where(observed_normalized.notna(), None)
+    expected_normalized = expected_normalized.where(expected_normalized.notna(), None)
     try:
         pd.testing.assert_frame_equal(
-            observed.reset_index(drop=True),
-            expected.reset_index(drop=True),
+            observed_normalized,
+            expected_normalized,
             check_dtype=False,
             check_like=True,
         )
@@ -376,21 +380,95 @@ def _restricted_snapshot(run_root: Path) -> dict[str, tuple[int, str]]:
 
 
 def _verify_reproducibility_matches_saved(run_root: Path) -> None:
-    current_restricted, current_aggregate = _recompute_reproducibility(run_root)
-    saved_restricted = _read_json_object(
-        run_root / "restricted/reproducibility_details.json",
-        "REPRODUCIBILITY_DETAILS_INVALID",
-    )
     saved_aggregate = _read_json_object(
         run_root / AGGREGATE_ARTIFACT_RELATIVE_PATHS["reproducibility"],
         "REPRODUCIBILITY_AGGREGATE_INVALID",
     )
+    details_path = run_root / "restricted/reproducibility_details.json"
+    bound_details_sha256 = saved_aggregate.get("restricted_details_sha256")
+    if (
+        not isinstance(bound_details_sha256, str)
+        or not SHA256_RE.fullmatch(bound_details_sha256)
+    ):
+        raise PreservationError("REPRODUCIBILITY_DETAILS_IDENTITY_MISSING")
+    if details_path.is_symlink() or not details_path.is_file():
+        raise PreservationError("REPRODUCIBILITY_DETAILS_IDENTITY_MISMATCH")
+    if sha256_file(details_path) != bound_details_sha256:
+        raise PreservationError("REPRODUCIBILITY_DETAILS_IDENTITY_MISMATCH")
+    saved_restricted = _read_json_object(
+        details_path,
+        "REPRODUCIBILITY_DETAILS_INVALID",
+    )
+    current_restricted, current_aggregate = _recompute_reproducibility(run_root)
     if current_restricted != saved_restricted:
         raise PreservationError("REPRODUCIBILITY_DETAILS_REVALIDATION_MISMATCH")
-    if current_aggregate != saved_aggregate:
+    comparable_saved_aggregate = dict(saved_aggregate)
+    comparable_saved_aggregate.pop("restricted_details_sha256")
+    if current_aggregate != comparable_saved_aggregate:
         raise PreservationError("REPRODUCIBILITY_AGGREGATE_REVALIDATION_MISMATCH")
     if current_aggregate.get("status") != "PASS":
         raise PreservationError("REPRODUCIBILITY_REVALIDATION_NOT_PASSED")
+
+
+def _revalidate_download_authority(
+    run_root: Path,
+    smoke_manifest: Path,
+    smoke_sha256: str,
+    saved_download_summary: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Recompute local hashes against the sealed exact-object GCS authority."""
+
+    if (
+        saved_download_summary.get("source_manifest_sha256") != smoke_sha256
+        or saved_download_summary.get("source_manifest_sha256_verified") is not True
+    ):
+        raise PreservationError("DOWNLOAD_SMOKE_MANIFEST_IDENTITY_MISMATCH")
+    if (
+        saved_download_summary.get("status") != "PASS"
+        or saved_download_summary.get("remote_metadata_authority")
+        != reconstruction.DOWNLOAD_REPORT_AUTHORITY
+        or saved_download_summary.get("object_transport_integrity_status")
+        != "VERIFIED_ALL_OBJECTS"
+    ):
+        raise PreservationError("DOWNLOAD_GCS_AUTHORITY_NOT_PASSED")
+    source_frame = pd.read_csv(smoke_manifest, low_memory=False)
+    download_report_path = run_root / "restricted/download_report.json"
+    bound_report_sha256 = saved_download_summary.get("restricted_report_sha256")
+    if (
+        not isinstance(bound_report_sha256, str)
+        or not SHA256_RE.fullmatch(bound_report_sha256)
+    ):
+        raise PreservationError("DOWNLOAD_REPORT_IDENTITY_MISSING")
+    if download_report_path.is_symlink() or not download_report_path.is_file():
+        raise PreservationError("DOWNLOAD_REPORT_IDENTITY_MISMATCH")
+    if sha256_file(download_report_path) != bound_report_sha256:
+        raise PreservationError("DOWNLOAD_REPORT_IDENTITY_MISMATCH")
+    downloader_report = reconstruction.read_downloader_report(download_report_path)
+    try:
+        current_frame, current_summary = reconstruction.audit_downloaded_objects(
+            source_frame,
+            downloader_report,
+            run_root / "restricted/downloads",
+            source_manifest_sha256=smoke_sha256,
+        )
+    except (OSError, ValueError) as exc:
+        raise PreservationError("DOWNLOAD_AUTHORITY_REVALIDATION_FAILED") from exc
+    if current_summary.get("status") != "PASS":
+        raise PreservationError("DOWNLOAD_AUTHORITY_REVALIDATION_FAILED")
+    saved_frame = pd.read_csv(
+        run_root / "restricted/download_audit.csv", low_memory=False
+    )
+    _assert_frames_equal(
+        current_frame,
+        saved_frame,
+        error_code="DOWNLOAD_AUDIT_REVALIDATION_MISMATCH",
+    )
+    if current_summary != _read_json_object(
+        run_root / AGGREGATE_ARTIFACT_RELATIVE_PATHS["download_audit"],
+        "DOWNLOAD_AUDIT_AGGREGATE_INVALID",
+    ):
+        raise PreservationError("DOWNLOAD_AUDIT_AGGREGATE_REVALIDATION_MISMATCH")
+    return current_frame, current_summary
 
 
 def revalidate_authoritative_run_artifacts(
@@ -422,42 +500,13 @@ def revalidate_authoritative_run_artifacts(
     ):
         raise PreservationError("SELECTED_SOURCE_MANIFEST_CHANGED")
 
-    release_checksums_path = run_root / "restricted/source/SHA256SUMS.txt"
-    if sha256_file(release_checksums_path) != source_summary.get(
-        "release_checksums_sha256"
-    ):
-        raise PreservationError("RELEASE_CHECKSUM_AUTHORITY_CHANGED")
     saved_download_summary = _read_json_object(
         run_root / AGGREGATE_ARTIFACT_RELATIVE_PATHS["download"],
         "DOWNLOAD_AGGREGATE_INVALID",
     )
-    if (
-        saved_download_summary.get("source_manifest_sha256") != smoke_sha256
-        or saved_download_summary.get("source_manifest_sha256_verified") is not True
-    ):
-        raise PreservationError("DOWNLOAD_SMOKE_MANIFEST_IDENTITY_MISMATCH")
-    source_frame = pd.read_csv(smoke_manifest, low_memory=False)
-    release_checksums = reconstruction.read_release_checksums(release_checksums_path)
-    current_download_frame, current_download_summary = (
-        reconstruction.audit_downloaded_objects(
-            source_frame,
-            release_checksums,
-            run_root / "restricted/downloads",
-        )
+    current_download_frame, current_download_summary = _revalidate_download_authority(
+        run_root, smoke_manifest, smoke_sha256, saved_download_summary
     )
-    saved_download_frame = pd.read_csv(
-        run_root / "restricted/download_audit.csv", low_memory=False
-    )
-    _assert_frames_equal(
-        current_download_frame,
-        saved_download_frame,
-        error_code="DOWNLOAD_AUDIT_REVALIDATION_MISMATCH",
-    )
-    if current_download_summary != _read_json_object(
-        run_root / AGGREGATE_ARTIFACT_RELATIVE_PATHS["download_audit"],
-        "DOWNLOAD_AUDIT_AGGREGATE_INVALID",
-    ):
-        raise PreservationError("DOWNLOAD_AUDIT_AGGREGATE_REVALIDATION_MISMATCH")
 
     current_dicom_frame, current_dicom_summary = reconstruction.audit_dicom_headers(
         current_download_frame,

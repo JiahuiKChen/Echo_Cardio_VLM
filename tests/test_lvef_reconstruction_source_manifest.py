@@ -293,16 +293,6 @@ def test_authoritative_provenance_mode_derives_all_smoke_strata() -> None:
             ]
         ).to_csv(canonical, index=False)
 
-        release = root / "SHA256SUMS.txt"
-        release.write_text(
-            "".join(
-                f"{'a' * 64}  ./{row['dicom_filepath']}\n"
-                for path in records.values()
-                for row in pd.read_csv(path, dtype=str).to_dict(orient="records")
-            ),
-            encoding="utf-8",
-        )
-
         names = (
             "EXPECTED_HISTORICAL_IMAGING_STUDIES",
             "EXPECTED_HISTORICAL_NO_CINE_STUDIES",
@@ -347,7 +337,6 @@ def test_authoritative_provenance_mode_derives_all_smoke_strata() -> None:
                 historical_study_manifest=historical,
                 duplicate_resolution=duplicate,
                 canonical_inventory=canonical,
-                release_checksums=release,
                 restricted_output_dir=root / "restricted",
                 aggregate_output_dir=root / "aggregate",
                 expected_selected_sha256=None,
@@ -359,7 +348,14 @@ def test_authoritative_provenance_mode_derives_all_smoke_strata() -> None:
             for name, value in original.items():
                 setattr(builder, name, value)
         assert summary["candidate_construction_mode"] == "phase1d_restricted_provenance"
-        assert summary["all_selected_objects_have_release_sha256"] is True
+        assert summary["all_selected_objects_have_release_sha256"] is False
+        assert summary["release_sha256_authority_available"] is False
+        assert summary["historical_object_sha256_imported"] is False
+        assert (
+            summary["object_integrity_authority"]
+            == "GCS_EXACT_OBJECT_STAT"
+        )
+        assert summary["gcs_exact_object_metadata_required_for_smoke"] is True
         assert summary["smoke_n_studies"] == 4
         assert summary["restricted_input_authority_hash_set_exact"] is True
         assert summary["locked_split_counts_match"] is True

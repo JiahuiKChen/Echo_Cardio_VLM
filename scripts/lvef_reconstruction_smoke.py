@@ -10,6 +10,8 @@ exercise provenance and ordering logic.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import hashlib
 import json
@@ -58,6 +60,8 @@ EXPECTED_EXTRACTION_PAIR_ALIASES = {"extraction"}
 MEAN = np.asarray([29.110628, 28.076836, 29.096405], dtype=np.float32)
 STD = np.asarray([47.989223, 46.456997, 47.20083], dtype=np.float32)
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+MIMIC_ECHO_BUCKET = "mimic-iv-echo-1.0.physionet.org"
+DOWNLOAD_REPORT_AUTHORITY = "GCS_EXACT_OBJECT_STAT"
 TRUE_VALUES = {"true", "1", "yes", "y"}
 FALSE_VALUES = {"false", "0", "no", "n"}
 
@@ -92,6 +96,27 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def md5_file_base64(path: Path) -> str:
+    """Return the standard base64 representation used by GCS ``md5Hash``."""
+
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return base64.b64encode(digest.digest()).decode("ascii")
+
+
+def _validated_base64_digest(value: Any, *, n_bytes: int, field: str) -> str:
+    text = str(value).strip()
+    try:
+        decoded = base64.b64decode(text, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError(f"Downloader report has an invalid {field} value.") from exc
+    if len(decoded) != n_bytes or base64.b64encode(decoded).decode("ascii") != text:
+        raise ValueError(f"Downloader report has a noncanonical {field} value.")
+    return text
 
 
 def array_content_sha256(array: np.ndarray) -> str:
@@ -203,27 +228,18 @@ def write_npz_atomic(path: Path, **arrays: np.ndarray) -> None:
     os.replace(temporary, path)
 
 
-def read_release_checksums(path: Path) -> dict[str, str]:
-    checksums: dict[str, str] = {}
-    with path.open(encoding="utf-8", errors="strict") as handle:
-        for line_number, raw in enumerate(handle, start=1):
-            line = raw.rstrip("\n")
-            if not line.strip():
-                continue
-            match = re.fullmatch(r"([0-9A-Fa-f]{64})[ \t]+\*?(.+)", line)
-            if not match:
-                raise ValueError(f"Malformed checksum line {line_number}.")
-            digest = match.group(1).lower()
-            relative_raw = match.group(2).strip()
-            while relative_raw.startswith("./"):
-                relative_raw = relative_raw[2:]
-            relative = safe_relative_path(relative_raw)
-            if relative in checksums:
-                raise ValueError("Duplicate release-checksum path.")
-            checksums[relative] = digest
-    if not checksums:
-        raise ValueError("Release checksum file contains no entries.")
-    return checksums
+def read_downloader_report(path: Path) -> dict[str, Any]:
+    """Read the restricted exact-object downloader authority fail-closed."""
+
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Downloader report is not a regular file.")
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError("Downloader report is not valid JSON.") from exc
+    if not isinstance(report, dict):
+        raise ValueError("Downloader report must be a JSON object.")
+    return report
 
 
 def _validate_source_manifest(frame: pd.DataFrame) -> pd.DataFrame:
@@ -261,20 +277,113 @@ def _validate_source_manifest(frame: pd.DataFrame) -> pd.DataFrame:
 
 def audit_downloaded_objects(
     source_manifest: pd.DataFrame,
-    release_checksums: Mapping[str, str],
+    downloader_report: Mapping[str, Any],
     download_root: Path,
+    *,
+    source_manifest_sha256: str,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     source = _validate_source_manifest(source_manifest)
-    release = {safe_relative_path(key): str(value).lower() for key, value in release_checksums.items()}
-    if any(not HEX64.fullmatch(value) for value in release.values()):
-        raise ValueError("Release checksum map contains an invalid SHA-256 value.")
+    manifest_sha256 = str(source_manifest_sha256).lower()
+    if not HEX64.fullmatch(manifest_sha256):
+        raise ValueError("Source-manifest SHA-256 is invalid.")
+    if not isinstance(downloader_report, Mapping):
+        raise ValueError("Downloader report must be a JSON object.")
+    if downloader_report.get("status") != "PASS":
+        raise ValueError("Downloader report does not record a completed PASS run.")
+    if downloader_report.get("authority") != DOWNLOAD_REPORT_AUTHORITY:
+        raise ValueError("Downloader report does not use the required GCS object authority.")
+    if downloader_report.get("object_transport_integrity_status") != "VERIFIED_ALL_OBJECTS":
+        raise ValueError("Downloader report does not record verified object integrity.")
+    if downloader_report.get("source_manifest_sha256") != manifest_sha256:
+        raise ValueError("Downloader report source-manifest identity does not match.")
+    report_objects = downloader_report.get("objects")
+    if not isinstance(report_objects, list) or not report_objects:
+        raise ValueError("Downloader report has no object records.")
+
+    required_report_fields = {
+        "subject_id",
+        "study_id",
+        "split",
+        "smoke_role",
+        "source_relative_path",
+        "gcs_uri",
+        "remote_size_bytes",
+        "remote_stat_size_bytes",
+        "remote_md5_base64",
+        "remote_crc32c_base64",
+        "remote_generation",
+        "local_size_bytes",
+        "local_status",
+        "local_md5_base64",
+        "local_sha256",
+        "remote_md5_verified",
+    }
+    report_by_path: dict[str, dict[str, Any]] = {}
+    for raw in report_objects:
+        if not isinstance(raw, dict) or not required_report_fields.issubset(raw):
+            raise ValueError("Downloader report object schema is incomplete.")
+        relative = safe_relative_path(raw["source_relative_path"])
+        if relative in report_by_path:
+            raise ValueError("Downloader report has duplicate source objects.")
+        if str(raw["gcs_uri"]) != f"gs://{MIMIC_ECHO_BUCKET}/{relative}":
+            raise ValueError("Downloader report has a noncanonical GCS object URI.")
+        if raw["local_status"] not in {"DOWNLOADED_VERIFIED", "PREEXISTING_VERIFIED"}:
+            raise ValueError("Downloader report has an invalid local object status.")
+        if raw["remote_md5_verified"] is not True:
+            raise ValueError("Downloader report does not verify every remote MD5.")
+        for field in ("remote_size_bytes", "remote_stat_size_bytes", "local_size_bytes"):
+            value = raw[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"Downloader report has an invalid {field} value.")
+        _validated_base64_digest(raw["remote_md5_base64"], n_bytes=16, field="remote MD5")
+        _validated_base64_digest(raw["local_md5_base64"], n_bytes=16, field="local MD5")
+        if not HEX64.fullmatch(str(raw["local_sha256"]).lower()):
+            raise ValueError("Downloader report has an invalid local SHA-256 value.")
+        _validated_base64_digest(
+            raw["remote_crc32c_base64"], n_bytes=4, field="remote CRC32C"
+        )
+        generation = raw["remote_generation"]
+        if not str(generation).isdigit():
+            raise ValueError("Downloader report has an invalid remote generation value.")
+        report_by_path[relative] = raw
+
+    source_records = {
+        str(record["source_relative_path"]): record
+        for record in source.to_dict(orient="records")
+    }
+    if set(report_by_path) != set(source_records):
+        raise ValueError("Downloader report and source manifest have different object sets.")
+    n_objects = len(report_by_path)
+    for field in (
+        "n_requested_objects",
+        "n_remote_metadata_complete",
+        "n_remote_md5_verified_objects",
+        "n_local_sha256_computed",
+    ):
+        if downloader_report.get(field) != n_objects:
+            raise ValueError("Downloader report aggregate counts are incomplete.")
 
     rows: list[dict[str, Any]] = []
-    for record in source.to_dict(orient="records"):
+    for relative, record in sorted(source_records.items()):
+        authority = report_by_path[relative]
+        expected_uri = f"gs://{MIMIC_ECHO_BUCKET}/{relative}"
+        if "gcs_uri" in source.columns and str(record["gcs_uri"]) != expected_uri:
+            raise ValueError("Source manifest has a noncanonical GCS object URI.")
+        authority_fields_match = all(
+            (
+                str(authority["subject_id"]) == str(record["subject_id"]),
+                str(authority["study_id"]) == str(record["study_id"]),
+                str(authority["split"]).strip().lower() == str(record["split"]),
+                str(authority["smoke_role"]) == str(record["smoke_role"]),
+                str(authority["gcs_uri"]) == expected_uri,
+            )
+        )
+        if not authority_fields_match:
+            raise ValueError("Downloader report ownership or role authority does not match.")
         relative = record["source_relative_path"]
-        expected = release.get(relative)
         status = "PASS"
-        actual: str | None = None
+        actual_sha256: str | None = None
+        actual_md5: str | None = None
         size: int | None = None
         error_code: str | None = None
         try:
@@ -282,11 +391,25 @@ def audit_downloaded_objects(
             if not source_path.is_file():
                 raise FileNotFoundError
             size = int(source_path.stat().st_size)
-            actual = sha256_file(source_path)
-            if expected is None:
-                status, error_code = "FAIL", "MISSING_RELEASE_CHECKSUM"
-            elif actual != expected:
-                status, error_code = "FAIL", "SHA256_MISMATCH"
+            actual_md5 = md5_file_base64(source_path)
+            actual_sha256 = sha256_file(source_path)
+            remote_metadata_match = (
+                authority["remote_size_bytes"] == authority["remote_stat_size_bytes"]
+                and authority["remote_stat_size_bytes"] == authority["local_size_bytes"]
+                and authority["local_size_bytes"] == size
+            )
+            md5_match = (
+                parse_bool(authority["remote_md5_verified"])
+                and authority["remote_md5_base64"] == authority["local_md5_base64"]
+                and authority["local_md5_base64"] == actual_md5
+            )
+            sha256_match = str(authority["local_sha256"]).lower() == actual_sha256
+            if not remote_metadata_match:
+                status, error_code = "FAIL", "REMOTE_METADATA_MISMATCH"
+            elif not md5_match:
+                status, error_code = "FAIL", "GCS_MD5_AUTHORITY_MISMATCH"
+            elif not sha256_match:
+                status, error_code = "FAIL", "LOCAL_SHA256_REPORT_MISMATCH"
         except FileNotFoundError:
             status, error_code = "FAIL", "MISSING_DOWNLOADED_OBJECT"
         except ValueError:
@@ -297,8 +420,12 @@ def audit_downloaded_objects(
                 "study_id": record["study_id"],
                 "smoke_role": record["smoke_role"],
                 "source_relative_path": relative,
-                "expected_sha256": expected,
-                "observed_sha256": actual,
+                "remote_size_bytes": authority["remote_size_bytes"],
+                "remote_md5_base64": authority["remote_md5_base64"],
+                "reported_local_md5_base64": authority["local_md5_base64"],
+                "observed_local_md5_base64": actual_md5,
+                "reported_local_sha256": str(authority["local_sha256"]).lower(),
+                "observed_sha256": actual_sha256,
                 "file_size_bytes": size,
                 "download_ok": status == "PASS",
                 "error_code": error_code,
@@ -310,13 +437,13 @@ def audit_downloaded_objects(
     root_resolved = download_root.resolve(strict=True)
     n_unsafe_discovered = 0
     for candidate in root_resolved.rglob("*"):
-        if candidate.suffix.lower() != ".dcm":
-            continue
         if candidate.is_symlink():
             n_unsafe_discovered += 1
             continue
         if candidate.is_file():
-            discovered.add(candidate.relative_to(root_resolved).as_posix())
+            discovered.add(
+                safe_relative_path(candidate.relative_to(root_resolved).as_posix())
+            )
     unexpected = discovered - expected_set
     missing = expected_set - discovered
     audit = pd.DataFrame(rows).sort_values("source_relative_path", kind="mergesort").reset_index(drop=True)
@@ -329,16 +456,38 @@ def audit_downloaded_objects(
             else "FAIL"
         ),
         "n_expected_objects": int(len(expected_set)),
-        "n_release_checksums_matched": int(audit["expected_sha256"].notna().sum()),
-        "n_download_objects_discovered": int(len(discovered)),
+        "n_downloaded_objects": int(len(discovered)),
+        "n_remote_metadata_complete": int(len(report_by_path)),
+        "n_remote_md5_verified_objects": int(
+            sum(parse_bool(item["remote_md5_verified"]) for item in report_by_path.values())
+        ),
+        "n_remote_metadata_mismatches": int(
+            (audit["error_code"] == "REMOTE_METADATA_MISMATCH").sum()
+        ),
+        "n_local_sha256_matched": int(
+            audit.apply(
+                lambda row: row["reported_local_sha256"] == row["observed_sha256"], axis=1
+            ).sum()
+        ),
         "n_verified_objects": int(audit["download_ok"].map(parse_bool).sum()),
-        "n_missing_objects": int(len(missing)),
-        "n_unexpected_objects": int(len(unexpected)),
+        "n_missing_downloads": int(len(missing)),
+        "n_unexpected_downloads": int(len(unexpected)),
         "n_unsafe_symlink_objects": int(n_unsafe_discovered),
-        "n_checksum_mismatches": int((audit["error_code"] == "SHA256_MISMATCH").sum()),
+        "n_gcs_md5_mismatches": int(
+            (audit["error_code"] == "GCS_MD5_AUTHORITY_MISMATCH").sum()
+        ),
+        "n_local_sha256_report_mismatches": int(
+            (audit["error_code"] == "LOCAL_SHA256_REPORT_MISMATCH").sum()
+        ),
         "n_smoke_roles": int(audit["smoke_role"].nunique()),
         "smoke_role_set_exact": set(audit["smoke_role"]) == set(EXPECTED_SMOKE_ROLES),
-        "source_manifest_sha256": _normalized_manifest_hash(source),
+        "source_manifest_sha256": manifest_sha256,
+        "downloader_report_authority": DOWNLOAD_REPORT_AUTHORITY,
+        "download_integrity_status": (
+            "PASS_GCS_METADATA_AND_LOCAL_HASH"
+            if all_rows_pass and not unexpected and not missing and n_unsafe_discovered == 0
+            else "FAIL"
+        ),
         "row_values_emitted": False,
         "paths_emitted": False,
     }
@@ -1530,13 +1679,18 @@ def _write_outputs(
     aggregate_path: Path,
     restricted_value: pd.DataFrame | Mapping[str, Any],
     aggregate_value: Mapping[str, Any],
+    *,
+    bind_restricted_details: bool = False,
 ) -> None:
     if isinstance(restricted_value, pd.DataFrame):
         write_csv_atomic(restricted_path, restricted_value)
     else:
         write_json_atomic(restricted_path, restricted_value)
-    write_json_atomic(aggregate_path, aggregate_value)
-    print(json.dumps(dict(aggregate_value), indent=2, sort_keys=True))
+    aggregate_payload = dict(aggregate_value)
+    if bind_restricted_details:
+        aggregate_payload["restricted_details_sha256"] = sha256_file(restricted_path)
+    write_json_atomic(aggregate_path, aggregate_payload)
+    print(json.dumps(aggregate_payload, indent=2, sort_keys=True))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1545,7 +1699,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     download = sub.add_parser("audit-downloads")
     download.add_argument("--source-manifest", type=Path, required=True)
-    download.add_argument("--release-checksums", type=Path, required=True)
+    download.add_argument("--download-report", type=Path, required=True)
     download.add_argument("--download-root", type=Path, required=True)
     download.add_argument("--restricted-output", type=Path, required=True)
     download.add_argument("--aggregate-output", type=Path, required=True)
@@ -1609,7 +1763,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "audit-downloads":
         source = pd.read_csv(args.source_manifest, low_memory=False)
         restricted, aggregate = audit_downloaded_objects(
-            source, read_release_checksums(args.release_checksums), args.download_root
+            source,
+            read_downloader_report(args.download_report),
+            args.download_root,
+            source_manifest_sha256=sha256_file(args.source_manifest),
         )
     elif args.command == "audit-dicoms":
         restricted, aggregate = audit_dicom_headers(
@@ -1651,7 +1808,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:  # pragma: no cover
         raise AssertionError(args.command)
 
-    _write_outputs(args.restricted_output, args.aggregate_output, restricted, aggregate)
+    _write_outputs(
+        args.restricted_output,
+        args.aggregate_output,
+        restricted,
+        aggregate,
+        bind_restricted_details=args.command == "compare-runs",
+    )
     return 0 if aggregate["status"] == "PASS" else 2
 
 

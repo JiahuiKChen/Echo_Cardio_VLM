@@ -10,7 +10,9 @@ The supplied Phase 1E-A text ends after the first Git command block. The smoke d
 
 The future selected-cohort authority is:
 
-`MIMIC-IV-ECHO 1.0 public source object -> exact-object download and integrity record -> privacy-safe DICOM/header audit -> multiframe cine candidacy -> deterministic extraction -> pinned encoder-only EchoPrime inference -> unique ordered clip manifest -> stable study-level mean pooling -> complete preservation manifest and independent verification`.
+`MIMIC-IV-ECHO 1.0 public source object -> exact-object GCS metadata record -> exact-object download and local integrity record -> privacy-safe DICOM/header audit -> multiframe cine candidacy -> deterministic extraction -> pinned encoder-only EchoPrime inference -> unique ordered clip manifest -> stable study-level mean pooling -> complete preservation manifest and independent verification`.
+
+The bucket root does not expose a `SHA256SUMS.txt` authority. Phase 1E-A therefore uses an exact-object `gsutil stat` record as the public-source authority. Before transfer, every expected object must have a recorded remote size, MD5, CRC32C, and generation. After transfer, the local byte count and locally computed MD5 must match the corresponding remote metadata. CRC32C and generation are retained as immutable remote provenance, and a local SHA-256 is computed for every downloaded object and carried into the restricted preservation inventory. Neither GCS MD5 nor CRC32C is represented as a release-provided SHA-256, and unverified SHA-256 fields from historical record manifests are not imported into the prospective authority.
 
 The historical selected-study manifest and split map define cohort membership only. Historical clip embeddings, vectors, labels, measurements, predictions, and performance are not inputs to reconstruction. Historical imaging lineage may be used only to prespecify technical smoke strata and the no-cine negative control.
 
@@ -33,7 +35,7 @@ Selection may read selected membership, subject split, component, public record 
 - The selected-study, split, historical-study, duplicate-resolution, canonical-inventory, Stage-D, and batch 000–008 inputs must match the SHA-256 authorities locked in the Phase 1E-A config before any row is read. The split must additionally contain exactly 3,171 train, 679 validation, and 680 test subjects.
 - The smoke manifest contains exactly four train studies and four subjects, one role apiece, and no outcome-bearing columns.
 - The serialized smoke manifest is sealed by SHA-256 across construction, remote preflight, queued execution, environment capture, run-level safety gating, and preservation. A changed manifest blocks before download.
-- The remote object set exactly matches the expected object set.
+- The remote object set exactly matches the expected object set, and exact-object GCS stat metadata are complete for every object: size, MD5, CRC32C, and generation.
 - The smoke scope is no more than 1,000 objects and 5 GiB expected raw bytes, with at least 20 GiB free before transfer.
 - The checkpoint is exactly 138,642,379 bytes with SHA-256 `7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b`.
 - Python, executable hash, packages, PyTorch, torchvision, CUDA, cuDNN, GPU, operating system, scheduler identity, source commit, config checksum, command checksum, and script checksums are captured.
@@ -41,7 +43,7 @@ Selection may read selected membership, subject split, component, public record 
 
 ## Technical contract
 
-All public DICOM objects for each smoke study are downloaded; there is no within-study sampling. Each observed local object must correspond to exactly one expected safe path, pass the available public-source integrity authority, and receive a local SHA-256. Missing objects, extra objects, ownership conflicts, symlinks, unsafe paths, or unreadable DICOMs fail closed.
+All public DICOM objects for each smoke study are downloaded; there is no within-study sampling. Each observed local object must correspond to exactly one expected safe path, match the exact remote byte count and MD5 returned by GCS, and receive a local SHA-256. The remote CRC32C and generation are preserved with the object record. Missing metadata, missing objects, extra objects, ownership conflicts, size or MD5 disagreement, symlinks, unsafe paths, or unreadable DICOMs fail closed.
 
 Every multiframe candidate is extracted. Extraction requires pydicom 3 raw-pixel decoding, an explicit named plugin for a compressed transfer syntax, exact 8-bit stored pixels, and a supported photometric interpretation. Stored YBR is converted to RGB exactly once; RGB is preserved; monochrome is directly replicated (and MONOCHROME1 inverted) without a YUV/BGR transform. Aggregate-only photometric, transfer-syntax, decoder, and color-transform counts are preserved.
 
@@ -55,7 +57,7 @@ The three positive controls are expected to produce at least one cine, clip embe
 
 ## Preservation and claim boundary
 
-The restricted preservation pack records safe relative paths, file sizes, SHA-256, internal array-content hashes, public release/object identity, source commit, config/command/script checksums, checkpoint identity, environment/hardware/scheduler evidence, timestamps, and aggregate safety status. Immediately before preservation it must reconcile the exact hashes of all 12 aggregate safety inputs, revalidate the public checksum and smoke-source authorities, recompute the downloaded-object and DICOM-header audits, and recompute all five reproducibility comparisons against their stored restricted and aggregate results. It then snapshots every restricted file and requires that snapshot to remain identical through the complete preservation-manifest scan. An independent second pass must verify the complete inventory.
+The restricted preservation pack records safe relative paths, file sizes, local SHA-256, internal array-content hashes, exact GCS object identity and remote size/MD5/CRC32C/generation, source commit, config/command/script checksums, checkpoint identity, environment/hardware/scheduler evidence, timestamps, and aggregate safety status. The serialized restricted downloader report is hash-bound into its aggregate download artifact before any downstream audit. The restricted reproducibility details—which carry logical hashes for both extraction runs, both clip/study manifests, and both clip/study embedding arrays—are likewise hash-bound into the aggregate reproducibility artifact. Immediately before preservation it must reconcile the exact hashes of all 12 aggregate safety inputs, require both restricted-authority bindings, revalidate the saved exact-object metadata and local size-and-MD5 audit, revalidate the smoke-source authority, reread DICOM headers, and recompute all five reproducibility comparisons against their stored restricted and aggregate results. It then snapshots every restricted file and requires that snapshot to remain identical through the complete preservation-manifest scan. An independent second pass must verify the complete inventory, including every local object SHA-256.
 
 A passing smoke run establishes only that the prospective implementation and provenance controls work on the prespecified four-study technical cohort. It cannot establish complete selected-cohort coverage, validate all Stage-D retained NPZs, estimate scientific performance, support modality comparisons, or authorize full C3 execution.
 

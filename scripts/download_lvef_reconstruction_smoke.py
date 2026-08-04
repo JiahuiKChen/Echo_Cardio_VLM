@@ -10,6 +10,7 @@ objects declared by a four-study train-only source manifest.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 from dataclasses import asdict, dataclass
 import hashlib
@@ -51,7 +52,7 @@ LOCATOR_COLUMNS = (
     "dicom_filepath",
 )
 SIZE_COLUMNS = ("expected_size_bytes", "size_bytes")
-CHECKSUM_COLUMNS = ("expected_sha256", "sha256", "release_sha256")
+CHECKSUM_COLUMNS = ("expected_sha256", "sha256")
 ROLE_COLUMNS = ("smoke_role", "technical_stratum")
 SOURCE_RELATIVE_COLUMNS = ("source_relative_path",)
 TECHNICAL_METADATA_COLUMNS = (
@@ -107,6 +108,17 @@ class SourceObject:
     smoke_role: str | None
 
 
+@dataclass(frozen=True)
+class GCSObjectMetadata:
+    """Restricted object metadata returned by ``gsutil stat``."""
+
+    gcs_uri: str
+    size_bytes: int
+    md5_base64: str
+    crc32c_base64: str
+    generation: str
+
+
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -116,6 +128,24 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
                 break
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def file_digests(path: Path, chunk_size: int = 1024 * 1024) -> tuple[str, str]:
+    """Return local MD5 in GCS base64 form plus SHA-256 hex in one pass."""
+
+    md5_digest = hashlib.md5(usedforsecurity=False)
+    sha256_digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            md5_digest.update(chunk)
+            sha256_digest.update(chunk)
+    return (
+        base64.b64encode(md5_digest.digest()).decode("ascii"),
+        sha256_digest.hexdigest(),
+    )
 
 
 def _one_column(fieldnames: Sequence[str], candidates: Sequence[str], *, required: bool) -> str | None:
@@ -290,52 +320,6 @@ def validate_source_objects(objects: Sequence[SourceObject]) -> None:
         raise SmokeDownloadError("PARTIAL_EXPECTED_CHECKSUM_COVERAGE")
 
 
-def parse_release_checksums(path: Path) -> dict[str, str]:
-    if path.is_symlink() or not path.is_file():
-        raise SmokeDownloadError("RELEASE_CHECKSUM_FILE_NOT_REGULAR")
-    checksums: dict[str, str] = {}
-    with path.open(encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
-                continue
-            match = re.fullmatch(r"([0-9A-Fa-f]{64})\s+[*]?(.+)", line)
-            if not match:
-                raise SmokeDownloadError("MALFORMED_RELEASE_CHECKSUM_LINE")
-            relative_raw = match.group(2).strip()
-            while relative_raw.startswith("./"):
-                relative_raw = relative_raw[2:]
-            try:
-                relative = safe_relative_object_path(relative_raw)
-            except SmokeDownloadError:
-                # The official release file can contain non-DICOM metadata;
-                # those entries are outside this exact-object smoke scope.
-                continue
-            checksum = match.group(1).lower()
-            if relative in checksums and checksums[relative] != checksum:
-                raise SmokeDownloadError("CONFLICTING_RELEASE_CHECKSUM")
-            checksums[relative] = checksum
-    return checksums
-
-
-def apply_release_checksums(
-    objects: Sequence[SourceObject], release_checksums: dict[str, str] | None
-) -> list[SourceObject]:
-    if release_checksums is None:
-        return list(objects)
-    out: list[SourceObject] = []
-    for item in objects:
-        release_sha = release_checksums.get(item.relative_path)
-        if release_sha is None:
-            raise SmokeDownloadError("SOURCE_OBJECT_MISSING_RELEASE_CHECKSUM")
-        if item.expected_sha256 is not None and item.expected_sha256 != release_sha:
-            raise SmokeDownloadError("MANIFEST_RELEASE_CHECKSUM_DISAGREEMENT")
-        values = asdict(item)
-        values["expected_sha256"] = release_sha
-        out.append(SourceObject(**values))
-    return out
-
-
 def parse_gsutil_ls_long(stdout: str, bucket: str = MIMIC_ECHO_BUCKET) -> dict[str, int]:
     remote: dict[str, int] = {}
     for raw_line in stdout.splitlines():
@@ -352,6 +336,98 @@ def parse_gsutil_ls_long(stdout: str, bucket: str = MIMIC_ECHO_BUCKET) -> dict[s
             raise SmokeDownloadError("REMOTE_LISTING_DUPLICATE_CONFLICT")
         remote[uri] = size
     return remote
+
+
+def _parse_gcs_base64_hash(value: str, *, decoded_bytes: int, code: str) -> str:
+    text = str(value).strip()
+    try:
+        decoded = base64.b64decode(text, validate=True)
+    except (ValueError, TypeError):
+        raise SmokeDownloadError(code) from None
+    if len(decoded) != decoded_bytes or base64.b64encode(decoded).decode("ascii") != text:
+        raise SmokeDownloadError(code)
+    return text
+
+
+def parse_gsutil_stat(
+    stdout: str, bucket: str = MIMIC_ECHO_BUCKET
+) -> dict[str, GCSObjectMetadata]:
+    """Parse exact-object ``gsutil stat`` output without emitting identifiers."""
+
+    parsed: dict[str, GCSObjectMetadata] = {}
+    current_uri: str | None = None
+    current: dict[str, str] = {}
+
+    def finish() -> None:
+        nonlocal current_uri, current
+        if current_uri is None:
+            return
+        if current_uri in parsed:
+            raise SmokeDownloadError("REMOTE_STAT_DUPLICATE_OBJECT")
+        size_text = current.get("content-length")
+        if size_text is None or not size_text.isdigit():
+            raise SmokeDownloadError("REMOTE_STAT_SIZE_MISSING_OR_INVALID")
+        md5_text = current.get("hash-md5")
+        if md5_text is None:
+            raise SmokeDownloadError("REMOTE_STAT_MD5_MISSING")
+        md5_base64 = _parse_gcs_base64_hash(
+            md5_text, decoded_bytes=16, code="REMOTE_STAT_MD5_INVALID"
+        )
+        crc32c_text = current.get("hash-crc32c")
+        if crc32c_text is None:
+            raise SmokeDownloadError("REMOTE_STAT_CRC32C_MISSING")
+        crc32c_base64 = _parse_gcs_base64_hash(
+            crc32c_text,
+            decoded_bytes=4,
+            code="REMOTE_STAT_CRC32C_INVALID",
+        )
+        generation = current.get("generation")
+        if generation is None:
+            raise SmokeDownloadError("REMOTE_STAT_GENERATION_MISSING")
+        if not generation.isdigit():
+            raise SmokeDownloadError("REMOTE_STAT_GENERATION_INVALID")
+        parsed[current_uri] = GCSObjectMetadata(
+            gcs_uri=current_uri,
+            size_bytes=int(size_text),
+            md5_base64=md5_base64,
+            crc32c_base64=crc32c_base64,
+            generation=generation,
+        )
+        current_uri = None
+        current = {}
+
+    for raw_line in stdout.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("gs://"):
+            if not stripped.endswith(":"):
+                raise SmokeDownloadError("REMOTE_STAT_HEADER_INVALID")
+            finish()
+            _, current_uri = canonicalize_locator(stripped[:-1], bucket=bucket)
+            continue
+        if current_uri is None:
+            raise SmokeDownloadError("REMOTE_STAT_OUTPUT_BEFORE_HEADER")
+        match = re.fullmatch(r"([^:]+):\s*(.*)", stripped)
+        if not match:
+            raise SmokeDownloadError("REMOTE_STAT_LINE_INVALID")
+        label = match.group(1).strip().lower()
+        value = match.group(2).strip()
+        normalized: str | None = None
+        if label == "content-length":
+            normalized = "content-length"
+        elif label == "hash (md5)":
+            normalized = "hash-md5"
+        elif label == "hash (crc32c)":
+            normalized = "hash-crc32c"
+        elif label == "generation":
+            normalized = "generation"
+        if normalized is not None:
+            if normalized in current and current[normalized] != value:
+                raise SmokeDownloadError("REMOTE_STAT_FIELD_CONFLICT")
+            current[normalized] = value
+    finish()
+    return parsed
 
 
 def _safe_subprocess_failure(code: str, completed: subprocess.CompletedProcess[str]) -> SmokeDownloadError:
@@ -399,6 +475,35 @@ def list_remote_objects(
     expected = {item.gcs_uri for item in objects}
     if set(remote) != expected:
         raise SmokeDownloadError("REMOTE_OBJECT_SET_MISMATCH")
+    return remote
+
+
+def stat_remote_objects(
+    objects: Sequence[SourceObject], *, gsutil_bin: str, billing_project: str
+) -> dict[str, GCSObjectMetadata]:
+    """Fetch integrity metadata for the exact requested URIs."""
+
+    expected = {item.gcs_uri for item in objects}
+    remote: dict[str, GCSObjectMetadata] = {}
+    uris = sorted(expected)
+    for start in range(0, len(uris), GSUTIL_LIST_CHUNK):
+        chunk = uris[start : start + GSUTIL_LIST_CHUNK]
+        completed = subprocess.run(
+            [gsutil_bin, "-u", billing_project, "stat", *chunk],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise _safe_subprocess_failure("REMOTE_STAT_FAILED", completed)
+        parsed = parse_gsutil_stat(completed.stdout)
+        if set(parsed) != set(chunk):
+            raise SmokeDownloadError("REMOTE_STAT_SET_MISMATCH")
+        if set(remote) & set(parsed):
+            raise SmokeDownloadError("REMOTE_STAT_DUPLICATE_OBJECT")
+        remote.update(parsed)
+    if set(remote) != expected:
+        raise SmokeDownloadError("REMOTE_STAT_SET_MISMATCH")
     return remote
 
 
@@ -462,13 +567,18 @@ def inventory_download_root(root: Path, expected_paths: set[str]) -> dict[str, P
     return actual
 
 
-def verify_remote_sizes(
-    objects: Sequence[SourceObject], remote_sizes: dict[str, int]
+def reconcile_remote_metadata(
+    objects: Sequence[SourceObject],
+    remote_sizes: dict[str, int],
+    remote_metadata: dict[str, GCSObjectMetadata],
 ) -> tuple[int, list[SourceObject]]:
     total = 0
     updated: list[SourceObject] = []
     for item in objects:
         remote_size = remote_sizes[item.gcs_uri]
+        stat_metadata = remote_metadata[item.gcs_uri]
+        if remote_size != stat_metadata.size_bytes:
+            raise SmokeDownloadError("REMOTE_LISTING_STAT_SIZE_DISAGREEMENT")
         if item.expected_size_bytes is not None and item.expected_size_bytes != remote_size:
             raise SmokeDownloadError("MANIFEST_REMOTE_SIZE_DISAGREEMENT")
         total += remote_size
@@ -480,17 +590,24 @@ def verify_remote_sizes(
     return total, updated
 
 
-def verify_local_file(path: Path, item: SourceObject) -> tuple[int, str, bool]:
+def verify_local_file(
+    path: Path, item: SourceObject, remote_metadata: GCSObjectMetadata
+) -> tuple[int, str, str]:
     if path.is_symlink() or not path.is_file():
         raise SmokeDownloadError("DOWNLOADED_OBJECT_NOT_REGULAR")
     size = path.stat().st_size
-    if item.expected_size_bytes is None or size != item.expected_size_bytes:
+    if (
+        item.expected_size_bytes is None
+        or size != item.expected_size_bytes
+        or size != remote_metadata.size_bytes
+    ):
         raise SmokeDownloadError("DOWNLOADED_OBJECT_SIZE_MISMATCH")
-    digest = sha256_file(path)
-    checksum_verified = item.expected_sha256 is not None
-    if checksum_verified and digest != item.expected_sha256:
+    local_md5_base64, local_sha256 = file_digests(path)
+    if local_md5_base64 != remote_metadata.md5_base64:
+        raise SmokeDownloadError("DOWNLOADED_OBJECT_MD5_MISMATCH")
+    if item.expected_sha256 is not None and local_sha256 != item.expected_sha256:
         raise SmokeDownloadError("DOWNLOADED_OBJECT_CHECKSUM_MISMATCH")
-    return size, digest, checksum_verified
+    return size, local_md5_base64, local_sha256
 
 
 def _write_json_exclusive(path: Path, payload: dict[str, Any]) -> None:
@@ -515,31 +632,47 @@ def _validate_output_path(path: Path, *, outside_root: Path) -> Path:
 
 def aggregate_template() -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "FAIL",
         "preflight_only": False,
         "n_manifest_rows": 0,
+        "n_requested_objects": 0,
         "n_studies": 0,
         "n_subjects": 0,
         "n_expected_objects": 0,
         "n_remote_objects": 0,
+        "n_remote_stat_objects": 0,
+        "n_remote_metadata_complete": 0,
+        "n_remote_md5_present": 0,
+        "n_remote_crc32c_present": 0,
+        "n_remote_generation_present": 0,
+        "n_remote_md5_verified_objects": 0,
+        "n_remote_metadata_mismatches": 0,
         "n_downloaded_objects": 0,
         "n_preexisting_verified_objects": 0,
-        "n_checksum_verified_objects": 0,
+        "n_local_sha256_computed": 0,
         "total_remote_bytes": 0,
+        "total_downloaded_bytes": 0,
         "free_bytes_before": 0,
         "max_studies": MAX_STUDIES,
         "max_objects": MAX_OBJECTS,
         "max_total_bytes": MAX_TOTAL_BYTES,
         "min_free_bytes": MIN_FREE_BYTES,
         "exact_remote_set": False,
+        "exact_stat_set": False,
+        "listing_stat_sizes_match": False,
+        "all_remote_md5_present": False,
+        "all_local_md5_match": False,
+        "all_local_sha256_computed": False,
         "all_sizes_verified": False,
-        "checksum_authority_status": "NOT_EVALUATED",
+        "remote_metadata_authority": "GCS_EXACT_OBJECT_STAT",
+        "object_transport_integrity_status": "NOT_EVALUATED",
         "no_symlinks": False,
         "no_extras": False,
         "error_code": "NOT_RUN",
         "source_manifest_sha256": None,
         "source_manifest_sha256_verified": False,
+        "restricted_report_sha256": None,
     }
 
 
@@ -579,20 +712,10 @@ def execute(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
         raise SmokeDownloadError("OUTPUT_PATH_COLLISION")
 
     objects = load_source_manifest(args.source_manifest, bucket=args.bucket)
-    release_checksums = (
-        parse_release_checksums(args.release_checksums) if args.release_checksums else None
-    )
-    if not args.preflight_only and release_checksums is None:
-        raise SmokeDownloadError("RELEASE_CHECKSUMS_REQUIRED_FOR_DOWNLOAD")
-    objects = apply_release_checksums(objects, release_checksums)
-    aggregate["checksum_authority_status"] = (
-        "SUPPLIED_PENDING_LOCAL_VERIFICATION"
-        if release_checksums is not None
-        else "PENDING_PREFLIGHT_ONLY"
-    )
     aggregate.update(
         {
             "n_manifest_rows": len(objects),
+            "n_requested_objects": len(objects),
             "n_studies": len({item.study_id for item in objects}),
             "n_subjects": len({item.subject_id for item in objects}),
             "n_expected_objects": len(objects),
@@ -613,32 +736,85 @@ def execute(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
     )
     aggregate["n_remote_objects"] = len(remote_sizes)
     aggregate["exact_remote_set"] = True
-    total_bytes, objects = verify_remote_sizes(objects, remote_sizes)
+    remote_metadata = stat_remote_objects(
+        objects, gsutil_bin=gsutil_bin, billing_project=args.billing_project
+    )
+    aggregate["n_remote_stat_objects"] = len(remote_metadata)
+    aggregate["exact_stat_set"] = True
+    aggregate["n_remote_metadata_complete"] = sum(
+        item.size_bytes >= 0
+        and bool(item.md5_base64)
+        and bool(item.crc32c_base64)
+        and bool(item.generation)
+        for item in remote_metadata.values()
+    )
+    aggregate["n_remote_md5_present"] = sum(
+        bool(item.md5_base64) for item in remote_metadata.values()
+    )
+    aggregate["n_remote_crc32c_present"] = sum(
+        bool(item.crc32c_base64) for item in remote_metadata.values()
+    )
+    aggregate["n_remote_generation_present"] = sum(
+        bool(item.generation) for item in remote_metadata.values()
+    )
+    required_remote_count = len(objects)
+    if not (
+        aggregate["n_remote_metadata_complete"]
+        == aggregate["n_remote_md5_present"]
+        == aggregate["n_remote_crc32c_present"]
+        == aggregate["n_remote_generation_present"]
+        == required_remote_count
+    ):
+        raise SmokeDownloadError("INCOMPLETE_REMOTE_METADATA_AUTHORITY")
+    aggregate["all_remote_md5_present"] = (
+        aggregate["n_remote_md5_present"] == len(objects)
+    )
+    total_bytes, objects = reconcile_remote_metadata(
+        objects, remote_sizes, remote_metadata
+    )
     aggregate["total_remote_bytes"] = total_bytes
+    aggregate["listing_stat_sizes_match"] = True
     aggregate["all_sizes_verified"] = True
+    aggregate["object_transport_integrity_status"] = "REMOTE_MD5_PRESENT"
 
     restricted_rows: list[dict[str, Any]] = []
     if args.preflight_only:
         for item in objects:
+            metadata = remote_metadata[item.gcs_uri]
             restricted_rows.append(
                 {
-                    **asdict(item),
+                    "subject_id": item.subject_id,
+                    "study_id": item.study_id,
+                    "split": item.split,
+                    "source_relative_path": item.relative_path,
+                    "gcs_uri": item.gcs_uri,
+                    "expected_size_bytes": item.expected_size_bytes,
+                    "expected_sha256": item.expected_sha256,
+                    "smoke_role": item.smoke_role,
                     "remote_size_bytes": remote_sizes[item.gcs_uri],
+                    "remote_stat_size_bytes": metadata.size_bytes,
+                    "remote_md5_base64": metadata.md5_base64,
+                    "remote_crc32c_base64": metadata.crc32c_base64,
+                    "remote_generation": metadata.generation,
                     "local_status": "NOT_DOWNLOADED_PREFLIGHT_ONLY",
                     "local_size_bytes": None,
+                    "local_md5_base64": None,
                     "local_sha256": None,
-                    "release_checksum_verified": False,
+                    "remote_md5_verified": False,
                 }
             )
     else:
         for item in objects:
+            metadata = remote_metadata[item.gcs_uri]
             destination = download_root / PurePosixPath(item.relative_path)
             ensure_no_symlink_components(download_root, destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
             ensure_no_symlink_components(download_root, destination.parent)
             status: str
             if item.relative_path in existing:
-                local_size, local_sha, checksum_verified = verify_local_file(destination, item)
+                local_size, local_md5, local_sha = verify_local_file(
+                    destination, item, metadata
+                )
                 status = "PREEXISTING_VERIFIED"
                 aggregate["n_preexisting_verified_objects"] += 1
             else:
@@ -655,42 +831,74 @@ def execute(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
                 )
                 if completed.returncode != 0:
                     raise _safe_subprocess_failure("OBJECT_DOWNLOAD_FAILED", completed)
-                local_size, local_sha, checksum_verified = verify_local_file(temporary, item)
+                local_size, local_md5, local_sha = verify_local_file(
+                    temporary, item, metadata
+                )
                 if destination.exists() or destination.is_symlink():
                     raise SmokeDownloadError("DESTINATION_APPEARED_DURING_DOWNLOAD")
                 os.replace(temporary, destination)
                 status = "DOWNLOADED_VERIFIED"
                 aggregate["n_downloaded_objects"] += 1
-            if checksum_verified:
-                aggregate["n_checksum_verified_objects"] += 1
+            aggregate["n_remote_md5_verified_objects"] += 1
+            aggregate["n_local_sha256_computed"] += 1
+            aggregate["total_downloaded_bytes"] += local_size
             restricted_rows.append(
                 {
-                    **asdict(item),
+                    "subject_id": item.subject_id,
+                    "study_id": item.study_id,
+                    "split": item.split,
+                    "source_relative_path": item.relative_path,
+                    "gcs_uri": item.gcs_uri,
+                    "expected_size_bytes": item.expected_size_bytes,
+                    "expected_sha256": item.expected_sha256,
+                    "smoke_role": item.smoke_role,
                     "remote_size_bytes": remote_sizes[item.gcs_uri],
+                    "remote_stat_size_bytes": metadata.size_bytes,
+                    "remote_md5_base64": metadata.md5_base64,
+                    "remote_crc32c_base64": metadata.crc32c_base64,
+                    "remote_generation": metadata.generation,
                     "local_status": status,
                     "local_size_bytes": local_size,
+                    "local_md5_base64": local_md5,
                     "local_sha256": local_sha,
-                    "release_checksum_verified": checksum_verified,
+                    "remote_md5_verified": True,
                 }
             )
 
         final_inventory = inventory_download_root(download_root, expected_paths)
         if set(final_inventory) != expected_paths:
             raise SmokeDownloadError("FINAL_LOCAL_OBJECT_SET_MISMATCH")
-        if aggregate["n_checksum_verified_objects"] != aggregate["n_expected_objects"]:
-            raise SmokeDownloadError("INCOMPLETE_RELEASE_CHECKSUM_VERIFICATION")
-        aggregate["checksum_authority_status"] = "VERIFIED_ALL_OBJECTS"
+        if aggregate["n_remote_md5_verified_objects"] != aggregate["n_expected_objects"]:
+            raise SmokeDownloadError("INCOMPLETE_GCS_MD5_VERIFICATION")
+        if aggregate["n_local_sha256_computed"] != aggregate["n_expected_objects"]:
+            raise SmokeDownloadError("INCOMPLETE_LOCAL_SHA256_COMPUTATION")
+        aggregate["all_local_md5_match"] = True
+        aggregate["all_local_sha256_computed"] = True
+        aggregate["object_transport_integrity_status"] = "VERIFIED_ALL_OBJECTS"
 
     aggregate["status"] = "PASS_PREFLIGHT_ONLY" if args.preflight_only else "PASS"
     aggregate["error_code"] = "NONE"
     restricted = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": aggregate["status"],
         "source_manifest_sha256": sha256_file(args.source_manifest),
-        "release_checksums_supplied": release_checksums is not None,
+        "authority": aggregate["remote_metadata_authority"],
+        "object_transport_integrity_status": aggregate[
+            "object_transport_integrity_status"
+        ],
+        "n_requested_objects": aggregate["n_requested_objects"],
+        "n_downloaded_objects": aggregate["n_downloaded_objects"],
+        "n_remote_metadata_complete": aggregate["n_remote_metadata_complete"],
+        "n_remote_md5_verified_objects": aggregate[
+            "n_remote_md5_verified_objects"
+        ],
+        "n_remote_metadata_mismatches": aggregate["n_remote_metadata_mismatches"],
+        "n_local_sha256_computed": aggregate["n_local_sha256_computed"],
+        "total_downloaded_bytes": aggregate["total_downloaded_bytes"],
         "objects": restricted_rows,
     }
     _write_json_exclusive(restricted_report, restricted)
+    aggregate["restricted_report_sha256"] = sha256_file(restricted_report)
     _write_json_exclusive(aggregate_output, aggregate)
     return aggregate, restricted
 
@@ -705,7 +913,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--restricted-report", type=Path, required=True)
     parser.add_argument("--aggregate-output", type=Path, required=True)
     parser.add_argument("--billing-project", required=True)
-    parser.add_argument("--release-checksums", type=Path, default=None)
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--gsutil-bin", default="gsutil")
     parser.add_argument("--bucket", default=MIMIC_ECHO_BUCKET)
@@ -742,7 +949,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _safe_failure_write(
             args.restricted_report,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "FAIL",
                 "error_code": exc.code,
                 "sanitized_detail": exc.detail,
@@ -760,7 +967,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _safe_failure_write(
             args.restricted_report,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "FAIL",
                 "error_code": "UNEXPECTED_INTERNAL_ERROR",
             },

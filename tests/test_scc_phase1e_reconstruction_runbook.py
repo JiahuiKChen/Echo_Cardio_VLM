@@ -40,7 +40,7 @@ def test_runbook_locks_git_and_known_restricted_authorities() -> None:
         "duplicate_clip_resolution_v2_restricted.csv",
         "canonical_selected_clip_inventory_restricted.csv",
         "batch_%03d",
-        "SHA256SUMS.txt",
+        "GCS_EXACT_OBJECT_STAT",
         "7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b",
         "138642379",
         "1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb",
@@ -75,7 +75,47 @@ def test_runbook_uses_committed_pipeline_and_direct_job_submission() -> None:
     assert "--historical-study-manifest" in text
     assert "--duplicate-resolution" in text
     assert "--canonical-inventory" in text
-    assert "--release-checksums" in text
+    assert "--release-checksums" not in combined
+    assert "RELEASE_CHECKSUMS" not in combined
+    assert "SHA256SUMS.txt" in text
+    assert "has no `SHA256SUMS.txt` object" in text
+    assert "gsutil stat" in text
+    assert "--download-report" in runner
+    assert "remote size, MD5, CRC32C, and generation" in text
+    assert "local SHA-256" in text
+    assert 'assert preflight["remote_metadata_authority"] == "GCS_EXACT_OBJECT_STAT"' in text
+    assert (
+        'assert preflight["n_remote_metadata_complete"] '
+        '== preflight["n_requested_objects"]' in text
+    )
+    assert 'assert preflight["n_remote_metadata_mismatches"] == 0' in text
+    assert (
+        'assert preflight["n_remote_crc32c_present"] '
+        '== preflight["n_requested_objects"]' in text
+    )
+    assert (
+        'assert preflight["n_remote_generation_present"] '
+        '== preflight["n_requested_objects"]' in text
+    )
+    assert (
+        'assert download["object_transport_integrity_status"] '
+        '== "VERIFIED_ALL_OBJECTS"' in text
+    )
+    assert (
+        'assert download["n_remote_md5_verified_objects"] '
+        '== download["n_requested_objects"]' in text
+    )
+    assert (
+        'assert download["n_local_sha256_computed"] '
+        '== download["n_requested_objects"]' in text
+    )
+    assert 'assert download["all_local_md5_match"] is True' in text
+    assert 'assert download["all_local_sha256_computed"] is True' in text
+    assert (
+        'assert download["total_downloaded_bytes"] '
+        '== download["total_remote_bytes"]' in text
+    )
+    assert "gs://mimic-iv-echo-1.0.physionet.org/SHA256SUMS.txt" not in text
     assert "--expected-source-manifest-sha256" in text
     assert "EXPECTED_SMOKE_SOURCE_SHA256" in text
     assert text.index("module load python3/3.10.12") < text.index(

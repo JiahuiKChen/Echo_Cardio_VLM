@@ -83,7 +83,53 @@ def _source_frame(paths: list[str]) -> pd.DataFrame:
     )
 
 
-def test_download_audit_requires_exact_set_and_release_hashes() -> None:
+def _downloader_report(
+    frame: pd.DataFrame, root: Path, source_manifest_sha256: str = "a" * 64
+) -> dict[str, object]:
+    objects = []
+    for record in frame.to_dict(orient="records"):
+        relative = record["source_relative_path"]
+        path = root / relative
+        objects.append(
+            {
+                "subject_id": record["subject_id"],
+                "study_id": record["study_id"],
+                "split": record["split"],
+                "smoke_role": record["smoke_role"],
+                "source_relative_path": relative,
+                "gcs_uri": f"gs://{smoke.MIMIC_ECHO_BUCKET}/{relative}",
+                "remote_size_bytes": path.stat().st_size,
+                "remote_stat_size_bytes": path.stat().st_size,
+                "remote_md5_base64": smoke.md5_file_base64(path),
+                "remote_crc32c_base64": "AAAAAA==",
+                "remote_generation": "123456789",
+                "local_size_bytes": path.stat().st_size,
+                "local_status": "DOWNLOADED_VERIFIED",
+                "local_md5_base64": smoke.md5_file_base64(path),
+                "local_sha256": smoke.sha256_file(path),
+                "remote_md5_verified": True,
+            }
+        )
+    report = {
+        "schema_version": 2,
+        "status": "PASS",
+        "authority": smoke.DOWNLOAD_REPORT_AUTHORITY,
+        "object_transport_integrity_status": "VERIFIED_ALL_OBJECTS",
+        "source_manifest_sha256": source_manifest_sha256,
+        "objects": objects,
+    }
+    report.update(
+        {
+            "n_requested_objects": len(objects),
+            "n_remote_metadata_complete": len(objects),
+            "n_remote_md5_verified_objects": len(objects),
+            "n_local_sha256_computed": len(objects),
+        }
+    )
+    return report
+
+
+def test_download_audit_requires_exact_sets_and_gcs_md5_authority() -> None:
     with tempfile.TemporaryDirectory() as directory:
         tmp_path = Path(directory)
         paths = [
@@ -92,27 +138,89 @@ def test_download_audit_requires_exact_set_and_release_hashes() -> None:
             "files/p00/p12/s22/c.dcm",
             "files/p00/p13/s23/d.dcm",
         ]
-        checksums = {}
         for index, relative in enumerate(paths):
             path = tmp_path / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(f"dicom-{index}".encode())
-            checksums[relative] = smoke.sha256_file(path)
 
-        restricted, summary = smoke.audit_downloaded_objects(_source_frame(paths[::-1]), checksums, tmp_path)
+        source = _source_frame(paths[::-1])
+        report = _downloader_report(source, tmp_path)
+        restricted, summary = smoke.audit_downloaded_objects(
+            source, report, tmp_path, source_manifest_sha256="a" * 64
+        )
         assert summary["status"] == "PASS"
         assert summary["n_verified_objects"] == 4
+        assert summary["n_remote_md5_verified_objects"] == 4
+        assert summary["n_local_sha256_matched"] == 4
+        assert summary["download_integrity_status"] == "PASS_GCS_METADATA_AND_LOCAL_HASH"
         assert summary["smoke_role_set_exact"] is True
         assert "objects_by_smoke_role" not in summary
         assert restricted["source_relative_path"].tolist() == sorted(paths)
         assert restricted["download_ok"].all()
 
-        unexpected = tmp_path / "files/p00/p12/s22/unexpected.dcm"
+        unexpected = tmp_path / "files/p00/p12/s22/unexpected.txt"
         unexpected.parent.mkdir(parents=True, exist_ok=True)
         unexpected.write_bytes(b"extra")
-        _, failed = smoke.audit_downloaded_objects(_source_frame(paths), checksums, tmp_path)
+        _, failed = smoke.audit_downloaded_objects(
+            source, report, tmp_path, source_manifest_sha256="a" * 64
+        )
         assert failed["status"] == "FAIL"
-        assert failed["n_unexpected_objects"] == 1
+        assert failed["n_unexpected_downloads"] == 1
+
+
+def test_download_audit_detects_report_and_local_mutations() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        paths = [f"files/p00/p{10 + i}/s{20 + i}/{i}.dcm" for i in range(4)]
+        for index, relative in enumerate(paths):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"dicom-{index}".encode())
+        source = _source_frame(paths)
+        report = _downloader_report(source, root)
+
+        report["objects"][0]["local_sha256"] = "0" * 64  # type: ignore[index]
+        _, failed = smoke.audit_downloaded_objects(
+            source, report, root, source_manifest_sha256="a" * 64
+        )
+        assert failed["status"] == "FAIL"
+        assert failed["n_local_sha256_report_mismatches"] == 1
+
+        report = _downloader_report(source, root)
+        (root / paths[0]).write_bytes(b"mutated-after-download")
+        _, failed = smoke.audit_downloaded_objects(
+            source, report, root, source_manifest_sha256="a" * 64
+        )
+        assert failed["status"] == "FAIL"
+        assert failed["n_remote_metadata_mismatches"] == 1
+
+
+def test_download_audit_rejects_wrong_authority_or_manifest_identity() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        paths = [f"files/p00/p{10 + i}/s{20 + i}/{i}.dcm" for i in range(4)]
+        for relative in paths:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"dicom")
+        source = _source_frame(paths)
+        report = _downloader_report(source, root)
+        report["authority"] = "UNTRUSTED"
+        expect_raises(
+            ValueError,
+            lambda: smoke.audit_downloaded_objects(
+                source, report, root, source_manifest_sha256="a" * 64
+            ),
+            "required GCS object authority",
+        )
+        report = _downloader_report(source, root)
+        expect_raises(
+            ValueError,
+            lambda: smoke.audit_downloaded_objects(
+                source, report, root, source_manifest_sha256="b" * 64
+            ),
+            "identity",
+        )
 
 
 def test_download_audit_rejects_duplicate_source_paths() -> None:
@@ -128,7 +236,9 @@ def test_download_audit_rejects_duplicate_source_paths() -> None:
         )
         expect_raises(
             ValueError,
-            lambda: smoke.audit_downloaded_objects(frame, {"a.dcm": "0" * 64}, Path(directory)),
+            lambda: smoke.audit_downloaded_objects(
+                frame, {}, Path(directory), source_manifest_sha256="a" * 64
+            ),
             "duplicate",
         )
 
@@ -147,38 +257,38 @@ def test_source_manifest_rejects_non_dicom_and_download_audit_blocks_symlink() -
         )
         expect_raises(
             ValueError,
-            lambda: smoke.audit_downloaded_objects(non_dicom, {"files/a.txt": "0" * 64}, tmp_path),
+            lambda: smoke.audit_downloaded_objects(
+                non_dicom, {}, tmp_path, source_manifest_sha256="a" * 64
+            ),
             "DICOM",
         )
 
         paths = ["linked.dcm", "second.dcm", "third.dcm", "fourth.dcm"]
-        checksums = {}
         real = tmp_path / "real.bin"
         real.write_bytes(b"dicom-0")
         linked = tmp_path / paths[0]
         linked.symlink_to(real)
-        checksums[paths[0]] = smoke.sha256_file(real)
         for index, relative in enumerate(paths[1:], start=1):
             path = tmp_path / relative
             path.write_bytes(f"dicom-{index}".encode())
-            checksums[relative] = smoke.sha256_file(path)
         frame = _source_frame(paths)
+        report = _downloader_report(frame, tmp_path)
         _, summary = smoke.audit_downloaded_objects(
-            frame, checksums, tmp_path
+            frame, report, tmp_path, source_manifest_sha256="a" * 64
         )
         assert summary["status"] == "FAIL"
         assert summary["n_unsafe_symlink_objects"] == 1
 
 
-def test_release_checksum_parser_is_fail_closed() -> None:
+def test_downloader_report_reader_is_fail_closed() -> None:
     with tempfile.TemporaryDirectory() as directory:
         tmp_path = Path(directory)
-        good = tmp_path / "SHA256SUMS.txt"
-        good.write_text(f"{'a' * 64}  ./files/a.dcm\n")
-        assert smoke.read_release_checksums(good) == {"files/a.dcm": "a" * 64}
+        good = tmp_path / "download_report.json"
+        good.write_text('{"status":"PASS"}\n')
+        assert smoke.read_downloader_report(good) == {"status": "PASS"}
         bad = tmp_path / "bad.txt"
-        bad.write_text("not-a-checksum files/a.dcm\n")
-        expect_raises(ValueError, lambda: smoke.read_release_checksums(bad), "Malformed")
+        bad.write_text("not-json\n")
+        expect_raises(ValueError, lambda: smoke.read_downloader_report(bad), "valid JSON")
 
 
 def test_dicom_summary_emits_counts_only_and_requires_cine() -> None:
@@ -712,7 +822,7 @@ def test_guarded_main_suppresses_exception_message_and_path() -> None:
             [
                 "audit-downloads",
                 "--source-manifest", secret_path,
-                "--release-checksums", "/restricted/secret/SHA256SUMS.txt",
+                "--download-report", "/restricted/secret/download_report.json",
                 "--download-root", "/restricted/secret/download",
                 "--restricted-output", "/restricted/secret/out.csv",
                 "--aggregate-output", "/restricted/secret/out.json",

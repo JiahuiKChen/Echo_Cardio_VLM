@@ -150,6 +150,20 @@ phase1e_a_reconstruction_smoke:
   selected_cohort_source_manifest:
     restricted_only: true
     release: mimic_iv_echo_1_0
+    object_integrity_authority: GCS_EXACT_OBJECT_STAT
+    bucket_root_sha256sums_authority_available: false
+    historical_object_sha256_imported: false
+    exact_object_stat_required: true
+    remote_metadata_required:
+      - remote_size_bytes
+      - remote_md5_base64
+      - remote_crc32c_base64
+      - remote_generation
+    remote_metadata_must_be_recorded_restricted_only: true
+    local_size_match_required: true
+    local_md5_match_required: true
+    local_sha256_computation_and_preservation_required: true
+    crc32c_and_generation_recorded_as_remote_provenance: true
     selected_studies_expected: 4530
     selected_subjects_expected: 4530
     require_exact_selected_study_ownership: true
@@ -256,6 +270,12 @@ phase1e_a_reconstruction_smoke:
     study_embeddings: 0
   preservation:
     restricted_only: true
+    exact_gcs_object_metadata_revalidation_required: true
+    restricted_downloader_report_hash_binding_required: true
+    restricted_reproducibility_details_hash_binding_required: true
+    remote_size_md5_crc32c_generation_required: true
+    local_md5_reverification_required: true
+    local_sha256_inventory_required: true
     second_pass_checksum_verification_required: true
     aggregate_safety_gate_required: true
     aggregate_input_hash_reconciliation_required: true

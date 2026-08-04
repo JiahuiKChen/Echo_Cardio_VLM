@@ -93,7 +93,6 @@ LOCATOR_COLUMNS = (
     "source_relative_path",
 )
 SIZE_COLUMNS = ("expected_size_bytes", "size_bytes", "object_size_bytes", "file_size_bytes")
-HASH_COLUMNS = ("expected_sha256", "sha256", "release_sha256", "source_sha256", "dicom_sha256")
 FORBIDDEN_EVIDENCE_TOKENS = (
     "lvef",
     "label",
@@ -125,46 +124,6 @@ def file_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
-
-
-def load_release_checksums(path: Path) -> dict[str, str]:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("Release checksum authority is not a regular file")
-    checksums: dict[str, str] = {}
-    with path.open(encoding="utf-8", errors="strict") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
-                continue
-            match = re.fullmatch(r"([0-9A-Fa-f]{64})\s+[*]?(.+)", line)
-            if match is None:
-                raise ValueError("Release checksum authority has a malformed line")
-            relative = match.group(2).strip()
-            while relative.startswith("./"):
-                relative = relative[2:]
-            if PATH_RE.fullmatch(relative) is None:
-                continue
-            digest = match.group(1).lower()
-            if relative in checksums and checksums[relative] != digest:
-                raise ValueError("Release checksum authority contains a conflict")
-            checksums[relative] = digest
-    if not checksums:
-        raise ValueError("Release checksum authority has no DICOM entries")
-    return checksums
-
-
-def apply_release_checksums(source: pd.DataFrame, path: Path) -> pd.DataFrame:
-    checksums = load_release_checksums(path)
-    out = source.copy()
-    resolved = out["source_relative_path"].map(checksums)
-    if resolved.isna().any():
-        raise ValueError("A selected source object is absent from release checksums")
-    existing = out["expected_sha256"]
-    disagreement = existing.notna() & existing.astype(str).ne(resolved)
-    if disagreement.any():
-        raise ValueError("Record and release checksum authorities disagree")
-    out["expected_sha256"] = resolved
-    return out
 
 
 def csv_header(path: Path) -> list[str]:
@@ -331,12 +290,9 @@ def load_record_components(
         if not locator_columns:
             raise ValueError("Record component is missing a source locator column")
         size_column = _single_present(header, SIZE_COLUMNS, "size", False)
-        hash_column = _single_present(header, HASH_COLUMNS, "SHA-256", False)
         columns = ["subject_id", "study_id", *locator_columns]
         if size_column:
             columns.append(size_column)
-        if hash_column:
-            columns.append(hash_column)
         frame = read_columns(path, columns)
         for record in frame.to_dict(orient="records"):
             subject_id = canonical_id(record["subject_id"])
@@ -376,11 +332,6 @@ def load_record_components(
                 if not ID_RE.fullmatch(raw_size):
                     raise ValueError("Object size is not a nonnegative integer")
                 size = int(raw_size)
-            expected_hash: str | None = None
-            if hash_column and str(record[hash_column]) != "":
-                expected_hash = str(record[hash_column])
-                if not SHA256_RE.fullmatch(expected_hash):
-                    raise ValueError("Object SHA-256 is not lowercase canonical hex")
             rows.append(
                 {
                     "release_id": SOURCE_RELEASE,
@@ -392,7 +343,10 @@ def load_record_components(
                     "source_relative_path": relative,
                     "gcs_uri": f"gs://{SOURCE_BUCKET}/{relative}",
                     "expected_size_bytes": size,
-                    "expected_sha256": expected_hash,
+                    # Historical manifest hashes have no verified linkage to the
+                    # public release and are deliberately not imported. Exact GCS
+                    # stat metadata plus a fresh local SHA-256 govern this run.
+                    "expected_sha256": None,
                     "source_object_key": hashlib.sha256(
                         f"{SOURCE_RELEASE}\0{relative}".encode("utf-8")
                     ).hexdigest(),
@@ -873,7 +827,6 @@ def execute(
     historical_study_manifest: Path | None = None,
     duplicate_resolution: Path | None = None,
     canonical_inventory: Path | None = None,
-    release_checksums: Path | None = None,
     expected_selected_sha256: str | None = SELECTED_AUTHORITY_SHA256,
     expected_selected_studies: int = EXPECTED_SELECTED_STUDIES,
     expected_input_sha256: Mapping[str, str] | None = None,
@@ -923,10 +876,6 @@ def execute(
         )
     else:
         raise ValueError("Exactly one complete candidate-construction mode is required")
-    if candidate_mode == "phase1d_restricted_provenance" and release_checksums is None:
-        raise ValueError("Authoritative provenance mode requires release checksums")
-    if release_checksums is not None:
-        source = apply_release_checksums(source, release_checksums)
     smoke, chosen = select_smoke(source, candidates)
     summary, components, roles, safety = build_aggregate_outputs(selected, source, smoke, chosen)
     split_counts = {
@@ -943,9 +892,6 @@ def execute(
                 name: file_sha256(record_components[name])
                 for name in sorted(record_components)
             },
-            "release_checksums_sha256": (
-                file_sha256(release_checksums) if release_checksums is not None else None
-            ),
             "historical_study_manifest_sha256": (
                 file_sha256(historical_study_manifest)
                 if historical_study_manifest is not None
@@ -961,9 +907,11 @@ def execute(
                 if canonical_inventory is not None
                 else None
             ),
-            "all_selected_objects_have_release_sha256": bool(
-                source["expected_sha256"].notna().all()
-            ),
+            "all_selected_objects_have_release_sha256": False,
+            "historical_object_sha256_imported": False,
+            "release_sha256_authority_available": False,
+            "object_integrity_authority": "GCS_EXACT_OBJECT_STAT",
+            "gcs_exact_object_metadata_required_for_smoke": True,
             "split_counts": split_counts,
             "locked_split_counts_match": (
                 expected_split_counts is not None
@@ -984,6 +932,7 @@ def execute(
     safety["locked_split_counts_gate_passed"] = bool(
         summary["locked_split_counts_match"]
     )
+    safety["gcs_exact_object_metadata_gate_required"] = True
     assert_aggregate_safe_json(summary)
     assert_aggregate_safe_json(safety)
 
@@ -1023,7 +972,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--historical-study-manifest", type=Path, required=True)
     parser.add_argument("--duplicate-resolution", type=Path, required=True)
     parser.add_argument("--canonical-inventory", type=Path, required=True)
-    parser.add_argument("--release-checksums", type=Path, required=True)
     parser.add_argument("--restricted-output-dir", type=Path, required=True)
     parser.add_argument("--aggregate-output-dir", type=Path, required=True)
     return parser.parse_args()
@@ -1049,7 +997,6 @@ def main() -> int:
         historical_study_manifest=args.historical_study_manifest,
         duplicate_resolution=args.duplicate_resolution,
         canonical_inventory=args.canonical_inventory,
-        release_checksums=args.release_checksums,
         expected_input_sha256=LOCKED_PRODUCTION_INPUT_SHA256,
         expected_split_counts=EXPECTED_SPLIT_COUNTS,
     )

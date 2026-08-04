@@ -30,7 +30,6 @@ RUN_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 : "${BILLING_PROJECT:?}"
 : "${SMOKE_SOURCE:?}"
 : "${EXPECTED_SMOKE_SOURCE_SHA256:?}"
-: "${RELEASE_CHECKSUMS:?}"
 : "${DOWNLOAD_ROOT:?}"
 : "${CONFIG:?}"
 : "${CHECKPOINT:?}"
@@ -73,13 +72,12 @@ chmod 600 "$COMMAND_FILE"
   --restricted-report "$RUN_ROOT/restricted/download_report.json" \
   --aggregate-output "$RUN_ROOT/aggregate/download.json" \
   --billing-project "$BILLING_PROJECT" \
-  --release-checksums "$RELEASE_CHECKSUMS" \
   >"$RUN_ROOT/restricted/logs/download.stdout.txt" \
   2>"$RUN_ROOT/restricted/logs/download.stderr.txt"
 
 "$PYTHON" scripts/lvef_reconstruction_smoke.py audit-downloads \
   --source-manifest "$SMOKE_SOURCE" \
-  --release-checksums "$RELEASE_CHECKSUMS" \
+  --download-report "$RUN_ROOT/restricted/download_report.json" \
   --download-root "$DOWNLOAD_ROOT" \
   --restricted-output "$RUN_ROOT/restricted/download_audit.csv" \
   --aggregate-output "$RUN_ROOT/aggregate/download_audit.json" \

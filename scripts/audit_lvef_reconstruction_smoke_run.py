@@ -152,7 +152,11 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         source_ownership_exact=True,
         source_objects_unique=True,
         source_object_counts_match_selected_authority=True,
-        all_selected_objects_have_release_sha256=True,
+        all_selected_objects_have_release_sha256=False,
+        release_sha256_authority_available=False,
+        historical_object_sha256_imported=False,
+        object_integrity_authority="GCS_EXACT_OBJECT_STAT",
+        gcs_exact_object_metadata_required_for_smoke=True,
         candidate_construction_mode="phase1d_restricted_provenance",
         selection_salt="lvef-multitask-phase1e-a-smoke4-v1",
         smoke_n_roles=4,
@@ -182,6 +186,7 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         outcome_blind_selection_passed=True,
         restricted_input_authority_hash_gate_passed=True,
         locked_split_counts_gate_passed=True,
+        gcs_exact_object_metadata_gate_required=True,
     )
     download = payloads["download"]
     _require(
@@ -190,8 +195,14 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         n_studies=4,
         n_subjects=4,
         exact_remote_set=True,
+        exact_stat_set=True,
+        listing_stat_sizes_match=True,
         all_sizes_verified=True,
-        checksum_authority_status="VERIFIED_ALL_OBJECTS",
+        all_remote_md5_present=True,
+        all_local_md5_match=True,
+        all_local_sha256_computed=True,
+        remote_metadata_authority="GCS_EXACT_OBJECT_STAT",
+        object_transport_integrity_status="VERIFIED_ALL_OBJECTS",
         no_symlinks=True,
         no_extras=True,
         error_code="NONE",
@@ -199,16 +210,32 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
     )
     if download.get("source_manifest_sha256") != smoke_manifest_sha256:
         raise SafetyGateError("Queued download used a different smoke manifest")
-    if download.get("n_checksum_verified_objects") != download.get("n_expected_objects"):
-        raise SafetyGateError("Not every downloaded object has a release checksum")
+    restricted_report_sha256 = download.get("restricted_report_sha256")
+    if not isinstance(restricted_report_sha256, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", restricted_report_sha256
+    ):
+        raise SafetyGateError("Restricted downloader authority is not hash-bound")
     source_objects = payloads["source_manifest_summary"].get("smoke_n_objects")
     if not isinstance(source_objects, int) or not (4 <= source_objects <= 1000):
         raise SafetyGateError("Source smoke object count is outside the locked envelope")
     if any(
         download.get(key) != source_objects
-        for key in ("n_expected_objects", "n_remote_objects", "n_checksum_verified_objects")
+        for key in (
+            "n_expected_objects",
+            "n_requested_objects",
+            "n_remote_objects",
+            "n_remote_stat_objects",
+            "n_remote_metadata_complete",
+            "n_remote_md5_present",
+            "n_remote_crc32c_present",
+            "n_remote_generation_present",
+            "n_remote_md5_verified_objects",
+            "n_local_sha256_computed",
+        )
     ):
         raise SafetyGateError("Source/download object counts are not identical")
+    if download.get("n_remote_metadata_mismatches") != 0:
+        raise SafetyGateError("Remote object metadata reconciliation is not exact")
     if (
         download.get("n_downloaded_objects", 0)
         + download.get("n_preexisting_verified_objects", 0)
@@ -222,6 +249,7 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         or download.get("min_free_bytes") != 20 * 1024**3
         or not isinstance(download.get("total_remote_bytes"), int)
         or download["total_remote_bytes"] > 5 * 1024**3
+        or download.get("total_downloaded_bytes") != download["total_remote_bytes"]
         or not isinstance(download.get("free_bytes_before"), int)
         or download["free_bytes_before"] < 20 * 1024**3
     ):
@@ -232,24 +260,32 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         status="PASS",
         n_smoke_roles=4,
         smoke_role_set_exact=True,
-        n_missing_objects=0,
-        n_unexpected_objects=0,
+        downloader_report_authority="GCS_EXACT_OBJECT_STAT",
+        download_integrity_status="PASS_GCS_METADATA_AND_LOCAL_HASH",
+        n_missing_downloads=0,
+        n_unexpected_downloads=0,
         n_unsafe_symlink_objects=0,
-        n_checksum_mismatches=0,
+        n_remote_metadata_mismatches=0,
+        n_gcs_md5_mismatches=0,
+        n_local_sha256_report_mismatches=0,
     )
     download_audit = payloads["download_audit"]
     expected_objects = download_audit.get("n_expected_objects")
     if not isinstance(expected_objects, int) or expected_objects < 4:
         raise SafetyGateError("Downloaded-object audit has an invalid object count")
     for key in (
-        "n_release_checksums_matched",
-        "n_download_objects_discovered",
+        "n_downloaded_objects",
+        "n_remote_metadata_complete",
+        "n_remote_md5_verified_objects",
+        "n_local_sha256_matched",
         "n_verified_objects",
     ):
         if download_audit.get(key) != expected_objects:
             raise SafetyGateError("Downloaded-object audit is incomplete")
     if expected_objects != source_objects:
         raise SafetyGateError("Downloaded-object audit denominator differs from source")
+    if download_audit.get("source_manifest_sha256") != smoke_manifest_sha256:
+        raise SafetyGateError("Downloaded-object audit used a different smoke manifest")
     _require(
         payloads["dicom_audit"],
         status="PASS",
@@ -369,6 +405,13 @@ def validate(payloads: Mapping[str, Mapping[str, Any]]) -> None:
         required_artifact_pair_set_exact=True,
         distinct_run_files_and_extraction_roots=True,
     )
+    restricted_details_sha256 = payloads["reproducibility"].get(
+        "restricted_details_sha256"
+    )
+    if not isinstance(restricted_details_sha256, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", restricted_details_sha256
+    ):
+        raise SafetyGateError("Restricted reproducibility details are not hash-bound")
     if payloads["reproducibility"].get("extraction_internal_arrays_compared") != 3 * cine_count:
         raise SafetyGateError("Extraction reproducibility array count is incomplete")
 

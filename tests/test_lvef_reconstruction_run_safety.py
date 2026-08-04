@@ -23,7 +23,11 @@ def _payloads() -> dict[str, dict]:
         "source_ownership_exact": True,
         "source_objects_unique": True,
         "source_object_counts_match_selected_authority": True,
-        "all_selected_objects_have_release_sha256": True,
+        "all_selected_objects_have_release_sha256": False,
+        "release_sha256_authority_available": False,
+        "historical_object_sha256_imported": False,
+        "object_integrity_authority": "GCS_EXACT_OBJECT_STAT",
+        "gcs_exact_object_metadata_required_for_smoke": True,
         "candidate_construction_mode": "phase1d_restricted_provenance",
         "selection_salt": "lvef-multitask-phase1e-a-smoke4-v1",
         "smoke_n_roles": 4,
@@ -47,29 +51,46 @@ def _payloads() -> dict[str, dict]:
         "outcome_blind_selection_passed": True,
         "restricted_input_authority_hash_gate_passed": True,
         "locked_split_counts_gate_passed": True,
+        "gcs_exact_object_metadata_gate_required": True,
     }
     download = {
         "status": "PASS",
         "n_studies": 4,
         "n_subjects": 4,
         "n_expected_objects": 4,
+        "n_requested_objects": 4,
         "n_remote_objects": 4,
+        "n_remote_stat_objects": 4,
+        "n_remote_metadata_complete": 4,
+        "n_remote_md5_present": 4,
+        "n_remote_crc32c_present": 4,
+        "n_remote_generation_present": 4,
+        "n_remote_md5_verified_objects": 4,
+        "n_remote_metadata_mismatches": 0,
+        "n_local_sha256_computed": 4,
         "n_downloaded_objects": 4,
         "n_preexisting_verified_objects": 0,
-        "n_checksum_verified_objects": 4,
         "exact_remote_set": True,
+        "exact_stat_set": True,
+        "listing_stat_sizes_match": True,
         "all_sizes_verified": True,
-        "checksum_authority_status": "VERIFIED_ALL_OBJECTS",
+        "all_remote_md5_present": True,
+        "all_local_md5_match": True,
+        "all_local_sha256_computed": True,
+        "remote_metadata_authority": "GCS_EXACT_OBJECT_STAT",
+        "object_transport_integrity_status": "VERIFIED_ALL_OBJECTS",
         "no_symlinks": True,
         "no_extras": True,
         "error_code": "NONE",
         "source_manifest_sha256": "a" * 64,
+        "restricted_report_sha256": "b" * 64,
         "source_manifest_sha256_verified": True,
         "max_studies": 4,
         "max_objects": 1000,
         "max_total_bytes": 5 * 1024**3,
         "min_free_bytes": 20 * 1024**3,
         "total_remote_bytes": 100,
+        "total_downloaded_bytes": 100,
         "free_bytes_before": 20 * 1024**3,
     }
     download_audit = {
@@ -77,13 +98,20 @@ def _payloads() -> dict[str, dict]:
         "n_smoke_roles": 4,
         "smoke_role_set_exact": True,
         "n_expected_objects": 4,
-        "n_release_checksums_matched": 4,
-        "n_download_objects_discovered": 4,
+        "n_downloaded_objects": 4,
+        "n_remote_metadata_complete": 4,
+        "n_remote_md5_verified_objects": 4,
+        "n_remote_metadata_mismatches": 0,
+        "n_local_sha256_matched": 4,
         "n_verified_objects": 4,
-        "n_missing_objects": 0,
-        "n_unexpected_objects": 0,
+        "n_missing_downloads": 0,
+        "n_unexpected_downloads": 0,
         "n_unsafe_symlink_objects": 0,
-        "n_checksum_mismatches": 0,
+        "n_gcs_md5_mismatches": 0,
+        "n_local_sha256_report_mismatches": 0,
+        "downloader_report_authority": "GCS_EXACT_OBJECT_STAT",
+        "download_integrity_status": "PASS_GCS_METADATA_AND_LOCAL_HASH",
+        "source_manifest_sha256": "a" * 64,
     }
     dicom = {
         "status": "PASS",
@@ -162,6 +190,7 @@ def _payloads() -> dict[str, dict]:
         "npz_container_bytes_used_as_exactness_gate": False,
         "required_artifact_pair_set_exact": True,
         "distinct_run_files_and_extraction_roots": True,
+        "restricted_details_sha256": "c" * 64,
     }
     return {
         "source_manifest_summary": source,
@@ -217,6 +246,26 @@ def test_cross_stage_smoke_manifest_identity_mismatch_fails_closed() -> None:
     except gate.SafetyGateError:
         return
     raise AssertionError("Cross-stage smoke manifest identity mismatch passed")
+
+
+def test_cross_stage_gcs_metadata_and_local_hash_gates_fail_closed() -> None:
+    mutations = (
+        ("download", "n_remote_metadata_complete", 3),
+        ("download", "object_transport_integrity_status", "REMOTE_MD5_PRESENT"),
+        ("download", "n_remote_metadata_mismatches", 1),
+        ("download", "restricted_report_sha256", "UNBOUND"),
+        ("download_audit", "n_local_sha256_matched", 3),
+        ("download_audit", "n_gcs_md5_mismatches", 1),
+        ("reproducibility", "restricted_details_sha256", "UNBOUND"),
+    )
+    for artifact, key, value in mutations:
+        payloads = _payloads()
+        payloads[artifact][key] = value
+        try:
+            gate.validate(payloads)
+        except gate.SafetyGateError:
+            continue
+        raise AssertionError(f"Cross-stage integrity mutation passed: {artifact}.{key}")
 
 
 def test_identifier_alias_keys_are_rejected() -> None:
