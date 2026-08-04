@@ -338,9 +338,6 @@ def audit_downloaded_objects(
         "n_checksum_mismatches": int((audit["error_code"] == "SHA256_MISMATCH").sum()),
         "n_smoke_roles": int(audit["smoke_role"].nunique()),
         "smoke_role_set_exact": set(audit["smoke_role"]) == set(EXPECTED_SMOKE_ROLES),
-        "objects_by_smoke_role": {
-            role: int((audit["smoke_role"] == role).sum()) for role in EXPECTED_SMOKE_ROLES
-        },
         "source_manifest_sha256": _normalized_manifest_hash(source),
         "row_values_emitted": False,
         "paths_emitted": False,
@@ -441,7 +438,6 @@ def summarize_dicom_audit(frame: pd.DataFrame) -> dict[str, Any]:
         "n_smoke_roles": int(frame["smoke_role"].nunique()),
         "smoke_role_set_exact": role_set_exact,
         "exactly_one_study_per_smoke_role": exactly_one_study_per_role,
-        "cine_candidates_by_smoke_role": cine_by_role,
         "positive_control_role_cine_gate_passed": positive_roles_pass,
         "negative_control_zero_cine_gate_passed": negative_role_pass,
         "photometric_interpretation_counts": _technical_counts(

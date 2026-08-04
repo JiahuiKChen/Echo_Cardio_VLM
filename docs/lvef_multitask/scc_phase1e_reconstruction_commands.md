@@ -296,7 +296,6 @@ assert preservation["aggregate_safety_gate_recorded"] is True
 
 cat "$RUN_ROOT/aggregate/source/reconstruction_source_manifest.summary.json"
 cat "$RUN_ROOT/aggregate/source/reconstruction_source_manifest_by_component.csv"
-cat "$RUN_ROOT/aggregate/source/reconstruction_smoke_roles.csv"
 cat "$RUN_ROOT/aggregate/source/reconstruction_source_manifest_safety_gate.json"
 cat "$RUN_ROOT/aggregate/download_preflight.json"
 cat "$RUN_ROOT/aggregate/download.json"

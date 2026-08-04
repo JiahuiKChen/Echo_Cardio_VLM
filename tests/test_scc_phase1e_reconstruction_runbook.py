@@ -131,7 +131,8 @@ def test_safe_output_block_never_prints_restricted_or_provenance_files() -> None
     blocks = _bash_blocks(text)
     paste_block = blocks[-1]
     cat_lines = [line.strip() for line in paste_block.splitlines() if line.strip().startswith("cat ")]
-    assert len(cat_lines) == 17
+    assert len(cat_lines) == 16
+    assert "reconstruction_smoke_roles" not in paste_block
     for line in cat_lines:
         assert "/restricted/" not in line
         assert "$RUN_ROOT/restricted" not in line

@@ -103,6 +103,7 @@ def test_download_audit_requires_exact_set_and_release_hashes() -> None:
         assert summary["status"] == "PASS"
         assert summary["n_verified_objects"] == 4
         assert summary["smoke_role_set_exact"] is True
+        assert "objects_by_smoke_role" not in summary
         assert restricted["source_relative_path"].tolist() == sorted(paths)
         assert restricted["download_ok"].all()
 
@@ -203,6 +204,7 @@ def test_dicom_summary_emits_counts_only_and_requires_cine() -> None:
     assert summary["n_cine_candidates"] == 3
     assert summary["positive_control_role_cine_gate_passed"] is True
     assert summary["negative_control_zero_cine_gate_passed"] is True
+    assert "cine_candidates_by_smoke_role" not in summary
     assert summary["photometric_interpretation_counts"] == {
         "MONOCHROME2": 2,
         "RGB": 1,

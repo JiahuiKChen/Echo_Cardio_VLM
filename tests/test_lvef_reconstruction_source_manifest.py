@@ -193,7 +193,9 @@ def test_fixed_hash_ranking_is_order_independent_and_candidate_count_is_reported
             Path(directory), multiple_later_candidates=True
         )
         assert summary["smoke_n_studies"] == 4
-        roles = pd.read_csv(aggregate / "reconstruction_smoke_roles.csv")
+        roles = pd.read_csv(
+            restricted / "technical_smoke_role_selection_restricted.csv"
+        )
         later = roles[
             roles["smoke_role"] == "batch_001_008_historical_cine_positive"
         ].iloc[0]

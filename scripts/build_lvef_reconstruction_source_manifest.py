@@ -997,7 +997,7 @@ def execute(
         "smoke": restricted_dir / "technical_smoke_source_manifest_restricted.csv",
         "summary": aggregate_dir / "reconstruction_source_manifest.summary.json",
         "components": aggregate_dir / "reconstruction_source_manifest_by_component.csv",
-        "roles": aggregate_dir / "reconstruction_smoke_roles.csv",
+        "roles": restricted_dir / "technical_smoke_role_selection_restricted.csv",
         "safety": aggregate_dir / "reconstruction_source_manifest_safety_gate.json",
     }
     if any(path.exists() for path in targets.values()):
