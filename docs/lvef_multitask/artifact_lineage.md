@@ -78,7 +78,9 @@ The Stage-D-plus-nine-batch union was evaluated over all 10 expected component m
 
 Phase 1B reproduced those 9,605 mismatches and found zero residual full-row tuple mismatches after the declared normalization. The differences are concentrated in numeric serialization of `embedding_l2_norm`; merged `embedding_idx` rewrites are expected. Numeric serialization and index rewriting are therefore no longer scientific blockers.
 
-The remaining defect is exactly 32 duplicated selected-cohort keys, all in `batch_000` and present in both the component union and merged manifest. Key omission, multiplicity disagreement, component order, and subject/study ownership are ruled out. The Phase 1C restricted duplicate audit completed safely, but zero of the 32 groups had complete extracted-file hashes and every group remained `OTHER_UNRESOLVED`. This does not prove that source artifacts were purged, corrupt, identical, or different. It shows that the v1 physical-identity evidence was incomplete. A Phase 1D audit must separately report locator/hash/file availability, retained manifest and extraction evidence, vector correspondence, classification, and resolution before historical merged or study embeddings can be promoted to confirmatory authority.
+The remaining defect is exactly 32 duplicated selected-cohort keys, all in `batch_000` and present in both the component union and merged manifest. Key omission, multiplicity disagreement, component order, and subject/study ownership are ruled out. Phase 1D classified all 32 groups as `SOURCE_ARTIFACT_PURGED`: retained manifest, extraction-metadata, vector, L2, and component/merged evidence are concordant, but neither extracted NPZ/source DICOM content nor physical-file hashes survive. Physical identity is therefore not independently verified. Zero groups qualify for deterministic deduplication and all 32 remain quarantined.
+
+The Phase 1D selected-source inventory found 184,606 selected manifest rows, 7,387 outside-selected rows excluded, and 184,574 selected physical-source groups. Only 14,006 Stage D physical sources retain extracted NPZs; 170,568 sources in batches 000–008 retain neither NPZ nor DICOM. Historical embedding rows cover 4,525 selected studies, but quarantine leaves only 4,524 with at least one proposed canonical clip. Paths A, C1, and C2 are unavailable from retained evidence. Path C3 is the conditional clean-provenance preference and would require authorized selected-only DICOM redownload/re-extraction plus a fully pinned embedding run; it is not authorized.
 
 The same Phase 1C SCC execution reverified the selected partition: 329 of 500 Stage-D studies are selected, 171 are outside selection, and the remaining 4,201 selected studies occur exactly once across batches 000–008 with no ownership disagreement.
 
@@ -106,9 +108,11 @@ The Phase 1C SCC label-only audit passed without reading predictions or computin
 
 These counts are endpoint-provenance evidence. They establish that `<40` and `<=40` differ materially, but they do not authorize changing the accepted strict-inequality endpoint or imply anything about model performance.
 
-## Phase 1C clinical-metadata execution failure
+## Clinical-metadata execution lineage
 
-The Phase 1C clinical metadata packet was not generated. Its command document used bare `python3` for both project invocations instead of the runbook's validated `PYTHON_BIN`, thereby selecting an unsupported older SCC system interpreter. That interpreter raised `SyntaxError: future feature annotations is not defined` at `from __future__ import annotations`. The future import remains valid and unchanged; Phase 1D must select and validate Python 3.10 or newer before any packet output is created. Because the audit body was sourced under `set -e`, its nonzero status terminated the parent interactive SSH shell. Earlier completed provenance and threshold outputs remain valid.
+The Phase 1C clinical metadata packet was not generated. Its command document used bare `python3` for both project invocations instead of the runbook's validated `PYTHON_BIN`, thereby selecting an unsupported older SCC system interpreter. That interpreter raised `SyntaxError: future feature annotations is not defined` at `from __future__ import annotations`. Because the audit body was sourced under `set -e`, its nonzero status terminated the parent interactive SSH shell. Earlier completed provenance and threshold outputs remain valid.
+
+Phase 1D resolved the portability and shell-isolation defects without removing the future import. The final audit used Python 3.10.12 through the pinned resolver and guarded child runner. It safely reviewed a 188-row by 9-column mapping source, generated 67 restricted review rows, and found 29 of 30 exact allowlisted targets. The sole absent exact mapping is `lvef`; 30 outside-allowlist canonical candidates remain non-authoritative. Seventeen issue classes remain unresolved: eight require echocardiographer adjudication and nine require technical pipeline review. The aggregate clinical safety gate passed. Zero issues were literature-answerable, so the targeted follow-up gate returned `PASS_NO_PROMPT_REQUIRED` and generated no OpenEvidence prompt.
 
 ## Environment and checkpoint provenance
 
@@ -117,6 +121,8 @@ The audited checkpoint file is `echo_prime_encoder.pt`, 138,642,379 bytes, SHA-2
 Two frozen metadata artifacts exist and have stable hashes (`freeze_meta_0`: `33108641786d75d34f1641d41070b5ef0256ff34ab4ad421bb15cb8c28addb1f`; `freeze_meta_1`: `3ab76a13fd9952a0d6d0c5cece4359382dd6d0a37620c28018540b2c4f56bce5`). The aggregate packet intentionally did not expose their scalar contents. It therefore does not establish the historical Python, PyTorch, torchvision, CUDA, scikit-learn, or system environment, nor a historical checkpoint-to-embedding link.
 
 Before an authorized revalidation, record a new environment manifest and checkpoint checksum. Unless restricted historical metadata supplies a verifiable link, manuscript language must say that the historical embedding environment and exact checkpoint use could not be independently reconstructed, while separately reporting the fully captured environment for any new run.
+
+The Phase 1D audit interpreter is independently recorded as Python 3.10.12 with executable SHA-256 `1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb`, NumPy 2.2.6, pandas 2.3.3, SciPy 1.15.3, scikit-learn 1.7.2, and PyYAML 6.0.3. This establishes only the environment used for the model-independent Phase 1D audits; it does not establish the historical or future embedding environment.
 
 ## Historical model outputs
 

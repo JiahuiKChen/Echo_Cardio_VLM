@@ -1,5 +1,5 @@
 schema_version: 4
-analysis_version: phase1d-remediation-v1.1
+analysis_version: phase1d-remediation-v1.2
 status: blocked_after_phase1d_scc_scientific_no_go
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
@@ -58,9 +58,20 @@ phase1c_scc_execution:
   embeddings_generated: false
 
 phase1d_scc_execution:
+  final_clinical_audit_commit: e97324a4e4a313e73cb0b46446f7be18d8fbbe1f
+  final_clinical_audit_run_id: lvef_multitask_phase1d_clinical_final_20260804T001847Z_e97324a4e4a3
   interpreter_resolution_passed: true
   required_package_imports_passed: true
   audit_subprocess_parent_shell_survival_passed: true
+  interpreter:
+    python_version: 3.10.12
+    executable_sha256: 1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
+    packages:
+      numpy: 2.2.6
+      pandas: 2.3.3
+      scipy: 1.15.3
+      scikit_learn: 1.7.2
+      yaml: 6.0.3
   duplicate_v2_audit_completed: true
   duplicate_v2_scientific_go: false
   duplicate_v2_classification: SOURCE_ARTIFACT_PURGED
@@ -87,9 +98,32 @@ phase1d_scc_execution:
     - batch_008
   conditional_preferred_embedding_path: C3
   preferred_embedding_path_authorized: false
-  clinical_metadata_packet_generated: false
-  clinical_metadata_status: tooling_retry_pending
-  clinical_metadata_blocker: missing_exact_canonical_lvef_mapping_treated_as_fatal
+  clinical_metadata_packet_generated: true
+  clinical_metadata_status: COMPLETE_WITH_MISSING_ALLOWLISTED_TARGETS
+  clinical_metadata_source_rows: 188
+  clinical_metadata_source_columns: 9
+  clinical_metadata_packet_rows: 67
+  clinical_metadata_allowlisted_targets_requested: 30
+  clinical_metadata_allowlisted_targets_present: 29
+  clinical_metadata_missing_allowlisted_targets: [lvef]
+  clinical_metadata_outside_allowlist_candidates: 30
+  clinical_metadata_outside_allowlist_candidates_are_authority: false
+  clinical_metadata_unresolved_questions: 17
+  clinical_metadata_clinician_questions: 8
+  clinical_metadata_literature_questions: 0
+  clinical_metadata_safety_gate_passed: true
+  clinical_metadata_partial_disposition: true
+  clinical_metadata_remaining_blocker: missing_exact_canonical_lvef_mapping
+  clinical_unit_summary:
+    targets_with_one_known_unit: 28
+    targets_with_mixed_known_unknown_units: [ascending_aorta_diameter]
+    targets_with_no_rows: [lvef]
+  clinical_alias_summary:
+    targets_with_one_complete_alias: 28
+    targets_with_multiple_distinct_descriptions: [ascending_aorta_diameter]
+    targets_with_no_rows: [lvef]
+  targeted_openevidence_status: PASS_NO_PROMPT_REQUIRED
+  targeted_openevidence_prompt_generated: false
   exact_40_audit_status: PASS
   confirmatory_access_open: false
   model_fitting_performed: false
@@ -116,6 +150,14 @@ provenance:
     historical_package_environment_proven: false
     future_run_environment_capture_required: true
     future_run_environment_captured: false
+    phase1d_audit_interpreter:
+      python_version: 3.10.12
+      executable_sha256: 1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
+      numpy_version: 2.2.6
+      pandas_version: 2.3.3
+      scipy_version: 1.15.3
+      scikit_learn_version: 1.7.2
+      yaml_version: 6.0.3
     required_fields:
       - operating_system
       - python
@@ -503,8 +545,10 @@ prefit_gates:
   five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false
   future_environment_capture_specified: true
-  clinical_metadata_packet_complete: false
-  clinical_metadata_tooling_retry_pending: true
+  clinical_metadata_packet_complete: true
+  clinical_metadata_allowlist_coverage_complete: false
+  clinical_metadata_partial_disposition_recorded: true
+  clinical_metadata_tooling_retry_pending: false
   raw_alias_and_unit_review_complete: false
   clinical_dependency_adjudication_complete: false
   panel_membership_and_units_locked: false
@@ -516,7 +560,8 @@ prefit_gates:
   structured_feature_eligibility_rule_locked: true
   structured_missing_indicator_rule_locked: true
   equality_at_40_counts_recorded: true
-  targeted_openevidence_prompt_generated_if_justified: false
+  targeted_openevidence_prompt_generated_if_justified: true
+  targeted_openevidence_status: PASS_NO_PROMPT_REQUIRED
   clinician_signoff_recorded: false
   common_denominator_dry_run_passed: false
   target_family_exclusion_audit_passed: false

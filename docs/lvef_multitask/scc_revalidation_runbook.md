@@ -692,11 +692,13 @@ Paste or attach only these aggregate outputs:
 
 Also report the SCC Git commit shown by `git rev-parse HEAD`. Do not paste subject/study IDs, row-level labels or predictions, raw dependency registry rows, embeddings, DICOM paths, or anything from the restricted audit directory.
 
-The then-unresolved freeze-manifest, clip-component, five-study attrition, and environment/checkpoint diagnostics are isolated in [SCC Phase 1B aggregate-only follow-up commands](scc_phase1b_followup_commands.md). Run that block only after reviewing the Phase 1A packet; it writes to a fresh Phase 1B audit root and has its own final allowlist gate. The completed follow-up is adjudicated in `phase1b_scc_followup_findings.md`: the 9,605 serialization/index findings and provisional five-study imaging-eligibility rule are no longer open scientific questions, while the 32 duplicate keys and historical environment linkage remain unresolved.
+The then-unresolved freeze-manifest, clip-component, five-study attrition, and environment/checkpoint diagnostics are isolated in [SCC Phase 1B aggregate-only follow-up commands](scc_phase1b_followup_commands.md). Run that block only after reviewing the Phase 1A packet; it writes to a fresh Phase 1B audit root and has its own final allowlist gate. The completed follow-up is adjudicated in `phase1b_scc_followup_findings.md`: the 9,605 serialization/index findings and provisional five-study imaging-eligibility rule are no longer open scientific questions.
+
+The later Phase 1D execution is governed by [the isolated SCC workflow](scc_phase1d_execution_commands.md) and adjudicated in `phase1d_scc_execution_findings.md`. All 32 duplicate groups are now dispositioned `SOURCE_ARTIFACT_PURGED` and quarantined; that disposition closes the diagnostic question but does not make the historical store usable. The canonical inventory rules out retained-artifact Paths C1/C2, and the clinical packet completed with an unresolved exact `lvef` mapping plus clinician/technical review gates. Path C3, DICOM redownload, embedding generation, model fitting, and confirmatory access remain unauthorized.
 
 ## Historical Phase 1B lock blockers
 
-This checklist records the pre-follow-up gate. Where it conflicts with later findings, `phase1b_scc_followup_findings.md` and `phase1c_pre_revalidation_lock.md` control.
+This checklist records the pre-follow-up gate. Where it conflicts with later findings, `phase1b_scc_followup_findings.md`, `phase1c_pre_revalidation_lock.md`, `phase1d_scc_execution_findings.md`, and `phase1d_pre_embedding_lock.md` control.
 
 Do not proceed to confirmatory revalidation until all of the following are resolved:
 

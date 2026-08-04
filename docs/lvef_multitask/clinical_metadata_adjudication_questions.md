@@ -1,38 +1,54 @@
 # Restricted clinical metadata adjudication
 
-Status: **question-bank authority only; no current clinician form exists**.
+Status: **SCC-only questionnaire generated; eight echocardiographer decisions and nine technical reviews remain open**.
 
-The clinician-facing form is generated mechanically on SCC by `scripts/lvef_multitask_clinical_metadata.py`. It contains only issues classified `REQUIRES_ECHOCARDIOGRAPHER_ADJUDICATION` after exact raw descriptions and units have been parsed. This prevents a clinician from being asked to resolve missing source metadata, alias equality requiring value comparison, or literature questions that should be handled elsewhere.
-
-The generated restricted file is:
+The Phase 1D metadata audit completed successfully at commit `e97324a`. Its generated clinician form contains only issues classified `REQUIRES_ECHOCARDIOGRAPHER_ADJUDICATION`. The form includes restricted source metadata and therefore remains on SCC as:
 
 `clinical_metadata_clinician_questionnaire_restricted.md`
 
-It may contain exact non-patient raw names, descriptions, units, and mapping sources and therefore must remain on SCC. Do not paste it into Git or the terminal transcript. The repository stores only the question-bank logic and aggregate counts by evidence type.
+Do not paste that form, its source rows, or completed responses into Git. Only a separately reviewed aggregate adjudication summary may be imported later.
 
-## Mechanical routing before clinician review
+## Questions requiring echocardiographer adjudication
 
-- Missing descriptions, missing/ambiguous units, unvalidated candidate mappings, indexing provenance, and BSA formula/weight lineage route to `REQUIRES_TECHNICAL_PIPELINE_REVIEW`.
-- Equivalent mitral-E descriptions/units or other relationships requiring record-level equality checks route to `REQUIRES_VALUE_DISTRIBUTION_AUDIT`.
-- Measurement-methodology evidence questions route to `LITERATURE_ANSWERABLE` only after dataset identity and units are resolved.
-- Absent authority routes to `NOT_RESOLVABLE_FROM_AVAILABLE_DATA`.
-- Only clinically ambiguous, nonempty project metadata routes to `REQUIRES_ECHOCARDIOGRAPHER_ADJUDICATION`.
+The restricted form contains exactly these eight issue groups:
 
-## Clinician question bank
+1. `ARCH_DIAM_LEVEL`
+2. `ASCENDING_AORTA_CONVENTION`
+3. `INF_LAT_THICKNESS_DEFINITION`
+4. `IVC_DIAM_CONTEXT`
+5. `LA_DIMEN_PLANE`
+6. `MITRAL_E_FIELD_RELATIONSHIP`
+7. `SINUS_DIAM_CONVENTION`
+8. `TR_MMHG_DEFINITION`
 
-When triggered, the generator supplies explicit multiple-choice questions for:
+Each is presented as an explicit multiple-choice decision beside the restricted project metadata. Lexically different descriptions alone cannot establish distinct constructs, and identical descriptions alone cannot establish duplicate values.
 
-- the pressure construct represented by `tr_mmhg`;
-- whether `mv_peak_e` and `mitral_e_velocity` represent the same or incompatible acquisition/site constructs;
-- the wall, phase, and method represented by `inf_lat_thickness`;
-- the plane and timing represented by `la_dimen`;
-- the named level represented by `arch_diam`;
-- edge/timing conventions for `sinus_diam` and `ascending_aorta_diameter`;
-- respiratory/ventilation context for `ivc_diam`;
-- clinical harmonizability of explicitly documented mixed LVEF methods.
+## Questions not delegated to the clinician
 
-The generator includes a question only when the corresponding evidence classification requires it. Lexically different descriptions alone never prove two fields are distinct; identical descriptions alone never prove their values are duplicates.
+The following nine issues require technical pipeline review and are intentionally excluded from the clinician questionnaire:
 
-## Signoff
+- `BSA_FORMULA_WEIGHT_AVAILABILITY`
+- `DIMENSION_CM_MM_UNITS`
+- `LVEDV_LVESV_FIELDS`
+- `LVEF_ALIASES`
+- `LVEF_METHOD_MIXTURE`
+- `LV_MASS_RWT_FIELDS`
+- `MITRAL_EA_EEPRIME_RATIO_FIELDS`
+- `VELOCITY_MPS_CMPS_UNITS`
+- `WALL_MOTION_FIELDS`
 
-The restricted form must record clinician initials/date and remain linked to its packet checksum. A technical reviewer must separately confirm that every missing or ambiguous source-metadata issue is closed or explicitly excluded. Until then, raw-alias/unit review, the clinical dependency registry, and task panels remain unlocked.
+In particular, the mapping authority contains no exact `lvef` row. Candidate LVEF-adjacent rows cannot substitute for that authority, and LVEF method composition cannot be adjudicated until the technical mapping gap is resolved.
+
+No issue is currently `LITERATURE_ANSWERABLE`, so the clinician should not generate an OpenEvidence query from this packet.
+
+## Required signoff
+
+The restricted record must retain:
+
+- the packet checksum and commit;
+- one selected response for each of the eight clinician questions;
+- clinician initials and date;
+- technical reviewer disposition for all nine technical issues;
+- explicit exclusion rather than silent mapping for every unresolved item.
+
+Until both clinician and technical signoff are complete, the raw-alias/unit review, clinical dependency registry, and task-panel gates remain open.

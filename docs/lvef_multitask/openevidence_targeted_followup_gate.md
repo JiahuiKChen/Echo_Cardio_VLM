@@ -1,36 +1,30 @@
 # Targeted OpenEvidence follow-up gate
 
-Decision: **do not issue another OpenEvidence prompt yet**.
+Decision: **no prompt is required from the final Phase 1D metadata packet**.
 
-Clinically consequential ambiguity remains, but the current blockers are project-specific raw definitions and units rather than missing literature volume. OpenEvidence cannot determine whether `tr_mmhg` is a gradient or RVSP, whether `mitral_e_velocity` duplicates `mv_peak_e`, which wall/LA/aortic/IVC conventions were exported, or whether `lvef` mixes methods without seeing the exact non-PHI source metadata.
+The SCC follow-up generator evaluated the completed clinical metadata classification and returned:
 
-The SCC-only metadata review and CMR-01 through CMR-15 adjudication must run first. A follow-up is warranted only when all of the following hold:
+- status: `PASS_NO_PROMPT_REQUIRED`;
+- reason: `ZERO_LITERATURE_ANSWERABLE_AMBIGUITIES`;
+- prompt generated: no;
+- literature-answerable issues: 0;
+- patient values, identifiers, raw source metadata, and operational locators emitted: no.
 
-1. the exact raw name, description, native/normalized unit, and mapping source for the unresolved field can be included without PHI or operational paths;
-2. a clinician has identified a literature-answerable ambiguity rather than a database-mapping ambiguity;
-3. the question could change feature masking, target disposition, a threshold, or a native-unit margin;
-4. the requested evidence can be checked against a professional guideline or measurement-methodology source;
-5. the output is required to use exact repository identifiers and cannot introduce candidate field names as if they exist.
+The 17 unresolved issues are already routed to the evidence source capable of resolving them:
 
-If that gate passes, prepare one short prompt per ambiguity with this structure:
+- eight require echocardiographer adjudication using the SCC-only questionnaire;
+- nine require technical pipeline review using restricted project authorities.
 
-```text
-We need a targeted clinical measurement-methodology adjudication for one MIMIC-IV-ECHO structured field. Do not infer any additional project field exists.
+OpenEvidence cannot establish missing project mappings, determine alias equality from names, recover absent unit/source lineage, or replace clinical adjudication. Issuing another broad prompt now would not address the active gates.
 
-Exact repository canonical target: <EXACT_ALLOWLISTED_IDENTIFIER>
-Exact non-PHI raw name: <FROM_RESTRICTED_REVIEW>
-Exact non-PHI raw description: <FROM_RESTRICTED_REVIEW>
-Native unit: <FROM_RESTRICTED_REVIEW>
-Normalized unit: <FROM_RESTRICTED_REVIEW>
-Mapping source: <FROM_RESTRICTED_REVIEW>
-Remaining clinician question: <ONE PRECISE QUESTION>
+## Reopening criteria
 
-Use this evidence hierarchy: current professional guideline/consensus; peer-reviewed measurement methodology; peer-reviewed clinical observational evidence; formula inference; expert inference; unresolved. Distinguish what the supplied metadata establishes from what the literature supports. Do not repair or rename the exact canonical identifier.
+This gate may be reconsidered only if a later signed clinical or technical review:
 
-Return one CSV row with exactly these columns:
-target,raw_metadata_interpretation,adjudication,evidence_tier,citation,doi,pmid,direct_link,certainty,assumptions,remaining_unresolved,feature_mask_action,target_disposition_action
+1. resolves the project-specific identity and unit authority for an issue;
+2. leaves one precise measurement-methodology or reproducibility question;
+3. classifies that residual question as `LITERATURE_ANSWERABLE`;
+4. supplies only aggregate-safe, non-patient metadata to the generator; and
+5. passes a new targeted-follow-up safety gate.
 
-Use only Yes/No/Unresolved actions. If the source description is insufficient, return UNRESOLVED rather than guessing.
-```
-
-Placeholders are intentionally not filled from canonical names or OpenEvidence guesses. Consequently this file is a gated construction template, not a copy-ready clinical query and should not be pasted into OpenEvidence before restricted metadata review.
+Until then, no prompt should be sent. The clinical dependency registry, task panels, raw-alias/unit review, clinician signoff, and technical-review signoff remain open.
