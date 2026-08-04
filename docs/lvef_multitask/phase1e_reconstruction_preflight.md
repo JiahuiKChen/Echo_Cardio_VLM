@@ -55,7 +55,7 @@ The three positive controls are expected to produce at least one cine, clip embe
 
 ## Preservation and claim boundary
 
-The restricted preservation pack records safe relative paths, file sizes, SHA-256, internal array-content hashes, public release/object identity, source commit, config/command/script checksums, checkpoint identity, environment/hardware/scheduler evidence, timestamps, and aggregate safety status. An independent second pass must verify the complete inventory.
+The restricted preservation pack records safe relative paths, file sizes, SHA-256, internal array-content hashes, public release/object identity, source commit, config/command/script checksums, checkpoint identity, environment/hardware/scheduler evidence, timestamps, and aggregate safety status. Immediately before preservation it must reconcile the exact hashes of all 12 aggregate safety inputs, revalidate the public checksum and smoke-source authorities, recompute the downloaded-object and DICOM-header audits, and recompute all five reproducibility comparisons against their stored restricted and aggregate results. It then snapshots every restricted file and requires that snapshot to remain identical through the complete preservation-manifest scan. An independent second pass must verify the complete inventory.
 
 A passing smoke run establishes only that the prospective implementation and provenance controls work on the prespecified four-study technical cohort. It cannot establish complete selected-cohort coverage, validate all Stage-D retained NPZs, estimate scientific performance, support modality comparisons, or authorize full C3 execution.
 

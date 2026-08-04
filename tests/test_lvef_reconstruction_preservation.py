@@ -9,6 +9,8 @@ import stat
 import sys
 import tempfile
 
+import numpy as np
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -337,6 +339,12 @@ def _preservation_args(root: Path, run_root: Path, checkpoint: Path) -> argparse
         ),
         encoding="utf-8",
     )
+    aggregate_hashes = {}
+    for name, relative in preserve.AGGREGATE_ARTIFACT_RELATIVE_PATHS.items():
+        path = run_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"artifact": name}) + "\n", encoding="utf-8")
+        aggregate_hashes[name] = preserve.sha256_file(path)
     safety_gate = aggregate / "run_safety_gate.json"
     safety_gate.write_text(
         json.dumps(
@@ -344,6 +352,7 @@ def _preservation_args(root: Path, run_root: Path, checkpoint: Path) -> argparse
                 "status": "PASS",
                 "aggregate_safety_gate_passed": True,
                 "technical_smoke_source_manifest_sha256": "b" * 64,
+                "artifact_sha256": aggregate_hashes,
             }
         ),
         encoding="utf-8",
@@ -367,6 +376,98 @@ def _preservation_args(root: Path, run_root: Path, checkpoint: Path) -> argparse
     )
 
 
+def _write_reproducibility_fixture(run_root: Path) -> None:
+    reconstruction = preserve.reconstruction
+    for run_name in ("run_a", "run_b"):
+        run_dir = run_root / "restricted" / run_name
+        extracted = run_dir / "extracted"
+        extracted.mkdir(parents=True, exist_ok=True)
+        extraction_rows = []
+        for index in range(3):
+            frames = np.full((2, 2, 2, 3), index + 1, dtype=np.uint8)
+            sampled = np.asarray([0, 1], dtype=np.int64)
+            source_frames = np.asarray([2], dtype=np.int32)
+            relative = f"clip_{index}.npz"
+            np.savez(
+                extracted / relative,
+                frames=frames,
+                sampled_indices=sampled,
+                source_num_frames=source_frames,
+            )
+            extraction_rows.append(
+                {
+                    "clip_key": f"clip_{index}",
+                    "output_relative_path": relative,
+                    "write_ok": True,
+                    "frames_sha256": reconstruction.array_content_sha256(frames),
+                    "sampled_indices_sha256": reconstruction.array_content_sha256(
+                        sampled
+                    ),
+                    "source_num_frames_sha256": reconstruction.array_content_sha256(
+                        source_frames
+                    ),
+                }
+            )
+        pd.DataFrame(extraction_rows).to_csv(
+            run_dir / "extraction_manifest.csv", index=False
+        )
+        pd.DataFrame(
+            {"clip_key": [f"clip_{index}" for index in range(3)], "embedding_idx": range(3)}
+        ).to_csv(run_dir / "clip_embedding_manifest.csv", index=False)
+        pd.DataFrame(
+            {"study_key": [f"study_{index}" for index in range(3)], "embedding_idx": range(3)}
+        ).to_csv(run_dir / "study_embedding_manifest.csv", index=False)
+        clip_embeddings = np.arange(3 * 512, dtype=np.float32).reshape(3, 512)
+        study_embeddings = (clip_embeddings + 0.5).astype(np.float32)
+        np.savez(run_dir / "clip_embeddings_512.npz", embeddings=clip_embeddings)
+        np.savez(run_dir / "study_embeddings_512.npz", embeddings=study_embeddings)
+
+    restricted, aggregate = preserve._recompute_reproducibility(run_root)
+    (run_root / "restricted/reproducibility_details.json").write_text(
+        json.dumps(restricted, sort_keys=True), encoding="utf-8"
+    )
+    aggregate_path = (
+        run_root / preserve.AGGREGATE_ARTIFACT_RELATIVE_PATHS["reproducibility"]
+    )
+    aggregate_path.parent.mkdir(parents=True, exist_ok=True)
+    aggregate_path.write_text(json.dumps(aggregate, sort_keys=True), encoding="utf-8")
+
+
+def test_aggregate_artifact_hash_reconciliation_detects_mutation() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        run_root = Path(temporary)
+        declared = {}
+        for name, relative in preserve.AGGREGATE_ARTIFACT_RELATIVE_PATHS.items():
+            path = run_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"name": name}), encoding="utf-8")
+            declared[name] = preserve.sha256_file(path)
+        safety = {"artifact_sha256": declared}
+        assert preserve._verify_aggregate_artifact_hashes(run_root, safety) == declared
+        changed = run_root / preserve.AGGREGATE_ARTIFACT_RELATIVE_PATHS["download"]
+        changed.write_text('{"changed":true}', encoding="utf-8")
+        _expect_preservation_error(
+            "AGGREGATE_ARTIFACT_CHANGED_AFTER_SAFETY_GATE",
+            lambda: preserve._verify_aggregate_artifact_hashes(run_root, safety),
+        )
+
+
+def test_reproducibility_revalidation_detects_post_comparison_mutation() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        run_root = Path(temporary)
+        _write_reproducibility_fixture(run_root)
+        preserve._verify_reproducibility_matches_saved(run_root)
+        changed = run_root / "restricted/run_b/clip_embeddings_512.npz"
+        with np.load(changed, allow_pickle=False) as archive:
+            embeddings = archive["embeddings"].copy()
+        embeddings[0, 0] += np.float32(1.0)
+        np.savez(changed, embeddings=embeddings)
+        _expect_preservation_error(
+            "REPRODUCIBILITY_DETAILS_REVALIDATION_MISMATCH",
+            lambda: preserve._verify_reproducibility_matches_saved(run_root),
+        )
+
+
 def test_preservation_pack_uses_relative_paths_and_second_pass_hashes() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -381,27 +482,45 @@ def test_preservation_pack_uses_relative_paths_and_second_pass_hashes() -> None:
         original_sha256 = preserve.CHECKPOINT_SHA256
         preserve.CHECKPOINT_BYTES = checkpoint.stat().st_size
         preserve.CHECKPOINT_SHA256 = preserve.sha256_file(checkpoint)
+        original_revalidation = preserve.revalidate_authoritative_run_artifacts
+        preserve.revalidate_authoritative_run_artifacts = (
+            lambda run_root, safety_gate: (
+                {
+                    "aggregate_artifact_hashes_reconciled": 12,
+                    "download_audit_recomputed": True,
+                    "dicom_audit_recomputed": True,
+                    "reproducibility_recomputed": True,
+                    "restricted_files_snapshotted": 0,
+                },
+                {},
+            )
+        )
         try:
             aggregate = preserve.create_preservation_pack(args)
         finally:
+            preserve.revalidate_authoritative_run_artifacts = original_revalidation
             preserve.CHECKPOINT_BYTES = original_bytes
             preserve.CHECKPOINT_SHA256 = original_sha256
         assert aggregate["status"] == "PASS"
-        assert aggregate["n_files"] == 5
+        assert aggregate["n_files"] == 17
         assert aggregate["exact_file_set"] is True
         assert aggregate["all_sizes_match"] is True
         assert aggregate["all_sha256_match"] is True
         assert aggregate["no_symlinks"] is True
+        assert aggregate["aggregate_artifact_hashes_reconciled"] is True
+        assert aggregate["restricted_snapshot_reconciled"] is True
 
         manifest_path = args.restricted_output_dir / preserve.MANIFEST_NAME
         records = preserve.read_manifest(manifest_path)
-        assert [item.relative_path for item in records] == [
+        expected_paths = [
+            *preserve.AGGREGATE_ARTIFACT_RELATIVE_PATHS.values(),
             "aggregate/run_safety_gate.json",
             "first.json",
             "nested/array.npz",
             "provenance/environment.json",
             "provenance/job.sh",
         ]
+        assert [item.relative_path for item in records] == sorted(expected_paths)
         verified = preserve.verify_manifest_independently(run_root, manifest_path)
         assert verified["status"] == "PASS"
 

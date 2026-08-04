@@ -258,6 +258,10 @@ phase1e_a_reconstruction_smoke:
     restricted_only: true
     second_pass_checksum_verification_required: true
     aggregate_safety_gate_required: true
+    aggregate_input_hash_reconciliation_required: true
+    download_and_dicom_reaudit_required: true
+    reproducibility_identity_recomputation_required: true
+    restricted_snapshot_reconciliation_required: true
     identifiers_in_git_permitted: false
   prohibitions:
     - full_selected_cohort_redownload

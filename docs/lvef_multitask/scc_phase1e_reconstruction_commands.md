@@ -220,7 +220,7 @@ The committed `scripts/scc_run_lvef_reconstruction_smoke.sh` is the only submitt
 
 Environment capture is fail-closed and restricted. It must record the complete installed-distribution inventory as nonempty `{name, version}` entries, the pinned Python/config/checkpoint/script identities, repository authority, CUDA/cuDNN and allocated-GPU metadata, and SGE metadata. Preservation validates that package-inventory schema and reconciles the scheduler exactly: the captured scheduler must be `SGE`, and its numeric `scheduler_job_id` must equal the `JOB_ID` passed to preservation. A missing or inconsistent inventory, scheduler, or job identity blocks preservation.
 
-The SGE log directory is deliberately outside `RUN_ROOT`; otherwise the preservation verifier could hash a log while SGE is still appending to it.
+The SGE log directory is deliberately outside `RUN_ROOT`; otherwise the preservation verifier could hash a log while SGE is still appending to it. Preservation deliberately repeats several reads of the bounded smoke artifacts: it re-hashes every safety-gated aggregate, rechecks the downloaded objects against the locked release checksums, rereads DICOM headers, and recomputes the normalized manifest/internal-array reproducibility identities. This extra I/O is required to detect mutation after the earlier PASS gates.
 
 ```bash
 JOB_ENV="$RUN_ROOT/restricted/phase1e_a_job.env"
@@ -290,6 +290,11 @@ assert preservation["no_symlinks"] is True
 assert preservation["environment_recorded"] is True
 assert preservation["job_metadata_recorded"] is True
 assert preservation["aggregate_safety_gate_recorded"] is True
+assert preservation["aggregate_artifact_hashes_reconciled"] is True
+assert preservation["download_audit_recomputed"] is True
+assert preservation["dicom_audit_recomputed"] is True
+assert preservation["reproducibility_recomputed"] is True
+assert preservation["restricted_snapshot_reconciled"] is True
 ' \
   "$RUN_ROOT/aggregate/phase1e_a_smoke_safety_gate.json" \
   "$PRESERVATION_AGGREGATE"

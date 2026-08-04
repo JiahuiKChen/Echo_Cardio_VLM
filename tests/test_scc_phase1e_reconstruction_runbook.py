@@ -143,6 +143,9 @@ def test_safe_output_block_never_prints_restricted_or_provenance_files() -> None
     assert 'assert preservation["all_sha256_match"] is True' in paste_block
     assert 'assert preservation["environment_recorded"] is True' in paste_block
     assert 'assert preservation["job_metadata_recorded"] is True' in paste_block
+    assert 'assert preservation["aggregate_artifact_hashes_reconciled"] is True' in paste_block
+    assert 'assert preservation["reproducibility_recomputed"] is True' in paste_block
+    assert 'assert preservation["restricted_snapshot_reconciled"] is True' in paste_block
     assert "git add" not in text
     assert "git commit" not in text
     assert "git push" not in text
