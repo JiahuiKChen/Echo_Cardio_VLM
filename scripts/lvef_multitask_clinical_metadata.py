@@ -1563,6 +1563,31 @@ def _sensitive_values(rows: pd.DataFrame) -> set[str]:
     return sensitive
 
 
+def _json_leaf_text_values(payload: Any) -> Iterable[str]:
+    """Yield serialized leaf values without treating JSON keys as emitted data."""
+    if isinstance(payload, dict):
+        for value in payload.values():
+            yield from _json_leaf_text_values(value)
+    elif isinstance(payload, (list, tuple)):
+        for value in payload:
+            yield from _json_leaf_text_values(value)
+    elif payload is not None:
+        yield str(payload)
+
+
+def _frame_cell_text_values(frame: pd.DataFrame) -> Iterable[str]:
+    """Yield DataFrame cell values without treating column headers as data."""
+    for value in frame.to_numpy(dtype=object).ravel():
+        if value is None or value is pd.NA:
+            continue
+        try:
+            if bool(pd.isna(value)):
+                continue
+        except (TypeError, ValueError):
+            pass
+        yield str(value)
+
+
 def validate_aggregate_outputs(
     schema_summary: dict[str, Any],
     ambiguity: pd.DataFrame,
@@ -1589,15 +1614,15 @@ def validate_aggregate_outputs(
         issues.append("duplicate_issue_id")
     if not REQUIRED_ISSUE_IDS.issubset(set(ambiguity["issue_id"])):
         issues.append("required_issue_class_missing")
-    payload = "\n".join(
-        [
-            json.dumps(schema_summary, sort_keys=True),
-            ambiguity.to_csv(index=False),
-            unit_summary.to_csv(index=False),
-            alias_summary.to_csv(index=False),
-        ]
-    )
-    if any(value in payload for value in _sensitive_values(restricted_rows)):
+    aggregate_values = list(_json_leaf_text_values(schema_summary))
+    for frame in (ambiguity, unit_summary, alias_summary):
+        aggregate_values.extend(_frame_cell_text_values(frame))
+    sensitive_values = _sensitive_values(restricted_rows)
+    if any(
+        sensitive_value in aggregate_value
+        for sensitive_value in sensitive_values
+        for aggregate_value in aggregate_values
+    ):
         issues.append("restricted_metadata_value_in_aggregate_payload")
     return issues
 

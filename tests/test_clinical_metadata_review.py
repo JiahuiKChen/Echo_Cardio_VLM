@@ -15,15 +15,19 @@ from lvef_multitask_clinical_metadata import (
     EVIDENCE_TYPES,
     REQUIRED_ISSUE_IDS,
     build_alias_summary,
+    build_ambiguity_counts,
     build_canonical_summary,
     build_clinician_questionnaire,
     build_review_rows,
+    build_schema_summary,
     build_targeted_followup_prompt,
     build_unit_summary,
     classify_unresolved_questions,
     exact_target,
     normalized_text,
+    resolve_metadata_columns,
     requested_targets,
+    validate_aggregate_outputs,
 )
 
 
@@ -229,6 +233,18 @@ def synthetic_mapping() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def aggregate_validation_inputs(
+    frame: pd.DataFrame,
+) -> tuple[dict[str, object], pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    rows = build_review_rows(frame, ALLOWED_TARGETS)
+    units = build_unit_summary(rows, ALLOWED_TARGETS)
+    aliases = build_alias_summary(rows, ALLOWED_TARGETS)
+    issues = classify_unresolved_questions(rows, units)
+    ambiguity = build_ambiguity_counts(issues)
+    schema = build_schema_summary(frame, resolve_metadata_columns(frame), rows)
+    return schema, ambiguity, units, aliases, rows
+
+
 def test_exact_identifier_allowlist_rejects_mangled_and_unknown_names() -> None:
     assert exact_target("lvef") == "lvef"
     assert requested_targets([]) == ALLOWED_TARGETS
@@ -292,6 +308,45 @@ def test_canonical_summary_retains_only_counts_and_flags() -> None:
     assert bool(vti["multiple_nonunknown_normalized_units"])
     assert int(vti["n_normalized_units"]) == 2
     assert int(vti["n_exact_duplicate_rows_excess"]) == 1
+
+
+def test_aggregate_safety_ignores_restricted_strings_only_in_keys_or_headers() -> None:
+    frame = synthetic_mapping()
+    frame.loc[frame.index[0], "canonical_source"] = "required_field_presence"
+    frame.loc[frame.index[1], "canonical_source"] = "unit_resolution_status"
+    schema, ambiguity, units, aliases, rows = aggregate_validation_inputs(frame)
+
+    assert "required_field_presence" in schema
+    assert "unit_resolution_status" in units.columns
+    assert validate_aggregate_outputs(schema, ambiguity, units, aliases, rows) == []
+
+
+def test_aggregate_safety_rejects_restricted_secret_in_json_leaf_or_frame_cell() -> None:
+    secret = "SYNTHETIC_RESTRICTED_SOURCE_SECRET"
+    frame = synthetic_mapping()
+    frame.loc[frame.index[0], "canonical_source"] = secret
+    schema, ambiguity, units, aliases, rows = aggregate_validation_inputs(frame)
+    assert validate_aggregate_outputs(schema, ambiguity, units, aliases, rows) == []
+
+    leaked_schema = dict(schema)
+    leaked_schema["synthetic_safe_key"] = secret
+    assert "restricted_metadata_value_in_aggregate_payload" in validate_aggregate_outputs(
+        leaked_schema,
+        ambiguity,
+        units,
+        aliases,
+        rows,
+    )
+
+    leaked_aliases = aliases.copy()
+    leaked_aliases.loc[leaked_aliases.index[0], "alias_resolution_status"] = secret
+    assert "restricted_metadata_value_in_aggregate_payload" in validate_aggregate_outputs(
+        schema,
+        ambiguity,
+        units,
+        leaked_aliases,
+        rows,
+    )
 
 
 def test_issue_classification_covers_required_concepts_and_evidence_vocabulary() -> None:
