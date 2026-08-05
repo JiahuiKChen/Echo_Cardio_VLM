@@ -1,6 +1,6 @@
-schema_version: 6
-analysis_version: phase1e-a-prospective-reconstruction-smoke-v1
-status: phase1e_a_technical_smoke_passed_full_c3_and_confirmatory_access_blocked
+schema_version: 7
+analysis_version: phase1e-bc-resource-metadata-preauthorization-v1
+status: phase1e_bc_metadata_resource_preflight_only_full_c3_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -18,6 +18,12 @@ execution_authority:
   raw_dicom_reextraction_authorized: false
   raw_dicom_redownload_authorized: false
   restricted_selected_source_manifest_construction_authorized: true
+  institutionally_approved_direct_restricted_agent_access: true
+  gcs_selected_source_metadata_only_preflight_authorized: true
+  gcs_object_body_download_authorized_in_phase1e_bc: false
+  restricted_row_level_technical_metadata_review_authorized: true
+  restricted_clinician_packet_preparation_authorized: true
+  manuscript_or_git_export_requires_separate_review: true
   technical_smoke_dicom_redownload_authorized: true
   technical_smoke_dicom_reextraction_authorized: true
   technical_smoke_encoder_embedding_authorized: true
@@ -124,7 +130,7 @@ phase1d_scc_execution:
   clinical_metadata_literature_questions: 0
   clinical_metadata_safety_gate_passed: true
   clinical_metadata_partial_disposition: true
-  clinical_metadata_remaining_blocker: missing_exact_canonical_lvef_mapping
+  clinical_metadata_remaining_blocker: nine_technical_reviews_and_eight_human_clinical_decisions
   clinical_unit_summary:
     targets_with_one_known_unit: 28
     targets_with_mixed_known_unknown_units: [ascending_aorta_diameter]
@@ -188,6 +194,7 @@ phase1e_a_reconstruction_smoke:
       header_read_failed_objects: 0
       header_read_used_stop_before_pixels: true
       multiframe_candidates: 123
+
       single_frame_objects: 129
       studies_with_multiframe_candidate: 3
       positive_control_gate_passed: true
@@ -385,6 +392,73 @@ phase1e_a_reconstruction_smoke:
     - confirmatory_test_performance_access
     - performance_based_task_or_pipeline_selection
     - historical_snapshot_modification
+
+phase1e_bc_resource_metadata_preflight:
+  institutional_restricted_ai_authorization: INSTITUTIONALLY_AUTHORIZED
+  direct_analysis_mode: APPROVED_DIRECT_RESTRICTED_AGENT
+  export_mode: MANUSCRIPT_OR_GIT_EXPORT
+  authorization_recorded_date: '2026-08-05'
+  full_selected_object_metadata_preflight:
+    status: PENDING_SCC_EXECUTION
+    selected_studies: 4530
+    selected_subjects: 4530
+    normalized_requests: 335984
+    smoke_verified_requests: 252
+    requests_without_full_phase1e_bc_metadata_verification: 335732
+    exact_source_bytes: PENDING
+    missing_objects: PENDING
+    changed_objects: PENDING
+    ownership_conflicts: PENDING
+    object_bodies_authorized: false
+  storage:
+    project_and_projectnb_are_separate_filesystems: true
+    project_root_symlink: false
+    projectnb_root_symlink: false
+    project_root_bind_mount_observed: false
+    projectnb_root_bind_mount_observed: false
+    disaster_tier_allocated_bytes_observed: 10954752000
+    both_current_worktrees_depend_on_project_common_git: true
+    research_target_quota_bytes: 2000000000000
+    required_free_bytes: 200000000000
+    complete_200gb_reallocation_recommended_now: false
+    partial_retained_backed_up_quota_preference_gb: 50
+    exact_current_research_usage_bytes: PENDING_CONTEMPORANEOUS_SCC_WITNESS
+    exact_projected_peak_bytes: PENDING_FULL_METADATA_PREFLIGHT
+    exact_projected_headroom_bytes: PENDING_FULL_METADATA_PREFLIGHT
+    additional_tb_required: PENDING_FULL_METADATA_PREFLIGHT
+  lvef_authority:
+    separate_from_canonical_multitask_mapping: true
+    synthetic_mapping_row_required: false
+    raw_target_match: exact_case_sensitive_lvef
+    aggregation: numeric_median_by_subject_and_measurement_id
+    analytical_scale: ef_percentage_points
+    native_source_unit_proven: false
+    method_mixture_resolved: false
+    historical_primary_binary_endpoint: lvef_lt_40
+    secondary_boundary_sensitivity: lvef_le_40
+    guideline_category_sensitivity: lvef_lt_50
+    exact_40_counts_preperformance_access: true
+  technical_metadata:
+    issue_count: 9
+    restricted_execution_status: PENDING
+    performance_inputs_permitted: false
+    train_only_distributional_evidence_required: true
+    mapping_and_raw_name_completeness_required: true
+    wall_motion_regional_class: pending_segmental_vs_wmsi_global_summary_subclassification
+  clinician_signoff:
+    question_count: 8
+    packet_builder_implemented: true
+    restricted_packet_generated: false
+    human_echocardiographer_signoff_complete: false
+  c3_execution_contract:
+    source_body_download_authorized: false
+    production_batches: 19
+    maximum_concurrent_batches: 1
+    dependent_finalizer_required: true
+    production_batch_runner_implemented_and_validated: false
+    full_c3_owner_authorization: false
+  targeted_openevidence_status: NOT_GENERATED_ZERO_LITERATURE_ANSWERABLE_AMBIGUITIES
+  confirmatory_access_open: false
 
 provenance:
   embedding_authority:
@@ -816,11 +890,23 @@ prefit_gates:
   phase1e_a_embedding_reproducibility_passed: true
   phase1e_a_study_pooling_reproducibility_passed: true
   phase1e_a_preservation_second_pass_passed: true
+  institutional_restricted_agent_authority_recorded: true
+  direct_restricted_and_reviewed_export_modes_separated: true
+  full_selected_gcs_metadata_preflight_complete: false
+  exact_selected_source_bytes_known: false
+  storage_migration_plan_complete: true
+  backed_up_authority_copy_verified: false
+  two_tb_headroom_gate_passed: false
+  requester_pays_budget_approved: false
+  c3_production_runner_implemented_and_validated: false
+  full_c3_execution_authorized: false
   five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false
   future_environment_capture_specified: true
   clinical_metadata_packet_complete: true
+  lvef_separate_label_authority_dispositioned: true
   clinical_metadata_allowlist_coverage_complete: false
+  requested_target_label_authority_coverage_complete_with_separate_lvef_authority: true
   clinical_metadata_partial_disposition_recorded: true
   clinical_metadata_tooling_retry_pending: false
   raw_alias_and_unit_review_complete: false

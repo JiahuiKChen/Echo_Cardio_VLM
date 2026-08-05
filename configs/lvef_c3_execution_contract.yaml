@@ -1,0 +1,238 @@
+schema_version: 1
+contract_id: lvef_multitask_c3_selected_reconstruction_v1
+status: UNAUTHORIZED_PHASE_1E_BC
+scientific_scope: prospective_selected_cohort_only_reconstruction
+
+authority:
+  accepted_abstract_version: 10
+  accepted_abstract_immutable: true
+  historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
+  branch: codex/lvef-multitask-revalidation
+  selected_manifest_sha256: 920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1
+  split_manifest_sha256: c5101cea1d76b38c6bb4517edf4b463b338d7505032cfa40bc8f27ca5b97e517
+  frozen_selected_source_manifest_sha256: PENDING_RESTRICTED_FULL_SOURCE_PREFLIGHT
+  command_commit: PENDING_PHASE_1E_BC_COMMIT
+  source_preflight_summary_sha256: PENDING_RESTRICTED_FULL_SOURCE_PREFLIGHT
+  resource_plan_sha256: PENDING_RESTRICTED_FULL_SOURCE_PREFLIGHT
+  command_config_manifest_sha256: PENDING_PHASE_1E_BC_FINAL_LOCK
+
+source:
+  release: mimic-iv-echo/1.0
+  bucket: mimic-iv-echo-1.0.physionet.org
+  selected_subjects: 4530
+  selected_studies: 4530
+  normalized_source_requests: 335984
+  exact_source_bytes: PENDING_RESTRICTED_FULL_SOURCE_PREFLIGHT
+  outside_selected_studies_permitted: false
+  historical_embedding_reuse_permitted: false
+  exact_object_metadata_required:
+    - size_bytes
+    - md5_base64
+    - crc32c_base64
+    - generation
+    - storage_class
+    - updated
+  source_body_download_authorized: false
+
+requester_pays:
+  enabled: true
+  billing_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+  billing_project_may_be_written_to_git: false
+
+storage:
+  output_root: /restricted/projectnb/mimicecho/lvef_multitask_c3
+  raw_dicom_root: /restricted/projectnb/mimicecho/lvef_multitask_c3/raw_dicoms
+  extracted_cache_root: /restricted/projectnb/mimicecho/lvef_multitask_c3/extracted_cache
+  raw_dicoms_retained_through_active_analysis: true
+  raw_dicom_deletion_permitted_by_this_contract: false
+  maximum_concurrent_extracted_batches: 1
+  extracted_cache_retirement_permitted_after_authorization: true
+  partial_files:
+    suffix: .partial
+    atomic_rename_after_verified_size_and_md5: true
+    stale_partial_files_may_be_retried: true
+
+batching:
+  method: sorted_selected_study_authority_contiguous_chunks
+  sort_keys: [subject_id_numeric, study_id_numeric]
+  studies_per_batch: 250
+  batch_prefix: c3_batch_
+  keep_study_objects_in_one_batch: true
+  maximum_active_extracted_batches: 1
+
+download:
+  exact_object_only: true
+  prefix_body_copy_permitted: false
+  retries: 4
+  retry_backoff_seconds: [5, 20, 60, 180]
+  resumable: true
+  local_size_must_match_remote: true
+  local_md5_must_match_remote: true
+  local_sha256_required: true
+
+dicom_and_extraction:
+  header_audit_before_pixel_decode: true
+  cine_candidate_rule: number_of_frames_greater_than_one
+  decoder_api: pydicom_3_pixels_pixel_array_raw_true
+  decoder_plugin_priority: [pylibjpeg, gdcm, pillow, pyjpegls]
+  native_transfer_syntax_uids:
+    - 1.2.840.10008.1.2
+    - 1.2.840.10008.1.2.1
+    - 1.2.840.10008.1.2.1.99
+    - 1.2.840.10008.1.2.2
+  supported_photometric_interpretations:
+    - MONOCHROME1
+    - MONOCHROME2
+    - RGB
+    - YBR_FULL
+    - YBR_FULL_422
+  required_bits_allocated: 8
+  required_bits_stored: 8
+  canonical_color_space: RGB
+  ybr_conversion: explicit_once_after_raw_decode
+  monochrome1_rule: invert_then_replicate_to_rgb
+  monochrome2_rule: replicate_to_rgb
+  masking_policy: strict_ultrasound_sector_v1
+  crop_resize_policy: aspect_center_crop_then_10_percent_zoom_then_cv2_inter_cubic
+  opencv_threads: 1
+  source_and_sampled_quality_gates:
+    - nonempty_sector
+    - retained_signal
+    - temporal_variation
+  target_frames: 32
+  target_height: 224
+  target_width: 224
+  output_dtype: uint8
+  temporal_sampling: historical_compatible_linspace_or_tail_repeat_v1
+  one_canonical_row_per_physical_clip: true
+  unique_physical_source_key_fields:
+    - release
+    - normalized_source_locator
+    - source_generation
+    - extracted_clip_index
+
+embedding:
+  encoder: EchoPrime
+  encoder_only: true
+  view_classifier_used: false
+  checkpoint_filename: echo_prime_encoder.pt
+  checkpoint_bytes: 138642379
+  checkpoint_sha256: 7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b
+  dimension: 512
+  dtype: float32
+  deterministic_torch_algorithms_required: true
+  normalization_mean: [29.110628, 28.076836, 29.096405]
+  normalization_std: [47.989223, 46.456997, 47.20083]
+  tensor_layout: C_T_H_W
+  temporal_stride: 2
+  encoder_input_frames: 16
+  autocast_used: false
+  tf32_allowed: false
+  cublas_workspace_config: ':4096:8'
+  batch_size: 8
+  random_seed: 20260803
+
+pooling:
+  method: arithmetic_mean
+  stable_clip_key_order_required: true
+  accumulation_dtype: float64
+  output_dtype: float32
+  one_vector_per_imaging_eligible_study: true
+
+environment:
+  python_executable: /restricted/projectnb/mimicecho/envs/echoprime-c3-py310/bin/python
+  python_version: 3.10.12
+  python_executable_sha256: 1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
+  pytorch_version: 2.11.0+cu130
+  torchvision_version: 0.26.0+cu130
+  cuda_runtime: '13.0'
+  cudnn_version: CAPTURE_FROM_ALLOCATED_JOB
+  full_package_inventory_required: true
+  allocated_gpu_identity_required: true
+
+scheduler:
+  system: SGE
+  array_tasks: 19
+  maximum_concurrent_array_tasks: 1
+  production_concurrency_batches: 1
+  extraction_threads: 4
+  gpu_slots_per_embedding_job: 1
+  dependent_finalizer_required: true
+  ambient_environment_export_permitted: false
+  job_identity_required: true
+  stdout_stderr_restricted: true
+
+cache_retirement:
+  enabled_only_after_owner_authorization: true
+  raw_dicom_retirement_prohibited: true
+  required_batch_gates:
+    - source
+    - download
+    - dicom_header
+    - extraction
+    - embedding
+    - pooling
+    - checksum
+    - preservation
+    - safety
+  require_marker_file: .c3_extracted_cache_marker.json
+  require_batch_manifest_sha256_match: true
+  require_preservation_manifest_sha256_match: true
+  require_cache_inventory_sha256_match: true
+  batch_cache_manifest_schema: c3_extracted_cache_manifest_v1_json
+  batch_preservation_manifest_schema: c3_batch_preservation_manifest_v1_json
+  require_contract_sha256_match: true
+  execute_confirmation_environment_variable: LVEF_C3_CACHE_RETIRE_CONFIRMATION
+
+preservation:
+  safe_relative_paths_only: true
+  sizes_and_sha256_required: true
+  source_commit_required: true
+  command_and_config_sha256_required: true
+  checkpoint_sha256_required: true
+  environment_and_package_inventory_required: true
+  scheduler_job_identity_required: true
+  run_timestamp_required: true
+  cohort_split_panel_model_versions_required: true
+  aggregate_safety_gate_required: true
+  denominator_manifest_required: true
+
+analysis_and_export:
+  restricted_analysis_mode: APPROVED_DIRECT_RESTRICTED_AGENT
+  export_mode: MANUSCRIPT_OR_GIT_EXPORT
+  detailed_outputs_remain_restricted: true
+  export_safety_gate_required: true
+
+authorization:
+  full_c3_execution: false
+  source_body_download: false
+  full_extraction: false
+  full_embedding: false
+  cache_retirement: false
+  predictive_modeling: false
+  confirmatory_performance_access: false
+  owner_name_or_initials: null
+  owner_authorization_date: null
+  owner_authorized_commit: null
+  owner_authorized_contract_sha256: null
+
+preauthorization_gates:
+  exact_source_metadata_complete: false
+  exact_source_bytes_known: false
+  no_selected_source_deficit: false
+  storage_migration_plan_complete: true
+  backed_up_authority_plan_complete: true
+  backed_up_authority_copy_verified: false
+  quota_headroom_gate_passed: false
+  requester_pays_budget_approved: false
+  selected_source_manifest_frozen: false
+  checkpoint_and_environment_contract_frozen: false
+  production_runner_implemented_and_validated: false
+  technical_metadata_review_complete: false
+  clinician_packet_ready: false
+  direct_restricted_agent_mode_documented: true
+  export_safety_mode_documented: true
+  command_config_checksums_frozen: false
+
+post_manuscript:
+  archival_or_purge_decision: PENDING_SEPARATE_OWNER_AND_INSTITUTIONAL_REVIEW

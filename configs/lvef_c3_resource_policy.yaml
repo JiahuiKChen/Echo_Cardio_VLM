@@ -1,0 +1,121 @@
+schema_version: 1
+policy_id: lvef_multitask_c3_resource_policy_v1
+status: PREFLIGHT_ONLY_NOT_EXECUTION_AUTHORITY
+
+units:
+  source_byte_authority: exact_integer_bytes_from_gcs_metadata
+  quota_planning_unit: decimal
+  decimal_gb_bytes: 1000000000
+  decimal_tb_bytes: 1000000000000
+  gib_bytes: 1073741824
+
+cohort:
+  selected_subjects: 4530
+  selected_studies: 4530
+  normalized_source_requests: 335984
+  deterministic_batch_size_studies: 250
+  deterministic_batch_prefix: c3_batch_
+
+storage:
+  final_research_quota_bytes: 2000000000000
+  current_research_usage_bytes: RUNTIME_OVERRIDE_REQUIRED
+  owner_reported_prior_research_usage_bytes: 139170000000
+  owner_observed_disaster_recovery_inventory_bytes: 10954752000
+  migrated_disaster_tier_usage_bytes: RUNTIME_CLASSIFIED_WITNESS_REQUIRED
+  migration_witness_status_required: PASS_CLASSIFIED_MIGRATION_WITNESS
+  migration_witness_states_allowed:
+    - PLANNED_NOT_EXECUTED
+    - COMPLETED_INCLUDED_IN_CURRENT_RESEARCH_USAGE
+  provisional_backed_up_retention_bytes: 50000000000
+  provisional_backed_up_retention_is_authority: false
+  minimum_absolute_headroom_bytes: 200000000000
+  minimum_fractional_headroom: 0.10
+  historical_full_extracted_cache_planning_bytes: 288000000000
+  extraction_bytes_per_source_object_upper_bound: 4816896
+  rolling_extracted_batch_concurrency: 1
+  rolling_extracted_batch_concurrency_sensitivity: 2
+  retained_extracted_audit_sample_bytes: 2000000000
+  manifest_and_metadata_reserve_bytes: 5000000000
+  log_reserve_bytes: 10000000000
+  preservation_output_reserve_bytes: 10000000000
+  safety_reserve_bytes: 50000000000
+  shared_partial_retry_buffer_batch_count: 1
+  shared_partial_retry_buffer_is_single_nonadditive_reserve: true
+  clip_embedding_bytes_per_source_object_upper_bound: 4096
+  study_embedding_bytes_per_study_upper_bound: 4096
+  raw_dicoms_retained: true
+  extracted_cache_is_rolling: true
+
+gcs_cost:
+  currency: USD
+  rate_authority: PLANNING_ASSUMPTION_REQUIRES_REQUESTER_PAYS_BILLING_CONFIRMATION
+  pricing_verified_date: '2026-08-05'
+  bucket_location_assumption: US
+  expected_bucket_locations: [US]
+  require_requester_pays_enabled: true
+  operation_pricing_scope: STANDARD_SELECTED_OBJECTS_WITH_AUTOCLASS_DISABLED_ONLY
+  require_all_selected_objects_standard_for_operation_rate_authority: true
+  require_bucket_autoclass_metadata: true
+  permit_autoclass_for_cost_authority: false
+  internet_egress_usd_per_gib: '0.12'
+  class_a_usd_per_1000_operations: '0.01'
+  class_b_usd_per_10000_operations: '0.004'
+  retrieval_usd_per_gib_by_storage_class:
+    STANDARD: '0'
+    NEARLINE: '0.01'
+    COLDLINE: '0.02'
+    ARCHIVE: '0.05'
+  body_get_operations_per_object: 1
+  retry_transfer_fraction: '0.05'
+  contingency_fraction: '0.20'
+
+storage_inventory:
+  roots:
+    - label: disaster_recovery
+      path: /restricted/project/mimicecho
+    - label: research
+      path: /restricted/projectnb/mimicecho
+  maximum_inventory_depth: 3
+  scheduler_path_environment_variables:
+    - TMPDIR
+    - TMP
+    - SGE_LOCALDIR
+    - SCRATCH
+  administrative_questions:
+    partial_quota_reallocation: REQUIRES_SCC_SUPPORT_CONFIRMATION
+    research_tier_backup: NO_OFFSITE_DISASTER_RECOVERY
+    research_tier_snapshots: DAILY_WITH_10_DAY_USER_ACCESSIBLE_RETENTION
+    research_tier_soft_delete: NOT_DOCUMENTED_REQUIRES_SCC_SUPPORT_CONFIRMATION
+    quota_decimal_or_binary: DECIMAL_GB_1000000000_BYTES
+
+recovery_classification_rules:
+  - pattern: '*/code/*/.git*'
+    recovery_class: git_recoverable
+    migration_disposition: safe_to_migrate_after_clean_git_and_remote_verification
+  - pattern: '*/code/Echo_Cardio_VLM_lvef_multitask*'
+    recovery_class: git_recoverable
+    migration_disposition: safe_to_migrate_after_clean_git_and_remote_verification
+  - pattern: '*/code/Echo_Cardio_VLM/.venv-echoprime*'
+    recovery_class: restricted_deterministically_regenerable
+    migration_disposition: safe_to_recreate_after_environment_authority_verification
+  - pattern: '*/code/Echo_Cardio_VLM/outputs*'
+    recovery_class: restricted_irreplaceability_unresolved
+    migration_disposition: requires_approved_backup_copy_or_owner_adjudication
+  - pattern: '*/raw*'
+    recovery_class: public_source_recoverable
+    migration_disposition: safe_to_migrate_with_checksum_preservation
+  - pattern: '*/dicom*'
+    recovery_class: public_source_recoverable
+    migration_disposition: safe_to_migrate_with_checksum_preservation
+  - pattern: '*/extracted*'
+    recovery_class: restricted_deterministically_regenerable
+    migration_disposition: safe_to_migrate_after_source_and_config_authority_verification
+  - pattern: '*/tmp*'
+    recovery_class: temporary
+    migration_disposition: review_before_migration
+  - pattern: '*/logs*'
+    recovery_class: temporary
+    migration_disposition: review_before_migration
+  - pattern: '*'
+    recovery_class: restricted_irreplaceability_unresolved
+    migration_disposition: requires_approved_backup_copy_or_owner_adjudication

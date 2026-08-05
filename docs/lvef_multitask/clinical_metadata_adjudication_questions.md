@@ -1,10 +1,10 @@
 # Restricted clinical metadata adjudication
 
-Status: **SCC-only questionnaire generated; eight echocardiographer decisions and nine technical reviews remain open**.
+Status: **fixed SCC-only signoff workflow prepared; eight echocardiographer decisions and nine technical reviews remain open**.
 
-The Phase 1D metadata audit completed successfully at commit `e97324a`. Its generated clinician form contains only issues classified `REQUIRES_ECHOCARDIOGRAPHER_ADJUDICATION`. The form includes restricted source metadata and therefore remains on SCC as:
+The Phase 1D metadata audit completed successfully at commit `e97324a`. Phase 1E adds a fixed packet builder and response validator. The form includes restricted source metadata and therefore remains on SCC as:
 
-`clinical_metadata_clinician_questionnaire_restricted.md`
+`clinical_metadata_clinician_signoff_restricted.md`
 
 Do not paste that form, its source rows, or completed responses into Git. Only a separately reviewed aggregate adjudication summary may be imported later.
 
@@ -21,7 +21,7 @@ The restricted form contains exactly these eight issue groups:
 7. `SINUS_DIAM_CONVENTION`
 8. `TR_MMHG_DEFINITION`
 
-Each is presented as an explicit multiple-choice decision beside the restricted project metadata. Lexically different descriptions alone cannot establish distinct constructs, and identical descriptions alone cannot establish duplicate values.
+Each is presented as an explicit multiple-choice decision beside the exact restricted project metadata. Every item includes an `UNRESOLVED_EXCLUDE` option, a required rationale, and the consequences for alias handling, target-family masking, and task scoring. Lexically different descriptions alone cannot establish distinct constructs, and identical descriptions alone cannot establish duplicate values.
 
 ## Questions not delegated to the clinician
 
@@ -37,7 +37,7 @@ The following nine issues require technical pipeline review and are intentionall
 - `VELOCITY_MPS_CMPS_UNITS`
 - `WALL_MOTION_FIELDS`
 
-In particular, the mapping authority contains no exact `lvef` row. Candidate LVEF-adjacent rows cannot substitute for that authority, and LVEF method composition cannot be adjudicated until the technical mapping gap is resolved.
+The mapping authority contains no exact `lvef` row because LVEF is governed separately by the exact raw target, numeric median aggregation within `(subject_id, measurement_id)`, the selected-study linkage, `build_lvef_still_manifest.py`, the historical manifest, and the passed label-provenance audit. A synthetic mapping row must not be created. This separate authority does not resolve LVEF method mixture or permit candidate aliases as predictors.
 
 No issue is currently `LITERATURE_ANSWERABLE`, so the clinician should not generate an OpenEvidence query from this packet.
 
@@ -45,9 +45,10 @@ No issue is currently `LITERATURE_ANSWERABLE`, so the clinician should not gener
 
 The restricted record must retain:
 
-- the packet checksum and commit;
+- the packet SHA-256 and source commit;
 - one selected response for each of the eight clinician questions;
-- clinician initials and date;
+- reviewer name or initials, role/expertise, and ISO signoff date;
+- a rationale for every response;
 - technical reviewer disposition for all nine technical issues;
 - explicit exclusion rather than silent mapping for every unresolved item.
 

@@ -1,0 +1,447 @@
+schema_version: 1
+policy_id: lvef_multitask_safe_export_v1
+
+authorization:
+  status: INSTITUTIONALLY_AUTHORIZED
+  recorded_date: '2026-08-05'
+  approved_workspace_or_api_class: institutionally_managed_chatgpt_enterprise_edu_healthcare_or_api_organization
+  exact_tenant_class_recorded_in_institutional_authority: true
+  direct_restricted_inspection_permitted: true
+  unrestricted_export_permitted: false
+
+modes:
+  APPROVED_DIRECT_RESTRICTED_AGENT:
+    enabled: true
+    detailed_outputs_must_remain_restricted: true
+    ordinary_responses_must_avoid_unnecessary_identifiers: true
+    confirmatory_performance_authority_granted: false
+    approved_roots:
+      - id: restricted_project_mimicecho
+        path: /restricted/project/mimicecho
+      - id: restricted_projectnb_mimicecho
+        path: /restricted/projectnb/mimicecho
+    receipt_roots:
+      - id: restricted_project_mimicecho
+        path: /restricted/project/mimicecho
+      - id: restricted_projectnb_mimicecho
+        path: /restricted/projectnb/mimicecho
+
+  MANUSCRIPT_OR_GIT_EXPORT:
+    enabled: true
+    human_approval_required: true
+    candidate_hash_binding_required: true
+    current_policy_hash_binding_required: true
+    schema_profile_required: true
+    revalidation_at_release_required: true
+    release_receipt_suffix: .release_receipt.json
+    restricted_staging_roots:
+      - id: restricted_project_mimicecho
+        path: /restricted/project/mimicecho
+      - id: restricted_projectnb_mimicecho
+        path: /restricted/projectnb/mimicecho
+    repository_release_roots:
+      - docs/lvef_multitask/approved_exports
+
+forbidden_content:
+  column_or_key_names:
+    - subject_id
+    - patient_id
+    - person_id
+    - study_id
+    - dicom_study_id
+    - dicom_id
+    - sop_instance_uid
+    - series_instance_uid
+    - study_instance_uid
+    - hadm_id
+    - stay_id
+    - mrn
+    - identifier
+    - y_true
+    - y_pred
+    - label
+    - prediction
+    - pred_lvef
+    - pred_reduced_prob
+    - embedding
+    - embeddings
+    - path
+    - file_path
+    - absolute_path
+    - dicom_filepath
+    - dicom_abs_path
+    - source_dicom_locator
+    - extracted_npz_locator
+    - keyframe_path
+    - npz_path
+    - gcs_uri
+    - gs_uri
+    - raw_name
+    - raw_description
+    - raw_alias
+  value_patterns:
+    - '(?i)/restricted/(?:project|projectnb)/'
+    - '(?i)gs://'
+    - '(?i)(?:^|[/\\])p[0-9]{2}/p[0-9]+/s[0-9]+(?:[/\\]|$)'
+    - '(?i)\.dcm(?:$|[/\\\s,])'
+    - '(?i)\.(?:npz|npy|parquet|pq|pt|pth|pkl|pickle)(?:$|[/\\\s,])'
+  git_blocked_suffixes:
+    - .dcm
+    - .npz
+    - .npy
+    - .parquet
+    - .pq
+    - .pt
+    - .pth
+    - .pkl
+    - .pickle
+    - .zip
+    - .tar
+    - .tar.gz
+    - .tgz
+    - .jsonl
+    - .log
+    - .out
+    - .err
+
+export_profiles:
+  c3_full_source_preflight_summary_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 262144
+    required_top_level_keys:
+      - status
+      - selected_studies
+      - selected_subjects
+      - requested_objects
+      - verified_objects
+      - missing_objects
+      - unexpected_selected_objects
+      - exact_source_bytes
+      - repeated_locator_groups_in_frozen_manifest
+      - historical_identical_rows_collapsed_before_frozen_manifest
+      - ownership_conflicts
+      - changed_objects_relative_to_historical_metadata
+      - split_manifest_sha256
+      - split_counts
+      - bucket_location
+      - bucket_requester_pays_enabled
+      - bucket_location_rate_match
+      - bucket_autoclass_metadata_present
+      - bucket_autoclass_enabled
+      - media_requests
+      - object_body_bytes_read
+      - dicom_bodies_downloaded
+    allowed_top_level_keys:
+      - schema_version
+      - status
+      - authority_scope
+      - authoritative_for_full_c3
+      - source_release
+      - selected_studies
+      - selected_subjects
+      - raw_source_request_rows
+      - requested_objects
+      - verified_objects
+      - missing_objects
+      - unexpected_selected_objects
+      - unexpected_selected_source_bytes
+      - changed_objects_relative_to_historical_metadata
+      - historical_metadata_comparable_counts
+      - historical_metadata_mismatch_counts
+      - production_batches
+      - zero_record_studies
+      - repeated_locator_groups_in_frozen_manifest
+      - historical_identical_rows_collapsed_before_frozen_manifest
+      - ownership_conflicts
+      - source_records_per_study
+      - exact_source_bytes
+      - exact_source_gib
+      - exact_source_decimal_tb
+      - storage_class_counts
+      - storage_class_bytes
+      - metadata_provider
+      - metadata_listing_pages
+      - metadata_objects_scanned
+      - metadata_selected_objects_matched
+      - metadata_operation_class
+      - media_requests
+      - object_body_bytes_read
+      - expected_metadata_list_operations
+      - expected_future_body_get_operations
+      - dicom_bodies_downloaded
+      - models_fitted
+      - predictions_generated
+      - confirmatory_performance_accessed
+      - selected_manifest_sha256
+      - split_manifest_sha256
+      - split_counts
+      - selected_source_manifest_sha256
+      - bucket_metadata_provider
+      - bucket_location
+      - bucket_location_type
+      - bucket_default_storage_class
+      - bucket_autoclass_metadata_present
+      - bucket_autoclass_enabled
+      - bucket_autoclass_toggle_time
+      - bucket_autoclass_terminal_storage_class
+      - bucket_autoclass_terminal_storage_class_update_time
+      - bucket_requester_pays_enabled
+      - bucket_metageneration
+      - bucket_updated
+      - bucket_metadata_operations
+      - bucket_metadata_media_requests
+      - bucket_metadata_body_bytes_read
+      - bucket_location_rate_match
+    field_types:
+      status: string
+      selected_studies: integer
+      selected_subjects: integer
+      requested_objects: integer
+      verified_objects: integer
+      missing_objects: integer
+      unexpected_selected_objects: integer
+      exact_source_bytes: integer
+      repeated_locator_groups_in_frozen_manifest: integer
+      ownership_conflicts: integer
+      changed_objects_relative_to_historical_metadata: integer
+      media_requests: integer
+      object_body_bytes_read: integer
+      dicom_bodies_downloaded: boolean
+      authoritative_for_full_c3: boolean
+      bucket_location: string
+      bucket_requester_pays_enabled: boolean
+      bucket_location_rate_match: boolean
+      bucket_autoclass_metadata_present: boolean
+      bucket_autoclass_enabled: boolean
+      bucket_metadata_operations: integer
+      bucket_metadata_media_requests: integer
+      bucket_metadata_body_bytes_read: integer
+
+  c3_full_source_preflight_by_batch_csv:
+    kind: csv
+    extensions: [.csv]
+    max_bytes: 1048576
+    max_rows: 1000
+    required_columns:
+      - production_batch
+      - n_studies
+      - n_subjects
+      - n_requested_objects
+      - n_verified_objects
+      - n_unexpected_selected_objects
+      - total_source_bytes
+      - status
+    allowed_columns:
+      - production_batch
+      - n_studies
+      - n_subjects
+      - n_requested_objects
+      - n_verified_objects
+      - n_unexpected_selected_objects
+      - total_source_bytes
+      - status
+
+  c3_full_source_cost_estimate_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 262144
+    required_top_level_keys:
+      - status
+      - currency
+      - exact_source_bytes
+      - metadata_list_class_a_operations
+      - bucket_metadata_class_a_operations
+      - total_metadata_class_a_operations
+      - bucket_location
+      - bucket_location_verified
+      - bucket_requester_pays_enabled
+      - future_body_get_class_b_operations
+      - projected_requester_pays_total_usd
+      - invoice_guarantee
+      - operation_pricing_authoritative
+      - selected_storage_classes_all_standard
+      - bucket_autoclass_metadata_present
+      - bucket_autoclass_enabled
+    allowed_top_level_keys:
+      - schema_version
+      - status
+      - currency
+      - rate_authority
+      - pricing_verified_date
+      - bucket_location_assumption
+      - bucket_location
+      - bucket_location_verified
+      - bucket_requester_pays_enabled
+      - bucket_autoclass_metadata_present
+      - bucket_autoclass_enabled
+      - selected_storage_classes_all_standard
+      - operation_pricing_authoritative
+      - operation_pricing_scope
+      - exact_source_bytes
+      - exact_source_gib
+      - metadata_list_class_a_operations
+      - bucket_metadata_class_a_operations
+      - total_metadata_class_a_operations
+      - future_body_get_class_b_operations
+      - internet_egress_usd_per_gib
+      - class_a_usd_per_1000_operations
+      - class_b_usd_per_10000_operations
+      - metadata_preflight_operation_cost_usd
+      - one_pass_source_egress_cost_usd
+      - one_pass_body_get_operation_cost_usd
+      - storage_class_bytes
+      - storage_class_counts
+      - one_pass_retrieval_cost_usd
+      - retry_fraction
+      - retry_contingency_cost_usd
+      - subtotal_before_general_contingency_usd
+      - general_contingency_fraction
+      - general_contingency_cost_usd
+      - projected_requester_pays_total_usd
+      - invoice_guarantee
+    field_types:
+      status: string
+      currency: string
+      exact_source_bytes: integer
+      metadata_list_class_a_operations: integer
+      bucket_metadata_class_a_operations: integer
+      total_metadata_class_a_operations: integer
+      bucket_location: string
+      bucket_location_verified: boolean
+      bucket_requester_pays_enabled: boolean
+      future_body_get_class_b_operations: integer
+      projected_requester_pays_total_usd: string
+      invoice_guarantee: boolean
+      operation_pricing_authoritative: boolean
+      selected_storage_classes_all_standard: boolean
+      bucket_autoclass_metadata_present: boolean
+      bucket_autoclass_enabled: boolean
+
+  c3_storage_projection_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 262144
+    required_top_level_keys:
+      - status
+      - quota_bytes
+      - projected_peak_bytes
+      - projected_headroom_bytes
+      - required_headroom_bytes
+      - headroom_gate_passed
+    allowed_top_level_keys:
+      - schema_version
+      - status
+      - strategy
+      - quota_bytes
+      - current_usage_bytes
+      - existing_research_usage_bytes
+      - migrated_disaster_tier_usage_bytes
+      - migration_increment_in_peak_bytes
+      - migration_witness_status
+      - migration_state
+      - disaster_tier_inventory_bytes
+      - classified_retained_disaster_tier_bytes
+      - provisional_50gb_retention_is_authority
+      - raw_source_bytes
+      - active_extraction_cache_bytes
+      - clip_embedding_bytes
+      - study_embedding_bytes
+      - manifest_bytes
+      - log_bytes
+      - shared_partial_retry_buffer_bytes
+      - preservation_bytes
+      - safety_reserve_bytes
+      - projected_peak_bytes
+      - projected_headroom_bytes
+      - required_headroom_bytes
+      - headroom_gate_passed
+      - additional_tb_required
+      - source_preflight_status
+      - final_research_quota_bytes
+      - quota_planning_unit
+      - minimum_absolute_headroom_bytes
+      - minimum_fractional_headroom_bytes
+      - exact_source_bytes
+      - production_batches
+      - rolling_extracted_batch_concurrency
+      - largest_batch_source_bytes
+      - full_extracted_cache_upper_bound_bytes
+      - extraction_bytes_per_source_object_upper_bound
+      - historical_full_extracted_cache_planning_bytes
+      - rolling_active_extracted_cache_upper_bound_bytes
+      - strategies
+      - preferred_strategy
+      - preferred_projected_peak_bytes
+      - preferred_remaining_headroom_bytes
+      - preferred_go_under_2tb_quota
+      - another_1tb_increment_needed
+      - raw_dicom_retention_assumed
+      - extracted_cache_retirement_requires_all_batch_gates
+      - input_checksums
+    field_types:
+      status: string
+      quota_bytes: integer
+      projected_peak_bytes: integer
+      projected_headroom_bytes: integer
+      required_headroom_bytes: integer
+      headroom_gate_passed: boolean
+
+  clinical_metadata_adjudication_summary_csv:
+    kind: csv
+    extensions: [.csv]
+    max_bytes: 1048576
+    max_rows: 100
+    required_columns:
+      - question_id
+      - review_type
+      - final_disposition_category
+      - evidence_tier
+      - reviewer_role
+      - signoff_date
+      - effect_on_strict_panel
+      - effect_on_family_masked_panel
+      - effect_on_pragmatic_panel
+      - unresolved_flag
+    allowed_columns:
+      - question_id
+      - review_type
+      - final_disposition_category
+      - evidence_tier
+      - reviewer_role
+      - signoff_date
+      - effect_on_strict_panel
+      - effect_on_family_masked_panel
+      - effect_on_pragmatic_panel
+      - unresolved_flag
+
+  aggregate_safety_gate_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 262144
+    required_top_level_keys:
+      - status
+      - safety_gate_passed
+      - issues
+    allowed_top_level_keys:
+      - schema_version
+      - status
+      - safety_gate_passed
+      - issues
+      - metadata_only_provider
+      - cloud_storage_json_api_objects_list_only
+      - offline_listing_replay
+      - media_requests
+      - object_body_bytes_read
+      - restricted_detail_outside_repository
+      - aggregate_contains_subject_or_study_identifiers
+      - aggregate_contains_object_locators
+      - aggregate_contains_object_hashes
+      - models_fitted
+      - predictions_generated
+      - confirmatory_performance_accessed
+      - dicom_bodies_downloaded
+    field_types:
+      status: string
+      safety_gate_passed: boolean
+      issues: array
