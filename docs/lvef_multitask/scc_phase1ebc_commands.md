@@ -61,6 +61,41 @@ findmnt --target /restricted/project/mimicecho >"$RUN_ROOT/restricted/quota/find
 findmnt --target /restricted/projectnb/mimicecho >"$RUN_ROOT/restricted/quota/findmnt_projectnb.txt"
 CURRENT_RESEARCH_USAGE_BYTES="$(du -sx -B1 /restricted/projectnb/mimicecho | awk 'NR==1 {print $1}')"
 [[ "$CURRENT_RESEARCH_USAGE_BYTES" =~ ^[0-9]+$ ]]
+RESOURCE_POLICY="$WORKTREE/configs/lvef_c3_resource_policy.yaml"
+SAFE_EXPORT_POLICY="$WORKTREE/configs/lvef_multitask_safe_export_policy.yaml"
+STORAGE_DETAIL="$RUN_ROOT/restricted/scc_storage_inventory.restricted.json"
+STORAGE_SUMMARY="$RUN_ROOT/aggregate/scc_storage_inventory.summary.json"
+if [[ -e "$STORAGE_DETAIL" || -e "$STORAGE_SUMMARY" ]]; then
+  test -f "$STORAGE_DETAIL"
+  test -f "$STORAGE_SUMMARY"
+else
+  "$PYTHON" scripts/audit_lvef_c3_storage.py \
+    --resource-policy "$RESOURCE_POLICY" \
+    --safe-export-policy "$SAFE_EXPORT_POLICY" \
+    --restricted-output "$STORAGE_DETAIL" \
+    --aggregate-output "$STORAGE_SUMMARY" \
+    >"$RUN_ROOT/restricted/logs/storage_audit.stdout.txt" \
+    2>"$RUN_ROOT/restricted/logs/storage_audit.stderr.txt"
+fi
+"$PYTHON" scripts/validate_lvef_c3_resource_preflight_outputs.py \
+  --stage storage --run-root "$RUN_ROOT" >/dev/null
+
+MIGRATION_CLASSIFICATION="$RUN_ROOT/restricted/quota/disaster_tier_path_classification.restricted.json"
+MIGRATION_WITNESS="$RUN_ROOT/restricted/quota/classified_migration_witness.json"
+"$PYTHON" scripts/build_lvef_c3_migration_witness.py \
+  --storage-detail "$STORAGE_DETAIL" \
+  --classification-output "$MIGRATION_CLASSIFICATION" \
+  --witness-output "$MIGRATION_WITNESS" \
+  --safe-export-policy "$SAFE_EXPORT_POLICY" \
+  --planning-mode FULL_MIGRATION_AFTER_BACKUP \
+  >"$RUN_ROOT/restricted/logs/migration_witness.stdout.txt" \
+  2>"$RUN_ROOT/restricted/logs/migration_witness.stderr.txt"
+test -f "$MIGRATION_CLASSIFICATION"
+test -f "$MIGRATION_WITNESS"
+EXPECTED_RESOURCE_POLICY_SHA256="$(sha256sum "$RESOURCE_POLICY" | awk '{print $1}')"
+EXPECTED_SAFE_EXPORT_POLICY_SHA256="$(sha256sum "$SAFE_EXPORT_POLICY" | awk '{print $1}')"
+EXPECTED_MIGRATION_CLASSIFICATION_SHA256="$(sha256sum "$MIGRATION_CLASSIFICATION" | awk '{print $1}')"
+EXPECTED_MIGRATION_WITNESS_SHA256="$(sha256sum "$MIGRATION_WITNESS" | awk '{print $1}')"
 SESSION_ENV_NEXT="$(mktemp "$SESSION_ENV.tmp.XXXXXX")"
 chmod 600 "$SESSION_ENV_NEXT"
 cp "$SESSION_ENV" "$SESSION_ENV_NEXT"
@@ -69,12 +104,22 @@ cp "$SESSION_ENV" "$SESSION_ENV_NEXT"
   printf 'RUN_ID=%q\n' "$RUN_ID"
   printf 'RUN_ROOT=%q\n' "$RUN_ROOT"
   printf 'CURRENT_RESEARCH_USAGE_BYTES=%q\n' "$CURRENT_RESEARCH_USAGE_BYTES"
+  printf 'RESOURCE_POLICY=%q\n' "$RESOURCE_POLICY"
+  printf 'SAFE_EXPORT_POLICY=%q\n' "$SAFE_EXPORT_POLICY"
+  printf 'STORAGE_DETAIL=%q\n' "$STORAGE_DETAIL"
+  printf 'STORAGE_SUMMARY=%q\n' "$STORAGE_SUMMARY"
+  printf 'MIGRATION_CLASSIFICATION=%q\n' "$MIGRATION_CLASSIFICATION"
+  printf 'MIGRATION_WITNESS=%q\n' "$MIGRATION_WITNESS"
+  printf 'EXPECTED_RESOURCE_POLICY_SHA256=%q\n' "$EXPECTED_RESOURCE_POLICY_SHA256"
+  printf 'EXPECTED_SAFE_EXPORT_POLICY_SHA256=%q\n' "$EXPECTED_SAFE_EXPORT_POLICY_SHA256"
+  printf 'EXPECTED_MIGRATION_CLASSIFICATION_SHA256=%q\n' "$EXPECTED_MIGRATION_CLASSIFICATION_SHA256"
+  printf 'EXPECTED_MIGRATION_WITNESS_SHA256=%q\n' "$EXPECTED_MIGRATION_WITNESS_SHA256"
 } >>"$SESSION_ENV_NEXT"
 mv -f "$SESSION_ENV_NEXT" "$SESSION_ENV"
 chmod 600 "$SESSION_ENV"
 ```
 
-Before continuing, complete the restricted path-level classification and create `$RUN_ROOT/restricted/quota/classified_migration_witness.json`. Do not substitute the observed whole-tree byte count. The JSON must contain `schema_version: 1`, status `PASS_CLASSIFIED_MIGRATION_WITNESS`, `classification_complete: true`, migration state `PLANNED_NOT_EXECUTED` or `COMPLETED_INCLUDED_IN_CURRENT_RESEARCH_USAGE`, reconciled nonnegative integer `disaster_tier_inventory_bytes`, `classified_migration_bytes`, and `classified_retained_bytes`, plus lowercase 64-character `inventory_sha256` and `classification_sha256` fields. Migrated plus retained bytes must equal the inventory exactly. The 50-GB retention option is provisional and cannot be used as a witness value without this classification.
+Block 2 creates only a conservative planning witness. It classifies the entire current disaster-tier inventory for migration after a separately verified backup, records `PLANNED_NOT_EXECUTED`, and explicitly records that neither backup nor migration was completed. The restricted path-level classification and its witness are checksum-bound to the current storage-detail JSON. The 50-GB retention option remains provisional and is not used in this full-migration planning mode.
 
 ## 3. Build the mode-600 GCS/resource preflight environment
 
@@ -96,10 +141,14 @@ SELECTED_STUDIES="$FULLSCALE_ROOT/manifests/all_eligible_studies.csv"
 SPLIT_MAP="$FULLSCALE_ROOT/manifests/subject_split_map_v1.csv"
 SELECTED_SOURCE_MANIFEST="$SMOKE_AUTH_ROOT/restricted/source/selected_source_manifest_restricted.csv"
 SOURCE_AUTHORITY_SUMMARY="$SMOKE_AUTH_ROOT/aggregate/source/reconstruction_source_manifest.summary.json"
-RESOURCE_POLICY="$WORKTREE/configs/lvef_c3_resource_policy.yaml"
-SAFE_EXPORT_POLICY="$WORKTREE/configs/lvef_multitask_safe_export_policy.yaml"
-MIGRATION_WITNESS="$RUN_ROOT/restricted/quota/classified_migration_witness.json"
+test -f "$RESOURCE_POLICY"
+test -f "$SAFE_EXPORT_POLICY"
+test -f "$MIGRATION_CLASSIFICATION"
 test -f "$MIGRATION_WITNESS"
+test "$(sha256sum "$RESOURCE_POLICY" | awk '{print $1}')" = "$EXPECTED_RESOURCE_POLICY_SHA256"
+test "$(sha256sum "$SAFE_EXPORT_POLICY" | awk '{print $1}')" = "$EXPECTED_SAFE_EXPORT_POLICY_SHA256"
+test "$(sha256sum "$MIGRATION_CLASSIFICATION" | awk '{print $1}')" = "$EXPECTED_MIGRATION_CLASSIFICATION_SHA256"
+test "$(sha256sum "$MIGRATION_WITNESS" | awk '{print $1}')" = "$EXPECTED_MIGRATION_WITNESS_SHA256"
 
 EXPECTED_SELECTED_SOURCE_SHA256="$(
   "$PYTHON" -c '
@@ -115,10 +164,6 @@ EXPECTED_SELECTED_STUDIES_SHA256="920aa8742297dd90c5f125723a425a85201fa7966e926b
 EXPECTED_SPLIT_MAP_SHA256="c5101cea1d76b38c6bb4517edf4b463b338d7505032cfa40bc8f27ca5b97e517"
 test "$(sha256sum "$SELECTED_STUDIES" | awk '{print $1}')" = "$EXPECTED_SELECTED_STUDIES_SHA256"
 test "$(sha256sum "$SPLIT_MAP" | awk '{print $1}')" = "$EXPECTED_SPLIT_MAP_SHA256"
-EXPECTED_RESOURCE_POLICY_SHA256="$(sha256sum "$RESOURCE_POLICY" | awk '{print $1}')"
-EXPECTED_SAFE_EXPORT_POLICY_SHA256="$(sha256sum "$SAFE_EXPORT_POLICY" | awk '{print $1}')"
-EXPECTED_MIGRATION_WITNESS_SHA256="$(sha256sum "$MIGRATION_WITNESS" | awk '{print $1}')"
-
 read -r -s -p 'Approved requester-pays GCP project: ' LVEF_C3_GCP_BILLING_PROJECT
 printf '\n'
 test -n "$LVEF_C3_GCP_BILLING_PROJECT"
