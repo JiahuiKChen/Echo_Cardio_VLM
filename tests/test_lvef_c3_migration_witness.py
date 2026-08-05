@@ -3,6 +3,7 @@ from __future__ import annotations
 # SYNTHETIC_TEST_DATA_ONLY: all paths and byte counts in this file are fixtures.
 
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import build_lvef_c3_migration_witness as builder
+import audit_lvef_c3_storage as storage_audit
 import plan_lvef_c3_resources as planner
 
 
@@ -37,12 +39,14 @@ def _detail(*, root_bytes: int = 1_024, direct_bytes: tuple[int, int] = (600, 40
                     "options": "rw",
                     "is_bind_mount": False,
                 },
+                "submount_inventory": {"status": "PASS", "nested_mounts": []},
                 "statvfs": {
                     "capacity_bytes": 2_000,
                     "available_bytes": 976,
                     "free_bytes": 976,
                 },
                 "symlinks": [],
+                "symlink_records": [],
                 "inventory": [
                     {
                         "path": str(root / "code" / "repo"),
@@ -76,8 +80,10 @@ def _detail(*, root_bytes: int = 1_024, direct_bytes: tuple[int, int] = (600, 40
                 "exists": True,
                 "device": 12,
                 "mount": {"status": "PASS", "is_bind_mount": False},
+                "submount_inventory": {"status": "PASS", "nested_mounts": []},
                 "statvfs": {},
                 "symlinks": [],
+                "symlink_records": [],
                 "inventory": [],
             },
         ],
@@ -149,15 +155,76 @@ def test_direct_child_bytes_cannot_exceed_root_inventory() -> None:
         raise AssertionError("Overlapping or inconsistent direct-child bytes must fail closed")
 
 
-def test_symlink_or_bind_mount_inventory_fails_closed() -> None:
+def _same_scope_symlink_record() -> dict:
+    link = SYNTHETIC_ROOT / "outputs" / "latest"
+    target = SYNTHETIC_ROOT / "outputs" / "run_001"
+    return {
+        "path": str(link),
+        "raw_target": str(target),
+        "resolved_target": str(target),
+        "target_exists": True,
+        "target_within_disaster_root": True,
+        "link_top_level_scope": "outputs",
+        "target_top_level_scope": "outputs",
+        "same_top_level_scope": True,
+        "status": "INTERNAL_EXISTING_SAME_SCOPE",
+        "target_content_followed_or_counted": False,
+    }
+
+
+def test_internal_existing_same_scope_symlink_is_planned_without_following() -> None:
     symlinked = _detail()
-    symlinked["roots"][0]["symlinks"] = [str(SYNTHETIC_ROOT / "link")]
+    record = _same_scope_symlink_record()
+    symlinked["roots"][0]["symlinks"] = [record["path"]]
+    symlinked["roots"][0]["symlink_records"] = [record]
+    classification, witness = _build(symlinked)
+    assert classification["symlink_count"] == 1
+    assert classification["all_symlinks_internal_existing_same_scope"] is True
+    assert classification["symlink_target_content_followed_or_counted"] is False
+    output_entry = next(
+        row for row in classification["entries"] if row["relative_path"] == "outputs"
+    )
+    assert output_entry["internal_same_scope_symlink_count"] == 1
+    assert witness["symlink_count"] == 1
+    assert witness["migration_state"] == "PLANNED_NOT_EXECUTED"
+
+
+def test_uncovered_or_blocking_symlink_inventory_fails_closed() -> None:
+    uncovered = _detail()
+    record = _same_scope_symlink_record()
+    uncovered["roots"][0]["symlinks"] = [record["path"]]
     try:
-        _build(symlinked)
+        _build(uncovered)
     except builder.MigrationWitnessError as exc:
-        assert str(exc) == "DISASTER_ROOT_CONTAINS_SYMLINKS"
+        assert str(exc) == "DISASTER_SYMLINK_RECORD_COVERAGE_INCOMPLETE"
     else:
-        raise AssertionError("A symlink-bearing inventory must fail closed")
+        raise AssertionError("An uncovered symlink must fail closed")
+
+    outside = _detail()
+    record = _same_scope_symlink_record()
+    record.update(
+        {
+            "resolved_target": "/synthetic/outside",
+            "target_within_disaster_root": False,
+            "target_top_level_scope": None,
+            "same_top_level_scope": False,
+            "status": "OUTSIDE_DISASTER_ROOT",
+        }
+    )
+    outside["roots"][0]["symlinks"] = [record["path"]]
+    outside["roots"][0]["symlink_records"] = [record]
+    try:
+        _build(outside)
+    except builder.MigrationWitnessError as exc:
+        assert str(exc) in {
+            "INVENTORY_PATH_ESCAPES_DISASTER_ROOT",
+            "DISASTER_ROOT_CONTAINS_BLOCKING_SYMLINKS",
+        }
+    else:
+        raise AssertionError("An external symlink target must fail closed")
+
+
+def test_bind_mount_inventory_fails_closed() -> None:
 
     bound = _detail()
     bound["roots"][0]["mount"]["is_bind_mount"] = True
@@ -167,6 +234,131 @@ def test_symlink_or_bind_mount_inventory_fails_closed() -> None:
         assert str(exc) == "DISASTER_MOUNT_NOT_VALIDATED_OR_IS_BIND"
     else:
         raise AssertionError("A bind-mounted root must fail closed")
+
+
+def test_storage_audit_classifies_internal_same_scope_symlink_without_following() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "outputs" / "run_001"
+        target.mkdir(parents=True)
+        (target / "payload.txt").write_text("synthetic\n", encoding="utf-8")
+        link = root / "outputs" / "latest"
+        os.symlink(target, link)
+        rows = storage_audit._symlink_records(root)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "INTERNAL_EXISTING_SAME_SCOPE"
+    assert rows[0]["target_exists"] is True
+    assert rows[0]["target_within_disaster_root"] is True
+    assert rows[0]["same_top_level_scope"] is True
+    assert rows[0]["target_content_followed_or_counted"] is False
+
+
+def test_storage_audit_marks_external_and_dangling_symlinks_blocking() -> None:
+    with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+        root = Path(directory)
+        (root / "outputs").mkdir()
+        external = Path(outside) / "target"
+        external.mkdir()
+        os.symlink(external, root / "outputs" / "external")
+        os.symlink(root / "outputs" / "missing", root / "outputs" / "dangling")
+        rows = storage_audit._symlink_records(root)
+    assert {row["status"] for row in rows} == {
+        "DANGLING_OR_UNRESOLVABLE",
+        "OUTSIDE_DISASTER_ROOT",
+    }
+    assert all(row["target_content_followed_or_counted"] is False for row in rows)
+
+
+def test_storage_audit_finds_symlinks_deeper_than_byte_inventory_depth() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "outputs" / "one" / "two" / "three" / "four" / "run"
+        target.mkdir(parents=True)
+        link = target.parent / "latest"
+        os.symlink(target, link)
+        rows = storage_audit._symlink_records(root)
+    assert [row["path"] for row in rows] == [str(link)]
+    assert rows[0]["status"] == "INTERNAL_EXISTING_SAME_SCOPE"
+
+
+def test_nested_mount_or_unvalidated_mount_inventory_fails_closed() -> None:
+    nested = _detail()
+    nested["roots"][0]["submount_inventory"] = {
+        "status": "PASS",
+        "nested_mounts": [
+            {
+                "target": str(SYNTHETIC_ROOT / "outputs" / "nested"),
+                "source": "synthetic",
+                "fstype": "syntheticfs",
+                "options": "rw,bind",
+                "is_bind_mount": True,
+            }
+        ],
+    }
+    try:
+        _build(nested)
+    except builder.MigrationWitnessError as exc:
+        assert str(exc) == "DISASTER_ROOT_CONTAINS_NESTED_MOUNTS"
+    else:
+        raise AssertionError("A nested mount must fail closed")
+
+    unavailable = _detail()
+    unavailable["roots"][0]["submount_inventory"] = {"status": "UNPARSEABLE"}
+    try:
+        _build(unavailable)
+    except builder.MigrationWitnessError as exc:
+        assert str(exc) == "DISASTER_SUBMOUNT_INVENTORY_NOT_VALIDATED"
+    else:
+        raise AssertionError("An unvalidated submount inventory must fail closed")
+
+
+def test_recursive_findmnt_inventory_detects_nested_mount_without_paths_in_safe_layer() -> None:
+    original_run = storage_audit._run
+    storage_audit._run = lambda command: {
+        "returncode": 0,
+        "stdout": json.dumps(
+            {
+                "filesystems": [
+                    {
+                        "target": "/synthetic/restricted/project",
+                        "source": "synthetic-root",
+                        "fstype": "syntheticfs",
+                        "options": "rw",
+                        "children": [
+                            {
+                                "target": str(SYNTHETIC_ROOT / "outputs" / "nested"),
+                                "source": "synthetic-bind",
+                                "fstype": "syntheticfs",
+                                "options": "rw,bind",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        "stderr_sha256": "a" * 64,
+    }
+    try:
+        result = storage_audit._findmnt_submounts(SYNTHETIC_ROOT)
+    finally:
+        storage_audit._run = original_run
+    assert result["status"] == "PASS"
+    assert len(result["nested_mounts"]) == 1
+    assert result["nested_mounts"][0]["is_bind_mount"] is True
+
+
+def test_recursive_findmnt_unparseable_tree_fails_closed() -> None:
+    original_run = storage_audit._run
+    storage_audit._run = lambda command: {
+        "returncode": 0,
+        "stdout": '{"filesystems": [{"target": 7}]}',
+        "stderr_sha256": "a" * 64,
+    }
+    try:
+        result = storage_audit._findmnt_submounts(SYNTHETIC_ROOT)
+    finally:
+        storage_audit._run = original_run
+    assert result == {"status": "UNPARSEABLE"}
 
 
 def test_write_or_validate_is_deterministic_and_never_overwrites() -> None:

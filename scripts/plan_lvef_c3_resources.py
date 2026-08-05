@@ -324,6 +324,10 @@ def build_plan(
             migration_witness["disaster_tier_inventory_bytes"]
         ),
         "classified_retained_disaster_tier_bytes": retained_classified_bytes,
+        "full_200gb_reallocation_supported_by_path_classification": (
+            retained_classified_bytes == 0
+        ),
+        "full_200gb_reallocation_completed_or_administratively_approved": False,
         "provisional_50gb_retention_is_authority": bool(
             storage["provisional_backed_up_retention_is_authority"]
         ),

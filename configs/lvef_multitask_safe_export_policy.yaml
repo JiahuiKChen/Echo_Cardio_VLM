@@ -342,6 +342,8 @@ export_profiles:
       - migration_state
       - disaster_tier_inventory_bytes
       - classified_retained_disaster_tier_bytes
+      - full_200gb_reallocation_supported_by_path_classification
+      - full_200gb_reallocation_completed_or_administratively_approved
       - provisional_50gb_retention_is_authority
       - raw_source_bytes
       - active_extraction_cache_bytes

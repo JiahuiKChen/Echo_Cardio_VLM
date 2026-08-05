@@ -58,6 +58,59 @@ def _findmnt(path: Path) -> dict[str, Any]:
     }
 
 
+def _flatten_mount_rows(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    flattened: list[Mapping[str, Any]] = []
+    for row in rows:
+        flattened.append(row)
+        children = row.get("children") or []
+        if not isinstance(children, list) or any(
+            not isinstance(child, Mapping) for child in children
+        ):
+            raise StorageAuditError("FINDMNT_SUBMOUNTS_CHILDREN_UNPARSEABLE")
+        flattened.extend(_flatten_mount_rows(children))
+    return flattened
+
+
+def _findmnt_submounts(path: Path) -> dict[str, Any]:
+    """Inventory nested mount points without traversing their contents."""
+
+    result = _run(["findmnt", "--json", "--submounts", "--target", str(path)])
+    if result["returncode"] != 0:
+        return {"status": "UNAVAILABLE", "error_digest": result["stderr_sha256"]}
+    try:
+        payload = json.loads(result["stdout"])
+        filesystems = payload.get("filesystems") or []
+        if not isinstance(filesystems, list) or any(
+            not isinstance(row, Mapping) for row in filesystems
+        ):
+            raise StorageAuditError("FINDMNT_SUBMOUNTS_ROOT_UNPARSEABLE")
+        rows = _flatten_mount_rows(filesystems)
+    except (json.JSONDecodeError, StorageAuditError, TypeError):
+        return {"status": "UNPARSEABLE"}
+
+    nested: list[dict[str, Any]] = []
+    for row in rows:
+        raw_target = row.get("target")
+        if not isinstance(raw_target, str) or not raw_target.startswith("/"):
+            return {"status": "UNPARSEABLE"}
+        target = Path(raw_target)
+        if target != path and _path_within(target, path):
+            options = str(row.get("options", ""))
+            nested.append(
+                {
+                    "target": raw_target,
+                    "source": row.get("source"),
+                    "fstype": row.get("fstype"),
+                    "options": options,
+                    "is_bind_mount": "bind" in options.split(","),
+                }
+            )
+    return {
+        "status": "PASS",
+        "nested_mounts": sorted(nested, key=lambda row: str(row["target"])),
+    }
+
+
 def _du_inventory(path: Path, depth: int) -> list[tuple[Path, int]]:
     result = _run(["du", "-x", "-B1", f"--max-depth={depth}", str(path)])
     if result["returncode"] != 0:
@@ -79,18 +132,100 @@ def _classification(path: Path, rules: Sequence[Mapping[str, Any]]) -> tuple[str
     return "restricted_irreplaceability_unresolved", "requires_approved_backup_copy_or_owner_adjudication"
 
 
-def _symlinks(path: Path, depth: int) -> list[str]:
-    found: list[str] = []
-    base_depth = len(path.parts)
-    for current, directories, files in os.walk(path, followlinks=False):
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _top_level_scope(path: Path, root: Path) -> str | None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    return relative.parts[0] if relative.parts else None
+
+
+def _symlink_records(path: Path) -> list[dict[str, Any]]:
+    """Recursively inventory link objects on the root device without following them."""
+
+    if path.is_symlink():
+        raise StorageAuditError("STORAGE_ROOT_IS_SYMLINK")
+
+    def fail_walk(error: OSError) -> None:
+        raise StorageAuditError("SYMLINK_SCAN_FAILED") from error
+
+    found: list[dict[str, Any]] = []
+    resolved_root = path.resolve(strict=True)
+    root_device = path.stat().st_dev
+    for current, directories, files in os.walk(
+        path, followlinks=False, onerror=fail_walk
+    ):
         current_path = Path(current)
-        if len(current_path.parts) - base_depth >= depth:
-            directories[:] = []
-        for name in list(directories) + files:
+        candidate_names = list(directories) + files
+        for directory in list(directories):
+            candidate = current_path / directory
+            try:
+                if candidate.is_symlink() or candidate.lstat().st_dev != root_device:
+                    directories.remove(directory)
+            except OSError as exc:
+                raise StorageAuditError("SYMLINK_SCAN_DIRECTORY_STAT_FAILED") from exc
+        for name in candidate_names:
             candidate = current_path / name
-            if candidate.is_symlink():
-                found.append(str(candidate))
-    return found
+            if not candidate.is_symlink():
+                continue
+            raw_target = os.readlink(candidate)
+            try:
+                resolved_target = candidate.resolve(strict=True)
+                target_exists = True
+                target_within_root = _path_within(resolved_target, resolved_root)
+                link_scope = _top_level_scope(candidate, path)
+                target_scope = (
+                    _top_level_scope(resolved_target, resolved_root)
+                    if target_within_root
+                    else None
+                )
+                same_top_level_scope = (
+                    target_within_root
+                    and link_scope is not None
+                    and link_scope == target_scope
+                )
+                if same_top_level_scope:
+                    status = "INTERNAL_EXISTING_SAME_SCOPE"
+                elif target_within_root:
+                    status = "INTERNAL_EXISTING_CROSS_SCOPE"
+                else:
+                    status = "OUTSIDE_DISASTER_ROOT"
+            except (OSError, RuntimeError):
+                try:
+                    resolved_target = candidate.resolve(strict=False)
+                except (OSError, RuntimeError):
+                    resolved_target = Path(
+                        os.path.abspath(os.path.join(candidate.parent, raw_target))
+                    )
+                target_exists = False
+                target_within_root = _path_within(resolved_target, resolved_root)
+                link_scope = _top_level_scope(candidate, path)
+                target_scope = None
+                same_top_level_scope = False
+                status = "DANGLING_OR_UNRESOLVABLE"
+            found.append(
+                {
+                    "path": str(candidate),
+                    "raw_target": raw_target,
+                    "resolved_target": str(resolved_target),
+                    "target_exists": target_exists,
+                    "target_within_disaster_root": target_within_root,
+                    "link_top_level_scope": link_scope,
+                    "target_top_level_scope": target_scope,
+                    "same_top_level_scope": same_top_level_scope,
+                    "status": status,
+                    "target_content_followed_or_counted": False,
+                }
+            )
+    return sorted(found, key=lambda row: str(row["path"]))
 
 
 def audit(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -104,11 +239,14 @@ def audit(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         path = Path(str(spec["path"]))
         exists = path.exists()
         mount = _findmnt(path) if exists else {"status": "PATH_ABSENT"}
+        submount_inventory = (
+            _findmnt_submounts(path) if exists else {"status": "PATH_ABSENT"}
+        )
         entries: list[dict[str, Any]] = []
         class_totals: dict[str, int] = {}
         root_allocated_bytes = 0
         direct_child_allocated_bytes = 0
-        symlinks: list[str] = []
+        symlink_records: list[dict[str, Any]] = []
         statvfs: dict[str, int] | None = None
         device: int | None = None
         if exists:
@@ -136,7 +274,7 @@ def audit(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
                 elif relative_depth == 1:
                     direct_child_allocated_bytes += size
                     class_totals[recovery] = class_totals.get(recovery, 0) + size
-            symlinks = _symlinks(path, depth)
+            symlink_records = _symlink_records(path)
         roots_detail.append(
             {
                 "label": label,
@@ -144,8 +282,10 @@ def audit(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
                 "exists": exists,
                 "device": device,
                 "mount": mount,
+                "submount_inventory": submount_inventory,
                 "statvfs": statvfs,
-                "symlinks": symlinks,
+                "symlinks": [row["path"] for row in symlink_records],
+                "symlink_records": symlink_records,
                 "inventory": entries,
             }
         )
@@ -157,9 +297,31 @@ def audit(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
                 "mount_status": mount.get("status"),
                 "filesystem_type": mount.get("fstype"),
                 "is_bind_mount": mount.get("is_bind_mount"),
+                "submount_inventory_status": submount_inventory.get("status"),
+                "nested_mount_count": len(submount_inventory.get("nested_mounts", [])),
+                "nested_bind_mount_count": sum(
+                    1
+                    for row in submount_inventory.get("nested_mounts", [])
+                    if row.get("is_bind_mount") is True
+                ),
                 "capacity_bytes": statvfs["capacity_bytes"] if statvfs else None,
                 "available_bytes": statvfs["available_bytes"] if statvfs else None,
-                "symlink_count": len(symlinks),
+                "symlink_count": len(symlink_records),
+                "symlink_counts_by_status": {
+                    status: sum(1 for row in symlink_records if row["status"] == status)
+                    for status in sorted({str(row["status"]) for row in symlink_records})
+                },
+                "migratable_internal_same_scope_symlink_count": sum(
+                    1
+                    for row in symlink_records
+                    if row["status"] == "INTERNAL_EXISTING_SAME_SCOPE"
+                ),
+                "blocking_symlink_count": sum(
+                    1
+                    for row in symlink_records
+                    if row["status"] != "INTERNAL_EXISTING_SAME_SCOPE"
+                ),
+                "symlink_scan_recursive_on_root_device": True,
                 "inventory_entry_count": len(entries),
                 "root_allocated_bytes": root_allocated_bytes,
                 "direct_child_allocated_bytes": direct_child_allocated_bytes,
@@ -212,6 +374,10 @@ def audit(policy: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         "roots_are_separate_devices": len(existing_devices) == 2 and len(set(existing_devices)) == 2,
         "any_symlinks": any(row["symlink_count"] for row in roots_safe),
         "any_bind_mounts": any(row.get("is_bind_mount") is True for row in roots_safe),
+        "any_nested_mounts": any(row["nested_mount_count"] for row in roots_safe),
+        "any_nested_bind_mounts": any(
+            row["nested_bind_mount_count"] for row in roots_safe
+        ),
         "quota_command_available": quota_result["returncode"] == 0,
         "quota_command_scope": quota_scope,
         "partial_quota_reallocation": storage_policy["administrative_questions"]["partial_quota_reallocation"],

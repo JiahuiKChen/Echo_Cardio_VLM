@@ -3,12 +3,16 @@
 set -euo pipefail
 umask 077
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lvef_c3_billing_environment.sh"
+
 : "${LVEF_C3_PREFLIGHT_ENV_FILE:?LVEF_C3_PREFLIGHT_ENV_FILE is required}"
 test -f "$LVEF_C3_PREFLIGHT_ENV_FILE"
 test -O "$LVEF_C3_PREFLIGHT_ENV_FILE"
 test "$(stat -c '%a' "$LVEF_C3_PREFLIGHT_ENV_FILE")" = "600"
 # The SCC-only file contains shell-escaped scalar assignments made by the owner.
 source "$LVEF_C3_PREFLIGHT_ENV_FILE"
+lvef_c3_quarantine_billing_project
 
 : "${WORKTREE:?}"
 : "${EXPECTED_COMMIT:?}"
@@ -103,16 +107,19 @@ for path in "${SOURCE_FINALS[@]}"; do
   [[ -e "$path" ]] && SOURCE_FINAL_COUNT=$((SOURCE_FINAL_COUNT + 1))
 done
 if [[ "$SOURCE_FINAL_COUNT" -eq "${#SOURCE_FINALS[@]}" ]]; then
+  unset LVEF_C3_GCP_BILLING_PROJECT
   "$PYTHON" scripts/validate_lvef_c3_resource_preflight_outputs.py \
     --stage source --run-root "$RUN_ROOT" \
     --source-manifest "$SELECTED_SOURCE_MANIFEST" \
     --selected-studies "$SELECTED_STUDIES" \
     --split-map "$SPLIT_MAP" >/dev/null
 elif [[ "$SOURCE_FINAL_COUNT" -ne 0 ]]; then
+  unset LVEF_C3_GCP_BILLING_PROJECT
   printf '%s\n' 'INCOMPLETE_FINAL_SOURCE_OUTPUT_SET' >&2
   exit 73
 else
-  "$PYTHON" scripts/preflight_lvef_c3_full_source.py \
+  if lvef_c3_run_with_billing_project \
+    "$PYTHON" scripts/preflight_lvef_c3_full_source.py \
     --source-manifest "$SELECTED_SOURCE_MANIFEST" \
     --selected-studies "$SELECTED_STUDIES" \
     --split-map "$SPLIT_MAP" \
@@ -124,7 +131,12 @@ else
     --aggregate-output-dir "$RUN_ROOT/aggregate" \
     --resume \
     >"$RUN_ROOT/restricted/logs/source_preflight.stdout.txt" \
-    2>"$RUN_ROOT/restricted/logs/source_preflight.stderr.txt"
+    2>"$RUN_ROOT/restricted/logs/source_preflight.stderr.txt"; then
+    :
+  else
+    SOURCE_PREFLIGHT_STATUS=$?
+    exit "$SOURCE_PREFLIGHT_STATUS"
+  fi
 fi
 
 RESOURCE_PLAN="$RUN_ROOT/aggregate/c3_full_resource_plan.json"

@@ -109,11 +109,62 @@ def build_artifacts(
         raise MigrationWitnessError("UNEXPECTED_DISASTER_ROOT")
     if disaster.get("exists") is not True:
         raise MigrationWitnessError("DISASTER_ROOT_ABSENT")
-    if disaster.get("symlinks") != []:
-        raise MigrationWitnessError("DISASTER_ROOT_CONTAINS_SYMLINKS")
+    symlinks = disaster.get("symlinks")
+    symlink_records = disaster.get("symlink_records", [])
+    if not isinstance(symlinks, list) or not isinstance(symlink_records, list):
+        raise MigrationWitnessError("DISASTER_SYMLINK_INVENTORY_INVALID")
+    symlink_paths = [str(value) for value in symlinks]
+    if len(symlink_paths) != len(set(symlink_paths)):
+        raise MigrationWitnessError("DUPLICATE_DISASTER_SYMLINK_PATH")
+    if len(symlink_records) != len(symlink_paths):
+        raise MigrationWitnessError("DISASTER_SYMLINK_RECORD_COVERAGE_INCOMPLETE")
+    validated_symlink_records: list[Mapping[str, Any]] = []
+    seen_symlink_records: set[str] = set()
+    for raw_record in symlink_records:
+        record = _require_mapping(raw_record, "DISASTER_SYMLINK_RECORD_NOT_MAPPING")
+        link_path = Path(str(record.get("path", "")))
+        _relative_inventory_path(link_path, disaster_root)
+        resolved_target = Path(str(record.get("resolved_target", "")))
+        _relative_inventory_path(resolved_target, disaster_root)
+        link_text = link_path.as_posix()
+        if link_text in seen_symlink_records:
+            raise MigrationWitnessError("DUPLICATE_DISASTER_SYMLINK_RECORD")
+        seen_symlink_records.add(link_text)
+        if (
+            link_text not in symlink_paths
+            or record.get("status") != "INTERNAL_EXISTING_SAME_SCOPE"
+            or record.get("target_exists") is not True
+            or record.get("target_within_disaster_root") is not True
+            or record.get("same_top_level_scope") is not True
+            or record.get("target_content_followed_or_counted") is not False
+        ):
+            raise MigrationWitnessError("DISASTER_ROOT_CONTAINS_BLOCKING_SYMLINKS")
+        link_relative = link_path.relative_to(disaster_root)
+        target_relative = resolved_target.relative_to(disaster_root)
+        if (
+            not link_relative.parts
+            or not target_relative.parts
+            or link_relative.parts[0] != target_relative.parts[0]
+            or record.get("link_top_level_scope") != link_relative.parts[0]
+            or record.get("target_top_level_scope") != target_relative.parts[0]
+        ):
+            raise MigrationWitnessError("DISASTER_SYMLINK_SCOPE_INCONSISTENT")
+        validated_symlink_records.append(record)
+    if seen_symlink_records != set(symlink_paths):
+        raise MigrationWitnessError("DISASTER_SYMLINK_RECORD_PATH_MISMATCH")
     mount = _require_mapping(disaster.get("mount"), "DISASTER_MOUNT_NOT_MAPPING")
     if mount.get("status") != "PASS" or mount.get("is_bind_mount") is True:
         raise MigrationWitnessError("DISASTER_MOUNT_NOT_VALIDATED_OR_IS_BIND")
+    submount_inventory = _require_mapping(
+        disaster.get("submount_inventory"), "DISASTER_SUBMOUNT_INVENTORY_NOT_MAPPING"
+    )
+    if submount_inventory.get("status") != "PASS":
+        raise MigrationWitnessError("DISASTER_SUBMOUNT_INVENTORY_NOT_VALIDATED")
+    nested_mounts = submount_inventory.get("nested_mounts")
+    if not isinstance(nested_mounts, list):
+        raise MigrationWitnessError("DISASTER_NESTED_MOUNTS_NOT_LIST")
+    if nested_mounts:
+        raise MigrationWitnessError("DISASTER_ROOT_CONTAINS_NESTED_MOUNTS")
 
     inventory = disaster.get("inventory")
     if not isinstance(inventory, list) or not inventory:
@@ -155,6 +206,10 @@ def build_artifacts(
     root_files_or_overhead_bytes = inventory_bytes - direct_child_bytes
 
     entries: list[dict[str, Any]] = []
+    symlink_counts_by_scope: dict[str, int] = {}
+    for record in validated_symlink_records:
+        scope = str(record["link_top_level_scope"])
+        symlink_counts_by_scope[scope] = symlink_counts_by_scope.get(scope, 0) + 1
     for relative, row, size in sorted(direct_rows, key=lambda item: item[0].as_posix()):
         recovery_class = row.get("recovery_class")
         audit_disposition = row.get("migration_disposition")
@@ -171,6 +226,14 @@ def build_artifacts(
                 "planning_disposition": "MIGRATE_AFTER_VERIFIED_BACKUP",
                 "backup_status": "NOT_VERIFIED_BY_THIS_WITNESS",
                 "migration_status": "NOT_EXECUTED",
+                "internal_same_scope_symlink_count": symlink_counts_by_scope.get(
+                    relative.parts[0], 0
+                ),
+                "symlink_handling": (
+                    "PRESERVE_LINK_OBJECT_AND_INTERNAL_TARGET_AFTER_VERIFIED_BACKUP"
+                    if symlink_counts_by_scope.get(relative.parts[0], 0)
+                    else "NO_SYMLINK_IN_SCOPE"
+                ),
             }
         )
 
@@ -186,6 +249,11 @@ def build_artifacts(
         "direct_child_bytes": direct_child_bytes,
         "root_files_or_overhead_bytes": root_files_or_overhead_bytes,
         "nested_inventory_row_count": len(nested_rows),
+        "nested_mount_count": 0,
+        "symlink_count": len(validated_symlink_records),
+        "symlink_scope_count": len(symlink_counts_by_scope),
+        "all_symlinks_internal_existing_same_scope": True,
+        "symlink_target_content_followed_or_counted": False,
         "complete_classified_direct_child_coverage": True,
         "classified_migration_bytes": inventory_bytes,
         "classified_retained_bytes": 0,
@@ -214,6 +282,11 @@ def build_artifacts(
         "disaster_tier_inventory_bytes": inventory_bytes,
         "classified_migration_bytes": inventory_bytes,
         "classified_retained_bytes": 0,
+        "symlink_count": len(validated_symlink_records),
+        "symlink_scope_count": len(symlink_counts_by_scope),
+        "nested_mount_count": 0,
+        "all_symlinks_internal_existing_same_scope": True,
+        "symlink_target_content_followed_or_counted": False,
         "inventory_sha256": storage_detail_sha256,
         "classification_sha256": classification_sha256,
         "backup_verified": False,

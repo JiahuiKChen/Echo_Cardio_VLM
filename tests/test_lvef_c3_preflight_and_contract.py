@@ -776,7 +776,8 @@ def test_full_runner_and_submit_gate_are_fail_closed_and_bash_valid() -> None:
     finalizer = ROOT / "scripts" / "scc_finalize_lvef_c3_full.sh"
     submit = ROOT / "scripts" / "scc_submit_lvef_c3_full.sh"
     resource = ROOT / "scripts" / "scc_run_lvef_c3_resource_preflight.sh"
-    for path in (runner, batch_runner, finalizer, submit, resource):
+    billing_helper = ROOT / "scripts" / "lvef_c3_billing_environment.sh"
+    for path in (runner, batch_runner, finalizer, submit, resource, billing_helper):
         subprocess.run(["bash", "-n", str(path)], check=True)
     completed = subprocess.run(["bash", str(runner)], capture_output=True, text=True)
     assert completed.returncode == 78
@@ -799,6 +800,92 @@ def test_full_runner_and_submit_gate_are_fail_closed_and_bash_valid() -> None:
     assert "-t 1-19 -tc 1" in planned.stdout
     assert "-hold_jid" in planned.stdout
     assert " -V " not in planned.stdout
+
+
+def _write_billing_environment_probe(path: Path) -> None:
+    path.write_text(
+        """\
+import os
+import sys
+
+present = "LVEF_C3_GCP_BILLING_PROJECT" in os.environ
+expected = sys.argv[1] == "present"
+if present != expected:
+    raise SystemExit(91)
+if len(sys.argv) > 2:
+    raise SystemExit(int(sys.argv[2]))
+print(f"billing_project_present={str(present).lower()}")
+""",
+        encoding="utf-8",
+    )
+
+
+def test_billing_project_is_scoped_to_wrapped_subprocess_without_disclosure() -> None:
+    helper = ROOT / "scripts" / "lvef_c3_billing_environment.sh"
+    resource = ROOT / "scripts" / "scc_run_lvef_c3_resource_preflight.sh"
+    secret = "synthetic-requester-project-never-print"
+    with tempfile.TemporaryDirectory() as directory:
+        probe = Path(directory) / "probe.py"
+        _write_billing_environment_probe(probe)
+        shell = r"""
+set -euo pipefail
+source "$1"
+export LVEF_C3_GCP_BILLING_PROJECT="$4"
+lvef_c3_quarantine_billing_project
+"$2" "$3" absent
+lvef_c3_run_with_billing_project "$2" "$3" present
+test -z "${LVEF_C3_GCP_BILLING_PROJECT+x}"
+"$2" "$3" absent
+"""
+        completed = subprocess.run(
+            ["bash", "-c", shell, "billing-test", str(helper), sys.executable, str(probe), secret],
+            capture_output=True,
+            text=True,
+        )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == [
+        "billing_project_present=false",
+        "billing_project_present=true",
+        "billing_project_present=false",
+    ]
+    assert secret not in completed.stdout
+    assert secret not in completed.stderr
+
+    resource_source = resource.read_text(encoding="utf-8")
+    assert "lvef_c3_quarantine_billing_project" in resource_source
+    assert "lvef_c3_run_with_billing_project" in resource_source
+    assert '"$PYTHON" scripts/preflight_lvef_c3_full_source.py' in resource_source
+
+
+def test_billing_project_is_unset_after_wrapped_subprocess_failure() -> None:
+    helper = ROOT / "scripts" / "lvef_c3_billing_environment.sh"
+    secret = "synthetic-failure-project-never-print"
+    with tempfile.TemporaryDirectory() as directory:
+        probe = Path(directory) / "probe.py"
+        _write_billing_environment_probe(probe)
+        shell = r"""
+set -euo pipefail
+source "$1"
+LVEF_C3_GCP_BILLING_PROJECT="$4"
+lvef_c3_quarantine_billing_project
+if lvef_c3_run_with_billing_project "$2" "$3" present 37; then
+  exit 92
+else
+  status=$?
+fi
+test "$status" -eq 37
+test -z "${LVEF_C3_GCP_BILLING_PROJECT+x}"
+"$2" "$3" absent
+"""
+        completed = subprocess.run(
+            ["bash", "-c", shell, "billing-test", str(helper), sys.executable, str(probe), secret],
+            capture_output=True,
+            text=True,
+        )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "billing_project_present=false\n"
+    assert secret not in completed.stdout
+    assert secret not in completed.stderr
 
 
 def test_contract_validator_rejects_execution_field_mutations() -> None:

@@ -126,7 +126,7 @@ mv -f "$SESSION_ENV_NEXT" "$SESSION_ENV"
 chmod 600 "$SESSION_ENV"
 ```
 
-Block 2 creates only a conservative planning witness. It classifies the entire current disaster-tier inventory for migration after a separately verified backup, records `PLANNED_NOT_EXECUTED`, and explicitly records that neither backup nor migration was completed. The restricted path-level classification and its witness are checksum-bound to the current storage-detail JSON. The 50-GB retention option remains provisional and is not used in this full-migration planning mode.
+Block 2 creates only a conservative planning witness. It recursively inventories symlink objects on the root filesystem without following their targets and separately inventories nested mount points. An existing internal symlink may remain in the full-migration plan only when its target exists inside the same top-level disaster-tier scope; the plan requires preserving the link object and internal target after a separately verified backup. Dangling, cyclic, external, cross-scope, uncovered, or malformed links and every nested mount fail closed. Exact paths and targets remain restricted. The witness records `PLANNED_NOT_EXECUTED` and explicitly records that neither backup nor migration was completed. The restricted path-level classification and its witness are checksum-bound to the current storage-detail JSON. The 50-GB retention option remains provisional and is not used in this full-migration planning mode.
 
 ## 3. Build the mode-600 GCS/resource preflight environment
 
@@ -250,7 +250,7 @@ qsub \
   "$WORKTREE/scripts/scc_run_lvef_c3_resource_preflight.sh"
 ```
 
-The job is metadata-only. It calls Cloud Storage bucket metadata and paginated `objects.list` GETs, never `alt=media`, `objects.get` media, `gsutil cp`, or `gcloud storage cp`. A partially written final output set blocks reuse; preserve the failed root and start a fresh run rather than deleting evidence in place.
+The job is metadata-only. It calls Cloud Storage bucket metadata and paginated `objects.list` GETs, never `alt=media`, `objects.get` media, `gsutil cp`, or `gcloud storage cp`. The requester-pays value is quarantined after the owner-only environment file is sourced, exposed only to the source-preflight Python subprocess through its environment, and cleared afterward; it is never passed in argv or printed. A partially written final output set blocks reuse; preserve the failed root and start a fresh run rather than deleting evidence in place.
 
 ## 5. Build and submit the restricted technical-metadata packet
 
