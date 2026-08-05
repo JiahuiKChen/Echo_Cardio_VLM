@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
@@ -26,6 +27,43 @@ MIGRATION_STATES = {
     "PLANNED_NOT_EXECUTED",
     "COMPLETED_INCLUDED_IN_CURRENT_RESEARCH_USAGE",
 }
+
+
+def validate_scc_quota_cost_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the published SCC quota rate without inventing an invoice total."""
+
+    quota_cost = policy.get("scc_quota_cost")
+    if not isinstance(quota_cost, Mapping):
+        raise ResourcePlanError("SCC_QUOTA_COST_POLICY_MISSING")
+    expected_literals = {
+        "status": "APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION",
+        "currency": "USD",
+        "rate_authority": "BOSTON_UNIVERSITY_STORAGE_AS_A_SERVICE_PUBLISHED_RATE",
+        "minimum_purchase_tb": 1,
+        "minimum_term_months": 6,
+        "billing_basis": "fiscal-year-prorated",
+        "administrative_exact_invoice": "pending-start-date-confirmation",
+    }
+    for key, expected in expected_literals.items():
+        if quota_cost.get(key) != expected:
+            raise ResourcePlanError(f"SCC_QUOTA_COST_POLICY_INVALID_{key.upper()}")
+    try:
+        annual_rate = Decimal(str(quota_cost["storage_as_a_service_usd_per_tb_year"]))
+        six_month_estimate = Decimal(
+            str(quota_cost["estimated_one_tb_six_month_cost_usd"])
+        )
+        twelve_month_estimate = Decimal(
+            str(quota_cost["estimated_one_tb_twelve_month_cost_usd"])
+        )
+    except (InvalidOperation, KeyError) as exc:
+        raise ResourcePlanError("SCC_QUOTA_COST_POLICY_INVALID_NUMERIC_RATE") from exc
+    if annual_rate != Decimal("22.00"):
+        raise ResourcePlanError("SCC_QUOTA_COST_ANNUAL_RATE_CHANGED")
+    if six_month_estimate != annual_rate * Decimal(6) / Decimal(12):
+        raise ResourcePlanError("SCC_QUOTA_COST_SIX_MONTH_ESTIMATE_INVALID")
+    if twelve_month_estimate != annual_rate:
+        raise ResourcePlanError("SCC_QUOTA_COST_TWELVE_MONTH_ESTIMATE_INVALID")
+    return dict(quota_cost)
 
 
 def _sha256_file(path: Path) -> str:
@@ -141,6 +179,7 @@ def build_plan(
     ):
         raise ResourcePlanError("SOURCE_PREFLIGHT_NOT_PASS")
     storage = policy["storage"]
+    scc_quota_cost = validate_scc_quota_cost_policy(policy)
     quota = int(storage["final_research_quota_bytes"])
     if current_usage_override is None:
         raise ResourcePlanError("CURRENT_RESEARCH_USAGE_RUNTIME_WITNESS_REQUIRED")
@@ -303,6 +342,7 @@ def build_plan(
         "projected_headroom_bytes": preferred["remaining_headroom_bytes"],
         "headroom_gate_passed": preferred["go_under_quota"],
         "additional_tb_required": 1 if another_tb_needed else 0,
+        "scc_quota_cost_authority": scc_quota_cost,
     }
 
 

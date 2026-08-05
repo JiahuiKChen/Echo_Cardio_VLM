@@ -429,6 +429,30 @@ def test_rolling_resource_plan_enforces_headroom() -> None:
     assert "retry_reserve" not in plan["strategies"][1]["components_bytes"]
     assert plan["provisional_50gb_retention_is_authority"] is False
     assert plan["raw_dicom_retention_assumed"] is True
+    assert plan["scc_quota_cost_authority"] == policy["scc_quota_cost"]
+
+
+def test_scc_quota_cost_policy_uses_published_annual_rate() -> None:
+    policy = yaml.safe_load(RESOURCE_POLICY.read_text())
+    quota_cost = planner.validate_scc_quota_cost_policy(policy)
+    assert quota_cost["status"] == "APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION"
+    assert quota_cost["storage_as_a_service_usd_per_tb_year"] == "22.00"
+    assert quota_cost["minimum_term_months"] == 6
+    assert quota_cost["estimated_one_tb_six_month_cost_usd"] == "11.00"
+    assert quota_cost["estimated_one_tb_twelve_month_cost_usd"] == "22.00"
+    assert quota_cost["billing_basis"] == "fiscal-year-prorated"
+    assert quota_cost["administrative_exact_invoice"] == "pending-start-date-confirmation"
+
+
+def test_scc_quota_cost_policy_rejects_invalid_six_month_arithmetic() -> None:
+    policy = yaml.safe_load(RESOURCE_POLICY.read_text())
+    policy["scc_quota_cost"]["estimated_one_tb_six_month_cost_usd"] = "10.00"
+    try:
+        planner.validate_scc_quota_cost_policy(policy)
+    except planner.ResourcePlanError as exc:
+        assert str(exc) == "SCC_QUOTA_COST_SIX_MONTH_ESTIMATE_INVALID"
+    else:
+        raise AssertionError("An invalid six-month storage estimate was accepted")
 
 
 def test_resource_plan_requires_a_contemporaneous_usage_witness() -> None:

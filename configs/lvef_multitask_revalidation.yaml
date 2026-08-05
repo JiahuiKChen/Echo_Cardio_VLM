@@ -411,6 +411,7 @@ phase1e_bc_resource_metadata_preflight:
     ownership_conflicts: PENDING
     object_bodies_authorized: false
   storage:
+    storage_expansion_status: APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION
     project_and_projectnb_are_separate_filesystems: true
     project_root_symlink: false
     projectnb_root_symlink: false

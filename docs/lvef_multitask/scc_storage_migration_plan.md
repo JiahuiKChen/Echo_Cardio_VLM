@@ -45,6 +45,7 @@ Current Boston University documentation distinguishes the tiers as follows:
 - scheduler-local `/scratch` has no snapshots and is automatically cleaned after about 30 days;
 - scheduler `$TMPDIR` is node-local and removed when the job finishes;
 - Storage-as-a-Service allocations are sold in whole terabytes defined as 1,000 GB.
+- the published Storage-as-a-Service rate is $22 per TB per year, subject to a six-month minimum and fiscal-year proration; one additional TB is therefore estimated at $11 for six months or $22 for 12 months, while the exact invoice remains pending the effective start date and RCS quote.
 
 Sources: [BU Project Disk Space](https://www.bu.edu/tech/support/research/computing-resources/file-storage/proj-diskspace/), [BU storage protection table](https://www.bu.edu/tech/support/research/computing-resources/file-storage/), and [BU job scratch guidance](https://www.bu.edu/tech/support/research/system-usage/running-jobs/resources-jobs/).
 

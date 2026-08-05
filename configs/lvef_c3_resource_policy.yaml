@@ -46,6 +46,19 @@ storage:
   raw_dicoms_retained: true
   extracted_cache_is_rolling: true
 
+scc_quota_cost:
+  status: APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION
+  currency: USD
+  rate_authority: BOSTON_UNIVERSITY_STORAGE_AS_A_SERVICE_PUBLISHED_RATE
+  pricing_verified_date: '2026-08-05'
+  storage_as_a_service_usd_per_tb_year: '22.00'
+  minimum_purchase_tb: 1
+  minimum_term_months: 6
+  estimated_one_tb_six_month_cost_usd: '11.00'
+  estimated_one_tb_twelve_month_cost_usd: '22.00'
+  billing_basis: fiscal-year-prorated
+  administrative_exact_invoice: pending-start-date-confirmation
+
 gcs_cost:
   currency: USD
   rate_authority: PLANNING_ASSUMPTION_REQUIRES_REQUESTER_PAYS_BILLING_CONFIRMATION

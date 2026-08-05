@@ -45,6 +45,11 @@ def test_metadata_wrapper_does_not_reference_predictive_workflows() -> None:
 
 def test_metadata_runbook_binds_historical_authority_hashes() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
+    assert 'scripts/resolve_lvef_scc_python.sh --record-json "$PYTHON_RECORD"' in text
+    assert 'PYTHON_RECORD_PARENT="/restricted/projectnb/mimicecho/audits/' in text
+    assert "test ! -e \"$PYTHON_RECORD\"" in text
+    assert "printf 'PYTHON_RECORD=%q\\n' \"$PYTHON_RECORD\"" in text
+    assert 'PYTHON="$(scripts/resolve_lvef_scc_python.sh)"' not in text
     assert (
         'EXPECTED_STRUCTURED_MEASUREMENTS_SHA256="'
         '95fc852457c25ca548d6fa1ae3ec5d2740b99a6aa3d53297a5b424ffc3d27023"'

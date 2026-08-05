@@ -357,6 +357,7 @@ export_profiles:
       - required_headroom_bytes
       - headroom_gate_passed
       - additional_tb_required
+      - scc_quota_cost_authority
       - source_preflight_status
       - final_research_quota_bytes
       - quota_planning_unit
