@@ -125,28 +125,62 @@ def build_artifacts(
         link_path = Path(str(record.get("path", "")))
         _relative_inventory_path(link_path, disaster_root)
         resolved_target = Path(str(record.get("resolved_target", "")))
-        _relative_inventory_path(resolved_target, disaster_root)
+        if not resolved_target.is_absolute() or ".." in resolved_target.parts:
+            raise MigrationWitnessError("DISASTER_SYMLINK_TARGET_PATH_INVALID")
         link_text = link_path.as_posix()
         if link_text in seen_symlink_records:
             raise MigrationWitnessError("DUPLICATE_DISASTER_SYMLINK_RECORD")
         seen_symlink_records.add(link_text)
+        status = record.get("status")
+        if status not in {
+            "INTERNAL_EXISTING_SAME_SCOPE",
+            "INTERNAL_EXISTING_CROSS_SCOPE",
+            "OUTSIDE_DISASTER_ROOT",
+            "DANGLING_OR_UNRESOLVABLE",
+        }:
+            raise MigrationWitnessError("DISASTER_SYMLINK_STATUS_INVALID")
         if (
             link_text not in symlink_paths
-            or record.get("status") != "INTERNAL_EXISTING_SAME_SCOPE"
-            or record.get("target_exists") is not True
-            or record.get("target_within_disaster_root") is not True
-            or record.get("same_top_level_scope") is not True
+            or not isinstance(record.get("raw_target"), str)
+            or not str(record.get("raw_target"))
             or record.get("target_content_followed_or_counted") is not False
         ):
-            raise MigrationWitnessError("DISASTER_ROOT_CONTAINS_BLOCKING_SYMLINKS")
+            raise MigrationWitnessError("DISASTER_SYMLINK_RECORD_INVALID")
         link_relative = link_path.relative_to(disaster_root)
-        target_relative = resolved_target.relative_to(disaster_root)
-        if (
-            not link_relative.parts
-            or not target_relative.parts
-            or link_relative.parts[0] != target_relative.parts[0]
-            or record.get("link_top_level_scope") != link_relative.parts[0]
-            or record.get("target_top_level_scope") != target_relative.parts[0]
+        if not link_relative.parts or record.get("link_top_level_scope") != link_relative.parts[0]:
+            raise MigrationWitnessError("DISASTER_SYMLINK_SCOPE_INCONSISTENT")
+        target_within = record.get("target_within_disaster_root") is True
+        if target_within:
+            target_relative = _relative_inventory_path(resolved_target, disaster_root)
+            target_scope = target_relative.parts[0] if target_relative.parts else None
+        else:
+            target_scope = None
+        if status == "INTERNAL_EXISTING_SAME_SCOPE" and (
+            record.get("target_exists") is not True
+            or not target_within
+            or record.get("same_top_level_scope") is not True
+            or target_scope != link_relative.parts[0]
+            or record.get("target_top_level_scope") != target_scope
+        ):
+            raise MigrationWitnessError("DISASTER_SYMLINK_SCOPE_INCONSISTENT")
+        if status == "INTERNAL_EXISTING_CROSS_SCOPE" and (
+            record.get("target_exists") is not True
+            or not target_within
+            or record.get("same_top_level_scope") is not False
+            or target_scope in {None, link_relative.parts[0]}
+            or record.get("target_top_level_scope") != target_scope
+        ):
+            raise MigrationWitnessError("DISASTER_SYMLINK_SCOPE_INCONSISTENT")
+        if status == "OUTSIDE_DISASTER_ROOT" and (
+            record.get("target_exists") is not True
+            or target_within
+            or record.get("same_top_level_scope") is not False
+            or record.get("target_top_level_scope") is not None
+        ):
+            raise MigrationWitnessError("DISASTER_SYMLINK_SCOPE_INCONSISTENT")
+        if status == "DANGLING_OR_UNRESOLVABLE" and (
+            record.get("target_exists") is not False
+            or record.get("same_top_level_scope") is not False
         ):
             raise MigrationWitnessError("DISASTER_SYMLINK_SCOPE_INCONSISTENT")
         validated_symlink_records.append(record)
@@ -207,9 +241,29 @@ def build_artifacts(
 
     entries: list[dict[str, Any]] = []
     symlink_counts_by_scope: dict[str, int] = {}
+    internal_same_scope_symlink_counts_by_scope: dict[str, int] = {}
+    blocking_symlink_counts_by_scope: dict[str, int] = {}
+    root_overhead_symlink_count = 0
+    blocking_symlink_count = 0
     for record in validated_symlink_records:
         scope = str(record["link_top_level_scope"])
         symlink_counts_by_scope[scope] = symlink_counts_by_scope.get(scope, 0) + 1
+        blocking = record.get("status") != "INTERNAL_EXISTING_SAME_SCOPE"
+        if not blocking:
+            internal_same_scope_symlink_counts_by_scope[scope] = (
+                internal_same_scope_symlink_counts_by_scope.get(scope, 0) + 1
+            )
+        if scope not in direct_names:
+            root_overhead_symlink_count += 1
+            blocking = True
+        if blocking:
+            blocking_symlink_count += 1
+            if scope in direct_names:
+                blocking_symlink_counts_by_scope[scope] = (
+                    blocking_symlink_counts_by_scope.get(scope, 0) + 1
+                )
+    retained_direct_child_bytes = 0
+    migrated_direct_child_bytes = 0
     for relative, row, size in sorted(direct_rows, key=lambda item: item[0].as_posix()):
         recovery_class = row.get("recovery_class")
         audit_disposition = row.get("migration_disposition")
@@ -217,25 +271,54 @@ def build_artifacts(
             raise MigrationWitnessError("DIRECT_CHILD_RECOVERY_CLASS_MISSING")
         if not isinstance(audit_disposition, str) or not audit_disposition:
             raise MigrationWitnessError("DIRECT_CHILD_AUDIT_DISPOSITION_MISSING")
+        retained_for_symlink_adjudication = relative.parts[0] in blocking_symlink_counts_by_scope
+        if retained_for_symlink_adjudication:
+            retained_direct_child_bytes += size
+        else:
+            migrated_direct_child_bytes += size
         entries.append(
             {
                 "relative_path": relative.as_posix(),
                 "size_bytes": size,
                 "audit_recovery_class": recovery_class,
                 "audit_migration_disposition": audit_disposition,
-                "planning_disposition": "MIGRATE_AFTER_VERIFIED_BACKUP",
+                "planning_disposition": (
+                    "RETAIN_PENDING_SYMLINK_ADJUDICATION"
+                    if retained_for_symlink_adjudication
+                    else "MIGRATE_AFTER_VERIFIED_BACKUP"
+                ),
                 "backup_status": "NOT_VERIFIED_BY_THIS_WITNESS",
                 "migration_status": "NOT_EXECUTED",
-                "internal_same_scope_symlink_count": symlink_counts_by_scope.get(
+                "symlink_count": symlink_counts_by_scope.get(relative.parts[0], 0),
+                "internal_same_scope_symlink_count": (
+                    internal_same_scope_symlink_counts_by_scope.get(
+                        relative.parts[0], 0
+                    )
+                ),
+                "blocking_symlink_count": blocking_symlink_counts_by_scope.get(
                     relative.parts[0], 0
                 ),
                 "symlink_handling": (
-                    "PRESERVE_LINK_OBJECT_AND_INTERNAL_TARGET_AFTER_VERIFIED_BACKUP"
+                    "RETAIN_SCOPE_PENDING_SYMLINK_ADJUDICATION"
+                    if retained_for_symlink_adjudication
+                    else "PRESERVE_LINK_OBJECT_AND_INTERNAL_TARGET_AFTER_VERIFIED_BACKUP"
                     if symlink_counts_by_scope.get(relative.parts[0], 0)
                     else "NO_SYMLINK_IN_SCOPE"
                 ),
             }
         )
+
+    retain_root_overhead = root_overhead_symlink_count > 0
+    retained_root_overhead_bytes = root_files_or_overhead_bytes if retain_root_overhead else 0
+    migrated_root_overhead_bytes = 0 if retain_root_overhead else root_files_or_overhead_bytes
+    classified_migration_bytes = (
+        migrated_direct_child_bytes + migrated_root_overhead_bytes
+    )
+    classified_retained_bytes = (
+        retained_direct_child_bytes + retained_root_overhead_bytes
+    )
+    if classified_migration_bytes + classified_retained_bytes != inventory_bytes:
+        raise MigrationWitnessError("CLASSIFIED_MIGRATION_BYTES_DO_NOT_RECONCILE")
 
     classification = {
         "schema_version": 1,
@@ -252,11 +335,14 @@ def build_artifacts(
         "nested_mount_count": 0,
         "symlink_count": len(validated_symlink_records),
         "symlink_scope_count": len(symlink_counts_by_scope),
-        "all_symlinks_internal_existing_same_scope": True,
+        "blocking_symlink_count": blocking_symlink_count,
+        "retained_symlink_scope_count": len(blocking_symlink_counts_by_scope)
+        + int(retain_root_overhead),
+        "all_symlinks_internal_existing_same_scope": blocking_symlink_count == 0,
         "symlink_target_content_followed_or_counted": False,
         "complete_classified_direct_child_coverage": True,
-        "classified_migration_bytes": inventory_bytes,
-        "classified_retained_bytes": 0,
+        "classified_migration_bytes": classified_migration_bytes,
+        "classified_retained_bytes": classified_retained_bytes,
         "backup_verified": False,
         "migration_executed": False,
         "owner_authorization_present": False,
@@ -264,7 +350,12 @@ def build_artifacts(
         "root_files_or_overhead": {
             "relative_scope": "ROOT_FILES_OR_FILESYSTEM_OVERHEAD_NOT_IN_DIRECT_CHILDREN",
             "size_bytes": root_files_or_overhead_bytes,
-            "planning_disposition": "MIGRATE_AFTER_VERIFIED_BACKUP",
+            "planning_disposition": (
+                "RETAIN_PENDING_SYMLINK_ADJUDICATION"
+                if retain_root_overhead
+                else "MIGRATE_AFTER_VERIFIED_BACKUP"
+            ),
+            "blocking_symlink_count": root_overhead_symlink_count,
             "backup_status": "NOT_VERIFIED_BY_THIS_WITNESS",
             "migration_status": "NOT_EXECUTED",
         },
@@ -280,12 +371,16 @@ def build_artifacts(
         "classification_complete": True,
         "migration_state": "PLANNED_NOT_EXECUTED",
         "disaster_tier_inventory_bytes": inventory_bytes,
-        "classified_migration_bytes": inventory_bytes,
-        "classified_retained_bytes": 0,
+        "classified_migration_bytes": classified_migration_bytes,
+        "classified_retained_bytes": classified_retained_bytes,
         "symlink_count": len(validated_symlink_records),
         "symlink_scope_count": len(symlink_counts_by_scope),
+        "blocking_symlink_count": blocking_symlink_count,
+        "retained_symlink_scope_count": len(blocking_symlink_counts_by_scope)
+        + int(retain_root_overhead),
         "nested_mount_count": 0,
-        "all_symlinks_internal_existing_same_scope": True,
+        "all_symlinks_internal_existing_same_scope": blocking_symlink_count == 0,
+        "full_migration_path_classification_supported": classified_retained_bytes == 0,
         "symlink_target_content_followed_or_counted": False,
         "inventory_sha256": storage_detail_sha256,
         "classification_sha256": classification_sha256,

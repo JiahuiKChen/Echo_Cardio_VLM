@@ -213,15 +213,17 @@ def test_uncovered_or_blocking_symlink_inventory_fails_closed() -> None:
     )
     outside["roots"][0]["symlinks"] = [record["path"]]
     outside["roots"][0]["symlink_records"] = [record]
-    try:
-        _build(outside)
-    except builder.MigrationWitnessError as exc:
-        assert str(exc) in {
-            "INVENTORY_PATH_ESCAPES_DISASTER_ROOT",
-            "DISASTER_ROOT_CONTAINS_BLOCKING_SYMLINKS",
-        }
-    else:
-        raise AssertionError("An external symlink target must fail closed")
+    classification, witness = _build(outside)
+    assert classification["classified_retained_bytes"] == 400
+    assert classification["classified_migration_bytes"] == 624
+    assert classification["blocking_symlink_count"] == 1
+    assert classification["retained_symlink_scope_count"] == 1
+    output_entry = next(
+        row for row in classification["entries"] if row["relative_path"] == "outputs"
+    )
+    assert output_entry["planning_disposition"] == "RETAIN_PENDING_SYMLINK_ADJUDICATION"
+    assert witness["full_migration_path_classification_supported"] is False
+    assert witness["migration_state"] == "PLANNED_NOT_EXECUTED"
 
 
 def test_bind_mount_inventory_fails_closed() -> None:

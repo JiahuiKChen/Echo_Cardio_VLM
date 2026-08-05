@@ -428,6 +428,9 @@ def test_rolling_resource_plan_enforces_headroom() -> None:
     assert "partial_transfers" not in plan["strategies"][1]["components_bytes"]
     assert "retry_reserve" not in plan["strategies"][1]["components_bytes"]
     assert plan["provisional_50gb_retention_is_authority"] is False
+    assert plan["classified_retained_disaster_tier_bytes"] == 954_752_000
+    assert plan["full_200gb_reallocation_supported_by_path_classification"] is False
+    assert plan["full_200gb_reallocation_completed_or_administratively_approved"] is False
     assert plan["raw_dicom_retention_assumed"] is True
     assert plan["scc_quota_cost_authority"] == policy["scc_quota_cost"]
 
