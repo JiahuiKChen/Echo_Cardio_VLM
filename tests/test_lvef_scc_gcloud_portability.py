@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -343,6 +344,7 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     repair = text[start:end]
     assert "177aac1ce498390f62d43fb76ca216d06dc6b25f" in repair
     assert "20d847648406d0a556957e0f5bc25dde392f8244" in repair
+    assert "6845bd180ee5811151929920234f53f15b272b14" in repair
     assert 'git merge-base --is-ancestor "$PRIOR_EXPECTED_COMMIT"' in repair
     assert (
         'test "$NEW_EXPECTED_COMMIT" = "$(git rev-parse '
@@ -360,6 +362,27 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
         assert checksum in repair
     assert 'repair_expected_commit "$SESSION_ENV"' in repair
     assert 'repair_expected_commit "$PREFLIGHT_ENV"' in repair
+    prior_policy_sha = "b4ba5df3ff5265375868b3ffcb3b3ceaa8fd768f0f65e0d27b45e751e457046b"
+    current_policy_sha = hashlib.sha256(
+        (ROOT / "configs" / "lvef_multitask_safe_export_policy.yaml").read_bytes()
+    ).hexdigest()
+    assert f'PRIOR_SAFE_EXPORT_POLICY_SHA256="{prior_policy_sha}"' in repair
+    assert f'NEW_SAFE_EXPORT_POLICY_SHA256="{current_policy_sha}"' in repair
+    assert 'migrate_safe_export_policy_checksum "$SESSION_ENV"' in repair
+    assert 'migrate_safe_export_policy_checksum "$PREFLIGHT_ENV"' in repair
+    assert "grep -c '^EXPECTED_SAFE_EXPORT_POLICY_SHA256='" in repair
+    assert 'temporary_file="$(mktemp "${authority_file}.tmp.XXXXXX")"' in repair
+    assert 'mv -f "$temporary_file" "$authority_file"' in repair
+    prior_wrapper_sha = "8e2d0dc213007c0f8d789cb0fbf3aee3e8dcf9892c7b6774b02e9ec18354f365"
+    current_wrapper_sha = hashlib.sha256(
+        (ROOT / "scripts" / "verify_lvef_scc_gcp_authority.sh").read_bytes()
+    ).hexdigest()
+    assert f'PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="{prior_wrapper_sha}"' in repair
+    assert f'NEW_GCP_AUTHORITY_WRAPPER_SHA256="{current_wrapper_sha}"' in repair
+    assert 'migrate_gcp_authority_wrapper_checksum "$SESSION_ENV"' in repair
+    assert 'migrate_gcp_authority_wrapper_checksum "$PREFLIGHT_ENV"' in repair
+    assert "grep -c '^EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256='" in repair
+    assert "sed -i" not in repair
     assert "audit_lvef_c3_storage.py" not in repair
     assert "build_lvef_c3_migration_witness.py" not in repair
     assert "RUN_ID=" not in repair
@@ -449,3 +472,96 @@ def test_interactive_auth_login_is_isolated_and_last_in_its_block() -> None:
     assert "CLOUDSDK_CONFIG=\"$CLOUDSDK_CONFIG\"" in executable_lines[-1]
     assert "qsub" not in section
     assert "verify_lvef_scc_gcp_authority.sh" not in section
+
+
+def test_section_3d_independently_gates_adc_quota_and_all_ambient_overrides() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    section = text[text.index("## 3D.") : text.index("## 4.")]
+    for name in (
+        "GOOGLE_OAUTH_ACCESS_TOKEN",
+        "CLOUDSDK_AUTH_ACCESS_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "CLOUDSDK_CORE_ACCOUNT",
+        "CLOUDSDK_CORE_PROJECT",
+        "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+        "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE",
+        "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT",
+        "CLOUDSDK_AUTH_DELEGATES",
+    ):
+        check = f'test -z "${{{name}:-}}"'
+        assert check in section
+        session_source = section.index('source "$SESSION_ENV"')
+        preflight_source = section.index('source "$PREFLIGHT_ENV"')
+        assert section.index(check, session_source) < section.index('cd "$WORKTREE"')
+        assert section.index(check, preflight_source) < section.index(
+            "GCP_AUTHORITY_RESTRICTED=", preflight_source
+        )
+    assert 'application_default_credentials.json"' in section
+    assert "write_lvef_gcp_quota_project_stage.py" in section
+    assert "GCP_ADC_QUOTA_PROJECT_SETUP=FAIL_AUTHORITY_AUDIT_NOT_STARTED" in section
+    assert "GCP_QUOTA_PROJECT_STAGE" in section
+    assert "EXPECTED_GCP_QUOTA_PROJECT_STAGE_SHA256" in section
+    assert section.index("write_lvef_gcp_quota_project_stage.py") < section.index(
+        'CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCP_AUTHORITY_WRAPPER"'
+    )
+    pair_gate = section.index("GCP_AUTHORITY_RESTRICTED_EXISTS=0")
+    first_config_mutation = section.index('"$GCLOUD" config set account')
+    assert pair_gate < first_config_mutation
+    assert section.index('test ! -L "$CANONICAL_ADC_FILE"') < first_config_mutation
+    complete_start = section.index(
+        'if [[ "$GCP_AUTHORITY_RESTRICTED_EXISTS" -eq 1 ]]'
+    )
+    absent_start = section.index("\nelse\n", complete_start)
+    complete_branch = section[complete_start:absent_start]
+    assert "config set" not in complete_branch
+    assert "write_lvef_gcp_quota_project_stage.py" not in complete_branch
+    assert "PREFLIGHT_ENV_NEXT" not in complete_branch
+    assert "mv -f" not in complete_branch
+    assert "BLOCKED_PARTIAL_RECEIPT_SET_NO_MUTATION" in section
+    assert "GCP_AUTH_ATTEMPT_ID" in section
+    assert "gcloud_auth_configuration_${GCP_AUTH_ATTEMPT_ID}.stdout.txt" in section
+    assert "gcloud_auth_configuration_${GCP_AUTH_ATTEMPT_ID}.stderr.txt" in section
+    assert "gcp_adc_quota_project_setup_${GCP_AUTH_ATTEMPT_ID}.summary.json" in section
+    assert 'test ! -e "$GCLOUD_AUTH_CONFIG_STDOUT"' in section
+    assert 'test ! -e "$GCLOUD_AUTH_CONFIG_STDERR"' in section
+    assert '( set -o noclobber; : >"$GCLOUD_AUTH_CONFIG_STDOUT" )' in section
+    assert '( set -o noclobber; : >"$GCLOUD_AUTH_CONFIG_STDERR" )' in section
+    assert 'gcloud_auth_configuration.stdout.txt' not in section
+    assert 'gcloud_auth_configuration.stderr.txt' not in section
+
+
+def test_runbook_auth_sources_are_nonsymlinked_and_complete_rerun_is_read_only() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    auth = text[text.index("## 3A.") : text.index("## 5.")]
+    for source_command, symlink_gate in (
+        ('source "$SESSION_ENV"', 'test ! -L "$SESSION_ENV"'),
+        ('source "$PREFLIGHT_ENV"', 'test ! -L "$PREFLIGHT_ENV"'),
+    ):
+        cursor = 0
+        while True:
+            source_at = auth.find(source_command, cursor)
+            if source_at == -1:
+                break
+            gate_at = auth.rfind(symlink_gate, 0, source_at)
+            assert gate_at != -1
+            assert source_at - gate_at < 600
+            cursor = source_at + len(source_command)
+
+    section = text[text.index("## 3D.") : text.index("## 4.")]
+    complete_start = section.index(
+        'if [[ "$GCP_AUTHORITY_RESTRICTED_EXISTS" -eq 1 ]]'
+    )
+    absent_start = section.index("\nelse\n", complete_start)
+    complete_branch = section[complete_start:absent_start]
+    for mutation in (
+        '"$GCLOUD" config set',
+        "write_lvef_gcp_quota_project_stage.py",
+        "PREFLIGHT_ENV_NEXT",
+        "mv -f",
+        "GCP_AUTH_ATTEMPT_ID=",
+    ):
+        assert mutation not in complete_branch
+    wrapper_call = section.index(
+        'CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCP_AUTHORITY_WRAPPER"'
+    )
+    assert wrapper_call > section.index("\nfi\n", absent_start)

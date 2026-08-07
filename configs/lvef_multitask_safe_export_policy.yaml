@@ -105,6 +105,108 @@ forbidden_content:
     - .err
 
 export_profiles:
+  gcp_authority_receipt_summary_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 32768
+    required_top_level_keys: &gcp_authority_summary_keys
+      - schema_version
+      - status
+      - run_context_bound
+      - command_authority_bound
+      - gcloud_resolution_record_bound
+      - quota_project_setup_passed
+      - active_identity_matches_expected
+      - cli_identity_matches_expected
+      - cli_configured_project_matches_expected
+      - adc_identity_matches_expected
+      - adc_quota_project_matches_expected
+      - cli_and_adc_identity_match
+      - configured_project_matches_expected
+      - project_display_name_matches_expected
+      - requester_pays_project_matches_expected
+      - project_resource_name_valid
+      - project_lifecycle_active
+      - billing_project_matches_expected
+      - billing_link_active
+      - billing_account_link_present
+      - free_trial_machine_verifiable
+      - gcloud_executable_pinned
+      - authorized_user_adc_pinned
+      - gcs_bucket_matches_expected
+      - gcs_requester_pays_metadata_access_passed
+      - gcs_single_object_metadata_probe_passed
+      - gcs_object_body_requests_zero
+      - gcs_object_body_bytes_read_zero
+      - bigquery_job_project_dry_run_passed
+      - bigquery_echo_entitlement_dry_run_passed
+      - bigquery_mimiciv_entitlement_dry_run_passed
+      - bigquery_rows_returned_zero
+      - access_token_emitted
+      - credential_bytes_emitted
+      - account_or_project_identifier_emitted
+      - billing_account_identifier_emitted
+    allowed_top_level_keys: *gcp_authority_summary_keys
+    field_types:
+      schema_version: integer
+      status: string
+      run_context_bound: boolean
+      command_authority_bound: boolean
+      gcloud_resolution_record_bound: boolean
+      quota_project_setup_passed: boolean
+      active_identity_matches_expected: boolean
+      cli_identity_matches_expected: boolean
+      cli_configured_project_matches_expected: boolean
+      adc_identity_matches_expected: boolean
+      adc_quota_project_matches_expected: boolean
+      cli_and_adc_identity_match: boolean
+      configured_project_matches_expected: boolean
+      project_display_name_matches_expected: boolean
+      requester_pays_project_matches_expected: boolean
+      project_resource_name_valid: boolean
+      project_lifecycle_active: boolean
+      billing_project_matches_expected: boolean
+      billing_link_active: boolean
+      billing_account_link_present: boolean
+      free_trial_machine_verifiable: boolean
+      gcloud_executable_pinned: boolean
+      authorized_user_adc_pinned: boolean
+      gcs_bucket_matches_expected: boolean
+      gcs_requester_pays_metadata_access_passed: boolean
+      gcs_single_object_metadata_probe_passed: boolean
+      gcs_object_body_requests_zero: boolean
+      gcs_object_body_bytes_read_zero: boolean
+      bigquery_job_project_dry_run_passed: boolean
+      bigquery_echo_entitlement_dry_run_passed: boolean
+      bigquery_mimiciv_entitlement_dry_run_passed: boolean
+      bigquery_rows_returned_zero: boolean
+      access_token_emitted: boolean
+      credential_bytes_emitted: boolean
+      account_or_project_identifier_emitted: boolean
+      billing_account_identifier_emitted: boolean
+
+  gcp_adc_quota_project_stage_summary_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 4096
+    required_top_level_keys: &gcp_quota_stage_keys
+      - schema_version
+      - status
+      - quota_project_setup_command_succeeded
+      - authority_audit_started
+      - identifiers_emitted
+      - tokens_emitted
+      - credential_paths_emitted
+    allowed_top_level_keys: *gcp_quota_stage_keys
+    field_types:
+      schema_version: integer
+      status: string
+      quota_project_setup_command_succeeded: boolean
+      authority_audit_started: boolean
+      identifiers_emitted: boolean
+      tokens_emitted: boolean
+      credential_paths_emitted: boolean
+
   c3_full_source_preflight_summary_json:
     kind: json
     extensions: [.json]

@@ -3,17 +3,37 @@
 set -euo pipefail
 umask 077
 
+test -z "${GOOGLE_OAUTH_ACCESS_TOKEN:-}"
+test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}"
+test -z "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+test -z "${CLOUDSDK_CORE_ACCOUNT:-}"
+test -z "${CLOUDSDK_CORE_PROJECT:-}"
+test -z "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}"
+test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN_FILE:-}"
+test -z "${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-}"
+test -z "${CLOUDSDK_AUTH_DELEGATES:-}"
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lvef_c3_billing_environment.sh"
 # The broader authority helpers below supersede the prior single-value
 # lvef_c3_quarantine_billing_project / lvef_c3_run_with_billing_project path.
 
 : "${LVEF_C3_PREFLIGHT_ENV_FILE:?LVEF_C3_PREFLIGHT_ENV_FILE is required}"
+test ! -L "$LVEF_C3_PREFLIGHT_ENV_FILE"
 test -f "$LVEF_C3_PREFLIGHT_ENV_FILE"
 test -O "$LVEF_C3_PREFLIGHT_ENV_FILE"
 test "$(stat -c '%a' "$LVEF_C3_PREFLIGHT_ENV_FILE")" = "600"
 # The SCC-only file contains shell-escaped scalar assignments made by the owner.
 source "$LVEF_C3_PREFLIGHT_ENV_FILE"
+test -z "${GOOGLE_OAUTH_ACCESS_TOKEN:-}"
+test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}"
+test -z "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+test -z "${CLOUDSDK_CORE_ACCOUNT:-}"
+test -z "${CLOUDSDK_CORE_PROJECT:-}"
+test -z "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}"
+test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN_FILE:-}"
+test -z "${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-}"
+test -z "${CLOUDSDK_AUTH_DELEGATES:-}"
 lvef_c3_quarantine_gcp_authority_environment
 
 : "${WORKTREE:?}"
@@ -44,11 +64,13 @@ lvef_c3_quarantine_gcp_authority_environment
 : "${EXPECTED_C3_EXECUTION_CONTRACT_SHA256:?}"
 : "${GCLOUD_RESOLVER:?}"
 : "${EXPECTED_GCLOUD_RESOLVER_SHA256:?}"
+: "${GCP_QUOTA_PROJECT_STAGE:?}"
+: "${EXPECTED_GCP_QUOTA_PROJECT_STAGE_SHA256:?}"
 
 GCLOUD="${GCLOUD:-}"
 LVEF_C3_GCP_AUTHORIZED_USER_FILE="${LVEF_C3_GCP_AUTHORIZED_USER_FILE:-}"
 if [[ -n "$GCLOUD" ]]; then
-  test -z "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test -n "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
   test -x "$GCLOUD"
   : "${GCLOUD_RESOLUTION_RECORD:?}"
   : "${EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256:?}"
@@ -56,9 +78,22 @@ if [[ -n "$GCLOUD" ]]; then
   : "${CLOUDSDK_CONFIG:?}"
   "$WORKTREE/scripts/check_lvef_private_directory.sh" "$CLOUDSDK_CONFIG"
   export CLOUDSDK_CONFIG
+  test ! -L "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test -f "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test -O "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test "$(stat -c '%a' "$LVEF_C3_GCP_AUTHORIZED_USER_FILE")" = '600'
 else
   test -n "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test ! -L "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test -f "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test -O "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test "$(stat -c '%a' "$LVEF_C3_GCP_AUTHORIZED_USER_FILE")" = '600'
 fi
+test ! -L "$GCP_QUOTA_PROJECT_STAGE"
+test -f "$GCP_QUOTA_PROJECT_STAGE"
+test -O "$GCP_QUOTA_PROJECT_STAGE"
+test "$(stat -c '%a' "$GCP_QUOTA_PROJECT_STAGE")" = '600'
+test "$(sha256sum "$GCP_QUOTA_PROJECT_STAGE" | awk '{print $1}')" = "$EXPECTED_GCP_QUOTA_PROJECT_STAGE_SHA256"
 
 cd "$WORKTREE"
 test "$(git branch --show-current)" = "codex/lvef-multitask-revalidation"

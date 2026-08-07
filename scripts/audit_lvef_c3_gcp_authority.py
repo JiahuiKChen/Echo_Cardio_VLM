@@ -49,6 +49,17 @@ AMBIENT_CREDENTIAL_OVERRIDES = (
     "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT",
     "CLOUDSDK_AUTH_DELEGATES",
 )
+QUOTA_STAGE_KEYS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "quota_project_setup_command_succeeded",
+        "authority_audit_started",
+        "identifiers_emitted",
+        "tokens_emitted",
+        "credential_paths_emitted",
+    }
+)
 PINNED_GCLOUD_VERSION = "579.0.0"
 PINNED_GCLOUD_ROOT = "/restricted/projectnb/mimicecho/tools/google-cloud-cli-579.0.0"
 PINNED_GCLOUD_ARCHIVE_SHA256 = (
@@ -119,7 +130,7 @@ class CredentialEvidence:
     source_kind: str
     observed_account: str
     configured_project: str
-    source_sha256: str
+    source_sha256: str | None
     gcloud_executable_pinned: bool
     authorized_user_adc_pinned: bool
 
@@ -135,6 +146,8 @@ class RunAuthority:
     gcloud_resolver_script_sha256: str
     gcloud_resolution_record_sha256: str | None
     gcloud_resolution_record_bound: bool
+    quota_project_stage_sha256: str
+    quota_project_setup_passed: bool
     run_context_bound: bool
 
 
@@ -306,6 +319,32 @@ def _load_run_authority(
     ):
         raise AuthorityError("GCLOUD_RESOLVER_SCRIPT_BINDING_MISMATCH")
 
+    quota_stage_text = os.environ.get("GCP_QUOTA_PROJECT_STAGE", "").strip()
+    expected_quota_stage_sha = os.environ.get(
+        "EXPECTED_GCP_QUOTA_PROJECT_STAGE_SHA256", ""
+    ).strip()
+    if not quota_stage_text or not SHA256_RE.fullmatch(expected_quota_stage_sha):
+        raise AuthorityError("QUOTA_PROJECT_STAGE_AUTHORITY_MISSING")
+    quota_stage_path = _require_regular_file(Path(quota_stage_text), private=True)
+    if sha256_file(quota_stage_path) != expected_quota_stage_sha:
+        raise AuthorityError("QUOTA_PROJECT_STAGE_SHA256_MISMATCH")
+    try:
+        quota_stage = json.loads(quota_stage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise AuthorityError("QUOTA_PROJECT_STAGE_JSON_INVALID") from None
+    if (
+        not isinstance(quota_stage, Mapping)
+        or set(quota_stage) != QUOTA_STAGE_KEYS
+        or quota_stage.get("schema_version") != 1
+        or quota_stage.get("status") != "PASS"
+        or quota_stage.get("quota_project_setup_command_succeeded") is not True
+        or quota_stage.get("authority_audit_started") is not False
+        or quota_stage.get("identifiers_emitted") is not False
+        or quota_stage.get("tokens_emitted") is not False
+        or quota_stage.get("credential_paths_emitted") is not False
+    ):
+        raise AuthorityError("QUOTA_PROJECT_STAGE_NOT_AUTHORITATIVE_PASS")
+
     resolution_sha256: str | None = None
     resolution_bound = False
     if gcloud_bin:
@@ -360,11 +399,13 @@ def _load_run_authority(
         gcloud_resolver_script_sha256=sha256_file(resolver_script),
         gcloud_resolution_record_sha256=resolution_sha256,
         gcloud_resolution_record_bound=resolution_bound,
+        quota_project_stage_sha256=expected_quota_stage_sha,
+        quota_project_setup_passed=True,
         run_context_bound=True,
     )
 
 
-def _refresh_authorized_user_token(path: Path) -> tuple[str, str, str, str]:
+def _refresh_authorized_user_token(path: Path) -> tuple[str, str, str]:
     path = _require_regular_file(path, private=True)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -402,7 +443,7 @@ def _refresh_authorized_user_token(path: Path) -> tuple[str, str, str, str]:
         raise AuthorityError("AUTHORIZED_USER_TOKEN_REFRESH_INVALID")
     account = str(payload.get("account", "")).strip()
     quota_project = str(payload.get("quota_project_id", "")).strip()
-    return access_token, account, quota_project, sha256_file(path)
+    return access_token, account, quota_project
 
 
 def _read_json_response(
@@ -497,8 +538,8 @@ def acquire_credentials(
     """Acquire one token from an explicit source; never consult PATH or ADC discovery."""
     _reject_ambient_credential_overrides()
     authorized_user_text = os.environ.get(AUTHORIZED_USER_FILE_ENV, "").strip()
-    if bool(gcloud_bin) == bool(authorized_user_text):
-        raise AuthorityError("EXACTLY_ONE_EXPLICIT_CREDENTIAL_SOURCE_REQUIRED")
+    if not gcloud_bin and not authorized_user_text:
+        raise AuthorityError("EXPLICIT_CREDENTIAL_SOURCE_REQUIRED")
     if gcloud_bin:
         executable = _resolve_gcloud(gcloud_bin)
         active_rows = [
@@ -534,12 +575,16 @@ def acquire_credentials(
             raise AuthorityError("GCLOUD_SERVICE_ACCOUNT_IMPERSONATION_PROHIBITED")
         token = _run_gcloud(
             executable,
-            ["auth", "print-access-token"],
+            ["auth", "print-access-token", expected.account],
             "GCLOUD_ACCESS_TOKEN_REFRESH_FAILED",
         )
         token_account = _userinfo_account(token, timeout_seconds=timeout_seconds)
         if token_account != active_rows[0]:
             raise AuthorityError("GCLOUD_TOKEN_IDENTITY_DOES_NOT_MATCH_ACTIVE_ACCOUNT")
+        if active_rows[0] != expected.account:
+            raise AuthorityError("GCLOUD_IDENTITY_DOES_NOT_MATCH_EXPECTED")
+        if configured_project != expected.project_id:
+            raise AuthorityError("GCLOUD_PROJECT_DOES_NOT_MATCH_EXPECTED")
         return CredentialEvidence(
             access_token=token,
             source_kind="PINNED_GCLOUD_EXECUTABLE",
@@ -549,18 +594,22 @@ def acquire_credentials(
             gcloud_executable_pinned=True,
             authorized_user_adc_pinned=False,
         )
-    access_token, asserted_account, quota_project, source_sha256 = _refresh_authorized_user_token(
+    access_token, asserted_account, quota_project = _refresh_authorized_user_token(
         Path(authorized_user_text)
     )
     token_account = _userinfo_account(access_token, timeout_seconds=timeout_seconds)
     if asserted_account and asserted_account != token_account:
         raise AuthorityError("AUTHORIZED_USER_ADC_ACCOUNT_DOES_NOT_MATCH_TOKEN")
+    if token_account != expected.account:
+        raise AuthorityError("AUTHORIZED_USER_ADC_IDENTITY_DOES_NOT_MATCH_EXPECTED")
+    if quota_project != expected.project_id:
+        raise AuthorityError("AUTHORIZED_USER_ADC_QUOTA_PROJECT_DOES_NOT_MATCH_EXPECTED")
     return CredentialEvidence(
         access_token=access_token,
         source_kind="PINNED_AUTHORIZED_USER_ADC",
         observed_account=token_account,
         configured_project=quota_project,
-        source_sha256=source_sha256,
+        source_sha256=None,
         gcloud_executable_pinned=False,
         authorized_user_adc_pinned=True,
     )
@@ -674,10 +723,34 @@ def collect_observation(
         expected=expected,
         timeout_seconds=timeout_seconds,
     )
-    if credentials.observed_account != expected.account:
-        raise AuthorityError("ACTIVE_IDENTITY_DOES_NOT_MATCH_EXPECTED")
-    if credentials.configured_project != expected.project_id:
-        raise AuthorityError("CONFIGURED_PROJECT_DOES_NOT_MATCH_EXPECTED")
+    if credentials.source_kind != "PINNED_GCLOUD_EXECUTABLE":
+        raise AuthorityError("CLI_CREDENTIAL_AUTHORITY_REQUIRED")
+    adc_credentials = acquire_credentials(
+        gcloud_bin="",
+        expected=expected,
+        timeout_seconds=timeout_seconds,
+    )
+    if adc_credentials.source_kind != "PINNED_AUTHORIZED_USER_ADC":
+        raise AuthorityError("ADC_CREDENTIAL_AUTHORITY_REQUIRED")
+    cli_identity_matches_expected = credentials.observed_account == expected.account
+    cli_project_matches_expected = credentials.configured_project == expected.project_id
+    adc_identity_matches_expected = adc_credentials.observed_account == expected.account
+    adc_quota_project_matches_expected = (
+        adc_credentials.configured_project == expected.project_id
+    )
+    cli_and_adc_identity_match = (
+        credentials.observed_account == adc_credentials.observed_account
+    )
+    if not all(
+        (
+            cli_identity_matches_expected,
+            cli_project_matches_expected,
+            adc_identity_matches_expected,
+            adc_quota_project_matches_expected,
+            cli_and_adc_identity_match,
+        )
+    ):
+        raise AuthorityError("CLI_OR_ADC_AUTHORITY_DOES_NOT_MATCH_EXPECTED")
 
     project_fields = "name,projectId,displayName,state"
     project = _api_json(
@@ -815,11 +888,18 @@ def collect_observation(
         "gcloud_resolution_record_bound": (
             run_authority.gcloud_resolution_record_bound
         ),
+        "quota_project_stage_sha256": run_authority.quota_project_stage_sha256,
+        "quota_project_setup_passed": run_authority.quota_project_setup_passed,
         "run_context_bound": run_authority.run_context_bound,
         "command_authority_bound": True,
         "expected_account_sha256": sha256_text(expected.account),
         "observed_account_sha256": sha256_text(credentials.observed_account),
         "active_identity_matches_expected": True,
+        "cli_identity_matches_expected": cli_identity_matches_expected,
+        "cli_configured_project_matches_expected": cli_project_matches_expected,
+        "adc_identity_matches_expected": adc_identity_matches_expected,
+        "adc_quota_project_matches_expected": adc_quota_project_matches_expected,
+        "cli_and_adc_identity_match": cli_and_adc_identity_match,
         "expected_project_id_sha256": sha256_text(expected.project_id),
         "observed_project_id_sha256": sha256_text(str(project.get("projectId"))),
         "configured_project_matches_expected": True,
@@ -843,13 +923,15 @@ def collect_observation(
         "credential_source_kind": credentials.source_kind,
         "credential_source_sha256": credentials.source_sha256,
         "gcloud_executable_pinned": credentials.gcloud_executable_pinned,
-        "authorized_user_adc_pinned": credentials.authorized_user_adc_pinned,
+        "authorized_user_adc_pinned": adc_credentials.authorized_user_adc_pinned,
         "source_manifest_sha256": source_manifest_sha256,
         "gcs_bucket_matches_expected": True,
         "gcs_requester_pays_metadata_access_passed": True,
         "gcs_single_object_metadata_probe_passed": True,
         "gcs_object_body_requests": 0,
         "gcs_object_body_bytes_read": 0,
+        "gcs_object_body_requests_zero": True,
+        "gcs_object_body_bytes_read_zero": True,
         "bigquery_job_project_dry_run_passed": True,
         "bigquery_echo_entitlement_dry_run_passed": True,
         "bigquery_mimiciv_entitlement_dry_run_passed": True,
@@ -857,6 +939,7 @@ def collect_observation(
         "bigquery_echo_bytes_processed": bq_bytes["physionet_echo"],
         "bigquery_mimiciv_bytes_processed": bq_bytes["physionet_mimiciv"],
         "bigquery_rows_returned": 0,
+        "bigquery_rows_returned_zero": True,
         "access_token_emitted": False,
         "credential_bytes_emitted": False,
         "account_or_project_identifier_emitted": False,
@@ -864,15 +947,19 @@ def collect_observation(
     }
 
 
-def aggregate_receipt(restricted: Mapping[str, Any], restricted_sha256: str) -> dict[str, Any]:
+def aggregate_receipt(restricted: Mapping[str, Any]) -> dict[str, Any]:
     keys = (
         "status",
-        "authority_scope",
-        "expected_commit",
         "run_context_bound",
         "command_authority_bound",
         "gcloud_resolution_record_bound",
+        "quota_project_setup_passed",
         "active_identity_matches_expected",
+        "cli_identity_matches_expected",
+        "cli_configured_project_matches_expected",
+        "adc_identity_matches_expected",
+        "adc_quota_project_matches_expected",
+        "cli_and_adc_identity_match",
         "configured_project_matches_expected",
         "project_display_name_matches_expected",
         "requester_pays_project_matches_expected",
@@ -887,17 +974,18 @@ def aggregate_receipt(restricted: Mapping[str, Any], restricted_sha256: str) -> 
         "gcs_bucket_matches_expected",
         "gcs_requester_pays_metadata_access_passed",
         "gcs_single_object_metadata_probe_passed",
-        "gcs_object_body_requests",
-        "gcs_object_body_bytes_read",
+        "gcs_object_body_requests_zero",
+        "gcs_object_body_bytes_read_zero",
         "bigquery_job_project_dry_run_passed",
         "bigquery_echo_entitlement_dry_run_passed",
         "bigquery_mimiciv_entitlement_dry_run_passed",
+        "bigquery_rows_returned_zero",
         "access_token_emitted",
         "credential_bytes_emitted",
         "account_or_project_identifier_emitted",
         "billing_account_identifier_emitted",
     )
-    output = {"schema_version": 1, "restricted_receipt_sha256": restricted_sha256}
+    output = {"schema_version": 1}
     output.update({key: restricted.get(key) for key in keys})
     return output
 
@@ -955,6 +1043,10 @@ def validate_restricted_receipt(
     resolver_expected_sha = os.environ.get(
         "EXPECTED_GCLOUD_RESOLVER_SHA256", ""
     ).strip()
+    quota_stage_text = os.environ.get("GCP_QUOTA_PROJECT_STAGE", "").strip()
+    quota_stage_expected_sha = os.environ.get(
+        "EXPECTED_GCP_QUOTA_PROJECT_STAGE_SHA256", ""
+    ).strip()
     if not all(
         SHA256_RE.fullmatch(value)
         for value in (
@@ -962,12 +1054,18 @@ def validate_restricted_receipt(
             contract_expected_sha,
             source_expected_sha,
             resolver_expected_sha,
+            quota_stage_expected_sha,
         )
     ):
         raise AuthorityError("AUTHORITY_RECEIPT_COMMAND_BINDING_ENVIRONMENT_INVALID")
     wrapper_path = _require_regular_file(Path(wrapper_path_text), private=False)
     contract_path = _require_regular_file(Path(contract_path_text), private=False)
     resolver_path = _require_regular_file(Path(resolver_path_text), private=False)
+    quota_stage_path = _require_regular_file(Path(quota_stage_text), private=True)
+    try:
+        quota_stage = json.loads(quota_stage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise AuthorityError("AUTHORITY_RECEIPT_QUOTA_STAGE_INVALID") from None
     if (
         sha256_file(wrapper_path) != wrapper_expected_sha
         or payload.get("wrapper_script_sha256") != wrapper_expected_sha
@@ -976,6 +1074,17 @@ def validate_restricted_receipt(
         or payload.get("source_manifest_sha256") != source_expected_sha
         or sha256_file(resolver_path) != resolver_expected_sha
         or payload.get("gcloud_resolver_script_sha256") != resolver_expected_sha
+        or sha256_file(quota_stage_path) != quota_stage_expected_sha
+        or payload.get("quota_project_stage_sha256") != quota_stage_expected_sha
+        or not isinstance(quota_stage, Mapping)
+        or set(quota_stage) != QUOTA_STAGE_KEYS
+        or quota_stage.get("schema_version") != 1
+        or quota_stage.get("status") != "PASS"
+        or quota_stage.get("quota_project_setup_command_succeeded") is not True
+        or quota_stage.get("authority_audit_started") is not False
+        or quota_stage.get("identifiers_emitted") is not False
+        or quota_stage.get("tokens_emitted") is not False
+        or quota_stage.get("credential_paths_emitted") is not False
         or payload.get("expected_account_sha256") != sha256_text(expected.account)
         or payload.get("observed_account_sha256") != sha256_text(expected.account)
         or payload.get("expected_project_id_sha256") != sha256_text(expected.project_id)
@@ -994,12 +1103,15 @@ def validate_restricted_receipt(
             "EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256", ""
         ).strip()
         gcloud_text = os.environ.get("GCLOUD", "").strip()
+        adc_text = os.environ.get(AUTHORIZED_USER_FILE_ENV, "").strip()
         if not record_text or not SHA256_RE.fullmatch(record_expected_sha) or not gcloud_text:
             raise AuthorityError("AUTHORITY_RECEIPT_GCLOUD_BINDING_ENVIRONMENT_INVALID")
         record_path = _require_regular_file(Path(record_text), private=True)
         gcloud_path = _resolve_gcloud(gcloud_text)
+        adc_path = _require_regular_file(Path(adc_text), private=True)
         try:
             resolution = json.loads(record_path.read_text(encoding="utf-8"))
+            adc_payload = json.loads(adc_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             raise AuthorityError("AUTHORITY_RECEIPT_GCLOUD_RESOLUTION_INVALID") from None
         if (
@@ -1022,20 +1134,24 @@ def validate_restricted_receipt(
                 != PINNED_GCLOUD_TAR_PAYLOAD_SHA256
             )
             or payload.get("credential_source_sha256") != sha256_file(gcloud_path)
+            or not isinstance(adc_payload, Mapping)
+            or adc_payload.get("type") != "authorized_user"
+            or adc_payload.get("quota_project_id") != expected.project_id
         ):
             raise AuthorityError("AUTHORITY_RECEIPT_GCLOUD_BINDING_MISMATCH")
-    elif credential_kind == "PINNED_AUTHORIZED_USER_ADC":
-        adc_text = os.environ.get(AUTHORIZED_USER_FILE_ENV, "").strip()
-        adc_path = _require_regular_file(Path(adc_text), private=True)
-        if payload.get("credential_source_sha256") != sha256_file(adc_path):
-            raise AuthorityError("AUTHORITY_RECEIPT_ADC_BINDING_MISMATCH")
     else:
         raise AuthorityError("AUTHORITY_RECEIPT_CREDENTIAL_SOURCE_INVALID")
 
     required_true = (
         "run_context_bound",
         "command_authority_bound",
+        "quota_project_setup_passed",
         "active_identity_matches_expected",
+        "cli_identity_matches_expected",
+        "cli_configured_project_matches_expected",
+        "adc_identity_matches_expected",
+        "adc_quota_project_matches_expected",
+        "cli_and_adc_identity_match",
         "configured_project_matches_expected",
         "project_display_name_matches_expected",
         "requester_pays_project_matches_expected",
@@ -1044,12 +1160,17 @@ def validate_restricted_receipt(
         "billing_project_matches_expected",
         "billing_link_active",
         "billing_account_link_present",
+        "gcloud_executable_pinned",
+        "authorized_user_adc_pinned",
         "gcs_bucket_matches_expected",
         "gcs_requester_pays_metadata_access_passed",
         "gcs_single_object_metadata_probe_passed",
+        "gcs_object_body_requests_zero",
+        "gcs_object_body_bytes_read_zero",
         "bigquery_job_project_dry_run_passed",
         "bigquery_echo_entitlement_dry_run_passed",
         "bigquery_mimiciv_entitlement_dry_run_passed",
+        "bigquery_rows_returned_zero",
     )
     if (
         payload.get("schema_version") != 1
@@ -1090,7 +1211,7 @@ def create_receipts(args: argparse.Namespace) -> dict[str, Any]:
     )
     _write_json_exclusive(args.restricted_output, restricted)
     restricted_sha256 = sha256_file(args.restricted_output)
-    aggregate = aggregate_receipt(restricted, restricted_sha256)
+    aggregate = aggregate_receipt(restricted)
     _write_json_exclusive(args.aggregate_output, aggregate)
     return aggregate
 
@@ -1104,7 +1225,7 @@ def validate_receipts(args: argparse.Namespace) -> dict[str, Any]:
         billing_project=expected.billing_project,
     )
     aggregate = _load_receipt(args.aggregate_output)
-    if aggregate != aggregate_receipt(prior, restricted_sha256):
+    if aggregate != aggregate_receipt(prior):
         raise AuthorityError("AGGREGATE_AUTHORITY_RECEIPT_MISMATCH")
     run_root = Path(os.environ.get("RUN_ROOT", ""))
     completed_source_summary = run_root / "aggregate" / "c3_full_source_preflight.summary.json"
