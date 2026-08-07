@@ -70,9 +70,7 @@ if [[ -n "$GCLOUD" ]]; then
   : "${EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256:?}"
   test "$(sha256sum "$GCLOUD_RESOLUTION_RECORD" | awk '{print $1}')" = "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
   : "${CLOUDSDK_CONFIG:?}"
-  test -d "$CLOUDSDK_CONFIG"
-  test -O "$CLOUDSDK_CONFIG"
-  test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = '700'
+  "$WORKTREE/scripts/check_lvef_private_directory.sh" "$CLOUDSDK_CONFIG"
   export CLOUDSDK_CONFIG
 else
   test -n "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"

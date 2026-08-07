@@ -14,6 +14,7 @@ RESOLVER = ROOT / "scripts" / "resolve_lvef_scc_gcloud.sh"
 BOOTSTRAP_PREPARER = (
     ROOT / "scripts" / "prepare_lvef_scc_gcloud_cli_bootstrap.sh"
 )
+PRIVATE_DIRECTORY_CHECK = ROOT / "scripts" / "check_lvef_private_directory.sh"
 RUNBOOK = ROOT / "docs" / "lvef_multitask" / "scc_phase1ebc_commands.md"
 
 
@@ -236,9 +237,78 @@ def test_bootstrap_helper_only_prepares_reviewable_pinned_script() -> None:
         assert "gcloud auth" not in text
 
 
+def test_private_directory_check_accepts_0700_and_setgid_only_2700() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        completed = subprocess.run(
+            [str(PRIVATE_DIRECTORY_CHECK), str(private)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout == ""
+
+        # Some local filesystems clear setgid on chmod. Inject GNU-stat's SCC
+        # observation so the 2700 compatibility branch is deterministic.
+        fake_bin = root / "fake-bin"
+        fake_bin.mkdir()
+        fake_stat = fake_bin / "stat"
+        fake_stat.write_text("#!/bin/sh\nprintf '%s\\n' 2700\n", encoding="utf-8")
+        fake_stat.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+        completed = subprocess.run(
+            [str(PRIVATE_DIRECTORY_CHECK), str(private)],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout == ""
+
+
+def test_private_directory_check_rejects_group_or_other_permissions() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        private = Path(directory) / "private"
+        private.mkdir()
+        for mode in (0o750, 0o770, 0o707, 0o2770):
+            private.chmod(mode)
+            completed = subprocess.run(
+                [str(PRIVATE_DIRECTORY_CHECK), str(private)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert completed.returncode == 65
+            assert "FAIL_NONPRIVATE_MODE" in completed.stderr
+
+
+def test_private_directory_check_rejects_symlink() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        linked = root / "linked"
+        linked.symlink_to(private)
+        completed = subprocess.run(
+            [str(PRIVATE_DIRECTORY_CHECK), str(linked)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 65
+        assert completed.stdout == ""
+        assert "FAIL_SYMLINK" in completed.stderr
+
+
 def test_portability_scripts_and_phase1ebc_runbook_parse_as_bash() -> None:
     subprocess.run(["bash", "-n", str(RESOLVER)], check=True)
     subprocess.run(["bash", "-n", str(BOOTSTRAP_PREPARER)], check=True)
+    subprocess.run(["bash", "-n", str(PRIVATE_DIRECTORY_CHECK)], check=True)
     # The prepared script is syntax-checked without executing it.
     with tempfile.TemporaryDirectory() as directory:
         prepared = Path(directory) / "bootstrap.sh"
@@ -272,6 +342,7 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     end = text.index("## 3B.")
     repair = text[start:end]
     assert "177aac1ce498390f62d43fb76ca216d06dc6b25f" in repair
+    assert "20d847648406d0a556957e0f5bc25dde392f8244" in repair
     assert 'git merge-base --is-ancestor "$PRIOR_EXPECTED_COMMIT"' in repair
     assert (
         'test "$NEW_EXPECTED_COMMIT" = "$(git rev-parse '
@@ -293,6 +364,25 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     assert "build_lvef_c3_migration_witness.py" not in repair
     assert "RUN_ID=" not in repair
     assert "rm " not in repair and "rm -" not in repair
+
+
+def test_runbook_accepts_only_private_cloudsdk_config_modes_and_empty_resume() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    portability = text[text.index("## 3B.") : text.index("## 4.")]
+    assert "check_lvef_private_directory.sh" in portability
+    assert (
+        'CLOUDSDK_CONFIG_FIRST_ENTRY="$(find "$CLOUDSDK_CONFIG" '
+        '-mindepth 1 -print -quit)"' in portability
+    )
+    assert 'test -z "$CLOUDSDK_CONFIG_FIRST_ENTRY"' in portability
+    assert 'test "$(stat -c \'%a\' "$CLOUDSDK_CONFIG")" = "700"' not in portability
+    for script in (
+        ROOT / "scripts" / "verify_lvef_scc_gcp_authority.sh",
+        ROOT / "scripts" / "scc_run_lvef_c3_resource_preflight.sh",
+    ):
+        script_text = script.read_text(encoding="utf-8")
+        assert "check_lvef_private_directory.sh" in script_text
+        assert "stat -c '%a' \"$CLOUDSDK_CONFIG\"" not in script_text
 
 
 def test_runbook_keeps_expected_authority_values_restricted_and_gates_qsub() -> None:

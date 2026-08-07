@@ -243,12 +243,19 @@ set -euo pipefail
 umask 077
 WORKTREE="/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask"
 SESSION_ENV="/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env"
-PRIOR_EXPECTED_COMMIT="177aac1ce498390f62d43fb76ca216d06dc6b25f"
 test -f "$SESSION_ENV"
 test -O "$SESSION_ENV"
 test "$(stat -c '%a' "$SESSION_ENV")" = "600"
 source "$SESSION_ENV"
-test "$EXPECTED_COMMIT" = "$PRIOR_EXPECTED_COMMIT"
+case "$EXPECTED_COMMIT" in
+  177aac1ce498390f62d43fb76ca216d06dc6b25f|20d847648406d0a556957e0f5bc25dde392f8244)
+    PRIOR_EXPECTED_COMMIT="$EXPECTED_COMMIT"
+    ;;
+  *)
+    printf '%s\n' 'PHASE1EBC_EXISTING_RUN_AUTHORITY_REPAIR=BLOCKED_UNTRUSTED_PRIOR_COMMIT' >&2
+    exit 65
+    ;;
+esac
 EXPECTED_PYTHON_SHA256="1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
 test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "$EXPECTED_PYTHON_SHA256"
 test -d "$RUN_ROOT"
@@ -388,11 +395,15 @@ EXPECTED_C3_EXECUTION_CONTRACT_SHA256="$(sha256sum "$C3_EXECUTION_CONTRACT" | aw
 [[ "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
 CLOUDSDK_CONFIG="$RUN_ROOT/restricted/gcloud_config"
-test ! -e "$CLOUDSDK_CONFIG"
-mkdir "$CLOUDSDK_CONFIG"
-chmod 700 "$CLOUDSDK_CONFIG"
-test -O "$CLOUDSDK_CONFIG"
-test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+if [[ -e "$CLOUDSDK_CONFIG" ]]; then
+  "$WORKTREE/scripts/check_lvef_private_directory.sh" "$CLOUDSDK_CONFIG"
+  CLOUDSDK_CONFIG_FIRST_ENTRY="$(find "$CLOUDSDK_CONFIG" -mindepth 1 -print -quit)"
+  test -z "$CLOUDSDK_CONFIG_FIRST_ENTRY"
+else
+  mkdir "$CLOUDSDK_CONFIG"
+  chmod 700 "$CLOUDSDK_CONFIG"
+  "$WORKTREE/scripts/check_lvef_private_directory.sh" "$CLOUDSDK_CONFIG"
+fi
 
 test "$(grep -c '^GCLOUD=' "$SESSION_ENV")" -eq 0
 SESSION_ENV_NEXT="$(mktemp "$SESSION_ENV.tmp.XXXXXX")"
@@ -464,7 +475,9 @@ printf '%s\n' 'GCLOUD_RESOLUTION=PASS_CREDENTIALS_NOT_ACCESSED'
 This is the only interactive login block. Run it by itself. The `gcloud auth
 login` invocation is deliberately the final command so no later shell text can
 be consumed by an interactive authentication prompt. It uses only the new
-mode-700 config directory under the preserved restricted run root; it does not
+owner-private config directory under the preserved restricted run root. Mode
+`0700` is canonical; SCC's inherited setgid-only mode `2700` is also accepted
+because group and other permissions remain zero. It does not
 read or modify a home-directory Cloud SDK profile. Do not paste another command
 until this command has returned to the shell prompt. Any browser URL, device
 code, or authentication transcript is restricted and must not be pasted into an
@@ -484,9 +497,7 @@ test -f "$SESSION_ENV"
 test -O "$SESSION_ENV"
 test "$(stat -c '%a' "$SESSION_ENV")" = "600"
 source "$SESSION_ENV"
-test -d "$CLOUDSDK_CONFIG"
-test -O "$CLOUDSDK_CONFIG"
-test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+"$WORKTREE/scripts/check_lvef_private_directory.sh" "$CLOUDSDK_CONFIG"
 test -f "$PREFLIGHT_ENV"
 test -O "$PREFLIGHT_ENV"
 test "$(stat -c '%a' "$PREFLIGHT_ENV")" = "600"
@@ -531,9 +542,7 @@ test -x "$GCLOUD"
 test "$(sha256sum "$GCLOUD_RESOLUTION_RECORD" | awk '{print $1}')" = "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
 test "$(sha256sum "$GCP_AUTHORITY_WRAPPER" | awk '{print $1}')" = "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256"
 test "$(sha256sum "$C3_EXECUTION_CONTRACT" | awk '{print $1}')" = "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256"
-test -d "$CLOUDSDK_CONFIG"
-test -O "$CLOUDSDK_CONFIG"
-test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+"$WORKTREE/scripts/check_lvef_private_directory.sh" "$CLOUDSDK_CONFIG"
 source "$PREFLIGHT_ENV"
 export -n LVEF_C3_EXPECTED_GCP_ACCOUNT
 export -n LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME
@@ -588,9 +597,7 @@ test -x "$GCLOUD"
 test "$(sha256sum "$GCLOUD_RESOLUTION_RECORD" | awk '{print $1}')" = "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
 test "$(sha256sum "$GCP_AUTHORITY_WRAPPER" | awk '{print $1}')" = "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256"
 test "$(sha256sum "$C3_EXECUTION_CONTRACT" | awk '{print $1}')" = "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256"
-test -d "$CLOUDSDK_CONFIG"
-test -O "$CLOUDSDK_CONFIG"
-test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+"$WORKTREE/scripts/check_lvef_private_directory.sh" "$CLOUDSDK_CONFIG"
 CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCP_AUTHORITY_WRAPPER" \
   --preflight-env "$PREFLIGHT_ENV" \
   --restricted-output "$RUN_ROOT/restricted/gcp_authority_receipt.restricted.json" \
