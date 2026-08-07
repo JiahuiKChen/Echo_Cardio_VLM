@@ -148,6 +148,31 @@ SINGLE_IDENTIFIER_ROW_RE = re.compile(
 RESTRICTED_ARTIFACT_BASENAME_RE = re.compile(
     r"(?i)(?:^|/)[^/]*(?:_restricted|\.restricted)\.(?:csv|tsv|tab|json|jsonl|ndjson|md|txt)$"
 )
+CLOUD_CREDENTIAL_BASENAME_RE = re.compile(
+    r"(?i)(?:^|/)(?:"
+    r"application_default_credentials\.json|access_tokens\.db|credentials\.db|\.boto|"
+    r"[^/]*service[_-]?account[_-]?key[^/]*\.json|"
+    r"[^/]*gcp[_-]?credentials?[^/]*\.json|"
+    r"[^/]*requester[_-]?pays[^/]*\.env|"
+    r"lvef_multitask_phase1ebc_(?:session|preflight)\.env|"
+    r"lvef_c3_preflight\.env"
+    r")$"
+)
+CLOUD_CREDENTIAL_DIRECTORY_RE = re.compile(
+    r"(?i)(?:^|/)(?:\.config/gcloud|\.gcloud|\.gsutil|gcloud_config)(?:/|$)"
+)
+HIGH_CONFIDENCE_CLOUD_SECRET_RES = (
+    re.compile(r"(?i)\bya29\.[A-Za-z0-9_-]{20,}"),
+    re.compile(r"\bAIza[A-Za-z0-9_-]{30,}"),
+    re.compile(r"\bGOCSPX-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----"),
+    re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.gserviceaccount\.com\b", re.IGNORECASE),
+    re.compile(r"\b[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}\b", re.IGNORECASE),
+)
+CLOUD_CREDENTIAL_JSON_KEY_RE = re.compile(
+    r"(?i)[\"'](?:refresh_token|access_token|id_token|client_secret|private_key|private_key_id)"
+    r"[\"']\s*[:=]"
+)
 HARD_BLOCKED_TEXT_SUFFIXES = (".jsonl", ".ndjson", ".log", ".out", ".err")
 
 
@@ -169,6 +194,10 @@ def _assert_high_confidence_text_safety(
         raise SafetyPolicyError("Staged text contains an identifier-shaped row table")
     if SINGLE_IDENTIFIER_HEADER_RE.search(text) and SINGLE_IDENTIFIER_ROW_RE.search(text):
         raise SafetyPolicyError("Staged text contains an identifier-shaped row table")
+    if any(pattern.search(text) for pattern in HIGH_CONFIDENCE_CLOUD_SECRET_RES):
+        raise SafetyPolicyError("Staged text contains high-confidence cloud credential material")
+    if PurePosixPath(relative_path).suffix.lower() == ".json" and CLOUD_CREDENTIAL_JSON_KEY_RE.search(text):
+        raise SafetyPolicyError("Staged JSON contains cloud credential state")
 
 
 def _validate_release_pair(
@@ -261,6 +290,11 @@ def scan_staged_git_safety(
             raise SafetyPolicyError("Git index contains a restricted row/log artifact suffix")
         if RESTRICTED_ARTIFACT_BASENAME_RE.search(relative_path):
             raise SafetyPolicyError("Git index contains a restricted analysis artifact filename")
+        if (
+            CLOUD_CREDENTIAL_BASENAME_RE.search(relative_path)
+            or CLOUD_CREDENTIAL_DIRECTORY_RE.search(relative_path)
+        ):
+            raise SafetyPolicyError("Git index contains a cloud credential/session artifact filename")
         if lower.endswith(blocked_suffixes):
             raise SafetyPolicyError("Git index contains a prohibited restricted-artifact suffix")
         payload = _index_blob(root, relative_path)

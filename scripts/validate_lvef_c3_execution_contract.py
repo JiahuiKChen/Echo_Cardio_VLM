@@ -48,6 +48,13 @@ REQUIRED_CACHE_GATES = {
     "safety",
 }
 REQUIRED_PREAUTHORIZATION_GATES = {
+    "prospective_gcp_tooling_resolved",
+    "prospective_gcp_identity_verified",
+    "prospective_gcp_project_verified",
+    "prospective_gcp_billing_link_verified",
+    "prospective_requester_pays_metadata_access_verified",
+    "prospective_bigquery_billing_access_verified",
+    "free_trial_status_owner_verified_or_separately_budgeted",
     "exact_source_metadata_complete",
     "exact_source_bytes_known",
     "no_selected_source_deficit",
@@ -121,7 +128,7 @@ def load_contract(path: Path) -> dict[str, Any]:
 def validate_structure(contract: Mapping[str, Any]) -> None:
     if set(contract) != {
         "schema_version", "contract_id", "status", "scientific_scope", "authority",
-        "source", "requester_pays", "storage", "batching", "download",
+        "source", "requester_pays", "google_cloud_provenance", "storage", "batching", "download",
         "dicom_and_extraction", "embedding", "pooling", "environment", "scheduler",
         "cache_retirement", "preservation", "analysis_and_export", "authorization",
         "preauthorization_gates", "post_manuscript",
@@ -133,6 +140,7 @@ def validate_structure(contract: Mapping[str, Any]) -> None:
     authority = _mapping(contract.get("authority"), "AUTHORITY")
     source = _mapping(contract.get("source"), "SOURCE")
     billing = _mapping(contract.get("requester_pays"), "REQUESTER_PAYS")
+    cloud = _mapping(contract.get("google_cloud_provenance"), "GOOGLE_CLOUD_PROVENANCE")
     storage = _mapping(contract.get("storage"), "STORAGE")
     batching = _mapping(contract.get("batching"), "BATCHING")
     download = _mapping(contract.get("download"), "DOWNLOAD")
@@ -164,8 +172,40 @@ def validate_structure(contract: Mapping[str, Any]) -> None:
         "source_body_download_authorized",
     }, "SOURCE")
     _exact_keys(billing, {
-        "enabled", "billing_project_environment_variable", "billing_project_may_be_written_to_git",
+        "enabled", "authority_scope", "billing_project_environment_variable",
+        "billing_project_may_be_written_to_git", "authentication_and_billing_gate_required",
     }, "REQUESTER_PAYS")
+    _exact_keys(cloud, {
+        "historical_authority", "active_prospective_authority", "credential_state", "free_trial",
+    }, "GOOGLE_CLOUD_PROVENANCE")
+    cloud_historical = _mapping(cloud.get("historical_authority"), "GCP_HISTORICAL_AUTHORITY")
+    cloud_active = _mapping(cloud.get("active_prospective_authority"), "GCP_ACTIVE_PROSPECTIVE_AUTHORITY")
+    cloud_credentials = _mapping(cloud.get("credential_state"), "GCP_CREDENTIAL_STATE")
+    cloud_trial = _mapping(cloud.get("free_trial"), "GCP_FREE_TRIAL")
+    _exact_keys(cloud_historical, {
+        "classification", "preserve_captured_account_and_project_association",
+        "unknown_association_disposition", "prospective_project_backfill_permitted",
+    }, "GCP_HISTORICAL_AUTHORITY")
+    _exact_keys(cloud_active, {
+        "classification", "exact_identity_storage", "exact_project_storage",
+        "expected_identity_environment_variable", "expected_project_display_name_environment_variable",
+        "expected_project_environment_variable",
+        "requester_pays_project_environment_variable", "bigquery_billing_project_environment_variable",
+        "exact_identifiers_may_be_written_to_git", "activation_requires_identity_match",
+        "activation_requires_project_match", "activation_requires_active_billing_link",
+        "activation_requires_requester_pays_metadata_access",
+        "activation_requires_bigquery_billing_access",
+    }, "GCP_ACTIVE_PROSPECTIVE_AUTHORITY")
+    _exact_keys(cloud_credentials, {
+        "classification", "credentials_remain_scc_only", "oauth_tokens_may_be_printed",
+        "credential_files_may_be_written_to_git",
+        "billing_account_or_payment_details_may_be_exported",
+        "requester_pays_session_files_may_be_written_to_git",
+    }, "GCP_CREDENTIAL_STATE")
+    _exact_keys(cloud_trial, {
+        "api_verification_status", "project_existence_is_trial_evidence",
+        "billing_enabled_is_trial_evidence", "trial_credit_required_for_scientific_authority",
+    }, "GCP_FREE_TRIAL")
     _exact_keys(storage, {
         "output_root", "raw_dicom_root", "extracted_cache_root",
         "raw_dicoms_retained_through_active_analysis", "raw_dicom_deletion_permitted_by_this_contract",
@@ -281,10 +321,50 @@ def validate_structure(contract: Mapping[str, Any]) -> None:
         raise ContractError("REMOTE_METADATA_SET_NOT_EXACT")
 
     _exact(billing.get("enabled"), True, "REQUESTER_PAYS_NOT_REQUIRED")
+    _exact(billing.get("authority_scope"), "ACTIVE_PROSPECTIVE_AUTHORITY", "REQUESTER_PAYS_AUTHORITY_SCOPE_CHANGED")
     billing_env = str(billing.get("billing_project_environment_variable", ""))
     if billing_env != "LVEF_C3_GCP_BILLING_PROJECT":
         raise ContractError("BILLING_ENVIRONMENT_VARIABLE_CHANGED")
     _exact(billing.get("billing_project_may_be_written_to_git"), False, "BILLING_PROJECT_EXPORT_ALLOWED")
+    _exact(billing.get("authentication_and_billing_gate_required"), True, "GCP_AUTHENTICATION_GATE_DISABLED")
+
+    _exact(cloud_historical.get("classification"), "HISTORICAL_AUTHORITY", "GCP_HISTORICAL_CLASS_CHANGED")
+    _exact(cloud_historical.get("preserve_captured_account_and_project_association"), True, "GCP_HISTORICAL_PROVENANCE_REWRITE_ALLOWED")
+    _exact(cloud_historical.get("unknown_association_disposition"), "UNKNOWN_NOT_RETROACTIVELY_ASSIGNED", "GCP_UNKNOWN_HISTORY_DISPOSITION_CHANGED")
+    _exact(cloud_historical.get("prospective_project_backfill_permitted"), False, "GCP_PROSPECTIVE_PROJECT_BACKFILL_ALLOWED")
+    _exact(cloud_active.get("classification"), "ACTIVE_PROSPECTIVE_AUTHORITY", "GCP_ACTIVE_CLASS_CHANGED")
+    _exact(cloud_active.get("exact_identity_storage"), "SCC_ONLY_MODE_600", "GCP_IDENTITY_STORAGE_NOT_RESTRICTED")
+    _exact(cloud_active.get("exact_project_storage"), "SCC_ONLY_MODE_600", "GCP_PROJECT_STORAGE_NOT_RESTRICTED")
+    _exact(cloud_active.get("expected_identity_environment_variable"), "LVEF_C3_EXPECTED_GCP_ACCOUNT", "GCP_IDENTITY_ENVIRONMENT_VARIABLE_CHANGED")
+    _exact(cloud_active.get("expected_project_display_name_environment_variable"), "LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME", "GCP_PROJECT_DISPLAY_NAME_ENVIRONMENT_VARIABLE_CHANGED")
+    for key in (
+        "expected_project_environment_variable",
+        "requester_pays_project_environment_variable",
+        "bigquery_billing_project_environment_variable",
+    ):
+        _exact(cloud_active.get(key), "LVEF_C3_GCP_BILLING_PROJECT", f"GCP_{key.upper()}_CHANGED")
+    for key in (
+        "activation_requires_identity_match",
+        "activation_requires_project_match",
+        "activation_requires_active_billing_link",
+        "activation_requires_requester_pays_metadata_access",
+        "activation_requires_bigquery_billing_access",
+    ):
+        _exact(cloud_active.get(key), True, f"GCP_{key.upper()}_DISABLED")
+    _exact(cloud_active.get("exact_identifiers_may_be_written_to_git"), False, "GCP_EXACT_IDENTIFIERS_EXPORT_ALLOWED")
+    _exact(cloud_credentials.get("classification"), "CREDENTIAL_STATE", "GCP_CREDENTIAL_CLASS_CHANGED")
+    _exact(cloud_credentials.get("credentials_remain_scc_only"), True, "GCP_CREDENTIALS_NOT_RESTRICTED")
+    for key in (
+        "oauth_tokens_may_be_printed",
+        "credential_files_may_be_written_to_git",
+        "billing_account_or_payment_details_may_be_exported",
+        "requester_pays_session_files_may_be_written_to_git",
+    ):
+        _exact(cloud_credentials.get(key), False, f"GCP_{key.upper()}_ALLOWED")
+    _exact(cloud_trial.get("api_verification_status"), "NOT_API_VERIFIABLE_REQUIRES_OWNER_CONSOLE_OR_BILLING_RECORD", "GCP_FREE_TRIAL_API_CLAIM_CHANGED")
+    _exact(cloud_trial.get("project_existence_is_trial_evidence"), False, "GCP_PROJECT_EXISTENCE_MISCLASSIFIED_AS_TRIAL_EVIDENCE")
+    _exact(cloud_trial.get("billing_enabled_is_trial_evidence"), False, "GCP_BILLING_LINK_MISCLASSIFIED_AS_TRIAL_EVIDENCE")
+    _exact(cloud_trial.get("trial_credit_required_for_scientific_authority"), False, "GCP_TRIAL_CREDIT_MISCLASSIFIED_AS_SCIENTIFIC_AUTHORITY")
 
     output_root = Path(str(storage.get("output_root", "")))
     raw_root = Path(str(storage.get("raw_dicom_root", "")))

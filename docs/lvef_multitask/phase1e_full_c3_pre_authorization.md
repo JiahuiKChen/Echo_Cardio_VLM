@@ -10,10 +10,19 @@ Institutionally approved restricted-agent analysis permits necessary inspection 
 
 During Phase 1E-B/C the only GCS operation authorized is metadata reconciliation. No object media/body endpoint may be invoked. No full extraction, full EchoPrime inference, predictive model, prediction generation, or confirmatory-performance access is authorized.
 
+The prospective Google Cloud pivot is governed by [`gcp_authority_and_billing_provenance.md`](gcp_authority_and_billing_provenance.md). Historical cloud provenance must not be rewritten. The owner-entered requester-pays value produced `PREFLIGHT_ENV_READY`, which proves only controlled SCC-side capture. It does not prove authentication, project equality, billing linkage, Free Trial credit, requester-pays access, or BigQuery access. Exact prospective account/project values and all credentials remain SCC-only.
+
 ## Gate table
 
 | Gate | Current disposition | Evidence required to pass | Effect |
 |---|---|---|---|
+| Prospective cloud tooling resolved | `PENDING_PORTABILITY_REPAIR` | Supported Cloud SDK or authenticated API fallback resolved with nonsecret tool provenance; no tokens printed | Blocks prospective metadata request |
+| Prospective Google identity verified | `PENDING_RUNTIME_GATE` | Active runtime identity equals the owner-approved SCC-only identity | Blocks prospective metadata request |
+| Prospective project verified | `PENDING_RUNTIME_GATE` | Configured, requester-pays, and BigQuery project values equal the owner-approved SCC-only project | Blocks prospective metadata request |
+| Prospective billing link verified | `PENDING_RUNTIME_GATE` | Project exists and billing-enabled status is true without exporting billing-account identity | Blocks prospective metadata request and body transfer |
+| Requester-pays metadata access verified | `NOT_RUN_UNDER_NEW_AUTHORITY` | Metadata-only release request succeeds with zero media requests and zero object-body bytes | Blocks authoritative source preflight |
+| BigQuery billing/access verified | `NOT_RUN_UNDER_NEW_AUTHORITY` | Non-row-returning/dry-run access check succeeds under the prospective billing project | Blocks prospective BigQuery work |
+| Free Trial status | `NOT_API_VERIFIABLE_REQUIRES_OWNER_CONSOLE_OR_BILLING_RECORD` | Owner console/billing record or separate approved budget; project existence/billing-enabled status is insufficient | Does not invalidate metadata science; blocks reliance on trial credit |
 | Exact selected-source metadata complete | `PENDING_FULL_METADATA_PREFLIGHT` | 335,984 exact normalized requests reconciled to current name, size, MD5, CRC32C, generation, storage class, update time, and ownership | Blocks body transfer |
 | Exact selected-source byte total known | `PENDING_FULL_METADATA_PREFLIGHT` | Integer byte sum over the complete verified request set | Blocks final resource/cost seal |
 | No unresolved selected-study source deficit | `PENDING_FULL_METADATA_PREFLIGHT` | Zero missing objects, zero zero-record selected studies, zero ownership conflicts, and no unexplained extra selected-prefix objects | Blocks body transfer |
@@ -24,7 +33,7 @@ During Phase 1E-B/C the only GCS operation authorized is metadata reconciliation
 | Backed-up authority copy verified | `ABSENT` | Exact safe-relative-path size/SHA-256 manifest and independent restore check | Blocks complete 200-GB reallocation |
 | Storage expansion administrative status | `APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION` | Owner reports the reallocation and one-TB rental as approved or imminent; actual activation must be verified with `pquota` | Does not block metadata-only audits; blocks body transfer until activated |
 | Final 2-TB peak leaves required headroom | `PENDING_EXACT_SOURCE_BYTES` | Resource JSON proves peak <=1.8 TB for one-batch rolling cache | Blocks full C3 |
-| Requester-pays budget approved | `ABSENT` | Owner/financial approval for exact preflight-derived estimate plus contingency | Blocks body transfer |
+| Requester-pays budget approved | `ABSENT` | Owner/financial approval for exact preflight-derived estimate plus contingency; Free Trial credit must not be assumed | Blocks body transfer |
 | Storage-class/Autoclass operation pricing authoritative | `PENDING_FULL_METADATA_PREFLIGHT` | Every selected object is `STANDARD`, bucket Autoclass metadata is present, and Autoclass is disabled; otherwise freeze a class-aware operation-price model | Blocks authoritative cost seal |
 | SCC quota charge confirmed | `APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION` | Published authority is $22/TB/year, six-month minimum, fiscal-year-prorated: $11 estimated for one TB over six months or $22 over 12 months; exact invoice requires the effective start date | Does not block metadata-only work; actual `pquota` activation still blocks body transfer |
 | Selected source request manifest frozen | `PASS_STRUCTURAL_ONLY` | Existing hash-locked 4,530-study, 335,984-request authority | Not yet public-object authority |
@@ -92,6 +101,8 @@ The human packet must contain exactly the eight prespecified echocardiographer q
 
 [`lvef_c3_execution_contract.yaml`](../../configs/lvef_c3_execution_contract.yaml) freezes the intended future authority without granting it. It binds the 4,530-study selected cohort and MIMIC-IV-ECHO 1.0 source; requester-pays configuration through an SCC-only environment variable; `/restricted/projectnb/mimicecho/lvef_multitask_c3` output roots; 250-study deterministic chunks yielding 19 production batches; concurrency one; exact-generation, size, MD5, and local SHA-256 requirements; object-atomic partial files; header-first multiframe candidacy; deterministic extraction; the 138,642,379-byte EchoPrime checkpoint and SHA-256; the prospective Python/PyTorch/CUDA contract; raw-DICOM retention; manifest-exact extracted-cache retirement gates; unique physical-source keys; no historical embedding reuse; no outside-selected studies; float32 512-dimensional clip vectors; stable float64-accumulated study mean pooling; denominator and preservation authorities; direct restricted-agent receipts; and reviewed export gates.
 
+The contract now also makes the three Google Cloud provenance classes machine-checkable: preserved-or-unknown historical association, an SCC-only active prospective identity/project authority, and nonexportable credential state. It requires identity, project, billing-link, requester-pays metadata, and BigQuery billing gates before future execution. The exact prospective account/project values are intentionally absent from Git.
+
 The scheduler interface prints a future 19-task SGE array (`-t 1-19 -tc 1`) and dependent finalizer without exporting the ambient environment. Every current production entry point exits 78, and `--submit` is refused. Before that interface can be authorized, the repository still needs a generic exact-generation downloader, streaming batch runner, batch preservation/audit receipts, cross-batch finalizer, selected-source freeze, migrated/revalidated environment, Phase 1E-A equivalence tests, resume/failure tests, command/config manifest, budget approval, and owner authorization. The four-study smoke implementation cannot be relabeled as the production runner.
 
 ## Full C3 decision
@@ -99,10 +110,11 @@ The scheduler interface prints a future 19-task SGE array (`-t 1-19 -tc 1`) and 
 **NO-GO.** The current phase may complete source metadata, resource arithmetic, restricted technical metadata review, packet preparation, implementation, and dry-run validation. The following remain absolute prerequisites before a later owner authorization can be considered:
 
 1. complete exact GCS metadata with zero unresolved source deficit;
-2. exact raw bytes, final 2-TB peak, and requester-pays budget approval;
-3. verified backup/migration readiness and final quota confirmation;
-4. production exact-generation download, streaming batch, preservation, and finalization implementation plus smoke-equivalence/resume/failure tests;
-5. frozen enriched source, command, config, checkpoint, and environment identities;
-6. written owner authorization for full C3.
+2. verified prospective identity, project, billing link, requester-pays metadata access, and BigQuery billing access;
+3. exact raw bytes, final 2-TB peak, and requester-pays budget approval without assuming Free Trial credit;
+4. verified backup/migration readiness and final quota confirmation;
+5. production exact-generation download, streaming batch, preservation, and finalization implementation plus smoke-equivalence/resume/failure tests;
+6. frozen enriched source, command, config, checkpoint, and environment identities;
+7. written owner authorization for full C3.
 
 Confirmatory modeling additionally requires qualified clinician signoff, final aliases/units/dependencies/panels, exact common denominators, final SAP/config checksums, and a separate explicit owner authorization.

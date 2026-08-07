@@ -5,6 +5,8 @@ umask 077
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lvef_c3_billing_environment.sh"
+# The broader authority helpers below supersede the prior single-value
+# lvef_c3_quarantine_billing_project / lvef_c3_run_with_billing_project path.
 
 : "${LVEF_C3_PREFLIGHT_ENV_FILE:?LVEF_C3_PREFLIGHT_ENV_FILE is required}"
 test -f "$LVEF_C3_PREFLIGHT_ENV_FILE"
@@ -12,11 +14,12 @@ test -O "$LVEF_C3_PREFLIGHT_ENV_FILE"
 test "$(stat -c '%a' "$LVEF_C3_PREFLIGHT_ENV_FILE")" = "600"
 # The SCC-only file contains shell-escaped scalar assignments made by the owner.
 source "$LVEF_C3_PREFLIGHT_ENV_FILE"
-lvef_c3_quarantine_billing_project
+lvef_c3_quarantine_gcp_authority_environment
 
 : "${WORKTREE:?}"
 : "${EXPECTED_COMMIT:?}"
 : "${PYTHON:?}"
+: "${EXPECTED_PYTHON_SHA256:?}"
 : "${SELECTED_STUDIES:?}"
 : "${SPLIT_MAP:?}"
 : "${SELECTED_SOURCE_MANIFEST:?}"
@@ -33,12 +36,38 @@ lvef_c3_quarantine_billing_project
 : "${APPROVED_ORGANIZATION_CLASS:?}"
 : "${RUN_ROOT:?}"
 : "${LVEF_C3_GCP_BILLING_PROJECT:?}"
+: "${LVEF_C3_EXPECTED_GCP_ACCOUNT:?}"
+: "${LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME:?}"
+: "${GCP_AUTHORITY_WRAPPER:?}"
+: "${EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256:?}"
+: "${C3_EXECUTION_CONTRACT:?}"
+: "${EXPECTED_C3_EXECUTION_CONTRACT_SHA256:?}"
+: "${GCLOUD_RESOLVER:?}"
+: "${EXPECTED_GCLOUD_RESOLVER_SHA256:?}"
+
+GCLOUD="${GCLOUD:-}"
+LVEF_C3_GCP_AUTHORIZED_USER_FILE="${LVEF_C3_GCP_AUTHORIZED_USER_FILE:-}"
+if [[ -n "$GCLOUD" ]]; then
+  test -z "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+  test -x "$GCLOUD"
+  : "${GCLOUD_RESOLUTION_RECORD:?}"
+  : "${EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256:?}"
+  test "$(sha256sum "$GCLOUD_RESOLUTION_RECORD" | awk '{print $1}')" = "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
+  : "${CLOUDSDK_CONFIG:?}"
+  test -d "$CLOUDSDK_CONFIG"
+  test -O "$CLOUDSDK_CONFIG"
+  test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = '700'
+  export CLOUDSDK_CONFIG
+else
+  test -n "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+fi
 
 cd "$WORKTREE"
 test "$(git branch --show-current)" = "codex/lvef-multitask-revalidation"
 test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test -z "$(git status --porcelain)"
 test -x "$PYTHON"
+test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "$EXPECTED_PYTHON_SHA256"
 [[ "$EXPECTED_SELECTED_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$CURRENT_RESEARCH_USAGE_BYTES" =~ ^[0-9]+$ ]]
 [[ "$EXPECTED_MIGRATION_WITNESS_SHA256" =~ ^[0-9a-f]{64}$ ]]
@@ -48,6 +77,9 @@ test "$(sha256sum "$SPLIT_MAP" | awk '{print $1}')" = "$EXPECTED_SPLIT_MAP_SHA25
 test "$(sha256sum "$RESOURCE_POLICY" | awk '{print $1}')" = "$EXPECTED_RESOURCE_POLICY_SHA256"
 test "$(sha256sum "$SAFE_EXPORT_POLICY" | awk '{print $1}')" = "$EXPECTED_SAFE_EXPORT_POLICY_SHA256"
 test "$(sha256sum "$MIGRATION_WITNESS" | awk '{print $1}')" = "$EXPECTED_MIGRATION_WITNESS_SHA256"
+test "$(sha256sum "$GCP_AUTHORITY_WRAPPER" | awk '{print $1}')" = "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256"
+test "$(sha256sum "$C3_EXECUTION_CONTRACT" | awk '{print $1}')" = "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256"
+test "$(sha256sum "$GCLOUD_RESOLVER" | awk '{print $1}')" = "$EXPECTED_GCLOUD_RESOLVER_SHA256"
 
 mkdir -p "$RUN_ROOT/aggregate" "$RUN_ROOT/restricted/logs" "$RUN_ROOT/restricted/source_preflight"
 
@@ -76,6 +108,17 @@ else
     --output "$RUN_ROOT/restricted/source_preflight" \
     --output "$RUN_ROOT/aggregate" >/dev/null
 fi
+
+GCP_AUTHORITY_RESTRICTED="$RUN_ROOT/restricted/gcp_authority_receipt.restricted.json"
+GCP_AUTHORITY_SUMMARY="$RUN_ROOT/aggregate/gcp_authority_receipt.summary.json"
+"$GCP_AUTHORITY_WRAPPER" \
+  --preflight-env "$LVEF_C3_PREFLIGHT_ENV_FILE" \
+  --restricted-output "$GCP_AUTHORITY_RESTRICTED" \
+  --aggregate-output "$GCP_AUTHORITY_SUMMARY" \
+  >"$RUN_ROOT/restricted/logs/gcp_authority_gate.stdout.txt" \
+  2>"$RUN_ROOT/restricted/logs/gcp_authority_gate.stderr.txt"
+GCP_AUTHORITY_RECEIPT_SHA256="$(sha256sum "$GCP_AUTHORITY_RESTRICTED" | awk '{print $1}')"
+[[ "$GCP_AUTHORITY_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]
 
 STORAGE_DETAIL="$RUN_ROOT/restricted/scc_storage_inventory.restricted.json"
 STORAGE_SUMMARY="$RUN_ROOT/aggregate/scc_storage_inventory.summary.json"
@@ -118,7 +161,7 @@ elif [[ "$SOURCE_FINAL_COUNT" -ne 0 ]]; then
   printf '%s\n' 'INCOMPLETE_FINAL_SOURCE_OUTPUT_SET' >&2
   exit 73
 else
-  if lvef_c3_run_with_billing_project \
+  if lvef_c3_run_with_gcp_authority_environment \
     "$PYTHON" scripts/preflight_lvef_c3_full_source.py \
     --source-manifest "$SELECTED_SOURCE_MANIFEST" \
     --selected-studies "$SELECTED_STUDIES" \
@@ -129,6 +172,9 @@ else
     --safe-export-policy "$SAFE_EXPORT_POLICY" \
     --restricted-output-dir "$RUN_ROOT/restricted/source_preflight" \
     --aggregate-output-dir "$RUN_ROOT/aggregate" \
+    --gcloud-bin "$GCLOUD" \
+    --gcp-authority-receipt "$GCP_AUTHORITY_RESTRICTED" \
+    --expected-gcp-authority-receipt-sha256 "$GCP_AUTHORITY_RECEIPT_SHA256" \
     --resume \
     >"$RUN_ROOT/restricted/logs/source_preflight.stdout.txt" \
     2>"$RUN_ROOT/restricted/logs/source_preflight.stderr.txt"; then

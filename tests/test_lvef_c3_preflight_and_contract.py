@@ -219,20 +219,13 @@ def test_json_api_provider_is_paginated_project_billed_and_never_media() -> None
     }
     urls: list[str] = []
 
-    class Response(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            self.close()
-
-    def fake_urlopen(request, timeout):
-        del timeout
+    def fake_json_response(request, *, timeout_seconds, purpose):
+        del timeout_seconds, purpose
         urls.append(request.full_url)
-        return Response(json.dumps(payload).encode())
+        return payload
 
     with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-        preflight, "urlopen", side_effect=fake_urlopen
+        preflight, "_read_gcs_json_response", side_effect=fake_json_response
     ), mock.patch.dict("os.environ", {"TEST_GCS_TOKEN": "secret-token"}):
         metadata, stats = preflight.list_json_api_metadata(
             {relative},
@@ -269,19 +262,14 @@ def test_bucket_metadata_is_project_billed_and_location_bound() -> None:
     }
     urls: list[str] = []
 
-    class Response(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            self.close()
-
-    def fake_urlopen(request, timeout):
-        del timeout
+    def fake_json_response(request, *, timeout_seconds, purpose):
+        del timeout_seconds, purpose
         urls.append(request.full_url)
-        return Response(json.dumps(payload).encode())
+        return payload
 
-    with mock.patch.object(preflight, "urlopen", side_effect=fake_urlopen):
+    with mock.patch.object(
+        preflight, "_read_gcs_json_response", side_effect=fake_json_response
+    ):
         metadata = preflight.get_bucket_metadata(
             billing_project="approved-billing-project",
             token_env="UNUSED",
@@ -299,6 +287,58 @@ def test_bucket_metadata_is_project_billed_and_location_bound() -> None:
     assert "alt=media" not in urls[0]
 
 
+def test_gcs_json_reader_rejects_redirects_and_non_json_content() -> None:
+    request = preflight.Request(
+        "https://storage.googleapis.com/storage/v1/b/synthetic?fields=name",
+        headers={"Authorization": "Bearer synthetic"},
+    )
+
+    class Headers:
+        def __init__(self, content_type: str):
+            self.content_type = content_type
+
+        def get_content_type(self) -> str:
+            return self.content_type
+
+    class Response(io.BytesIO):
+        def __init__(self, *, final_url: str, content_type: str):
+            super().__init__(b"{}")
+            self.final_url = final_url
+            self.headers = Headers(content_type)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
+
+        def geturl(self) -> str:
+            return self.final_url
+
+    for response, expected in (
+        (
+            Response(
+                final_url="https://storage.googleapis.com/download/storage/v1/b/synthetic",
+                content_type="application/json",
+            ),
+            "REDIRECT_PROHIBITED",
+        ),
+        (
+            Response(final_url=request.full_url, content_type="application/octet-stream"),
+            "CONTENT_TYPE_INVALID",
+        ),
+    ):
+        with mock.patch.object(preflight, "_urlopen_no_redirect", return_value=response):
+            try:
+                preflight._read_gcs_json_response(
+                    request, timeout_seconds=10, purpose="SYNTHETIC_GCS"
+                )
+            except preflight.PreflightError as exc:
+                assert expected in str(exc)
+            else:
+                raise AssertionError(f"Expected {expected}")
+
+
 def test_live_listing_recovers_after_page_journal_before_state_crash() -> None:
     relative = "files/" + "p10/" + "p" + "10000001/" + "s" + "20000001/a.dcm"
     payload = {
@@ -313,19 +353,12 @@ def test_live_listing_recovers_after_page_journal_before_state_crash() -> None:
         }]
     }
 
-    class Response(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            self.close()
-
-    def fake_urlopen(request, timeout):
-        del request, timeout
-        return Response(json.dumps(payload).encode())
+    def fake_json_response(request, *, timeout_seconds, purpose):
+        del request, timeout_seconds, purpose
+        return payload
 
     with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-        preflight, "urlopen", side_effect=fake_urlopen
+        preflight, "_read_gcs_json_response", side_effect=fake_json_response
     ):
         work = Path(directory)
         with mock.patch.object(

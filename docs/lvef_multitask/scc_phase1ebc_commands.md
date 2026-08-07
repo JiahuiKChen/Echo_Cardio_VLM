@@ -25,7 +25,8 @@ test ! -e "$PYTHON_RECORD"
 export LVEF_SCC_PYTHON="/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python"
 PYTHON="$(scripts/resolve_lvef_scc_python.sh --record-json "$PYTHON_RECORD")"
 test -x "$PYTHON"
-test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
+EXPECTED_PYTHON_SHA256="1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
+test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "$EXPECTED_PYTHON_SHA256"
 test -f "$PYTHON_RECORD"
 test "$(stat -c '%a' "$PYTHON_RECORD")" = "600"
 
@@ -38,6 +39,7 @@ chmod 600 "$SESSION_ENV_NEXT"
   printf 'EXPECTED_COMMIT=%q\n' "$EXPECTED_COMMIT"
   printf 'PYTHON=%q\n' "$PYTHON"
   printf 'PYTHON_RECORD=%q\n' "$PYTHON_RECORD"
+  printf 'EXPECTED_PYTHON_SHA256=%q\n' "$EXPECTED_PYTHON_SHA256"
 } >"$SESSION_ENV_NEXT"
 mv -f "$SESSION_ENV_NEXT" "$SESSION_ENV"
 chmod 600 "$SESSION_ENV"
@@ -180,6 +182,7 @@ install -m 600 /dev/null "$PREFLIGHT_ENV"
   printf 'WORKTREE=%q\n' "$WORKTREE"
   printf 'EXPECTED_COMMIT=%q\n' "$EXPECTED_COMMIT"
   printf 'PYTHON=%q\n' "$PYTHON"
+  printf 'EXPECTED_PYTHON_SHA256=%q\n' "$EXPECTED_PYTHON_SHA256"
   printf 'SELECTED_STUDIES=%q\n' "$SELECTED_STUDIES"
   printf 'SPLIT_MAP=%q\n' "$SPLIT_MAP"
   printf 'SELECTED_SOURCE_MANIFEST=%q\n' "$SELECTED_SOURCE_MANIFEST"
@@ -224,6 +227,344 @@ mv -f "$SESSION_ENV_NEXT" "$SESSION_ENV"
 chmod 600 "$SESSION_ENV"
 ```
 
+## 3A. Repair the preserved run authority after the portability commit
+
+Run this block once **after** the portability repair has been fast-forwarded into
+the dedicated SCC worktree. It does not rerun Block 2 and does not create a new
+run root. It accepts only the exact previously bound commit, requires the new
+commit to be the synchronized remote tip and a fast-forward descendant, verifies
+the unchanged policy/migration/input checksums, atomically replaces the
+`EXPECTED_COMMIT` assignment, and adds the already established pinned-Python
+checksum when absent. The existing requester-pays value is copied byte-for-byte
+and is never printed.
+
+```bash
+set -euo pipefail
+umask 077
+WORKTREE="/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask"
+SESSION_ENV="/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env"
+PRIOR_EXPECTED_COMMIT="177aac1ce498390f62d43fb76ca216d06dc6b25f"
+test -f "$SESSION_ENV"
+test -O "$SESSION_ENV"
+test "$(stat -c '%a' "$SESSION_ENV")" = "600"
+source "$SESSION_ENV"
+test "$EXPECTED_COMMIT" = "$PRIOR_EXPECTED_COMMIT"
+EXPECTED_PYTHON_SHA256="1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
+test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "$EXPECTED_PYTHON_SHA256"
+test -d "$RUN_ROOT"
+test -f "$PREFLIGHT_ENV"
+test -O "$PREFLIGHT_ENV"
+test "$(stat -c '%a' "$PREFLIGHT_ENV")" = "600"
+test "$(grep -c '^EXPECTED_COMMIT=' "$SESSION_ENV")" -eq 1
+test "$(grep -c '^EXPECTED_COMMIT=' "$PREFLIGHT_ENV")" -eq 1
+test "$(grep '^EXPECTED_COMMIT=' "$PREFLIGHT_ENV")" = "EXPECTED_COMMIT=$PRIOR_EXPECTED_COMMIT"
+test "$(grep -c '^LVEF_C3_GCP_BILLING_PROJECT=' "$PREFLIGHT_ENV")" -eq 1
+
+cd "$WORKTREE"
+test "$(git branch --show-current)" = "codex/lvef-multitask-revalidation"
+test -z "$(git status --porcelain)"
+git fetch origin --prune
+NEW_EXPECTED_COMMIT="$(git rev-parse HEAD)"
+test "$NEW_EXPECTED_COMMIT" = "$(git rev-parse origin/codex/lvef-multitask-revalidation)"
+test "$NEW_EXPECTED_COMMIT" != "$PRIOR_EXPECTED_COMMIT"
+git merge-base --is-ancestor "$PRIOR_EXPECTED_COMMIT" "$NEW_EXPECTED_COMMIT"
+
+test "$(sha256sum "$RESOURCE_POLICY" | awk '{print $1}')" = "$EXPECTED_RESOURCE_POLICY_SHA256"
+test "$(sha256sum "$SAFE_EXPORT_POLICY" | awk '{print $1}')" = "$EXPECTED_SAFE_EXPORT_POLICY_SHA256"
+test "$(sha256sum "$MIGRATION_CLASSIFICATION" | awk '{print $1}')" = "$EXPECTED_MIGRATION_CLASSIFICATION_SHA256"
+test "$(sha256sum "$MIGRATION_WITNESS" | awk '{print $1}')" = "$EXPECTED_MIGRATION_WITNESS_SHA256"
+test "$(sha256sum "$SELECTED_SOURCE_MANIFEST" | awk '{print $1}')" = "$EXPECTED_SELECTED_SOURCE_SHA256"
+test "$(sha256sum "$SELECTED_STUDIES" | awk '{print $1}')" = "$EXPECTED_SELECTED_STUDIES_SHA256"
+test "$(sha256sum "$SPLIT_MAP" | awk '{print $1}')" = "$EXPECTED_SPLIT_MAP_SHA256"
+
+repair_expected_commit() {
+  local authority_file="$1"
+  local temporary_file
+  temporary_file="$(mktemp "${authority_file}.tmp.XXXXXX")"
+  chmod 600 "$temporary_file"
+  awk -v replacement="EXPECTED_COMMIT=$NEW_EXPECTED_COMMIT" '
+    BEGIN { replaced = 0 }
+    /^EXPECTED_COMMIT=/ {
+      if (replaced != 0) exit 74
+      print replacement
+      replaced = 1
+      next
+    }
+    { print }
+    END { if (replaced != 1) exit 74 }
+  ' "$authority_file" >"$temporary_file"
+  test "$(grep -c '^EXPECTED_COMMIT=' "$temporary_file")" -eq 1
+  mv -f "$temporary_file" "$authority_file"
+  chmod 600 "$authority_file"
+}
+
+repair_expected_commit "$SESSION_ENV"
+repair_expected_commit "$PREFLIGHT_ENV"
+
+append_python_authority_if_absent() {
+  local authority_file="$1"
+  local temporary_file
+  if grep -q '^EXPECTED_PYTHON_SHA256=' "$authority_file"; then
+    test "$(grep '^EXPECTED_PYTHON_SHA256=' "$authority_file")" = \
+      "EXPECTED_PYTHON_SHA256=$EXPECTED_PYTHON_SHA256"
+    return
+  fi
+  temporary_file="$(mktemp "${authority_file}.tmp.XXXXXX")"
+  chmod 600 "$temporary_file"
+  cp "$authority_file" "$temporary_file"
+  printf 'EXPECTED_PYTHON_SHA256=%q\n' "$EXPECTED_PYTHON_SHA256" >>"$temporary_file"
+  mv -f "$temporary_file" "$authority_file"
+  chmod 600 "$authority_file"
+}
+append_python_authority_if_absent "$SESSION_ENV"
+append_python_authority_if_absent "$PREFLIGHT_ENV"
+test "$(grep '^EXPECTED_COMMIT=' "$SESSION_ENV")" = "EXPECTED_COMMIT=$NEW_EXPECTED_COMMIT"
+test "$(grep '^EXPECTED_COMMIT=' "$PREFLIGHT_ENV")" = "EXPECTED_COMMIT=$NEW_EXPECTED_COMMIT"
+test "$RUN_ROOT" = "$(. "$SESSION_ENV"; printf '%s' "$RUN_ROOT")"
+printf '%s\n' 'PHASE1EBC_EXISTING_RUN_AUTHORITY_REPAIR=PASS_NO_STORAGE_RERUN'
+```
+
+## 3B. Resolve Google Cloud CLI or prepare a pinned bootstrap
+
+This block first prefers an owner-specified absolute `LVEF_SCC_GCLOUD`, then an
+existing `gcloud` on `PATH`, then known self-contained user/project installs,
+and finally the pinned SCC environment module. Resolution reads no credential
+material and writes a restricted provenance record. If no valid executable is
+found, it prepares—but does not execute—a mode-600 bootstrap script for Google
+Cloud CLI 579.0.0 from the exact official versioned archive, pinned to SHA-256
+`a9a7fbe51cda37cf6142b1bbcff12227550e60a6c67e8cf84644fb301371c4de`
+(96,066,973 bytes; decompressed tar-payload SHA-256
+`f44705777ec8b5b401ff705c39421f747780b7fb7655f836af43e316964b90bd`).
+The prepared bootstrap targets only `/restricted/projectnb/mimicecho/tools`,
+does not modify profiles or system packages, and requires separate owner review
+and authorization before it may be executed.
+
+```bash
+set -euo pipefail
+umask 077
+SESSION_ENV="/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env"
+test -f "$SESSION_ENV"
+test -O "$SESSION_ENV"
+test "$(stat -c '%a' "$SESSION_ENV")" = "600"
+source "$SESSION_ENV"
+cd "$WORKTREE"
+test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test "$(git rev-parse origin/codex/lvef-multitask-revalidation)" = "$EXPECTED_COMMIT"
+test -z "$(git status --porcelain)"
+
+GCLOUD_RESOLUTION_RECORD="$RUN_ROOT/restricted/lvef_scc_gcloud_resolution_$(date -u +%Y%m%dT%H%M%SZ)_$$.json"
+GCLOUD_RESOLVER="$WORKTREE/scripts/resolve_lvef_scc_gcloud.sh"
+test -f "$GCLOUD_RESOLVER"
+EXPECTED_GCLOUD_RESOLVER_SHA256="$(sha256sum "$GCLOUD_RESOLVER" | awk '{print $1}')"
+[[ "$EXPECTED_GCLOUD_RESOLVER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+test ! -e "$GCLOUD_RESOLUTION_RECORD"
+if GCLOUD="$(
+  LVEF_SCC_PYTHON="$PYTHON" "$GCLOUD_RESOLVER" \
+    --record-json "$GCLOUD_RESOLUTION_RECORD" \
+    --expected-version 579.0.0
+)"; then
+  test -x "$GCLOUD"
+  test -f "$GCLOUD_RESOLUTION_RECORD"
+  test "$(stat -c '%a' "$GCLOUD_RESOLUTION_RECORD")" = "600"
+else
+  RESOLUTION_STATUS=$?
+  BOOTSTRAP_REVIEW_SCRIPT="$RUN_ROOT/restricted/google_cloud_cli_579_0_0_bootstrap.PREPARED_NOT_EXECUTED.sh"
+  test ! -e "$BOOTSTRAP_REVIEW_SCRIPT"
+  scripts/prepare_lvef_scc_gcloud_cli_bootstrap.sh \
+    --output-script "$BOOTSTRAP_REVIEW_SCRIPT"
+  test "$(stat -c '%a' "$BOOTSTRAP_REVIEW_SCRIPT")" = "600"
+  printf '%s\n' 'GCLOUD_RESOLUTION=BLOCKED_BOOTSTRAP_PREPARED_NOT_EXECUTED' >&2
+  exit "$RESOLUTION_STATUS"
+fi
+EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256="$(sha256sum "$GCLOUD_RESOLUTION_RECORD" | awk '{print $1}')"
+[[ "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256" =~ ^[0-9a-f]{64}$ ]]
+GCP_AUTHORITY_WRAPPER="$WORKTREE/scripts/verify_lvef_scc_gcp_authority.sh"
+C3_EXECUTION_CONTRACT="$WORKTREE/configs/lvef_c3_execution_contract.yaml"
+test -f "$GCP_AUTHORITY_WRAPPER"
+test -x "$GCP_AUTHORITY_WRAPPER"
+test -f "$C3_EXECUTION_CONTRACT"
+EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256="$(sha256sum "$GCP_AUTHORITY_WRAPPER" | awk '{print $1}')"
+EXPECTED_C3_EXECUTION_CONTRACT_SHA256="$(sha256sum "$C3_EXECUTION_CONTRACT" | awk '{print $1}')"
+[[ "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+CLOUDSDK_CONFIG="$RUN_ROOT/restricted/gcloud_config"
+test ! -e "$CLOUDSDK_CONFIG"
+mkdir "$CLOUDSDK_CONFIG"
+chmod 700 "$CLOUDSDK_CONFIG"
+test -O "$CLOUDSDK_CONFIG"
+test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+
+test "$(grep -c '^GCLOUD=' "$SESSION_ENV")" -eq 0
+SESSION_ENV_NEXT="$(mktemp "$SESSION_ENV.tmp.XXXXXX")"
+chmod 600 "$SESSION_ENV_NEXT"
+cp "$SESSION_ENV" "$SESSION_ENV_NEXT"
+{
+  printf 'GCLOUD=%q\n' "$GCLOUD"
+  printf 'GCLOUD_RESOLVER=%q\n' "$GCLOUD_RESOLVER"
+  printf 'EXPECTED_GCLOUD_RESOLVER_SHA256=%q\n' "$EXPECTED_GCLOUD_RESOLVER_SHA256"
+  printf 'GCLOUD_RESOLUTION_RECORD=%q\n' "$GCLOUD_RESOLUTION_RECORD"
+  printf 'EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256=%q\n' "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
+  printf 'GCP_AUTHORITY_WRAPPER=%q\n' "$GCP_AUTHORITY_WRAPPER"
+  printf 'EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256=%q\n' "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256"
+  printf 'C3_EXECUTION_CONTRACT=%q\n' "$C3_EXECUTION_CONTRACT"
+  printf 'EXPECTED_C3_EXECUTION_CONTRACT_SHA256=%q\n' "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256"
+  printf 'CLOUDSDK_CONFIG=%q\n' "$CLOUDSDK_CONFIG"
+} >>"$SESSION_ENV_NEXT"
+mv -f "$SESSION_ENV_NEXT" "$SESSION_ENV"
+chmod 600 "$SESSION_ENV"
+
+read -r -s -p 'Approved active Google identity: ' LVEF_C3_EXPECTED_GCP_ACCOUNT
+printf '\n'
+test -n "$LVEF_C3_EXPECTED_GCP_ACCOUNT"
+read -r -s -p 'Approved Google Cloud project display name: ' LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME
+printf '\n'
+test -n "$LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME"
+LVEF_C3_GCP_AUTHORIZED_USER_FILE=""
+test "$(grep -c '^GCLOUD=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^GCLOUD_RESOLVER=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^EXPECTED_GCLOUD_RESOLVER_SHA256=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^LVEF_C3_EXPECTED_GCP_ACCOUNT=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^LVEF_C3_GCP_AUTHORIZED_USER_FILE=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^GCLOUD_RESOLUTION_RECORD=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^GCP_AUTHORITY_WRAPPER=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^C3_EXECUTION_CONTRACT=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^EXPECTED_C3_EXECUTION_CONTRACT_SHA256=' "$PREFLIGHT_ENV")" -eq 0
+test "$(grep -c '^CLOUDSDK_CONFIG=' "$PREFLIGHT_ENV")" -eq 0
+PREFLIGHT_ENV_NEXT="$(mktemp "$PREFLIGHT_ENV.tmp.XXXXXX")"
+chmod 600 "$PREFLIGHT_ENV_NEXT"
+cp "$PREFLIGHT_ENV" "$PREFLIGHT_ENV_NEXT"
+{
+  printf 'GCLOUD=%q\n' "$GCLOUD"
+  printf 'GCLOUD_RESOLVER=%q\n' "$GCLOUD_RESOLVER"
+  printf 'EXPECTED_GCLOUD_RESOLVER_SHA256=%q\n' "$EXPECTED_GCLOUD_RESOLVER_SHA256"
+  printf 'GCLOUD_RESOLUTION_RECORD=%q\n' "$GCLOUD_RESOLUTION_RECORD"
+  printf 'EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256=%q\n' "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
+  printf 'GCP_AUTHORITY_WRAPPER=%q\n' "$GCP_AUTHORITY_WRAPPER"
+  printf 'EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256=%q\n' "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256"
+  printf 'C3_EXECUTION_CONTRACT=%q\n' "$C3_EXECUTION_CONTRACT"
+  printf 'EXPECTED_C3_EXECUTION_CONTRACT_SHA256=%q\n' "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256"
+  printf 'CLOUDSDK_CONFIG=%q\n' "$CLOUDSDK_CONFIG"
+  printf 'LVEF_C3_EXPECTED_GCP_ACCOUNT=%q\n' "$LVEF_C3_EXPECTED_GCP_ACCOUNT"
+  printf 'LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME=%q\n' "$LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME"
+  printf 'LVEF_C3_GCP_AUTHORIZED_USER_FILE=%q\n' "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+} >>"$PREFLIGHT_ENV_NEXT"
+mv -f "$PREFLIGHT_ENV_NEXT" "$PREFLIGHT_ENV"
+chmod 600 "$PREFLIGHT_ENV"
+unset LVEF_C3_EXPECTED_GCP_ACCOUNT
+unset LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME
+unset LVEF_C3_GCP_AUTHORIZED_USER_FILE
+printf '%s\n' 'GCLOUD_RESOLUTION=PASS_CREDENTIALS_NOT_ACCESSED'
+```
+
+## 3C. Initialize the isolated owner authentication
+
+This is the only interactive login block. Run it by itself. The `gcloud auth
+login` invocation is deliberately the final command so no later shell text can
+be consumed by an interactive authentication prompt. It uses only the new
+mode-700 config directory under the preserved restricted run root; it does not
+read or modify a home-directory Cloud SDK profile. Do not paste another command
+until this command has returned to the shell prompt. Any browser URL, device
+code, or authentication transcript is restricted and must not be pasted into an
+ordinary response or Git.
+
+```bash
+set -euo pipefail
+umask 077
+SESSION_ENV="/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env"
+test -z "${GOOGLE_OAUTH_ACCESS_TOKEN:-}"
+test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}"
+test -z "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+test -z "${CLOUDSDK_CORE_ACCOUNT:-}"
+test -z "${CLOUDSDK_CORE_PROJECT:-}"
+test -z "${CLOUDSDK_CONFIG:-}"
+test -f "$SESSION_ENV"
+test -O "$SESSION_ENV"
+test "$(stat -c '%a' "$SESSION_ENV")" = "600"
+source "$SESSION_ENV"
+test -d "$CLOUDSDK_CONFIG"
+test -O "$CLOUDSDK_CONFIG"
+test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+test -f "$PREFLIGHT_ENV"
+test -O "$PREFLIGHT_ENV"
+test "$(stat -c '%a' "$PREFLIGHT_ENV")" = "600"
+source "$PREFLIGHT_ENV"
+export -n LVEF_C3_EXPECTED_GCP_ACCOUNT
+export -n LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME
+export -n LVEF_C3_GCP_BILLING_PROJECT
+export -n LVEF_C3_GCP_AUTHORIZED_USER_FILE
+test -n "$LVEF_C3_EXPECTED_GCP_ACCOUNT"
+test -z "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCLOUD" auth login "$LVEF_C3_EXPECTED_GCP_ACCOUNT" --no-launch-browser --update-adc
+```
+
+## 3D. Configure and verify prospective authentication, billing, and metadata access
+
+This gate reads the exact expected identity, project display name, and existing
+requester-pays project only from the owner-only preflight environment. It rejects
+ambient access-token and credential-file overrides, prints no identity, project,
+token, credential path, project number, or billing-account identifier, and makes
+metadata/control-plane probes only. Detailed evidence stays restricted; the
+aggregate receipt contains status and booleans only. A failed or partial gate
+blocks metadata-job submission without changing the run root.
+
+```bash
+set -euo pipefail
+umask 077
+SESSION_ENV="/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env"
+test -z "${GOOGLE_OAUTH_ACCESS_TOKEN:-}"
+test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}"
+test -z "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+test -z "${CLOUDSDK_CORE_ACCOUNT:-}"
+test -z "${CLOUDSDK_CORE_PROJECT:-}"
+test -z "${CLOUDSDK_CONFIG:-}"
+test -f "$SESSION_ENV"
+test -O "$SESSION_ENV"
+test "$(stat -c '%a' "$SESSION_ENV")" = "600"
+source "$SESSION_ENV"
+cd "$WORKTREE"
+test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test -z "$(git status --porcelain)"
+test -x "$GCLOUD"
+test "$(sha256sum "$GCLOUD_RESOLUTION_RECORD" | awk '{print $1}')" = "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
+test "$(sha256sum "$GCP_AUTHORITY_WRAPPER" | awk '{print $1}')" = "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256"
+test "$(sha256sum "$C3_EXECUTION_CONTRACT" | awk '{print $1}')" = "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256"
+test -d "$CLOUDSDK_CONFIG"
+test -O "$CLOUDSDK_CONFIG"
+test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+source "$PREFLIGHT_ENV"
+export -n LVEF_C3_EXPECTED_GCP_ACCOUNT
+export -n LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME
+export -n LVEF_C3_GCP_BILLING_PROJECT
+export -n LVEF_C3_GCP_AUTHORIZED_USER_FILE
+test -z "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"
+
+GCLOUD_AUTH_CONFIG_STDOUT="$RUN_ROOT/restricted/logs/gcloud_auth_configuration.stdout.txt"
+GCLOUD_AUTH_CONFIG_STDERR="$RUN_ROOT/restricted/logs/gcloud_auth_configuration.stderr.txt"
+: >"$GCLOUD_AUTH_CONFIG_STDOUT"
+: >"$GCLOUD_AUTH_CONFIG_STDERR"
+chmod 600 "$GCLOUD_AUTH_CONFIG_STDOUT" "$GCLOUD_AUTH_CONFIG_STDERR"
+CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCLOUD" config set account "$LVEF_C3_EXPECTED_GCP_ACCOUNT" \
+  >>"$GCLOUD_AUTH_CONFIG_STDOUT" 2>>"$GCLOUD_AUTH_CONFIG_STDERR"
+CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCLOUD" config set project "$LVEF_C3_GCP_BILLING_PROJECT" \
+  >>"$GCLOUD_AUTH_CONFIG_STDOUT" 2>>"$GCLOUD_AUTH_CONFIG_STDERR"
+CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCLOUD" auth application-default set-quota-project "$LVEF_C3_GCP_BILLING_PROJECT" \
+  >>"$GCLOUD_AUTH_CONFIG_STDOUT" 2>>"$GCLOUD_AUTH_CONFIG_STDERR"
+
+GCP_AUTHORITY_RESTRICTED="$RUN_ROOT/restricted/gcp_authority_receipt.restricted.json"
+GCP_AUTHORITY_SUMMARY="$RUN_ROOT/aggregate/gcp_authority_receipt.summary.json"
+CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCP_AUTHORITY_WRAPPER" \
+  --preflight-env "$PREFLIGHT_ENV" \
+  --restricted-output "$GCP_AUTHORITY_RESTRICTED" \
+  --aggregate-output "$GCP_AUTHORITY_SUMMARY"
+test -f "$GCP_AUTHORITY_RESTRICTED"
+test -f "$GCP_AUTHORITY_SUMMARY"
+test "$(stat -c '%a' "$GCP_AUTHORITY_RESTRICTED")" = "600"
+printf '%s\n' 'GCP_PROSPECTIVE_AUTHORITY_GATE=PASS_METADATA_ONLY'
+```
+
 ## 4. Submit only the metadata/resource preflight
 
 No ambient shell environment is exported to the job.
@@ -238,6 +579,22 @@ source "$SESSION_ENV"
 cd "$WORKTREE"
 test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test -z "$(git status --porcelain)"
+test -z "${GOOGLE_OAUTH_ACCESS_TOKEN:-}"
+test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}"
+test -z "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+test -z "${CLOUDSDK_CORE_ACCOUNT:-}"
+test -z "${CLOUDSDK_CORE_PROJECT:-}"
+test -x "$GCLOUD"
+test "$(sha256sum "$GCLOUD_RESOLUTION_RECORD" | awk '{print $1}')" = "$EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256"
+test "$(sha256sum "$GCP_AUTHORITY_WRAPPER" | awk '{print $1}')" = "$EXPECTED_GCP_AUTHORITY_WRAPPER_SHA256"
+test "$(sha256sum "$C3_EXECUTION_CONTRACT" | awk '{print $1}')" = "$EXPECTED_C3_EXECUTION_CONTRACT_SHA256"
+test -d "$CLOUDSDK_CONFIG"
+test -O "$CLOUDSDK_CONFIG"
+test "$(stat -c '%a' "$CLOUDSDK_CONFIG")" = "700"
+CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCP_AUTHORITY_WRAPPER" \
+  --preflight-env "$PREFLIGHT_ENV" \
+  --restricted-output "$RUN_ROOT/restricted/gcp_authority_receipt.restricted.json" \
+  --aggregate-output "$RUN_ROOT/aggregate/gcp_authority_receipt.summary.json"
 qsub \
   -P mimicecho \
   -N lvef_c3_preflight \

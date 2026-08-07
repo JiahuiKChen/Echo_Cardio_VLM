@@ -36,8 +36,44 @@ source:
 
 requester_pays:
   enabled: true
+  authority_scope: ACTIVE_PROSPECTIVE_AUTHORITY
   billing_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
   billing_project_may_be_written_to_git: false
+  authentication_and_billing_gate_required: true
+
+google_cloud_provenance:
+  historical_authority:
+    classification: HISTORICAL_AUTHORITY
+    preserve_captured_account_and_project_association: true
+    unknown_association_disposition: UNKNOWN_NOT_RETROACTIVELY_ASSIGNED
+    prospective_project_backfill_permitted: false
+  active_prospective_authority:
+    classification: ACTIVE_PROSPECTIVE_AUTHORITY
+    exact_identity_storage: SCC_ONLY_MODE_600
+    exact_project_storage: SCC_ONLY_MODE_600
+    expected_identity_environment_variable: LVEF_C3_EXPECTED_GCP_ACCOUNT
+    expected_project_display_name_environment_variable: LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME
+    expected_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+    requester_pays_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+    bigquery_billing_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+    exact_identifiers_may_be_written_to_git: false
+    activation_requires_identity_match: true
+    activation_requires_project_match: true
+    activation_requires_active_billing_link: true
+    activation_requires_requester_pays_metadata_access: true
+    activation_requires_bigquery_billing_access: true
+  credential_state:
+    classification: CREDENTIAL_STATE
+    credentials_remain_scc_only: true
+    oauth_tokens_may_be_printed: false
+    credential_files_may_be_written_to_git: false
+    billing_account_or_payment_details_may_be_exported: false
+    requester_pays_session_files_may_be_written_to_git: false
+  free_trial:
+    api_verification_status: NOT_API_VERIFIABLE_REQUIRES_OWNER_CONSOLE_OR_BILLING_RECORD
+    project_existence_is_trial_evidence: false
+    billing_enabled_is_trial_evidence: false
+    trial_credit_required_for_scientific_authority: false
 
 storage:
   output_root: /restricted/projectnb/mimicecho/lvef_multitask_c3
@@ -217,6 +253,13 @@ authorization:
   owner_authorized_contract_sha256: null
 
 preauthorization_gates:
+  prospective_gcp_tooling_resolved: false
+  prospective_gcp_identity_verified: false
+  prospective_gcp_project_verified: false
+  prospective_gcp_billing_link_verified: false
+  prospective_requester_pays_metadata_access_verified: false
+  prospective_bigquery_billing_access_verified: false
+  free_trial_status_owner_verified_or_separately_budgeted: false
   exact_source_metadata_complete: false
   exact_source_bytes_known: false
   no_selected_source_deficit: false

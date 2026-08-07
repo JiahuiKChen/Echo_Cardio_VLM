@@ -21,20 +21,24 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import yaml
 
 from lvef_multitask_analysis_modes import (
     bind_approved_restricted_path,
     load_policy as load_safe_export_policy,
+)
+from audit_lvef_c3_gcp_authority import (
+    AuthorityError as GCPAuthorityError,
+    acquire_access_token_for_preflight,
+    validate_restricted_receipt,
 )
 
 
@@ -50,6 +54,7 @@ EXPECTED_SELECTED_SHA256 = (
     "920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1"
 )
 DEFAULT_PAGE_SIZE = 1000
+MAX_GCS_JSON_BYTES = 16 * 1024 * 1024
 JSON_API_FIELDS = (
     "nextPageToken,items(name,size,md5Hash,crc32c,generation,storageClass,updated)"
 )
@@ -96,6 +101,54 @@ ALLOWED_SOURCE_COLUMNS = {
 
 class PreflightError(RuntimeError):
     """Fail-closed error whose message is safe for aggregate output."""
+
+
+class _RejectRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, *_: Any, **__: Any) -> None:
+        return None
+
+
+def _urlopen_no_redirect(request: Request, *, timeout: int):
+    return build_opener(_RejectRedirectHandler()).open(request, timeout=timeout)
+
+
+def _read_gcs_json_response(
+    request: Request, *, timeout_seconds: int, purpose: str
+) -> Mapping[str, Any]:
+    requested = urlparse(request.full_url)
+    if (
+        requested.scheme != "https"
+        or requested.hostname != "storage.googleapis.com"
+        or "/download/storage/" in request.full_url
+        or "alt=media" in request.full_url
+    ):
+        raise PreflightError("MEDIA_ENDPOINT_PROHIBITED")
+    try:
+        with _urlopen_no_redirect(request, timeout=timeout_seconds) as response:
+            if response.geturl() != request.full_url:
+                raise PreflightError(f"{purpose}_REDIRECT_PROHIBITED")
+            headers = getattr(response, "headers", None)
+            content_type = (
+                headers.get_content_type()
+                if headers is not None and hasattr(headers, "get_content_type")
+                else ""
+            )
+            if content_type != "application/json":
+                raise PreflightError(f"{purpose}_CONTENT_TYPE_INVALID")
+            body = response.read(MAX_GCS_JSON_BYTES + 1)
+    except HTTPError as exc:
+        raise PreflightError(f"{purpose}_HTTP_{exc.code}") from None
+    except (URLError, TimeoutError):
+        raise PreflightError(f"{purpose}_NETWORK_FAILURE") from None
+    if len(body) > MAX_GCS_JSON_BYTES:
+        raise PreflightError(f"{purpose}_RESPONSE_TOO_LARGE")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise PreflightError(f"{purpose}_JSON_INVALID") from None
+    if not isinstance(payload, Mapping):
+        raise PreflightError(f"{purpose}_JSON_NOT_OBJECT")
+    return payload
 
 
 @dataclass(frozen=True)
@@ -525,14 +578,22 @@ def load_offline_listing(
 
 
 def _access_token(*, token_env: str, gcloud_bin: str) -> str:
+    """Legacy unit-test seam; live execution uses the authority-gated source.
+
+    Production access-token environment overrides are prohibited.  A custom
+    ``TEST_*`` variable remains available to dependency-light HTTP unit tests.
+    """
     token = os.environ.get(token_env, "").strip()
     if token:
+        if not token_env.startswith("TEST_"):
+            raise PreflightError("AMBIENT_ACCESS_TOKEN_OVERRIDE_PROHIBITED")
         return token
-    executable = shutil.which(gcloud_bin)
-    if executable is None:
+    executable = Path(gcloud_bin)
+    if not executable.is_absolute() or not executable.exists() or not os.access(executable, os.X_OK):
         raise PreflightError("GCLOUD_NOT_AVAILABLE_FOR_ACCESS_TOKEN")
+    executable = executable.resolve(strict=True)
     completed = subprocess.run(
-        [executable, "auth", "print-access-token"],
+        [str(executable), "auth", "print-access-token"],
         capture_output=True,
         text=True,
         check=False,
@@ -563,13 +624,11 @@ def get_bucket_metadata(
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         method="GET",
     )
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            payload = json.load(response)
-    except HTTPError as exc:
-        raise PreflightError(f"GCS_BUCKET_JSON_API_HTTP_{exc.code}") from None
-    except (URLError, TimeoutError):
-        raise PreflightError("GCS_BUCKET_JSON_API_NETWORK_FAILURE") from None
+    payload = _read_gcs_json_response(
+        request,
+        timeout_seconds=timeout_seconds,
+        purpose="GCS_BUCKET_JSON_API",
+    )
     if not isinstance(payload, Mapping) or payload.get("name") != BUCKET:
         raise PreflightError("GCS_BUCKET_METADATA_SCHEMA_INVALID")
     billing = payload.get("billing")
@@ -717,7 +776,7 @@ def list_json_api_metadata(
     if resume and state_path.is_file():
         state = json.loads(state_path.read_text(encoding="utf-8"))
         if (
-            state.get("schema_version") != 4
+            state.get("schema_version") != 5
             or state.get("bucket") != BUCKET
             or state.get("prefix") != "files/"
             or state.get("fields") != JSON_API_FIELDS
@@ -809,13 +868,11 @@ def list_json_api_metadata(
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
             method="GET",
         )
-        try:
-            with urlopen(request, timeout=timeout_seconds) as response:
-                payload = json.load(response)
-        except HTTPError as exc:
-            raise PreflightError(f"GCS_JSON_API_HTTP_{exc.code}") from None
-        except (URLError, TimeoutError):
-            raise PreflightError("GCS_JSON_API_NETWORK_FAILURE") from None
+        payload = _read_gcs_json_response(
+            request,
+            timeout_seconds=timeout_seconds,
+            purpose="GCS_JSON_API",
+        )
         if not isinstance(payload, Mapping) or not isinstance(payload.get("items", []), list):
             raise PreflightError("GCS_JSON_API_RESPONSE_SCHEMA_INVALID")
         request_page_token = next_page_token or "__FIRST_PAGE__"
@@ -863,7 +920,7 @@ def list_json_api_metadata(
         _atomic_json(
             state_path,
             {
-                "schema_version": 4,
+                "schema_version": 5,
                 "bucket": BUCKET,
                 "prefix": "files/",
                 "fields": JSON_API_FIELDS,
@@ -1359,9 +1416,20 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         )
     else:
         billing_project = os.environ.get(args.billing_project_env, "")
-        access_token = _access_token(
-            token_env=args.access_token_env,
+        authority_receipt = bind_approved_restricted_path(
+            args.gcp_authority_receipt,
+            policy=safe_policy,
+            must_exist=True,
+            expect="file",
+        )
+        validate_restricted_receipt(
+            authority_receipt,
+            expected_sha256=args.expected_gcp_authority_receipt_sha256,
+            billing_project=billing_project,
+        )
+        access_token = acquire_access_token_for_preflight(
             gcloud_bin=args.gcloud_bin,
+            timeout_seconds=args.timeout_seconds,
         )
         bucket_metadata = get_bucket_metadata(
             billing_project=billing_project,
@@ -1384,6 +1452,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 "selected_source_manifest_sha256": sha256_file(source_manifest),
                 "selected_studies_sha256": sha256_file(selected_studies_path),
                 "split_map_sha256": sha256_file(split_map_path),
+                "gcp_authority_receipt_sha256": sha256_file(authority_receipt),
             },
         )
     summary, batches, restricted_rows, discrepancies = reconcile(
@@ -1512,7 +1581,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--metadata-json", type=Path)
     parser.add_argument("--billing-project-env", default="LVEF_C3_GCP_BILLING_PROJECT")
     parser.add_argument("--access-token-env", default="GOOGLE_OAUTH_ACCESS_TOKEN")
-    parser.add_argument("--gcloud-bin", default="gcloud")
+    parser.add_argument("--gcloud-bin", default="")
+    parser.add_argument("--gcp-authority-receipt", type=Path)
+    parser.add_argument("--expected-gcp-authority-receipt-sha256")
     parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE)
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--resume", action="store_true")
@@ -1524,6 +1595,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.metadata_json is not None and args.resume:
         parser.error("--resume is only valid for the live JSON API provider")
+    if args.metadata_json is None and (
+        args.gcp_authority_receipt is None
+        or not args.expected_gcp_authority_receipt_sha256
+    ):
+        parser.error(
+            "live provider requires --gcp-authority-receipt and "
+            "--expected-gcp-authority-receipt-sha256"
+        )
     return args
 
 
@@ -1531,7 +1610,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         summary = execute(args)
-    except (PreflightError, OSError, csv.Error, json.JSONDecodeError, yaml.YAMLError) as exc:
+    except (
+        PreflightError,
+        GCPAuthorityError,
+        OSError,
+        csv.Error,
+        json.JSONDecodeError,
+        yaml.YAMLError,
+    ) as exc:
         print(json.dumps({"status": "FAIL", "error_code": str(exc)}, sort_keys=True))
         return 2
     print(

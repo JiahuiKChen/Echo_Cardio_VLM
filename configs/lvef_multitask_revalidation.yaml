@@ -1,6 +1,6 @@
 schema_version: 7
-analysis_version: phase1e-bc-resource-metadata-preauthorization-v1
-status: phase1e_bc_metadata_resource_preflight_only_full_c3_and_confirmatory_access_blocked
+analysis_version: phase1e-bc-gcp-authentication-portability-repair-v2
+status: phase1e_bc_gcp_authentication_and_metadata_preflight_only_full_c3_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -56,6 +56,41 @@ authority:
   scc_preservation_pack_checksum_comparable_entries: 0
   scc_preservation_pack_absence_of_byte_mismatch_proven: false
   scc_preservation_pack_is_future_revalidation_authority: false
+
+google_cloud_provenance:
+  historical_authority:
+    classification: HISTORICAL_AUTHORITY
+    preserve_captured_account_and_project_association: true
+    unknown_association_disposition: UNKNOWN_NOT_RETROACTIVELY_ASSIGNED
+    prospective_project_backfill_permitted: false
+  active_prospective_authority:
+    classification: ACTIVE_PROSPECTIVE_AUTHORITY
+    exact_identity_storage: SCC_ONLY_MODE_600
+    exact_project_storage: SCC_ONLY_MODE_600
+    expected_identity_environment_variable: LVEF_C3_EXPECTED_GCP_ACCOUNT
+    expected_project_display_name_environment_variable: LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME
+    expected_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+    requester_pays_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+    bigquery_billing_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+    exact_identifiers_may_be_written_to_git: false
+    requester_pays_value_capture_status: PASS_PREFLIGHT_ENV_READY
+    authentication_status: PENDING_PORTABLE_TOOLING_REPAIR_AND_RUNTIME_GATE
+    billing_link_status: PENDING_RUNTIME_GATE
+    metadata_access_status: NOT_RUN_UNDER_NEW_AUTHORITY
+    bigquery_access_status: NOT_RUN_UNDER_NEW_AUTHORITY
+  credential_state:
+    classification: CREDENTIAL_STATE
+    credentials_remain_scc_only: true
+    tokens_or_credential_files_may_be_printed: false
+    tokens_or_credential_files_may_be_written_to_git: false
+    billing_account_or_payment_details_may_be_exported: false
+    requester_pays_session_files_may_be_written_to_git: false
+  free_trial:
+    owner_attestation_recorded: true
+    api_verification_status: NOT_API_VERIFIABLE_REQUIRES_OWNER_CONSOLE_OR_BILLING_RECORD
+    project_existence_is_trial_evidence: false
+    billing_enabled_is_trial_evidence: false
+    budget_approval_remains_separate: true
 
 phase1c_scc_execution:
   transcript_authority_received: true
@@ -893,6 +928,13 @@ prefit_gates:
   phase1e_a_preservation_second_pass_passed: true
   institutional_restricted_agent_authority_recorded: true
   direct_restricted_and_reviewed_export_modes_separated: true
+  prospective_gcp_tooling_resolved: false
+  prospective_gcp_identity_verified: false
+  prospective_gcp_project_verified: false
+  prospective_gcp_billing_link_verified: false
+  prospective_requester_pays_metadata_access_verified: false
+  prospective_bigquery_billing_access_verified: false
+  free_trial_status_owner_verified_or_separately_budgeted: false
   full_selected_gcs_metadata_preflight_complete: false
   exact_selected_source_bytes_known: false
   storage_migration_plan_complete: true
@@ -945,6 +987,14 @@ governance:
   allow_test_tuned_changes: false
   allow_historical_snapshot_modification: false
   allow_scc_preservation_pack_modification: false
+  cloud_credential_boundary:
+    exact_account_and_project_values_in_git_permitted: false
+    oauth_tokens_in_git_permitted: false
+    application_default_credentials_in_git_permitted: false
+    service_account_keys_in_git_permitted: false
+    billing_account_or_payment_details_in_git_permitted: false
+    requester_pays_session_files_in_git_permitted: false
+    aggregate_boolean_authentication_receipts_permitted_after_safety_review: true
   future_preservation_manifest:
     safe_relative_paths_required: true
     fields:
