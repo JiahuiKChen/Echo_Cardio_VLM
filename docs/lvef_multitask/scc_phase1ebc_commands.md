@@ -268,6 +268,11 @@ case "$EXPECTED_COMMIT" in
     PRIOR_SAFE_EXPORT_POLICY_SHA256="76ad8e0673036b321a755d537d52fc7627f81eab07fe7be78f3ce31b3f5bb110"
     PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="9a7053b568b16ab00e4969d73a1db76c7de85efa4b7a955445ca4aeea6af7a12"
     ;;
+  3af60607abfa498c683907c283550badecf7c7e3)
+    PRIOR_EXPECTED_COMMIT="$EXPECTED_COMMIT"
+    PRIOR_SAFE_EXPORT_POLICY_SHA256="bda97de67166a7fbe346a9ce3e8143c2d8d64a4c6054ecc65ddb018daa491ea0"
+    PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="9a7053b568b16ab00e4969d73a1db76c7de85efa4b7a955445ca4aeea6af7a12"
+    ;;
   *)
     printf '%s\n' 'PHASE1EBC_EXISTING_RUN_AUTHORITY_REPAIR=BLOCKED_UNTRUSTED_PRIOR_COMMIT' >&2
     exit 65
@@ -842,6 +847,19 @@ CLOUDSDK_CONFIG="$CLOUDSDK_CONFIG" "$GCP_AUTHORITY_WRAPPER" \
   --preflight-env "$PREFLIGHT_ENV" \
   --restricted-output "$RUN_ROOT/restricted/gcp_authority_receipt.restricted.json" \
   --aggregate-output "$RUN_ROOT/aggregate/gcp_authority_receipt.summary.json"
+SUBMITTED_RUNNER="$WORKTREE/scripts/scc_run_lvef_c3_resource_preflight.sh"
+BILLING_HELPER="$WORKTREE/scripts/lvef_c3_billing_environment.sh"
+for SUBMISSION_AUTHORITY_FILE in "$PREFLIGHT_ENV" "$SUBMITTED_RUNNER" "$BILLING_HELPER"; do
+  test ! -L "$SUBMISSION_AUTHORITY_FILE"
+  test -f "$SUBMISSION_AUTHORITY_FILE"
+  test -O "$SUBMISSION_AUTHORITY_FILE"
+done
+PREFLIGHT_ENV_SHA256="$(sha256sum "$PREFLIGHT_ENV" | awk '{print $1}')"
+SUBMITTED_RUNNER_SHA256="$(sha256sum "$SUBMITTED_RUNNER" | awk '{print $1}')"
+BILLING_HELPER_SHA256="$(sha256sum "$BILLING_HELPER" | awk '{print $1}')"
+[[ "$PREFLIGHT_ENV_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$SUBMITTED_RUNNER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$BILLING_HELPER_SHA256" =~ ^[0-9a-f]{64}$ ]]
 qsub \
   -P mimicecho \
   -N lvef_c3_preflight \
@@ -850,9 +868,11 @@ qsub \
   -l mem_total=16G \
   -o "$RUN_ROOT/scheduler_logs" \
   -e "$RUN_ROOT/scheduler_logs" \
-  -v "LVEF_C3_PREFLIGHT_ENV_FILE=$PREFLIGHT_ENV" \
-  "$WORKTREE/scripts/scc_run_lvef_c3_resource_preflight.sh"
+  -v "LVEF_C3_PREFLIGHT_ENV_FILE=$PREFLIGHT_ENV,LVEF_C3_BOOTSTRAP_WORKTREE=$WORKTREE,LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT=$EXPECTED_COMMIT,LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256=$PREFLIGHT_ENV_SHA256,LVEF_C3_BOOTSTRAP_RUNNER_SHA256=$SUBMITTED_RUNNER_SHA256,LVEF_C3_BOOTSTRAP_BILLING_HELPER_SHA256=$BILLING_HELPER_SHA256" \
+  "$SUBMITTED_RUNNER"
 ```
+
+SGE may execute a spooled copy of the submitted runner, so the job does not resolve trusted helpers relative to `BASH_SOURCE`. Section 4 passes only nonsecret bootstrap bindings for the canonical worktree, commit, preflight file, runner, and billing helper. The spooled job verifies their paths and SHA-256 values, the exact clean Git authority, and byte identity between the spooled and canonical runner before it sources either authority file.
 
 The job is metadata-only. It calls Cloud Storage bucket metadata and paginated `objects.list` GETs, never `alt=media`, `objects.get` media, `gsutil cp`, or `gcloud storage cp`. The requester-pays value is quarantined after the owner-only environment file is sourced, exposed only to the source-preflight Python subprocess through its environment, and cleared afterward; it is never passed in argv or printed. A partially written final output set blocks reuse; preserve the failed root and start a fresh run rather than deleting evidence in place.
 

@@ -8,7 +8,10 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -917,6 +920,403 @@ print(f"billing_project_present={str(present).lower()}")
 """,
         encoding="utf-8",
     )
+
+
+def _write_portable_stat_mode_shim(path: Path) -> None:
+    path.write_text(
+        """\
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 3 && "$1" = "-c" && "$2" = "%a" ]]; then
+  if value="$(/usr/bin/stat -c '%a' "$3" 2>/dev/null)"; then
+    printf '%s\n' "$value"
+  else
+    /usr/bin/stat -f '%Lp' "$3"
+  fi
+else
+  exec /usr/bin/stat "$@"
+fi
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o700)
+
+
+def _write_spool_preflight_environment(
+    path: Path, *, worktree: Path, expected_commit: str, mode: int = 0o600
+) -> None:
+    path.write_text(
+        "\n".join(
+            (
+                f"WORKTREE={shlex.quote(str(worktree))}",
+                f"EXPECTED_COMMIT={shlex.quote(expected_commit)}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(mode)
+
+
+def _run_spooled_resource_runner(
+    runner: Path,
+    *,
+    preflight_environment: Path,
+    shim_directory: Path,
+    authority_worktree: Path,
+    expected_commit: str,
+    expected_runner_sha256: str,
+    expected_billing_helper_sha256: str,
+    expected_preflight_sha256: str | None = None,
+    invoke_relative: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"HOME", "LANG", "LC_ALL", "TMPDIR"}
+    }
+    environment["PATH"] = f"{shim_directory}:{os.environ.get('PATH', '')}"
+    environment["LVEF_C3_PREFLIGHT_ENV_FILE"] = str(preflight_environment)
+    environment["LVEF_C3_BOOTSTRAP_WORKTREE"] = str(authority_worktree)
+    environment["LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT"] = expected_commit
+    environment["LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256"] = (
+        expected_preflight_sha256
+        if expected_preflight_sha256 is not None
+        else hashlib.sha256(preflight_environment.read_bytes()).hexdigest()
+    )
+    environment["LVEF_C3_BOOTSTRAP_RUNNER_SHA256"] = expected_runner_sha256
+    environment["LVEF_C3_BOOTSTRAP_BILLING_HELPER_SHA256"] = (
+        expected_billing_helper_sha256
+    )
+    command_path = runner.name if invoke_relative else str(runner)
+    return subprocess.run(
+        ["bash", command_path],
+        cwd=runner.parent if invoke_relative else None,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_resource_runner_resolves_helper_from_authority_bound_worktree() -> None:
+    resource = ROOT / "scripts" / "scc_run_lvef_c3_resource_preflight.sh"
+    source = resource.read_text(encoding="utf-8")
+    canonical_source = 'source "$CANONICAL_BILLING_HELPER"'
+    assert source.count(canonical_source) == 1
+    assert 'source "$SCRIPT_DIR/lvef_c3_billing_environment.sh"' not in source
+    assert (
+        'CANONICAL_BILLING_HELPER="$BOOTSTRAP_WORKTREE/scripts/'
+        'lvef_c3_billing_environment.sh"'
+    ) in source
+    helper_position = source.index(canonical_source)
+    for gate in (
+        ': "${LVEF_C3_BOOTSTRAP_WORKTREE:',
+        ': "${LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT:',
+        ': "${LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256:',
+        'test ! -L "$BOOTSTRAP_PREFLIGHT_ENV"',
+        'test -O "$BOOTSTRAP_PREFLIGHT_ENV"',
+        'sha256sum "$BOOTSTRAP_PREFLIGHT_ENV"',
+        'test -O "$BOOTSTRAP_WORKTREE"',
+        'cd "$BOOTSTRAP_WORKTREE"',
+        'test "$(git branch --show-current)" = "codex/lvef-multitask-revalidation"',
+        'test "$(git rev-parse HEAD)" = "$BOOTSTRAP_EXPECTED_COMMIT"',
+        'test -z "$(git status --porcelain)"',
+        'SPOOLED_RUNNER_SHA256="$(sha256sum "${BASH_SOURCE[0]}"',
+        'test -O "$AUTHORITY_SCRIPT"',
+    ):
+        assert source.index(gate) < helper_position
+    assert 'unset LVEF_C3_PREFLIGHT_ENV_FILE' in source[:helper_position]
+    assert source.index('source "$BOOTSTRAP_PREFLIGHT_ENV"') > helper_position
+    assert '--preflight-env "$BOOTSTRAP_PREFLIGHT_ENV"' in source
+    assert '--preflight-env "$LVEF_C3_PREFLIGHT_ENV_FILE"' not in source
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        authority = (root / "authority").resolve()
+        scripts = authority / "scripts"
+        scripts.mkdir(parents=True)
+        canonical_runner = scripts / resource.name
+        shutil.copy2(resource, canonical_runner)
+        authority_helper = scripts / "lvef_c3_billing_environment.sh"
+        authority_helper_payload = (
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' 'AUTHORITY_HELPER_SOURCED'\n"
+            "exit 37\n"
+        )
+        authority_helper.write_text(authority_helper_payload, encoding="utf-8")
+        authority_helper.chmod(0o700)
+        subprocess.run(["git", "init"], cwd=authority, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "checkout", "-b", "codex/lvef-multitask-revalidation"],
+            cwd=authority,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "add", "scripts"], cwd=authority, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Synthetic Test",
+                "-c",
+                "user.email=synthetic@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "synthetic authority",
+            ],
+            cwd=authority,
+            check=True,
+            capture_output=True,
+        )
+        expected_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=authority,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        expected_runner_sha256 = hashlib.sha256(canonical_runner.read_bytes()).hexdigest()
+        expected_helper_sha256 = hashlib.sha256(authority_helper.read_bytes()).hexdigest()
+
+        spool = root / "scheduler_spool"
+        spool.mkdir()
+        spooled_runner = spool / "job_script"
+        shutil.copy2(resource, spooled_runner)
+        decoy_helper = spool / "lvef_c3_billing_environment.sh"
+        decoy_helper.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' 'SPOOL_HELPER_SOURCED'\nexit 43\n",
+            encoding="utf-8",
+        )
+        decoy_helper.chmod(0o700)
+        shim = root / "shim"
+        shim.mkdir()
+        _write_portable_stat_mode_shim(shim / "stat")
+        preflight = root / "preflight.env"
+        _write_spool_preflight_environment(
+            preflight, worktree=authority, expected_commit=expected_commit
+        )
+
+        completed = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+        )
+        assert completed.returncode == 37, completed.stderr
+        assert completed.stdout == "AUTHORITY_HELPER_SOURCED\n"
+        assert "SPOOL_HELPER_SOURCED" not in completed.stdout + completed.stderr
+
+        relative_completed = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+            invoke_relative=True,
+        )
+        assert relative_completed.returncode == 37, relative_completed.stderr
+        assert relative_completed.stdout == "AUTHORITY_HELPER_SOURCED\n"
+        assert "SPOOL_HELPER_SOURCED" not in (
+            relative_completed.stdout + relative_completed.stderr
+        )
+
+        mutated_runner = spool / "job_script_mutated"
+        mutated_runner.write_bytes(spooled_runner.read_bytes() + b"\n# synthetic mutation\n")
+        mutated_runner.chmod(0o700)
+        rejected_runner = _run_spooled_resource_runner(
+            mutated_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+        )
+        assert rejected_runner.returncode != 0
+        assert "AUTHORITY_HELPER_SOURCED" not in (
+            rejected_runner.stdout + rejected_runner.stderr
+        )
+        assert "SPOOL_HELPER_SOURCED" not in (
+            rejected_runner.stdout + rejected_runner.stderr
+        )
+
+        rejected_preflight_hash = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+            expected_preflight_sha256="f" * 64,
+        )
+        assert rejected_preflight_hash.returncode != 0
+        assert "AUTHORITY_HELPER_SOURCED" not in (
+            rejected_preflight_hash.stdout + rejected_preflight_hash.stderr
+        )
+
+        rejected_helper_hash = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256="e" * 64,
+        )
+        assert rejected_helper_hash.returncode != 0
+        assert "AUTHORITY_HELPER_SOURCED" not in (
+            rejected_helper_hash.stdout + rejected_helper_hash.stderr
+        )
+        assert "SPOOL_HELPER_SOURCED" not in (
+            rejected_helper_hash.stdout + rejected_helper_hash.stderr
+        )
+
+        authority_helper.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' 'DIRTY_HELPER_SOURCED'\nexit 38\n",
+            encoding="utf-8",
+        )
+        dirty = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+        )
+        assert dirty.returncode != 0
+        assert "DIRTY_HELPER_SOURCED" not in dirty.stdout + dirty.stderr
+        assert "SPOOL_HELPER_SOURCED" not in dirty.stdout + dirty.stderr
+        authority_helper.write_text(authority_helper_payload, encoding="utf-8")
+        authority_helper.chmod(0o700)
+
+        helper_target = root / "symlink_helper_target.sh"
+        helper_target.write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' 'SYMLINK_HELPER_SOURCED'\nexit 40\n",
+            encoding="utf-8",
+        )
+        authority_helper.unlink()
+        authority_helper.symlink_to(helper_target)
+        rejected_helper_link = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+        )
+        assert rejected_helper_link.returncode != 0
+        assert "SYMLINK_HELPER_SOURCED" not in (
+            rejected_helper_link.stdout + rejected_helper_link.stderr
+        )
+        authority_helper.unlink()
+        authority_helper.write_text(authority_helper_payload, encoding="utf-8")
+        authority_helper.chmod(0o700)
+
+        authority_link = root / "authority_symlink"
+        authority_link.symlink_to(authority, target_is_directory=True)
+        rejected_worktree_link = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=preflight,
+            shim_directory=shim,
+            authority_worktree=authority_link,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+        )
+        assert rejected_worktree_link.returncode != 0
+        assert "AUTHORITY_HELPER_SOURCED" not in (
+            rejected_worktree_link.stdout + rejected_worktree_link.stderr
+        )
+
+        wrong_commit = root / "wrong_commit.env"
+        _write_spool_preflight_environment(
+            wrong_commit, worktree=authority, expected_commit="0" * 40
+        )
+        rejected_commit = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=wrong_commit,
+            shim_directory=shim,
+            authority_worktree=authority,
+            expected_commit="0" * 40,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+        )
+        assert rejected_commit.returncode != 0
+        assert "AUTHORITY_HELPER_SOURCED" not in (
+            rejected_commit.stdout + rejected_commit.stderr
+        )
+        assert "SPOOL_HELPER_SOURCED" not in (
+            rejected_commit.stdout + rejected_commit.stderr
+        )
+
+        nongit = root / "not_a_git_worktree"
+        (nongit / "scripts").mkdir(parents=True)
+        (nongit / "scripts" / "lvef_c3_billing_environment.sh").write_text(
+            "#!/usr/bin/env bash\nprintf '%s\\n' 'UNTRUSTED_HELPER_SOURCED'\nexit 39\n",
+            encoding="utf-8",
+        )
+        nongit_env = root / "nongit.env"
+        _write_spool_preflight_environment(
+            nongit_env, worktree=nongit, expected_commit=expected_commit
+        )
+        rejected_worktree = _run_spooled_resource_runner(
+            spooled_runner,
+            preflight_environment=nongit_env,
+            shim_directory=shim,
+            authority_worktree=nongit,
+            expected_commit=expected_commit,
+            expected_runner_sha256=expected_runner_sha256,
+            expected_billing_helper_sha256=expected_helper_sha256,
+        )
+        assert rejected_worktree.returncode != 0
+        assert "UNTRUSTED_HELPER_SOURCED" not in (
+            rejected_worktree.stdout + rejected_worktree.stderr
+        )
+        assert "SPOOL_HELPER_SOURCED" not in (
+            rejected_worktree.stdout + rejected_worktree.stderr
+        )
+
+        missing = root / "missing.env"
+        symlinked = root / "symlinked.env"
+        symlinked.symlink_to(preflight)
+        public = root / "public.env"
+        _write_spool_preflight_environment(
+            public, worktree=authority, expected_commit=expected_commit, mode=0o644
+        )
+        for unsafe_preflight in (missing, symlinked, public):
+            rejected_preflight = _run_spooled_resource_runner(
+                spooled_runner,
+                preflight_environment=unsafe_preflight,
+                shim_directory=shim,
+                authority_worktree=authority,
+                expected_commit=expected_commit,
+                expected_runner_sha256=expected_runner_sha256,
+                expected_billing_helper_sha256=expected_helper_sha256,
+                expected_preflight_sha256=(
+                    hashlib.sha256(preflight.read_bytes()).hexdigest()
+                    if unsafe_preflight == symlinked
+                    else (
+                        hashlib.sha256(public.read_bytes()).hexdigest()
+                        if unsafe_preflight == public
+                        else "0" * 64
+                    )
+                ),
+            )
+            assert rejected_preflight.returncode != 0
+            combined = rejected_preflight.stdout + rejected_preflight.stderr
+            assert "AUTHORITY_HELPER_SOURCED" not in combined
+            assert "SPOOL_HELPER_SOURCED" not in combined
 
 
 def test_billing_project_is_scoped_to_wrapped_subprocess_without_disclosure() -> None:

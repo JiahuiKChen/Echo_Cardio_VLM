@@ -346,6 +346,7 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     assert "20d847648406d0a556957e0f5bc25dde392f8244" in repair
     assert "6845bd180ee5811151929920234f53f15b272b14" in repair
     assert "0a57cf55914fb9dc735a600d7f838737818161d1" in repair
+    assert "3af60607abfa498c683907c283550badecf7c7e3" in repair
     assert 'git merge-base --is-ancestor "$PRIOR_EXPECTED_COMMIT"' in repair
     assert (
         'test "$NEW_EXPECTED_COMMIT" = "$(git rev-parse '
@@ -445,6 +446,34 @@ def test_runbook_keeps_expected_authority_values_restricted_and_gates_qsub() -> 
     )
     assert final_gate_position != -1
     assert final_gate_position < qsub_position
+
+
+def test_section4_hash_binds_spooled_runner_without_exporting_cloud_authority() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    section4 = text[text.index("## 4.") : text.index("## 5.")]
+    qsub = section4[section4.index("qsub \\") :]
+    for bootstrap_name in (
+        "LVEF_C3_PREFLIGHT_ENV_FILE",
+        "LVEF_C3_BOOTSTRAP_WORKTREE",
+        "LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT",
+        "LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256",
+        "LVEF_C3_BOOTSTRAP_RUNNER_SHA256",
+        "LVEF_C3_BOOTSTRAP_BILLING_HELPER_SHA256",
+    ):
+        assert bootstrap_name in qsub
+    for prohibited_name in (
+        "LVEF_C3_GCP_BILLING_PROJECT",
+        "LVEF_C3_EXPECTED_GCP_ACCOUNT",
+        "LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME",
+        "LVEF_C3_GCP_AUTHORIZED_USER_FILE",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "CLOUDSDK_AUTH_ACCESS_TOKEN",
+    ):
+        assert prohibited_name not in qsub
+    assert " -V " not in qsub
+    assert 'PREFLIGHT_ENV_SHA256="$(sha256sum "$PREFLIGHT_ENV"' in section4
+    assert 'SUBMITTED_RUNNER_SHA256="$(sha256sum "$SUBMITTED_RUNNER"' in section4
+    assert 'BILLING_HELPER_SHA256="$(sha256sum "$BILLING_HELPER"' in section4
 
 
 def test_bootstrap_is_prepared_but_never_executed_by_runbook() -> None:

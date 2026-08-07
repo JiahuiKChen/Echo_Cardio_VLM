@@ -222,14 +222,14 @@ def test_shell_gate_rejects_every_python_ambient_override_and_requires_adc() -> 
         assert wrapper.index(expected, wrapper.index('source "$PREFLIGHT_ENV"')) < wrapper.index(
             ': "${WORKTREE:?}"'
         )
-        runner_source = runner.index('source "$LVEF_C3_PREFLIGHT_ENV_FILE"')
+        runner_source = runner.index('source "$BOOTSTRAP_PREFLIGHT_ENV"')
         assert runner.index(expected, runner_source) < runner.index(
             "lvef_c3_quarantine_gcp_authority_environment", runner_source
         )
     assert 'test -n "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"' in wrapper
     assert 'test ! -L "$PREFLIGHT_ENV"' in wrapper
     assert 'test ! -L "$LVEF_C3_GCP_AUTHORIZED_USER_FILE"' in wrapper
-    assert 'test ! -L "$LVEF_C3_PREFLIGHT_ENV_FILE"' in runner
+    assert 'test ! -L "$BOOTSTRAP_PREFLIGHT_ENV"' in runner
     assert "GCP_QUOTA_PROJECT_STAGE" in wrapper
     assert "EXPECTED_GCP_QUOTA_PROJECT_STAGE_SHA256" in wrapper
 

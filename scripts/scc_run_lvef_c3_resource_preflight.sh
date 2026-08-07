@@ -13,18 +13,74 @@ test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN_FILE:-}"
 test -z "${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-}"
 test -z "${CLOUDSDK_AUTH_DELEGATES:-}"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lvef_c3_billing_environment.sh"
+: "${LVEF_C3_PREFLIGHT_ENV_FILE:?LVEF_C3_PREFLIGHT_ENV_FILE is required}"
+: "${LVEF_C3_BOOTSTRAP_WORKTREE:?LVEF_C3_BOOTSTRAP_WORKTREE is required}"
+: "${LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT:?LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT is required}"
+: "${LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256:?LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256 is required}"
+: "${LVEF_C3_BOOTSTRAP_RUNNER_SHA256:?LVEF_C3_BOOTSTRAP_RUNNER_SHA256 is required}"
+: "${LVEF_C3_BOOTSTRAP_BILLING_HELPER_SHA256:?LVEF_C3_BOOTSTRAP_BILLING_HELPER_SHA256 is required}"
+
+BOOTSTRAP_PREFLIGHT_ENV="$LVEF_C3_PREFLIGHT_ENV_FILE"
+BOOTSTRAP_WORKTREE="$LVEF_C3_BOOTSTRAP_WORKTREE"
+BOOTSTRAP_EXPECTED_COMMIT="$LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT"
+BOOTSTRAP_PREFLIGHT_ENV_SHA256="$LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256"
+BOOTSTRAP_RUNNER_SHA256="$LVEF_C3_BOOTSTRAP_RUNNER_SHA256"
+BOOTSTRAP_BILLING_HELPER_SHA256="$LVEF_C3_BOOTSTRAP_BILLING_HELPER_SHA256"
+readonly BOOTSTRAP_PREFLIGHT_ENV BOOTSTRAP_WORKTREE BOOTSTRAP_EXPECTED_COMMIT
+readonly BOOTSTRAP_PREFLIGHT_ENV_SHA256 BOOTSTRAP_RUNNER_SHA256
+readonly BOOTSTRAP_BILLING_HELPER_SHA256
+unset LVEF_C3_PREFLIGHT_ENV_FILE
+unset LVEF_C3_BOOTSTRAP_WORKTREE LVEF_C3_BOOTSTRAP_EXPECTED_COMMIT
+unset LVEF_C3_BOOTSTRAP_PREFLIGHT_ENV_SHA256
+unset LVEF_C3_BOOTSTRAP_RUNNER_SHA256
+unset LVEF_C3_BOOTSTRAP_BILLING_HELPER_SHA256
+
+[[ "$BOOTSTRAP_EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+[[ "$BOOTSTRAP_PREFLIGHT_ENV_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$BOOTSTRAP_RUNNER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$BOOTSTRAP_BILLING_HELPER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$BOOTSTRAP_WORKTREE" = /* ]]
+SPOOLED_RUNNER_SHA256="$(sha256sum "${BASH_SOURCE[0]}" | awk '{print $1}')"
+readonly SPOOLED_RUNNER_SHA256
+test "$SPOOLED_RUNNER_SHA256" = "$BOOTSTRAP_RUNNER_SHA256"
+test ! -L "$BOOTSTRAP_PREFLIGHT_ENV"
+test -f "$BOOTSTRAP_PREFLIGHT_ENV"
+test -O "$BOOTSTRAP_PREFLIGHT_ENV"
+test "$(stat -c '%a' "$BOOTSTRAP_PREFLIGHT_ENV")" = "600"
+test "$(sha256sum "$BOOTSTRAP_PREFLIGHT_ENV" | awk '{print $1}')" = \
+  "$BOOTSTRAP_PREFLIGHT_ENV_SHA256"
+test ! -L "$BOOTSTRAP_WORKTREE"
+test -d "$BOOTSTRAP_WORKTREE"
+test -O "$BOOTSTRAP_WORKTREE"
+cd "$BOOTSTRAP_WORKTREE"
+test "$(pwd -P)" = "$BOOTSTRAP_WORKTREE"
+test "$(git rev-parse --show-toplevel)" = "$BOOTSTRAP_WORKTREE"
+test "$(git branch --show-current)" = "codex/lvef-multitask-revalidation"
+test "$(git rev-parse HEAD)" = "$BOOTSTRAP_EXPECTED_COMMIT"
+test -z "$(git status --porcelain)"
+CANONICAL_RUNNER="$BOOTSTRAP_WORKTREE/scripts/scc_run_lvef_c3_resource_preflight.sh"
+CANONICAL_BILLING_HELPER="$BOOTSTRAP_WORKTREE/scripts/lvef_c3_billing_environment.sh"
+for AUTHORITY_SCRIPT in "$CANONICAL_RUNNER" "$CANONICAL_BILLING_HELPER"; do
+  test ! -L "$AUTHORITY_SCRIPT"
+  test -f "$AUTHORITY_SCRIPT"
+  test -O "$AUTHORITY_SCRIPT"
+done
+git ls-files --error-unmatch scripts/scc_run_lvef_c3_resource_preflight.sh >/dev/null
+git ls-files --error-unmatch scripts/lvef_c3_billing_environment.sh >/dev/null
+test "$(sha256sum "$CANONICAL_RUNNER" | awk '{print $1}')" = "$BOOTSTRAP_RUNNER_SHA256"
+test "$(sha256sum "$CANONICAL_BILLING_HELPER" | awk '{print $1}')" = \
+  "$BOOTSTRAP_BILLING_HELPER_SHA256"
+source "$CANONICAL_BILLING_HELPER"
+readonly -f lvef_c3_quarantine_billing_project
+readonly -f lvef_c3_quarantine_gcp_authority_environment
+readonly -f lvef_c3_run_with_gcp_authority_environment
+readonly -f lvef_c3_run_with_billing_project
 # The broader authority helpers below supersede the prior single-value
 # lvef_c3_quarantine_billing_project / lvef_c3_run_with_billing_project path.
 
-: "${LVEF_C3_PREFLIGHT_ENV_FILE:?LVEF_C3_PREFLIGHT_ENV_FILE is required}"
-test ! -L "$LVEF_C3_PREFLIGHT_ENV_FILE"
-test -f "$LVEF_C3_PREFLIGHT_ENV_FILE"
-test -O "$LVEF_C3_PREFLIGHT_ENV_FILE"
-test "$(stat -c '%a' "$LVEF_C3_PREFLIGHT_ENV_FILE")" = "600"
-# The SCC-only file contains shell-escaped scalar assignments made by the owner.
-source "$LVEF_C3_PREFLIGHT_ENV_FILE"
+# The SCC-only file contains shell-escaped scalar assignments frozen and
+# hash-bound by the submitting Section 4 process.
+source "$BOOTSTRAP_PREFLIGHT_ENV"
 test -z "${GOOGLE_OAUTH_ACCESS_TOKEN:-}"
 test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}"
 test -z "${GOOGLE_APPLICATION_CREDENTIALS:-}"
@@ -34,7 +90,12 @@ test -z "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}"
 test -z "${CLOUDSDK_AUTH_ACCESS_TOKEN_FILE:-}"
 test -z "${CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT:-}"
 test -z "${CLOUDSDK_AUTH_DELEGATES:-}"
+export -n CLOUDSDK_CONFIG
 lvef_c3_quarantine_gcp_authority_environment
+test "$WORKTREE" = "$BOOTSTRAP_WORKTREE"
+test "$EXPECTED_COMMIT" = "$BOOTSTRAP_EXPECTED_COMMIT"
+test "$(sha256sum "$BOOTSTRAP_PREFLIGHT_ENV" | awk '{print $1}')" = \
+  "$BOOTSTRAP_PREFLIGHT_ENV_SHA256"
 
 : "${WORKTREE:?}"
 : "${EXPECTED_COMMIT:?}"
@@ -95,10 +156,6 @@ test -O "$GCP_QUOTA_PROJECT_STAGE"
 test "$(stat -c '%a' "$GCP_QUOTA_PROJECT_STAGE")" = '600'
 test "$(sha256sum "$GCP_QUOTA_PROJECT_STAGE" | awk '{print $1}')" = "$EXPECTED_GCP_QUOTA_PROJECT_STAGE_SHA256"
 
-cd "$WORKTREE"
-test "$(git branch --show-current)" = "codex/lvef-multitask-revalidation"
-test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-test -z "$(git status --porcelain)"
 test -x "$PYTHON"
 test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "$EXPECTED_PYTHON_SHA256"
 [[ "$EXPECTED_SELECTED_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]
@@ -145,7 +202,7 @@ fi
 GCP_AUTHORITY_RESTRICTED="$RUN_ROOT/restricted/gcp_authority_receipt.restricted.json"
 GCP_AUTHORITY_SUMMARY="$RUN_ROOT/aggregate/gcp_authority_receipt.summary.json"
 "$GCP_AUTHORITY_WRAPPER" \
-  --preflight-env "$LVEF_C3_PREFLIGHT_ENV_FILE" \
+  --preflight-env "$BOOTSTRAP_PREFLIGHT_ENV" \
   --restricted-output "$GCP_AUTHORITY_RESTRICTED" \
   --aggregate-output "$GCP_AUTHORITY_SUMMARY" \
   >"$RUN_ROOT/restricted/logs/gcp_authority_gate.stdout.txt" \
