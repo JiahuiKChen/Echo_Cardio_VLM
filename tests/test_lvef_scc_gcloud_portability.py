@@ -345,6 +345,7 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     assert "177aac1ce498390f62d43fb76ca216d06dc6b25f" in repair
     assert "20d847648406d0a556957e0f5bc25dde392f8244" in repair
     assert "6845bd180ee5811151929920234f53f15b272b14" in repair
+    assert "0a57cf55914fb9dc735a600d7f838737818161d1" in repair
     assert 'git merge-base --is-ancestor "$PRIOR_EXPECTED_COMMIT"' in repair
     assert (
         'test "$NEW_EXPECTED_COMMIT" = "$(git rev-parse '
@@ -367,6 +368,13 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
         (ROOT / "configs" / "lvef_multitask_safe_export_policy.yaml").read_bytes()
     ).hexdigest()
     assert f'PRIOR_SAFE_EXPORT_POLICY_SHA256="{prior_policy_sha}"' in repair
+    post_section3d_policy_sha = (
+        "76ad8e0673036b321a755d537d52fc7627f81eab07fe7be78f3ce31b3f5bb110"
+    )
+    assert (
+        f'PRIOR_SAFE_EXPORT_POLICY_SHA256="{post_section3d_policy_sha}"'
+        in repair
+    )
     assert f'NEW_SAFE_EXPORT_POLICY_SHA256="{current_policy_sha}"' in repair
     assert 'migrate_safe_export_policy_checksum "$SESSION_ENV"' in repair
     assert 'migrate_safe_export_policy_checksum "$PREFLIGHT_ENV"' in repair
@@ -385,6 +393,7 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     assert "sed -i" not in repair
     assert "audit_lvef_c3_storage.py" not in repair
     assert "build_lvef_c3_migration_witness.py" not in repair
+    assert "deliberately does not move, replace, or overwrite authority receipts" in repair
     assert "RUN_ID=" not in repair
     assert "rm " not in repair and "rm -" not in repair
 

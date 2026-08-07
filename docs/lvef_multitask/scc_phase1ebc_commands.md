@@ -87,7 +87,8 @@ else
     2>"$RUN_ROOT/restricted/logs/storage_audit.stderr.txt"
 fi
 "$PYTHON" scripts/validate_lvef_c3_resource_preflight_outputs.py \
-  --stage storage --run-root "$RUN_ROOT" >/dev/null
+  --stage storage --run-root "$RUN_ROOT" \
+  --safe-export-policy "$SAFE_EXPORT_POLICY" >/dev/null
 
 MIGRATION_CLASSIFICATION="$RUN_ROOT/restricted/quota/disaster_tier_path_classification.restricted.json"
 MIGRATION_WITNESS="$RUN_ROOT/restricted/quota/classified_migration_witness.json"
@@ -239,6 +240,12 @@ owner-only environment files, performs the same exact migration for the changed
 GCP authority wrapper, atomically replaces the `EXPECTED_COMMIT` assignment,
 and adds the already established pinned-Python checksum when absent.
 The existing requester-pays value is copied byte-for-byte and is never printed.
+The same block also accepts the exact post-Section-3D commit bound before the
+storage-summary export-profile repair and migrates only its safe-policy checksum
+to the current reviewed policy. If a complete Section 3D receipt pair already
+exists for that prior commit, preserve and retire that pair under a separately
+reviewed restricted receipt-rollover command before running this repair; this
+block deliberately does not move, replace, or overwrite authority receipts.
 
 ```bash
 set -euo pipefail
@@ -253,6 +260,13 @@ source "$SESSION_ENV"
 case "$EXPECTED_COMMIT" in
   177aac1ce498390f62d43fb76ca216d06dc6b25f|20d847648406d0a556957e0f5bc25dde392f8244|6845bd180ee5811151929920234f53f15b272b14)
     PRIOR_EXPECTED_COMMIT="$EXPECTED_COMMIT"
+    PRIOR_SAFE_EXPORT_POLICY_SHA256="b4ba5df3ff5265375868b3ffcb3b3ceaa8fd768f0f65e0d27b45e751e457046b"
+    PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="8e2d0dc213007c0f8d789cb0fbf3aee3e8dcf9892c7b6774b02e9ec18354f365"
+    ;;
+  0a57cf55914fb9dc735a600d7f838737818161d1)
+    PRIOR_EXPECTED_COMMIT="$EXPECTED_COMMIT"
+    PRIOR_SAFE_EXPORT_POLICY_SHA256="76ad8e0673036b321a755d537d52fc7627f81eab07fe7be78f3ce31b3f5bb110"
+    PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="9a7053b568b16ab00e4969d73a1db76c7de85efa4b7a955445ca4aeea6af7a12"
     ;;
   *)
     printf '%s\n' 'PHASE1EBC_EXISTING_RUN_AUTHORITY_REPAIR=BLOCKED_UNTRUSTED_PRIOR_COMMIT' >&2
@@ -260,9 +274,7 @@ case "$EXPECTED_COMMIT" in
     ;;
 esac
 EXPECTED_PYTHON_SHA256="1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
-PRIOR_SAFE_EXPORT_POLICY_SHA256="b4ba5df3ff5265375868b3ffcb3b3ceaa8fd768f0f65e0d27b45e751e457046b"
-NEW_SAFE_EXPORT_POLICY_SHA256="76ad8e0673036b321a755d537d52fc7627f81eab07fe7be78f3ce31b3f5bb110"
-PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="8e2d0dc213007c0f8d789cb0fbf3aee3e8dcf9892c7b6774b02e9ec18354f365"
+NEW_SAFE_EXPORT_POLICY_SHA256="bda97de67166a7fbe346a9ce3e8143c2d8d64a4c6054ecc65ddb018daa491ea0"
 NEW_GCP_AUTHORITY_WRAPPER_SHA256="9a7053b568b16ab00e4969d73a1db76c7de85efa4b7a955445ca4aeea6af7a12"
 test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "$EXPECTED_PYTHON_SHA256"
 test -d "$RUN_ROOT"

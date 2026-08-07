@@ -6,12 +6,16 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 from typing import Any, Mapping, Sequence
 
 import yaml
 
+import audit_lvef_c3_storage as storage_audit
+from lvef_multitask_analysis_modes import load_policy as load_safe_export_policy
 import plan_lvef_c3_resources as resource_planner
 import preflight_lvef_c3_full_source as source_preflight
 
@@ -37,9 +41,35 @@ def load_json(path: Path) -> Mapping[str, Any]:
     return value
 
 
-def validate_storage(run_root: Path) -> None:
+def read_regular_file_bytes_no_follow(path: Path) -> bytes:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise StageValidationError("NOFOLLOW_FILE_OPEN_UNAVAILABLE")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise StageValidationError("STAGE_FILE_NOT_REGULAR")
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            chunks.append(block)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def validate_storage(run_root: Path, *, safe_export_policy: Path) -> None:
     detail = load_json(run_root / "restricted" / "scc_storage_inventory.restricted.json")
-    safe = load_json(run_root / "aggregate" / "scc_storage_inventory.summary.json")
+    safe_path = run_root / "aggregate" / storage_audit.STORAGE_SUMMARY_FILENAME
+    policy, _ = load_safe_export_policy(safe_export_policy)
+    safe_payload = read_regular_file_bytes_no_follow(safe_path)
+    safe = storage_audit.validate_aggregate_summary_bytes(
+        safe_payload,
+        safe_export_policy=policy,
+    )
     for value in (detail, safe):
         if value.get("status") != "PASS_READ_ONLY":
             raise StageValidationError("STORAGE_STAGE_NOT_PASS")
@@ -318,7 +348,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         if args.stage == "storage":
-            validate_storage(args.run_root)
+            if args.safe_export_policy is None:
+                raise StageValidationError("STORAGE_SAFE_EXPORT_POLICY_REQUIRED")
+            validate_storage(
+                args.run_root,
+                safe_export_policy=args.safe_export_policy,
+            )
         elif args.stage == "source":
             if args.source_manifest is None or args.selected_studies is None or args.split_map is None:
                 raise StageValidationError("SOURCE_AUTHORITIES_REQUIRED")

@@ -207,6 +207,53 @@ export_profiles:
       tokens_emitted: boolean
       credential_paths_emitted: boolean
 
+  scc_storage_inventory_summary_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 262144
+    contextual_forbidden_key_exceptions:
+      - path: roots.*.label
+        allowed_string_values:
+          - disaster_recovery
+          - research
+    required_top_level_keys: &scc_storage_inventory_summary_keys
+      - schema_version
+      - status
+      - roots
+      - roots_are_separate_devices
+      - any_symlinks
+      - any_bind_mounts
+      - any_nested_mounts
+      - any_nested_bind_mounts
+      - quota_command_available
+      - quota_command_scope
+      - partial_quota_reallocation
+      - research_tier_backup
+      - research_tier_snapshots
+      - research_tier_soft_delete
+      - quota_decimal_or_binary
+      - files_moved
+      - files_deleted
+    allowed_top_level_keys: *scc_storage_inventory_summary_keys
+    field_types:
+      schema_version: integer
+      status: string
+      roots: array
+      roots_are_separate_devices: boolean
+      any_symlinks: boolean
+      any_bind_mounts: boolean
+      any_nested_mounts: boolean
+      any_nested_bind_mounts: boolean
+      quota_command_available: boolean
+      quota_command_scope: string
+      partial_quota_reallocation: string
+      research_tier_backup: string
+      research_tier_snapshots: string
+      research_tier_soft_delete: string
+      quota_decimal_or_binary: string
+      files_moved: integer
+      files_deleted: integer
+
   c3_full_source_preflight_summary_json:
     kind: json
     extensions: [.json]

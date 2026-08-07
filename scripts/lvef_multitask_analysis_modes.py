@@ -46,6 +46,10 @@ AUTHORIZATION_STATUS = "INSTITUTIONALLY_AUTHORIZED"
 REQUEST_STATUS = "AWAITING_HUMAN_APPROVAL"
 APPROVAL_DECISION = "APPROVED"
 DEFAULT_POLICY = repository_root() / "configs" / "lvef_multitask_safe_export_policy.yaml"
+STORAGE_CONTEXTUAL_FORBIDDEN_KEY_EXCEPTION = {
+    "path": "roots.*.label",
+    "allowed_string_values": ["disaster_recovery", "research"],
+}
 
 
 class SafetyPolicyError(ValueError):
@@ -158,6 +162,64 @@ def validate_policy(policy: Mapping[str, Any]) -> None:
                 profile.get("allowed_top_level_keys"),
                 f"export_profiles.{name}.allowed_top_level_keys",
             )
+            exceptions = profile.get("contextual_forbidden_key_exceptions", [])
+            if not isinstance(exceptions, list):
+                raise SafetyPolicyError(
+                    f"export_profiles.{name}.contextual_forbidden_key_exceptions "
+                    "must be a list"
+                )
+            seen_exception_paths: set[str] = set()
+            forbidden_names = {
+                _normalized_field_name(value)
+                for value in forbidden["column_or_key_names"]
+            }
+            for exception in exceptions:
+                spec = _require_mapping(
+                    exception,
+                    f"export_profiles.{name}.contextual_forbidden_key_exceptions",
+                )
+                if set(spec) != {"path", "allowed_string_values"}:
+                    raise SafetyPolicyError(
+                        "Contextual forbidden-key exceptions require exactly path "
+                        "and allowed_string_values"
+                    )
+                path = spec.get("path")
+                if (
+                    not isinstance(path, str)
+                    or not re.fullmatch(
+                        r"[A-Za-z0-9_]+(?:\.(?:[A-Za-z0-9_]+|\*))*",
+                        path,
+                    )
+                    or path in seen_exception_paths
+                ):
+                    raise SafetyPolicyError(
+                        "Contextual forbidden-key exception paths must be unique "
+                        "safe dotted paths"
+                    )
+                if _normalized_field_name(path.rsplit(".", 1)[-1]) not in forbidden_names:
+                    raise SafetyPolicyError(
+                        "Contextual exception must terminate in a globally forbidden key"
+                    )
+                _require_nonempty_strings(
+                    spec.get("allowed_string_values"),
+                    "contextual forbidden-key allowed_string_values",
+                )
+                seen_exception_paths.add(path)
+            if exceptions and (
+                name != "scc_storage_inventory_summary_json"
+                or len(exceptions) != 1
+                or exceptions[0].get("path")
+                != STORAGE_CONTEXTUAL_FORBIDDEN_KEY_EXCEPTION["path"]
+                or set(exceptions[0].get("allowed_string_values", []))
+                != set(
+                    STORAGE_CONTEXTUAL_FORBIDDEN_KEY_EXCEPTION[
+                        "allowed_string_values"
+                    ]
+                )
+            ):
+                raise SafetyPolicyError(
+                    "Only the fixed storage-root label exception is permitted"
+                )
         else:
             _require_nonempty_strings(
                 profile.get("required_columns"),
@@ -450,16 +512,100 @@ def _strict_json_loads(payload: bytes) -> Any:
 def _assert_no_forbidden_json_keys(
     value: Any,
     forbidden_names: set[str],
+    *,
+    contextual_exceptions: Sequence[Mapping[str, Any]] = (),
+    path: tuple[str | int, ...] = (),
 ) -> None:
     """Recursively apply safety normalization to every JSON object key."""
     if isinstance(value, Mapping):
         for key, nested in value.items():
-            if _normalized_field_name(key) in forbidden_names:
+            child_path = (*path, key)
+            if (
+                _normalized_field_name(key) in forbidden_names
+                and not _contextual_forbidden_key_is_allowed(
+                    child_path,
+                    nested,
+                    contextual_exceptions,
+                )
+            ):
                 raise SafetyPolicyError("JSON export candidate contains a forbidden key")
-            _assert_no_forbidden_json_keys(nested, forbidden_names)
+            _assert_no_forbidden_json_keys(
+                nested,
+                forbidden_names,
+                contextual_exceptions=contextual_exceptions,
+                path=child_path,
+            )
     elif isinstance(value, list):
-        for nested in value:
-            _assert_no_forbidden_json_keys(nested, forbidden_names)
+        for index, nested in enumerate(value):
+            _assert_no_forbidden_json_keys(
+                nested,
+                forbidden_names,
+                contextual_exceptions=contextual_exceptions,
+                path=(*path, index),
+            )
+
+
+def _contextual_forbidden_key_is_allowed(
+    path: tuple[str | int, ...],
+    value: Any,
+    exceptions: Sequence[Mapping[str, Any]],
+) -> bool:
+    for exception in exceptions:
+        expected_parts = str(exception["path"]).split(".")
+        if len(expected_parts) != len(path):
+            continue
+        if all(
+            expected == "*" and isinstance(observed, int)
+            or expected == str(observed)
+            for expected, observed in zip(expected_parts, path)
+        ):
+            return isinstance(value, str) and value in set(
+                exception["allowed_string_values"]
+            )
+    return False
+
+
+def _aggregate_safety_view(
+    value: Any,
+    *,
+    forbidden_names: set[str],
+    contextual_exceptions: Sequence[Mapping[str, Any]],
+    path: tuple[str | int, ...] = (),
+) -> Any:
+    """Rename only explicitly allowed contextual keys for the legacy JSON gate."""
+
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, nested in value.items():
+            child_path = (*path, key)
+            output_key = key
+            if _normalized_field_name(key) in forbidden_names:
+                if not _contextual_forbidden_key_is_allowed(
+                    child_path,
+                    nested,
+                    contextual_exceptions,
+                ):
+                    output_key = key
+                else:
+                    output_key = f"contextual_safe_{key}"
+            result[output_key] = _aggregate_safety_view(
+                nested,
+                forbidden_names=forbidden_names,
+                contextual_exceptions=contextual_exceptions,
+                path=child_path,
+            )
+        return result
+    if isinstance(value, list):
+        return [
+            _aggregate_safety_view(
+                nested,
+                forbidden_names=forbidden_names,
+                contextual_exceptions=contextual_exceptions,
+                path=(*path, index),
+            )
+            for index, nested in enumerate(value)
+        ]
+    return value
 
 
 def _matches_type(value: Any, expected: str) -> bool:
@@ -502,7 +648,17 @@ def validate_candidate_bytes(
         value = _strict_json_loads(payload)
         if not isinstance(value, Mapping):
             raise SafetyPolicyError("JSON export candidate must be a top-level object")
-        assert_aggregate_safe_json(value)
+        contextual_exceptions = profile.get(
+            "contextual_forbidden_key_exceptions",
+            [],
+        )
+        assert_aggregate_safe_json(
+            _aggregate_safety_view(
+                value,
+                forbidden_names=forbidden_names,
+                contextual_exceptions=contextual_exceptions,
+            )
+        )
         keys = set(value)
         required = set(profile["required_top_level_keys"])
         allowed = set(profile["allowed_top_level_keys"])
@@ -510,7 +666,11 @@ def validate_candidate_bytes(
             raise SafetyPolicyError("JSON export candidate is missing required profile keys")
         if not keys.issubset(allowed):
             raise SafetyPolicyError("JSON export candidate contains unapproved top-level keys")
-        _assert_no_forbidden_json_keys(value, forbidden_names)
+        _assert_no_forbidden_json_keys(
+            value,
+            forbidden_names,
+            contextual_exceptions=contextual_exceptions,
+        )
         for key, expected_type in profile.get("field_types", {}).items():
             if key in value and not _matches_type(value[key], str(expected_type)):
                 raise SafetyPolicyError("JSON export candidate has an invalid field type")

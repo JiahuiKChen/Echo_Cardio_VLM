@@ -18,11 +18,201 @@ import yaml
 from lvef_multitask_analysis_modes import (
     bind_approved_restricted_path,
     load_policy as load_safe_export_policy,
+    validate_candidate_bytes,
 )
 
 
 class StorageAuditError(ValueError):
     pass
+
+
+STORAGE_SUMMARY_EXPORT_PROFILE = "scc_storage_inventory_summary_json"
+STORAGE_SUMMARY_FILENAME = "scc_storage_inventory.summary.json"
+STORAGE_SUMMARY_ROOT_LABELS = {"disaster_recovery", "research"}
+STORAGE_SUMMARY_ROOT_KEYS = {
+    "label",
+    "exists",
+    "device",
+    "mount_status",
+    "filesystem_type",
+    "is_bind_mount",
+    "submount_inventory_status",
+    "nested_mount_count",
+    "nested_bind_mount_count",
+    "capacity_bytes",
+    "available_bytes",
+    "symlink_count",
+    "symlink_counts_by_status",
+    "migratable_internal_same_scope_symlink_count",
+    "blocking_symlink_count",
+    "symlink_scan_recursive_on_root_device",
+    "inventory_entry_count",
+    "root_allocated_bytes",
+    "direct_child_allocated_bytes",
+    "unattributed_root_files_or_overhead_bytes",
+    "bytes_by_recovery_class_nonoverlapping",
+}
+STORAGE_SUMMARY_SYMLINK_STATUSES = {
+    "DANGLING_OR_UNRESOLVABLE",
+    "INTERNAL_EXISTING_CROSS_SCOPE",
+    "INTERNAL_EXISTING_SAME_SCOPE",
+    "OUTSIDE_DISASTER_ROOT",
+}
+STORAGE_SUMMARY_RECOVERY_CLASSES = {
+    "git_recoverable",
+    "public_source_recoverable",
+    "restricted_deterministically_regenerable",
+    "restricted_irreplaceability_unresolved",
+    "temporary",
+}
+STORAGE_SUMMARY_MOUNT_STATUSES = {
+    "PASS",
+    "PATH_ABSENT",
+    "UNAVAILABLE",
+    "UNPARSEABLE",
+}
+
+
+def _is_nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _validate_nonnegative_integer_map(
+    value: Any,
+    *,
+    allowed_keys: set[str],
+) -> None:
+    if not isinstance(value, Mapping) or not set(value).issubset(allowed_keys):
+        raise StorageAuditError("STORAGE_SUMMARY_DYNAMIC_MAP_SCHEMA_INVALID")
+    if any(not _is_nonnegative_integer(item) for item in value.values()):
+        raise StorageAuditError("STORAGE_SUMMARY_DYNAMIC_MAP_VALUE_INVALID")
+
+
+def _validate_storage_summary_root(root: Any) -> None:
+    if not isinstance(root, Mapping) or set(root) != STORAGE_SUMMARY_ROOT_KEYS:
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_SCHEMA_INVALID")
+    if root["label"] not in STORAGE_SUMMARY_ROOT_LABELS:
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_LABEL_INVALID")
+    for key in (
+        "exists",
+        "symlink_scan_recursive_on_root_device",
+    ):
+        if not isinstance(root[key], bool):
+            raise StorageAuditError("STORAGE_SUMMARY_ROOT_BOOLEAN_INVALID")
+    if root["is_bind_mount"] is not None and not isinstance(
+        root["is_bind_mount"], bool
+    ):
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_BIND_FLAG_INVALID")
+    if root["device"] is not None and not _is_nonnegative_integer(root["device"]):
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_DEVICE_INVALID")
+    for key in ("capacity_bytes", "available_bytes"):
+        if root[key] is not None and not _is_nonnegative_integer(root[key]):
+            raise StorageAuditError("STORAGE_SUMMARY_ROOT_OPTIONAL_BYTES_INVALID")
+    if root["filesystem_type"] is not None and not isinstance(
+        root["filesystem_type"], str
+    ):
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_FILESYSTEM_TYPE_INVALID")
+    if root["mount_status"] not in STORAGE_SUMMARY_MOUNT_STATUSES:
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_MOUNT_STATUS_INVALID")
+    if root["submount_inventory_status"] not in STORAGE_SUMMARY_MOUNT_STATUSES:
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_SUBMOUNT_STATUS_INVALID")
+    for key in (
+        "nested_mount_count",
+        "nested_bind_mount_count",
+        "symlink_count",
+        "migratable_internal_same_scope_symlink_count",
+        "blocking_symlink_count",
+        "inventory_entry_count",
+        "root_allocated_bytes",
+        "direct_child_allocated_bytes",
+        "unattributed_root_files_or_overhead_bytes",
+    ):
+        if not _is_nonnegative_integer(root[key]):
+            raise StorageAuditError("STORAGE_SUMMARY_ROOT_COUNT_OR_BYTES_INVALID")
+    _validate_nonnegative_integer_map(
+        root["symlink_counts_by_status"],
+        allowed_keys=STORAGE_SUMMARY_SYMLINK_STATUSES,
+    )
+    _validate_nonnegative_integer_map(
+        root["bytes_by_recovery_class_nonoverlapping"],
+        allowed_keys=STORAGE_SUMMARY_RECOVERY_CLASSES,
+    )
+
+
+def _validate_storage_summary_structure(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise StorageAuditError("STORAGE_SUMMARY_NOT_MAPPING")
+    if (
+        value.get("schema_version") != 1
+        or value.get("status") != "PASS_READ_ONLY"
+        or value.get("files_moved") != 0
+        or value.get("files_deleted") != 0
+    ):
+        raise StorageAuditError("STORAGE_SUMMARY_STATUS_OR_MUTATION_INVALID")
+    roots = value.get("roots")
+    if not isinstance(roots, list) or len(roots) != 2:
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_COUNT_INVALID")
+    for root in roots:
+        _validate_storage_summary_root(root)
+    labels = [root["label"] for root in roots]
+    if len(set(labels)) != 2 or set(labels) != STORAGE_SUMMARY_ROOT_LABELS:
+        raise StorageAuditError("STORAGE_SUMMARY_ROOT_SET_INVALID")
+    for key in (
+        "roots_are_separate_devices",
+        "any_symlinks",
+        "any_bind_mounts",
+        "any_nested_mounts",
+        "any_nested_bind_mounts",
+        "quota_command_available",
+    ):
+        if not isinstance(value.get(key), bool):
+            raise StorageAuditError("STORAGE_SUMMARY_TOP_LEVEL_BOOLEAN_INVALID")
+    if value.get("quota_command_scope") not in {
+        "PROJECT_GROUP",
+        "HOME_FALLBACK_NOT_PROJECT_AUTHORITY",
+    }:
+        raise StorageAuditError("STORAGE_SUMMARY_QUOTA_SCOPE_INVALID")
+    exact_administrative_values = {
+        "partial_quota_reallocation": "REQUIRES_SCC_SUPPORT_CONFIRMATION",
+        "research_tier_backup": "NO_OFFSITE_DISASTER_RECOVERY",
+        "research_tier_snapshots": "DAILY_WITH_10_DAY_USER_ACCESSIBLE_RETENTION",
+        "research_tier_soft_delete": "NOT_DOCUMENTED_REQUIRES_SCC_SUPPORT_CONFIRMATION",
+        "quota_decimal_or_binary": "DECIMAL_GB_1000000000_BYTES",
+    }
+    if any(value.get(key) != expected for key, expected in exact_administrative_values.items()):
+        raise StorageAuditError("STORAGE_SUMMARY_ADMINISTRATIVE_VALUE_INVALID")
+    return value
+
+
+def serialize_aggregate_summary(
+    safe: Mapping[str, Any], *, safe_export_policy: Mapping[str, Any]
+) -> bytes:
+    """Serialize and validate the exact aggregate bytes before any output write."""
+
+    payload = (json.dumps(safe, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    validate_aggregate_summary_bytes(
+        payload,
+        safe_export_policy=safe_export_policy,
+    )
+    return payload
+
+
+def validate_aggregate_summary_bytes(
+    payload: bytes, *, safe_export_policy: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Validate the exact bytes of an existing or newly serialized summary."""
+
+    validate_candidate_bytes(
+        payload,
+        filename=STORAGE_SUMMARY_FILENAME,
+        profile_name=STORAGE_SUMMARY_EXPORT_PROFILE,
+        policy=safe_export_policy,
+    )
+    try:
+        value = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StorageAuditError("STORAGE_SUMMARY_JSON_INVALID") from exc
+    return _validate_storage_summary_structure(value)
 
 
 def _run(command: list[str]) -> dict[str, Any]:
@@ -428,12 +618,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         policy = yaml.safe_load(args.resource_policy.read_text(encoding="utf-8"))
         detail, safe = audit(policy)
+        aggregate_payload = serialize_aggregate_summary(
+            safe,
+            safe_export_policy=safe_policy,
+        )
         with restricted_output.open("x", encoding="utf-8") as handle:
             json.dump(detail, handle, indent=2, sort_keys=True)
             handle.write("\n")
-        with aggregate_output.open("x", encoding="utf-8") as handle:
-            json.dump(safe, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+        with aggregate_output.open("xb") as handle:
+            handle.write(aggregate_payload)
     except (OSError, ValueError, json.JSONDecodeError, yaml.YAMLError) as exc:
         print(json.dumps({"status": "FAIL", "error_code": str(exc)}, sort_keys=True))
         return 2

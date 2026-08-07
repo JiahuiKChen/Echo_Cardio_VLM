@@ -133,6 +133,28 @@ def test_policy_and_schema_validation_are_fail_closed() -> None:
             raise AssertionError(f"Unsafe candidate was accepted: {invalid!r}")
 
 
+def test_contextual_forbidden_key_exception_cannot_be_broadened() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        restricted = Path(directory) / "restricted"
+        restricted.mkdir()
+        policy = _policy(restricted)
+        policy["forbidden_content"]["column_or_key_names"].append("label")
+        policy["export_profiles"]["summary_json"][
+            "contextual_forbidden_key_exceptions"
+        ] = [
+            {
+                "path": "details.*.label",
+                "allowed_string_values": ["synthetic_safe_value"],
+            }
+        ]
+        try:
+            validate_policy(policy)
+        except SafetyPolicyError:
+            pass
+        else:
+            raise AssertionError("A non-storage contextual exception was accepted")
+
+
 def test_two_step_export_requires_hash_bound_approval_and_revalidates_bytes() -> None:
     with tempfile.TemporaryDirectory() as directory:
         base = Path(directory)

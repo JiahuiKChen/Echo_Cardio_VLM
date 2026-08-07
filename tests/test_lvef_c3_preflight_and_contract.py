@@ -21,15 +21,78 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import audit_lvef_c3_storage as storage_audit
 import preflight_lvef_c3_full_source as preflight
 import plan_lvef_c3_resources as planner
 import retire_lvef_c3_extracted_cache as retirement
 import validate_lvef_c3_execution_contract as contract_validator
-from lvef_multitask_analysis_modes import load_policy, validate_candidate_bytes
+import validate_lvef_c3_resource_preflight_outputs as output_validator
+from lvef_multitask_analysis_modes import (
+    load_policy,
+    validate_candidate_bytes,
+    validate_policy,
+)
 
 
 RESOURCE_POLICY = ROOT / "configs" / "lvef_c3_resource_policy.yaml"
 CONTRACT = ROOT / "configs" / "lvef_c3_execution_contract.yaml"
+SAFE_EXPORT_POLICY = ROOT / "configs" / "lvef_multitask_safe_export_policy.yaml"
+
+
+def _storage_summary_fixture() -> dict:
+    root = {
+        "label": "disaster_recovery",
+        "exists": True,
+        "device": 1001,
+        "mount_status": "PASS",
+        "filesystem_type": "syntheticfs",
+        "is_bind_mount": False,
+        "submount_inventory_status": "PASS",
+        "nested_mount_count": 0,
+        "nested_bind_mount_count": 0,
+        "capacity_bytes": 200_000_000_000,
+        "available_bytes": 190_000_000_000,
+        "symlink_count": 0,
+        "symlink_counts_by_status": {},
+        "migratable_internal_same_scope_symlink_count": 0,
+        "blocking_symlink_count": 0,
+        "symlink_scan_recursive_on_root_device": True,
+        "inventory_entry_count": 2,
+        "root_allocated_bytes": 10_000_000_000,
+        "direct_child_allocated_bytes": 10_000_000_000,
+        "unattributed_root_files_or_overhead_bytes": 0,
+        "bytes_by_recovery_class_nonoverlapping": {
+            "git_recoverable": 10_000_000_000,
+        },
+    }
+    research = dict(root)
+    research.update(
+        {
+            "label": "research",
+            "device": 1002,
+            "capacity_bytes": 2_000_000_000_000,
+            "available_bytes": 1_800_000_000_000,
+        }
+    )
+    return {
+        "schema_version": 1,
+        "status": "PASS_READ_ONLY",
+        "roots": [root, research],
+        "roots_are_separate_devices": True,
+        "any_symlinks": False,
+        "any_bind_mounts": False,
+        "any_nested_mounts": False,
+        "any_nested_bind_mounts": False,
+        "quota_command_available": True,
+        "quota_command_scope": "PROJECT_GROUP",
+        "partial_quota_reallocation": "REQUIRES_SCC_SUPPORT_CONFIRMATION",
+        "research_tier_backup": "NO_OFFSITE_DISASTER_RECOVERY",
+        "research_tier_snapshots": "DAILY_WITH_10_DAY_USER_ACCESSIBLE_RETENTION",
+        "research_tier_soft_delete": "NOT_DOCUMENTED_REQUIRES_SCC_SUPPORT_CONFIRMATION",
+        "quota_decimal_or_binary": "DECIMAL_GB_1000000000_BYTES",
+        "files_moved": 0,
+        "files_deleted": 0,
+    }
 
 
 def _migration_witness(
@@ -956,6 +1019,215 @@ def test_resource_policy_and_contract_yaml_are_parseable() -> None:
     for path in (RESOURCE_POLICY, CONTRACT):
         payload = yaml.safe_load(path.read_text())
         assert payload["schema_version"] == 1
+
+
+def test_storage_summary_writer_shape_matches_its_export_profile() -> None:
+    policy, _ = load_policy(SAFE_EXPORT_POLICY)
+    summary = _storage_summary_fixture()
+    payload = storage_audit.serialize_aggregate_summary(
+        summary,
+        safe_export_policy=policy,
+    )
+    result = validate_candidate_bytes(
+        payload,
+        filename=storage_audit.STORAGE_SUMMARY_FILENAME,
+        profile_name=storage_audit.STORAGE_SUMMARY_EXPORT_PROFILE,
+        policy=policy,
+    )
+    profile = policy["export_profiles"][storage_audit.STORAGE_SUMMARY_EXPORT_PROFILE]
+    assert result["status"] == "PASS"
+    assert set(profile["required_top_level_keys"]) == set(summary)
+    assert set(profile["allowed_top_level_keys"]) == set(summary)
+
+
+def test_storage_summary_profile_rejects_forbidden_and_extra_fields() -> None:
+    policy, _ = load_policy(SAFE_EXPORT_POLICY)
+    forbidden = json.loads(json.dumps(_storage_summary_fixture()))
+    forbidden["roots"][0]["path"] = "/synthetic/restricted/path"
+    wrong_contextual_value = json.loads(json.dumps(_storage_summary_fixture()))
+    wrong_contextual_value["roots"][0]["label"] = "unapproved_root"
+    wrong_contextual_path = json.loads(json.dumps(_storage_summary_fixture()))
+    wrong_contextual_path["roots"][0]["nested"] = {"label": "research"}
+    unapproved_nested_field = json.loads(json.dumps(_storage_summary_fixture()))
+    unapproved_nested_field["roots"][0]["unapproved_nested_field"] = "10000001"
+    contextual_collision = json.loads(json.dumps(_storage_summary_fixture()))
+    contextual_collision["roots"][0]["contextual_safe_label"] = "10000001"
+    extra_root = json.loads(json.dumps(_storage_summary_fixture()))
+    extra_root["roots"].append(dict(extra_root["roots"][1]))
+    missing_root = json.loads(json.dumps(_storage_summary_fixture()))
+    missing_root["roots"].pop()
+    duplicate_root = json.loads(json.dumps(_storage_summary_fixture()))
+    duplicate_root["roots"][1]["label"] = "disaster_recovery"
+    extra = {**_storage_summary_fixture(), "unexpected_aggregate_field": 1}
+    for candidate in (
+        forbidden,
+        wrong_contextual_value,
+        wrong_contextual_path,
+        unapproved_nested_field,
+        contextual_collision,
+        extra_root,
+        missing_root,
+        duplicate_root,
+        extra,
+    ):
+        try:
+            storage_audit.serialize_aggregate_summary(
+                candidate,
+                safe_export_policy=policy,
+            )
+        except ValueError:
+            continue
+        raise AssertionError("Unsafe storage summary passed its export profile")
+
+
+def test_storage_contextual_forbidden_key_exception_cannot_be_broadened() -> None:
+    policy = yaml.safe_load(SAFE_EXPORT_POLICY.read_text(encoding="utf-8"))
+    exception = policy["export_profiles"][
+        storage_audit.STORAGE_SUMMARY_EXPORT_PROFILE
+    ]["contextual_forbidden_key_exceptions"][0]
+    exception["allowed_string_values"].append("unapproved_root")
+    try:
+        validate_policy(policy)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Storage contextual exception accepted another value")
+
+    policy = yaml.safe_load(SAFE_EXPORT_POLICY.read_text(encoding="utf-8"))
+    policy["export_profiles"]["c3_full_source_preflight_summary_json"][
+        "contextual_forbidden_key_exceptions"
+    ] = [
+        {
+            "path": "roots.*.label",
+            "allowed_string_values": ["disaster_recovery", "research"],
+        }
+    ]
+    try:
+        validate_policy(policy)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Another export profile accepted the exception")
+
+
+def test_storage_writer_validates_aggregate_before_writing_either_output() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        restricted_output = root / "storage.restricted.json"
+        aggregate_output = root / storage_audit.STORAGE_SUMMARY_FILENAME
+        invalid = {**_storage_summary_fixture(), "unexpected_aggregate_field": 1}
+        detail = {
+            "schema_version": 1,
+            "status": "PASS_READ_ONLY",
+            "files_moved": 0,
+            "files_deleted": 0,
+        }
+        with mock.patch.object(
+            storage_audit,
+            "bind_approved_restricted_path",
+            side_effect=lambda path, **_: Path(path),
+        ), mock.patch.object(storage_audit, "audit", return_value=(detail, invalid)):
+            status = storage_audit.main(
+                [
+                    "--resource-policy",
+                    str(RESOURCE_POLICY),
+                    "--safe-export-policy",
+                    str(SAFE_EXPORT_POLICY),
+                    "--restricted-output",
+                    str(restricted_output),
+                    "--aggregate-output",
+                    str(aggregate_output),
+                ]
+            )
+        assert status == 2
+        assert not restricted_output.exists()
+        assert not aggregate_output.exists()
+
+
+def test_existing_storage_stage_revalidates_the_export_profile() -> None:
+    policy, _ = load_policy(SAFE_EXPORT_POLICY)
+    with tempfile.TemporaryDirectory() as directory:
+        run_root = Path(directory)
+        restricted = run_root / "restricted"
+        aggregate = run_root / "aggregate"
+        restricted.mkdir()
+        aggregate.mkdir()
+        (restricted / "scc_storage_inventory.restricted.json").write_text(
+            json.dumps(
+                {
+                    "status": "PASS_READ_ONLY",
+                    "files_moved": 0,
+                    "files_deleted": 0,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        safe_path = aggregate / storage_audit.STORAGE_SUMMARY_FILENAME
+        safe_path.write_bytes(
+            storage_audit.serialize_aggregate_summary(
+                _storage_summary_fixture(),
+                safe_export_policy=policy,
+            )
+        )
+        with mock.patch.object(
+            output_validator,
+            "read_regular_file_bytes_no_follow",
+            wraps=output_validator.read_regular_file_bytes_no_follow,
+        ) as reader:
+            output_validator.validate_storage(
+                run_root,
+                safe_export_policy=SAFE_EXPORT_POLICY,
+            )
+        assert reader.call_count == 1
+        invalid = {**_storage_summary_fixture(), "unexpected_aggregate_field": 1}
+        safe_path.write_text(json.dumps(invalid) + "\n", encoding="utf-8")
+        try:
+            output_validator.validate_storage(
+                run_root,
+                safe_export_policy=SAFE_EXPORT_POLICY,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Existing storage stage accepted an extra field")
+
+        valid_payload = storage_audit.serialize_aggregate_summary(
+            _storage_summary_fixture(),
+            safe_export_policy=policy,
+        ).decode("utf-8")
+        duplicate_key_payload = (
+            valid_payload.rstrip()[:-1]
+            + ',"status":"PASS_READ_ONLY"}\n'
+        )
+        safe_path.write_text(duplicate_key_payload, encoding="utf-8")
+        try:
+            output_validator.validate_storage(
+                run_root,
+                safe_export_policy=SAFE_EXPORT_POLICY,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Existing storage stage accepted duplicate JSON keys")
+
+        valid_bytes = storage_audit.serialize_aggregate_summary(
+            _storage_summary_fixture(),
+            safe_export_policy=policy,
+        )
+        real_path = aggregate / "real_storage_summary.json"
+        real_path.write_bytes(valid_bytes)
+        safe_path.unlink()
+        safe_path.symlink_to(real_path)
+        try:
+            output_validator.validate_storage(
+                run_root,
+                safe_export_policy=SAFE_EXPORT_POLICY,
+            )
+        except (OSError, ValueError):
+            pass
+        else:
+            raise AssertionError("Existing storage stage followed a summary symlink")
 
 
 def test_generated_aggregate_c3_artifacts_match_the_safe_export_profiles() -> None:

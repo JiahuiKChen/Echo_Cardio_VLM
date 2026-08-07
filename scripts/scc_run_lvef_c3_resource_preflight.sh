@@ -159,7 +159,8 @@ if [[ -e "$STORAGE_DETAIL" || -e "$STORAGE_SUMMARY" ]]; then
   test -f "$STORAGE_DETAIL"
   test -f "$STORAGE_SUMMARY"
   "$PYTHON" scripts/validate_lvef_c3_resource_preflight_outputs.py \
-    --stage storage --run-root "$RUN_ROOT" >/dev/null
+    --stage storage --run-root "$RUN_ROOT" \
+    --safe-export-policy "$SAFE_EXPORT_POLICY" >/dev/null
 else
   "$PYTHON" scripts/audit_lvef_c3_storage.py \
     --resource-policy "$RESOURCE_POLICY" \
