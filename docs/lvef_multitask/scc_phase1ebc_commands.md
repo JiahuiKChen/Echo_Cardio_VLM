@@ -234,8 +234,8 @@ Run this block once **after** the portability repair has been fast-forwarded int
 the dedicated SCC worktree. It does not rerun Block 2 and does not create a new
 run root. It accepts only the exact previously bound commit, requires the new
 commit to be the synchronized remote tip and a fast-forward descendant, verifies
-the unchanged resource/migration/input checksums, migrates the safe-export-policy
-authority from one exact prior checksum to one exact new checksum in both
+the unchanged migration/input checksums, migrates the resource-policy and
+safe-export-policy authorities from exact prior checksums to exact new checksums in both
 owner-only environment files, performs the same exact migration for the changed
 GCP authority wrapper, atomically replaces the `EXPECTED_COMMIT` assignment,
 and adds the already established pinned-Python checksum when absent.
@@ -257,6 +257,7 @@ test -f "$SESSION_ENV"
 test -O "$SESSION_ENV"
 test "$(stat -c '%a' "$SESSION_ENV")" = "600"
 source "$SESSION_ENV"
+PRIOR_RESOURCE_POLICY_SHA256="ff6a3e50a365e2b1c0289624e641874eb8c3210062f403a0999c1ed600f9341c"
 case "$EXPECTED_COMMIT" in
   177aac1ce498390f62d43fb76ca216d06dc6b25f|20d847648406d0a556957e0f5bc25dde392f8244|6845bd180ee5811151929920234f53f15b272b14)
     PRIOR_EXPECTED_COMMIT="$EXPECTED_COMMIT"
@@ -273,13 +274,20 @@ case "$EXPECTED_COMMIT" in
     PRIOR_SAFE_EXPORT_POLICY_SHA256="bda97de67166a7fbe346a9ce3e8143c2d8d64a4c6054ecc65ddb018daa491ea0"
     PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="9a7053b568b16ab00e4969d73a1db76c7de85efa4b7a955445ca4aeea6af7a12"
     ;;
+  223eed3bfc9566eea818425e69e74ca1c8960b5f)
+    PRIOR_EXPECTED_COMMIT="$EXPECTED_COMMIT"
+    PRIOR_RESOURCE_POLICY_SHA256="ff6a3e50a365e2b1c0289624e641874eb8c3210062f403a0999c1ed600f9341c"
+    PRIOR_SAFE_EXPORT_POLICY_SHA256="bda97de67166a7fbe346a9ce3e8143c2d8d64a4c6054ecc65ddb018daa491ea0"
+    PRIOR_GCP_AUTHORITY_WRAPPER_SHA256="9a7053b568b16ab00e4969d73a1db76c7de85efa4b7a955445ca4aeea6af7a12"
+    ;;
   *)
     printf '%s\n' 'PHASE1EBC_EXISTING_RUN_AUTHORITY_REPAIR=BLOCKED_UNTRUSTED_PRIOR_COMMIT' >&2
     exit 65
     ;;
 esac
 EXPECTED_PYTHON_SHA256="1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
-NEW_SAFE_EXPORT_POLICY_SHA256="bda97de67166a7fbe346a9ce3e8143c2d8d64a4c6054ecc65ddb018daa491ea0"
+NEW_RESOURCE_POLICY_SHA256="64ccb4c268d7368dcf6d525a9b95b6819511fa9793d1f63448031a048fa23854"
+NEW_SAFE_EXPORT_POLICY_SHA256="55f1d684cb99b4ce57167208acfb933393e397282779804a9898237f1ee058c1"
 NEW_GCP_AUTHORITY_WRAPPER_SHA256="9a7053b568b16ab00e4969d73a1db76c7de85efa4b7a955445ca4aeea6af7a12"
 test "$(sha256sum "$PYTHON" | awk '{print $1}')" = "$EXPECTED_PYTHON_SHA256"
 test -d "$RUN_ROOT"
@@ -291,8 +299,12 @@ test "$(grep -c '^EXPECTED_COMMIT=' "$SESSION_ENV")" -eq 1
 test "$(grep -c '^EXPECTED_COMMIT=' "$PREFLIGHT_ENV")" -eq 1
 test "$(grep '^EXPECTED_COMMIT=' "$PREFLIGHT_ENV")" = "EXPECTED_COMMIT=$PRIOR_EXPECTED_COMMIT"
 test "$(grep -c '^LVEF_C3_GCP_BILLING_PROJECT=' "$PREFLIGHT_ENV")" -eq 1
+test "$EXPECTED_RESOURCE_POLICY_SHA256" = "$PRIOR_RESOURCE_POLICY_SHA256"
 test "$EXPECTED_SAFE_EXPORT_POLICY_SHA256" = "$PRIOR_SAFE_EXPORT_POLICY_SHA256"
 for AUTHORITY_FILE in "$SESSION_ENV" "$PREFLIGHT_ENV"; do
+  test "$(grep -c '^EXPECTED_RESOURCE_POLICY_SHA256=' "$AUTHORITY_FILE")" -eq 1
+  test "$(grep '^EXPECTED_RESOURCE_POLICY_SHA256=' "$AUTHORITY_FILE")" = \
+    "EXPECTED_RESOURCE_POLICY_SHA256=$PRIOR_RESOURCE_POLICY_SHA256"
   test "$(grep -c '^EXPECTED_SAFE_EXPORT_POLICY_SHA256=' "$AUTHORITY_FILE")" -eq 1
   test "$(grep '^EXPECTED_SAFE_EXPORT_POLICY_SHA256=' "$AUTHORITY_FILE")" = \
     "EXPECTED_SAFE_EXPORT_POLICY_SHA256=$PRIOR_SAFE_EXPORT_POLICY_SHA256"
@@ -310,7 +322,7 @@ test "$NEW_EXPECTED_COMMIT" = "$(git rev-parse origin/codex/lvef-multitask-reval
 test "$NEW_EXPECTED_COMMIT" != "$PRIOR_EXPECTED_COMMIT"
 git merge-base --is-ancestor "$PRIOR_EXPECTED_COMMIT" "$NEW_EXPECTED_COMMIT"
 
-test "$(sha256sum "$RESOURCE_POLICY" | awk '{print $1}')" = "$EXPECTED_RESOURCE_POLICY_SHA256"
+test "$(sha256sum "$RESOURCE_POLICY" | awk '{print $1}')" = "$NEW_RESOURCE_POLICY_SHA256"
 test "$(sha256sum "$SAFE_EXPORT_POLICY" | awk '{print $1}')" = "$NEW_SAFE_EXPORT_POLICY_SHA256"
 test "$(sha256sum "$GCP_AUTHORITY_WRAPPER" | awk '{print $1}')" = "$NEW_GCP_AUTHORITY_WRAPPER_SHA256"
 test "$(sha256sum "$MIGRATION_CLASSIFICATION" | awk '{print $1}')" = "$EXPECTED_MIGRATION_CLASSIFICATION_SHA256"
@@ -318,6 +330,43 @@ test "$(sha256sum "$MIGRATION_WITNESS" | awk '{print $1}')" = "$EXPECTED_MIGRATI
 test "$(sha256sum "$SELECTED_SOURCE_MANIFEST" | awk '{print $1}')" = "$EXPECTED_SELECTED_SOURCE_SHA256"
 test "$(sha256sum "$SELECTED_STUDIES" | awk '{print $1}')" = "$EXPECTED_SELECTED_STUDIES_SHA256"
 test "$(sha256sum "$SPLIT_MAP" | awk '{print $1}')" = "$EXPECTED_SPLIT_MAP_SHA256"
+
+migrate_resource_policy_checksum() {
+  local authority_file="$1"
+  local temporary_file
+  test -f "$authority_file"
+  test -O "$authority_file"
+  test "$(stat -c '%a' "$authority_file")" = "600"
+  test "$(grep -c '^EXPECTED_RESOURCE_POLICY_SHA256=' "$authority_file")" -eq 1
+  test "$(grep '^EXPECTED_RESOURCE_POLICY_SHA256=' "$authority_file")" = \
+    "EXPECTED_RESOURCE_POLICY_SHA256=$PRIOR_RESOURCE_POLICY_SHA256"
+  temporary_file="$(mktemp "${authority_file}.tmp.XXXXXX")"
+  chmod 600 "$temporary_file"
+  awk -v replacement="EXPECTED_RESOURCE_POLICY_SHA256=$NEW_RESOURCE_POLICY_SHA256" '
+    BEGIN { replaced = 0 }
+    /^EXPECTED_RESOURCE_POLICY_SHA256=/ {
+      if (replaced != 0) exit 74
+      print replacement
+      replaced = 1
+      next
+    }
+    { print }
+    END { if (replaced != 1) exit 74 }
+  ' "$authority_file" >"$temporary_file"
+  test "$(grep -c '^EXPECTED_RESOURCE_POLICY_SHA256=' "$temporary_file")" -eq 1
+  test "$(grep '^EXPECTED_RESOURCE_POLICY_SHA256=' "$temporary_file")" = \
+    "EXPECTED_RESOURCE_POLICY_SHA256=$NEW_RESOURCE_POLICY_SHA256"
+  mv -f "$temporary_file" "$authority_file"
+  chmod 600 "$authority_file"
+}
+
+migrate_resource_policy_checksum "$SESSION_ENV"
+migrate_resource_policy_checksum "$PREFLIGHT_ENV"
+EXPECTED_RESOURCE_POLICY_SHA256="$NEW_RESOURCE_POLICY_SHA256"
+test "$(grep '^EXPECTED_RESOURCE_POLICY_SHA256=' "$SESSION_ENV")" = \
+  "EXPECTED_RESOURCE_POLICY_SHA256=$NEW_RESOURCE_POLICY_SHA256"
+test "$(grep '^EXPECTED_RESOURCE_POLICY_SHA256=' "$PREFLIGHT_ENV")" = \
+  "EXPECTED_RESOURCE_POLICY_SHA256=$NEW_RESOURCE_POLICY_SHA256"
 
 migrate_safe_export_policy_checksum() {
   local authority_file="$1"

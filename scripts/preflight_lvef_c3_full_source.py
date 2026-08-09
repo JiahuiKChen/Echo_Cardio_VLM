@@ -40,6 +40,7 @@ from audit_lvef_c3_gcp_authority import (
     acquire_access_token_for_preflight,
     validate_restricted_receipt,
 )
+from lvef_c3_autoclass_states import AutoclassStateError, observe_raw_autoclass, strict_json_loads
 
 
 BUCKET = "mimic-iv-echo-1.0.physionet.org"
@@ -143,8 +144,8 @@ def _read_gcs_json_response(
     if len(body) > MAX_GCS_JSON_BYTES:
         raise PreflightError(f"{purpose}_RESPONSE_TOO_LARGE")
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
+        payload = strict_json_loads(body)
+    except (json.JSONDecodeError, AutoclassStateError):
         raise PreflightError(f"{purpose}_JSON_INVALID") from None
     if not isinstance(payload, Mapping):
         raise PreflightError(f"{purpose}_JSON_NOT_OBJECT")
@@ -207,6 +208,9 @@ class BucketMetadata:
     requester_pays: bool
     autoclass_metadata_present: bool
     autoclass_enabled: bool
+    raw_autoclass_observation_state: str
+    effective_autoclass_semantic_state: str
+    autoclass_authoritatively_disabled: bool
     autoclass_toggle_time: str | None
     autoclass_terminal_storage_class: str | None
     autoclass_terminal_storage_class_update_time: str | None
@@ -643,24 +647,24 @@ def get_bucket_metadata(
     }
     if not all(fields.values()) or not fields["metageneration"].isdigit():
         raise PreflightError("GCS_BUCKET_METADATA_INCOMPLETE")
+    raw_autoclass_state = observe_raw_autoclass(payload)
     autoclass = payload.get("autoclass")
-    autoclass_present = isinstance(autoclass, Mapping)
-    if autoclass_present and not isinstance(autoclass.get("enabled"), bool):
-        raise PreflightError("GCS_BUCKET_AUTOCLASS_METADATA_INVALID")
-    autoclass_enabled = bool(autoclass.get("enabled")) if autoclass_present else False
+    autoclass_present = "autoclass" in payload
+    autoclass_mapping = isinstance(autoclass, Mapping)
+    autoclass_enabled = raw_autoclass_state == "KEY_PRESENT_MAPPING_ENABLED_TRUE"
     autoclass_toggle_time = (
         str(autoclass.get("toggleTime", "")).strip() or None
-        if autoclass_present
+        if autoclass_mapping
         else None
     )
     autoclass_terminal_class = (
         str(autoclass.get("terminalStorageClass", "")).strip().upper() or None
-        if autoclass_present
+        if autoclass_mapping
         else None
     )
     autoclass_terminal_update = (
         str(autoclass.get("terminalStorageClassUpdateTime", "")).strip() or None
-        if autoclass_present
+        if autoclass_mapping
         else None
     )
     return BucketMetadata(
@@ -668,6 +672,9 @@ def get_bucket_metadata(
         requester_pays=bool(billing["requesterPays"]),
         autoclass_metadata_present=autoclass_present,
         autoclass_enabled=autoclass_enabled,
+        raw_autoclass_observation_state=raw_autoclass_state,
+        effective_autoclass_semantic_state="MALFORMED_OR_UNPROVEN",
+        autoclass_authoritatively_disabled=False,
         autoclass_toggle_time=autoclass_toggle_time,
         autoclass_terminal_storage_class=autoclass_terminal_class,
         autoclass_terminal_storage_class_update_time=autoclass_terminal_update,
@@ -1197,7 +1204,9 @@ def calculate_cost(
     retry_fraction = Decimal(str(rates["retry_transfer_fraction"]))
     contingency_fraction = Decimal(str(rates["contingency_fraction"]))
     source_gib = total_bytes / gib_bytes
-    metadata_cost = (pages + bucket_metadata_operations) / Decimal(1000) * class_a_rate
+    list_metadata_cost = pages / Decimal(1000) * class_a_rate
+    bucket_metadata_cost = bucket_metadata_operations / Decimal(10000) * class_b_rate
+    metadata_cost = list_metadata_cost + bucket_metadata_cost
     egress_cost = source_gib * egress_rate
     body_operation_cost = objects * body_ops_per_object / Decimal(10000) * class_b_rate
     retrieval_rates = rates["retrieval_usd_per_gib_by_storage_class"]
@@ -1217,11 +1226,21 @@ def calculate_cost(
     )
     autoclass_metadata_present = summary.get("bucket_autoclass_metadata_present") is True
     autoclass_enabled = summary.get("bucket_autoclass_enabled") is True
+    effective_autoclass_state = str(
+        summary.get("effective_autoclass_semantic_state", "MALFORMED_OR_UNPROVEN")
+    )
+    authoritatively_disabled_states = set(
+        rates.get("authoritatively_disabled_autoclass_states", [])
+    )
+    autoclass_authoritatively_disabled = (
+        effective_autoclass_state in authoritatively_disabled_states
+        and summary.get("autoclass_authoritatively_disabled") is True
+    )
     operation_pricing_authoritative = (
         all_selected_standard
         and (
-            autoclass_metadata_present
-            if rates["require_bucket_autoclass_metadata"]
+            autoclass_authoritatively_disabled
+            if rates["require_authoritative_autoclass_semantics"]
             else True
         )
         and (
@@ -1260,14 +1279,20 @@ def calculate_cost(
         "bucket_requester_pays_enabled": summary.get("bucket_requester_pays_enabled") is True,
         "bucket_autoclass_metadata_present": autoclass_metadata_present,
         "bucket_autoclass_enabled": autoclass_enabled,
+        "raw_autoclass_observation_state": summary.get(
+            "raw_autoclass_observation_state", "REQUEST_OR_RECEIPT_UNPROVEN"
+        ),
+        "effective_autoclass_semantic_state": effective_autoclass_state,
+        "autoclass_authoritatively_disabled": autoclass_authoritatively_disabled,
         "selected_storage_classes_all_standard": all_selected_standard,
         "operation_pricing_authoritative": operation_pricing_authoritative,
         "operation_pricing_scope": rates["operation_pricing_scope"],
         "exact_source_bytes": int(total_bytes),
         "exact_source_gib": format(source_gib.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP), "f"),
         "metadata_list_class_a_operations": int(pages),
-        "bucket_metadata_class_a_operations": int(bucket_metadata_operations),
-        "total_metadata_class_a_operations": int(pages + bucket_metadata_operations),
+        "bucket_metadata_class_a_operations": 0,
+        "bucket_metadata_class_b_operations": int(bucket_metadata_operations),
+        "total_metadata_class_a_operations": int(pages),
         "future_body_get_class_b_operations": int(objects * body_ops_per_object),
         "internet_egress_usd_per_gib": str(egress_rate),
         "class_a_usd_per_1000_operations": str(class_a_rate),
@@ -1404,6 +1429,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             requester_pays=False,
             autoclass_metadata_present=False,
             autoclass_enabled=False,
+            raw_autoclass_observation_state="REQUEST_OR_RECEIPT_UNPROVEN",
+            effective_autoclass_semantic_state="MALFORMED_OR_UNPROVEN",
+            autoclass_authoritatively_disabled=False,
             autoclass_toggle_time=None,
             autoclass_terminal_storage_class=None,
             autoclass_terminal_storage_class_update_time=None,
@@ -1489,6 +1517,15 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             "bucket_requester_pays_enabled": bucket_metadata.requester_pays,
             "bucket_autoclass_metadata_present": bucket_metadata.autoclass_metadata_present,
             "bucket_autoclass_enabled": bucket_metadata.autoclass_enabled,
+            "raw_autoclass_observation_state": (
+                bucket_metadata.raw_autoclass_observation_state
+            ),
+            "effective_autoclass_semantic_state": (
+                bucket_metadata.effective_autoclass_semantic_state
+            ),
+            "autoclass_authoritatively_disabled": (
+                bucket_metadata.autoclass_authoritatively_disabled
+            ),
             "bucket_autoclass_toggle_time": bucket_metadata.autoclass_toggle_time,
             "bucket_autoclass_terminal_storage_class": (
                 bucket_metadata.autoclass_terminal_storage_class

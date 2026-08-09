@@ -1,0 +1,75 @@
+{
+  "conflicting_primary_source_found": false,
+  "default_disabled_semantics_verified": true,
+  "registry_status": "PASS_PRIMARY_GOOGLE_SOURCES_VERIFIED",
+  "retrieval_date": "2026-08-09",
+  "schema_version": 1,
+  "sources": [
+    {
+      "api_context": "Cloud Storage JSON API v1 Bucket resource",
+      "claim_category": "AUTOCLASS_DEFAULT_SEMANTICS",
+      "directly_supports_default_disabled": true,
+      "document_last_updated": "2026-07-31",
+      "evidence_id": "GCS_JSON_API_V1_BUCKET_AUTOCLASS",
+      "official_domain": "docs.cloud.google.com",
+      "paraphrased_rule": "When autoclass.enabled is not set, Autoclass is disabled.",
+      "title": "Buckets | Cloud Storage | Google Cloud Documentation",
+      "url": "https://docs.cloud.google.com/storage/docs/json_api/v1/buckets"
+    },
+    {
+      "api_context": "Cloud Storage API v2 Bucket resource",
+      "claim_category": "AUTOCLASS_ABSENT_CONFIGURATION_SEMANTICS",
+      "directly_supports_default_disabled": true,
+      "document_last_updated": "2026-07-20",
+      "evidence_id": "GCS_STORAGE_V2_BUCKET_AUTOCLASS",
+      "official_domain": "docs.cloud.google.com",
+      "paraphrased_rule": "Without an Autoclass configuration, Autoclass is disabled and has no effect on the bucket.",
+      "title": "Package google.storage.v2 | Cloud Storage | Google Cloud Documentation",
+      "url": "https://docs.cloud.google.com/storage/docs/reference/rpc/google.storage.v2"
+    },
+    {
+      "api_context": "Current Cloud Storage operation, retrieval, network-transfer, unit, and Always Free pricing",
+      "claim_category": "COST_RATE_AUTHORITY",
+      "directly_supports_default_disabled": false,
+      "document_last_updated": "NOT_STATED_DYNAMIC_PRICING_PAGE",
+      "evidence_id": "GCS_CURRENT_PRICING",
+      "official_domain": "cloud.google.com",
+      "paraphrased_rule": "For Standard storage in a US multi-region, objects.list is Class A, storage get operations are Class B, Standard retrieval is zero, and the applicable planning transfer tier is 0.12 USD per GiB.",
+      "title": "Storage pricing | Google Cloud",
+      "url": "https://cloud.google.com/storage/pricing"
+    },
+    {
+      "api_context": "Cloud Storage Requester Pays billing semantics",
+      "claim_category": "REQUESTER_PAYS_AUTHORITY",
+      "directly_supports_default_disabled": false,
+      "document_last_updated": "2026-07-10",
+      "evidence_id": "GCS_REQUESTER_PAYS",
+      "official_domain": "docs.cloud.google.com",
+      "paraphrased_rule": "A supplied billing project bears access-operation, retrieval, and network-read charges; source storage remains charged to the bucket owner.",
+      "title": "Requester Pays | Cloud Storage | Google Cloud Documentation",
+      "url": "https://docs.cloud.google.com/storage/docs/requester-pays"
+    },
+    {
+      "api_context": "Cloud Storage JSON API v1 metadata-only buckets.get method",
+      "claim_category": "REQUEST_METHOD_AUTHORITY",
+      "directly_supports_default_disabled": false,
+      "document_last_updated": "2026-07-29",
+      "evidence_id": "GCS_JSON_API_V1_BUCKETS_GET",
+      "official_domain": "docs.cloud.google.com",
+      "paraphrased_rule": "The method returns metadata for one specified bucket through the JSON API metadata endpoint.",
+      "title": "Buckets: get | Cloud Storage | Google Cloud Documentation",
+      "url": "https://docs.cloud.google.com/storage/docs/json_api/v1/buckets/get"
+    },
+    {
+      "api_context": "Cloud Storage JSON API v1 paginated objects.list method",
+      "claim_category": "LIST_OPERATION_AUTHORITY",
+      "directly_supports_default_disabled": false,
+      "document_last_updated": "2026-07-22",
+      "evidence_id": "GCS_JSON_API_V1_OBJECTS_LIST",
+      "official_domain": "docs.cloud.google.com",
+      "paraphrased_rule": "The method retrieves paginated object metadata; each page request is a Class A operation under current pricing.",
+      "title": "Objects: list | Cloud Storage | Google Cloud Documentation",
+      "url": "https://docs.cloud.google.com/storage/docs/json_api/v1/objects/list"
+    }
+  ]
+}

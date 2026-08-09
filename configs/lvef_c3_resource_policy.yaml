@@ -61,18 +61,24 @@ scc_quota_cost:
 
 gcs_cost:
   currency: USD
-  rate_authority: PLANNING_ASSUMPTION_REQUIRES_REQUESTER_PAYS_BILLING_CONFIRMATION
-  pricing_verified_date: '2026-08-05'
+  rate_authority: GOOGLE_CLOUD_PRIMARY_PRICING_RATE_EXPLICIT
+  pricing_verified_date: '2026-08-09'
   bucket_location_assumption: US
   expected_bucket_locations: [US]
   require_requester_pays_enabled: true
-  operation_pricing_scope: STANDARD_SELECTED_OBJECTS_WITH_AUTOCLASS_DISABLED_ONLY
+  operation_pricing_scope: STANDARD_SELECTED_OBJECTS_WITH_AUTHORITATIVELY_DISABLED_AUTOCLASS
   require_all_selected_objects_standard_for_operation_rate_authority: true
-  require_bucket_autoclass_metadata: true
+  require_authoritative_autoclass_semantics: true
+  authoritatively_disabled_autoclass_states:
+    - EXPLICIT_DISABLED
+    - ABSENT_CONFIGURATION_DEFAULT_DISABLED
   permit_autoclass_for_cost_authority: false
   internet_egress_usd_per_gib: '0.12'
   class_a_usd_per_1000_operations: '0.01'
   class_b_usd_per_10000_operations: '0.004'
+  bucket_metadata_operation_class: CLASS_B
+  object_listing_operation_class: CLASS_A
+  future_body_get_operation_class: CLASS_B
   retrieval_usd_per_gib_by_storage_class:
     STANDARD: '0'
     NEARLINE: '0.01'

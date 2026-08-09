@@ -479,6 +479,8 @@ def test_cost_estimate_uses_exact_bytes_and_explicit_rates() -> None:
             "bucket_location_rate_match": True,
             "bucket_autoclass_metadata_present": True,
             "bucket_autoclass_enabled": False,
+            "effective_autoclass_semantic_state": "EXPLICIT_DISABLED",
+            "autoclass_authoritatively_disabled": True,
         },
         policy,
     )
@@ -618,6 +620,8 @@ def test_nonstandard_or_autoclass_source_fails_operation_cost_authority() -> Non
         "bucket_location_rate_match": True,
         "bucket_autoclass_metadata_present": True,
         "bucket_autoclass_enabled": False,
+        "effective_autoclass_semantic_state": "EXPLICIT_DISABLED",
+        "autoclass_authoritatively_disabled": True,
         "storage_class_bytes": {"NEARLINE": 1024**3},
         "storage_class_counts": {"NEARLINE": 1},
     }
@@ -630,6 +634,8 @@ def test_nonstandard_or_autoclass_source_fails_operation_cost_authority() -> Non
             "storage_class_bytes": {"STANDARD": 1024**3},
             "storage_class_counts": {"STANDARD": 1},
             "bucket_autoclass_enabled": True,
+            "effective_autoclass_semantic_state": "EXPLICIT_ENABLED",
+            "autoclass_authoritatively_disabled": False,
         },
         policy,
     )

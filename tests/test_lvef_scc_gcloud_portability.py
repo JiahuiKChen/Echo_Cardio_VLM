@@ -347,6 +347,7 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     assert "6845bd180ee5811151929920234f53f15b272b14" in repair
     assert "0a57cf55914fb9dc735a600d7f838737818161d1" in repair
     assert "3af60607abfa498c683907c283550badecf7c7e3" in repair
+    assert "223eed3bfc9566eea818425e69e74ca1c8960b5f" in repair
     assert 'git merge-base --is-ancestor "$PRIOR_EXPECTED_COMMIT"' in repair
     assert (
         'test "$NEW_EXPECTED_COMMIT" = "$(git rev-parse '
@@ -379,6 +380,14 @@ def test_existing_run_repair_is_fast_forward_checksum_bound_and_storage_free() -
     assert f'NEW_SAFE_EXPORT_POLICY_SHA256="{current_policy_sha}"' in repair
     assert 'migrate_safe_export_policy_checksum "$SESSION_ENV"' in repair
     assert 'migrate_safe_export_policy_checksum "$PREFLIGHT_ENV"' in repair
+    prior_resource_sha = "ff6a3e50a365e2b1c0289624e641874eb8c3210062f403a0999c1ed600f9341c"
+    current_resource_sha = hashlib.sha256(
+        (ROOT / "configs" / "lvef_c3_resource_policy.yaml").read_bytes()
+    ).hexdigest()
+    assert f'PRIOR_RESOURCE_POLICY_SHA256="{prior_resource_sha}"' in repair
+    assert f'NEW_RESOURCE_POLICY_SHA256="{current_resource_sha}"' in repair
+    assert 'migrate_resource_policy_checksum "$SESSION_ENV"' in repair
+    assert 'migrate_resource_policy_checksum "$PREFLIGHT_ENV"' in repair
     assert "grep -c '^EXPECTED_SAFE_EXPORT_POLICY_SHA256='" in repair
     assert 'temporary_file="$(mktemp "${authority_file}.tmp.XXXXXX")"' in repair
     assert 'mv -f "$temporary_file" "$authority_file"' in repair

@@ -88,7 +88,6 @@ def validate_source(
     restricted = run_root / "restricted" / "source_preflight"
     summary = load_json(aggregate / "c3_full_source_preflight.summary.json")
     safety = load_json(aggregate / "c3_full_source_preflight_safety_gate.json")
-    cost = load_json(aggregate / "c3_full_source_cost_estimate.json")
     required_regular = (
         aggregate / "c3_full_source_preflight_by_batch.csv",
         restricted / "c3_full_source_object_metadata.restricted.jsonl",
@@ -108,7 +107,6 @@ def validate_source(
     )
     if (
         summary.get("status") != "PASS_METADATA_ONLY"
-        or summary.get("authoritative_for_full_c3") is not True
         or summary.get("metadata_provider") != "GCS_JSON_API_OBJECTS_LIST"
         or summary.get("requested_objects") != 335984
         or summary.get("verified_objects") != 335984
@@ -117,22 +115,15 @@ def validate_source(
         or summary.get("raw_source_request_rows") != 336016
         or summary.get("historical_identical_rows_collapsed_before_frozen_manifest") != 32
         or summary.get("production_batches") != 19
+        or summary.get("exact_source_bytes") != 1216569133322
         or summary.get("split_counts") != {"test": 680, "train": 3171, "val": 679}
         or any(summary.get(name) != 0 for name in expected_zero)
         or summary.get("dicom_bodies_downloaded") is not False
         or summary.get("selected_source_manifest_sha256") != sha256_file(source_manifest)
         or summary.get("selected_manifest_sha256") != sha256_file(selected_studies)
         or summary.get("split_manifest_sha256") != sha256_file(split_map)
-        or summary.get("bucket_metadata_provider") != "GCS_JSON_API_BUCKETS_GET"
-        or summary.get("bucket_location_rate_match") is not True
-        or summary.get("bucket_requester_pays_enabled") is not True
-        or summary.get("bucket_autoclass_metadata_present") is not True
-        or summary.get("bucket_autoclass_enabled") is not False
-        or summary.get("bucket_metadata_operations") != 1
-        or summary.get("bucket_metadata_media_requests") != 0
-        or summary.get("bucket_metadata_body_bytes_read") != 0
     ):
-        raise StageValidationError("SOURCE_STAGE_NOT_AUTHORITATIVE_PASS")
+        raise StageValidationError("SOURCE_INVENTORY_STAGE_NOT_AUTHORITATIVE_PASS")
     if (
         safety.get("status") != "PASS"
         or safety.get("safety_gate_passed") is not True
@@ -140,20 +131,29 @@ def validate_source(
         or safety.get("object_body_bytes_read") != 0
     ):
         raise StageValidationError("SOURCE_SAFETY_GATE_NOT_PASS")
-    if (
-        cost.get("status") != "PASS_RATE_EXPLICIT_PLANNING_ESTIMATE"
-        or cost.get("exact_source_bytes") != summary.get("exact_source_bytes")
-        or cost.get("bucket_location") != summary.get("bucket_location")
-        or cost.get("bucket_location_verified") is not True
-        or cost.get("bucket_requester_pays_enabled") is not True
-        or cost.get("selected_storage_classes_all_standard") is not True
-        or cost.get("bucket_autoclass_metadata_present") is not True
-        or cost.get("bucket_autoclass_enabled") is not False
-        or cost.get("operation_pricing_authoritative") is not True
-    ):
-        raise StageValidationError("SOURCE_COST_BYTES_DISAGREE")
     with required_regular[0].open(newline="", encoding="utf-8-sig") as handle:
-        rows = list(csv.DictReader(handle))
+        reader = csv.reader(handle)
+        try:
+            header = next(reader)
+        except StopIteration as exc:
+            raise StageValidationError("SOURCE_BATCH_TABLE_EMPTY") from exc
+        expected_header = [
+            "production_batch",
+            "n_studies",
+            "n_subjects",
+            "n_requested_objects",
+            "n_verified_objects",
+            "n_unexpected_selected_objects",
+            "total_source_bytes",
+            "status",
+        ]
+        normalized_header = [name.strip().casefold() for name in header]
+        if header != expected_header or len(normalized_header) != len(set(normalized_header)):
+            raise StageValidationError("SOURCE_BATCH_TABLE_HEADER_INVALID_OR_DUPLICATED")
+        raw_rows = list(reader)
+        if any(len(row) != len(header) for row in raw_rows):
+            raise StageValidationError("SOURCE_BATCH_TABLE_ROW_WIDTH_INVALID")
+        rows = [dict(zip(header, row)) for row in raw_rows]
     if (
         len(rows) != 19
         or {row["production_batch"] for row in rows}

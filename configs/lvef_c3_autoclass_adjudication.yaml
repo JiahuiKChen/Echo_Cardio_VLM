@@ -1,0 +1,88 @@
+schema_version: 1
+policy_id: lvef_c3_autoclass_adjudication_v1
+status: SUPPLEMENTAL_METADATA_ONLY_NOT_C3_EXECUTION_AUTHORITY
+
+attempt:
+  attempt_id: phase1ebc_autoclass_adjudication_attempt_001
+  source_scheduler_job_id: 7104307
+  starting_commit: 223eed3bfc9566eea818425e69e74ca1c8960b5f
+  targeted_bucket_get_requests: 1
+  object_list_requests: 0
+  object_get_requests: 0
+  media_requests: 0
+  object_body_bytes_read: 0
+  bigquery_requests: 0
+  storage_audit_repeated: false
+  section4_repeated: false
+
+raw_autoclass_states:
+  - KEY_ABSENT
+  - KEY_PRESENT_NULL
+  - KEY_PRESENT_MAPPING_ENABLED_TRUE
+  - KEY_PRESENT_MAPPING_ENABLED_FALSE
+  - KEY_PRESENT_EMPTY_MAPPING
+  - KEY_PRESENT_MAPPING_ENABLED_MISSING
+  - KEY_PRESENT_MALFORMED
+  - REQUEST_OR_RECEIPT_UNPROVEN
+
+effective_autoclass_states:
+  - EXPLICIT_ENABLED
+  - EXPLICIT_DISABLED
+  - ABSENT_CONFIGURATION_DEFAULT_DISABLED
+  - PRESENT_NULL_UNRESOLVED
+  - EMPTY_OR_INCOMPLETE_MAPPING_UNRESOLVED
+  - MALFORMED_OR_UNPROVEN
+
+authoritatively_disabled_states:
+  - EXPLICIT_DISABLED
+  - ABSENT_CONFIGURATION_DEFAULT_DISABLED
+
+source_inventory:
+  permitted_pass_claim: PASS_CURRENT_SELECTED_SOURCE_INVENTORY_FOR_PROSPECTIVE_C3
+  historical_object_identity_limitation: NOT_ESTABLISHED_NO_HISTORICAL_COMPARATORS
+  expected_selected_studies: 4530
+  expected_selected_subjects: 4530
+  expected_raw_source_request_rows: 336016
+  expected_normalized_requests: 335984
+  expected_identical_rows_collapsed: 32
+  expected_source_bytes: 1216569133322
+  expected_listing_pages: 526
+  expected_production_batches: 19
+  autoclass_is_source_inventory_gate: false
+  pricing_is_source_inventory_gate: false
+
+cost_authority:
+  pass_claim: PASS_RATE_EXPLICIT_PLANNING_ESTIMATE
+  currency: USD
+  pricing_retrieval_date: '2026-08-09'
+  require_authoritative_bucket_location: true
+  require_requester_pays: true
+  require_authoritatively_disabled_autoclass: true
+  require_all_selected_objects_standard: true
+  list_operation_class: CLASS_A
+  bucket_get_operation_class: CLASS_B
+  future_body_get_operation_class: CLASS_B
+  metadata_list_class_a_operations: 526
+  completed_and_supplemental_bucket_get_class_b_operations: 2
+  future_body_get_class_b_operations: 335984
+  retry_fraction: '0.05'
+  general_contingency_fraction: '0.20'
+  invoice_guarantee: false
+  free_allowance_deducted: false
+  trial_credit_is_independent_billing_authority: false
+
+provenance:
+  immutable_source_output_count: 6
+  supplemental_output_count: 6
+  manifest_bound_predecessor_output_count: 3
+  terminal_validation_predecessor_output_count: 5
+  repository_authorities:
+    - scripts/lvef_c3_autoclass_states.py
+    - scripts/adjudicate_lvef_c3_autoclass.py
+    - scripts/preflight_lvef_c3_full_source.py
+    - scripts/validate_lvef_c3_resource_preflight_outputs.py
+    - scripts/scc_run_lvef_c3_autoclass_adjudication.sh
+    - configs/lvef_c3_autoclass_adjudication.yaml
+    - configs/lvef_c3_resource_policy.yaml
+    - configs/lvef_multitask_safe_export_policy.yaml
+    - docs/lvef_multitask/c3_autoclass_official_evidence_registry.json

@@ -332,6 +332,9 @@ export_profiles:
       - bucket_default_storage_class
       - bucket_autoclass_metadata_present
       - bucket_autoclass_enabled
+      - raw_autoclass_observation_state
+      - effective_autoclass_semantic_state
+      - autoclass_authoritatively_disabled
       - bucket_autoclass_toggle_time
       - bucket_autoclass_terminal_storage_class
       - bucket_autoclass_terminal_storage_class_update_time
@@ -363,6 +366,9 @@ export_profiles:
       bucket_location_rate_match: boolean
       bucket_autoclass_metadata_present: boolean
       bucket_autoclass_enabled: boolean
+      raw_autoclass_observation_state: string
+      effective_autoclass_semantic_state: string
+      autoclass_authoritatively_disabled: boolean
       bucket_metadata_operations: integer
       bucket_metadata_media_requests: integer
       bucket_metadata_body_bytes_read: integer
@@ -424,6 +430,9 @@ export_profiles:
       - bucket_requester_pays_enabled
       - bucket_autoclass_metadata_present
       - bucket_autoclass_enabled
+      - raw_autoclass_observation_state
+      - effective_autoclass_semantic_state
+      - autoclass_authoritatively_disabled
       - selected_storage_classes_all_standard
       - operation_pricing_authoritative
       - operation_pricing_scope
@@ -431,6 +440,7 @@ export_profiles:
       - exact_source_gib
       - metadata_list_class_a_operations
       - bucket_metadata_class_a_operations
+      - bucket_metadata_class_b_operations
       - total_metadata_class_a_operations
       - future_body_get_class_b_operations
       - internet_egress_usd_per_gib
@@ -455,6 +465,7 @@ export_profiles:
       exact_source_bytes: integer
       metadata_list_class_a_operations: integer
       bucket_metadata_class_a_operations: integer
+      bucket_metadata_class_b_operations: integer
       total_metadata_class_a_operations: integer
       bucket_location: string
       bucket_location_verified: boolean
@@ -466,6 +477,9 @@ export_profiles:
       selected_storage_classes_all_standard: boolean
       bucket_autoclass_metadata_present: boolean
       bucket_autoclass_enabled: boolean
+      raw_autoclass_observation_state: string
+      effective_autoclass_semantic_state: string
+      autoclass_authoritatively_disabled: boolean
 
   c3_storage_projection_json:
     kind: json
@@ -538,6 +552,440 @@ export_profiles:
       projected_headroom_bytes: integer
       required_headroom_bytes: integer
       headroom_gate_passed: boolean
+
+  c3_autoclass_adjudication_summary_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 32768
+    required_top_level_keys: &c3_autoclass_adjudication_keys
+      - schema_version
+      - status
+      - attempt_id
+      - source_scheduler_job_id
+      - governing_commit
+      - targeted_bucket_get_request_count
+      - targeted_bucket_get_http_success
+      - bucket_get_fields_explicitly_requested
+      - content_type_json
+      - redirect_occurred
+      - request_receipt_sha256
+      - response_receipt_sha256
+      - raw_response_receipt_verified
+      - raw_response_size_bytes
+      - raw_response_sha256
+      - raw_autoclass_observation_state
+      - effective_autoclass_semantic_state
+      - autoclass_effectively_enabled
+      - autoclass_authoritatively_disabled
+      - semantic_evidence_authority
+      - official_evidence_registry_sha256
+      - requester_pays_authority_used
+      - bucket_location_rate_match
+      - bucket_location_type_rate_match
+      - bucket_default_storage_class_standard
+      - requester_pays_enabled
+      - media_requests
+      - object_list_requests
+      - object_get_requests
+      - object_body_bytes_read
+      - bigquery_requests
+      - credential_content_exported
+    allowed_top_level_keys: *c3_autoclass_adjudication_keys
+    field_types:
+      schema_version: integer
+      status: string
+      attempt_id: string
+      source_scheduler_job_id: integer
+      governing_commit: string
+      targeted_bucket_get_request_count: integer
+      targeted_bucket_get_http_success: boolean
+      bucket_get_fields_explicitly_requested: boolean
+      content_type_json: boolean
+      redirect_occurred: boolean
+      request_receipt_sha256: string
+      response_receipt_sha256: string
+      raw_response_receipt_verified: boolean
+      raw_response_size_bytes: integer
+      raw_response_sha256: string
+      raw_autoclass_observation_state: string
+      effective_autoclass_semantic_state: string
+      autoclass_effectively_enabled: boolean
+      autoclass_authoritatively_disabled: boolean
+      semantic_evidence_authority: string
+      official_evidence_registry_sha256: string
+      requester_pays_authority_used: boolean
+      bucket_location_rate_match: boolean
+      bucket_location_type_rate_match: boolean
+      bucket_default_storage_class_standard: boolean
+      requester_pays_enabled: boolean
+      media_requests: integer
+      object_list_requests: integer
+      object_get_requests: integer
+      object_body_bytes_read: integer
+      bigquery_requests: integer
+      credential_content_exported: boolean
+
+  c3_source_inventory_authority_adjudication_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 32768
+    required_top_level_keys: &c3_source_inventory_adjudication_keys
+      - schema_version
+      - status
+      - attempt_id
+      - source_scheduler_job_id
+      - source_inventory_authority
+      - source_claim_scope
+      - selected_studies
+      - selected_subjects
+      - raw_source_request_rows
+      - historical_identical_rows_collapsed
+      - requested_objects
+      - verified_objects
+      - exact_source_bytes
+      - missing_objects
+      - unexpected_selected_objects
+      - ownership_conflicts
+      - zero_record_studies
+      - production_batches
+      - batch_reconciliation_passed
+      - selected_manifest_hash_match
+      - split_manifest_hash_match
+      - selected_source_manifest_hash_match
+      - aggregate_safety_gate_passed
+      - media_requests
+      - object_body_bytes_read
+      - historical_size_comparator_count
+      - historical_md5_comparator_count
+      - historical_crc32c_comparator_count
+      - historical_generation_comparator_count
+      - historical_object_identity_authority
+      - source_summary_sha256
+      - batch_table_sha256
+      - original_source_safety_gate_sha256
+      - object_listing_repeated
+      - storage_audit_repeated
+    allowed_top_level_keys: *c3_source_inventory_adjudication_keys
+    field_types:
+      schema_version: integer
+      status: string
+      attempt_id: string
+      source_scheduler_job_id: integer
+      source_inventory_authority: boolean
+      source_claim_scope: string
+      selected_studies: integer
+      selected_subjects: integer
+      raw_source_request_rows: integer
+      historical_identical_rows_collapsed: integer
+      requested_objects: integer
+      verified_objects: integer
+      exact_source_bytes: integer
+      missing_objects: integer
+      unexpected_selected_objects: integer
+      ownership_conflicts: integer
+      zero_record_studies: integer
+      production_batches: integer
+      batch_reconciliation_passed: boolean
+      selected_manifest_hash_match: boolean
+      split_manifest_hash_match: boolean
+      selected_source_manifest_hash_match: boolean
+      aggregate_safety_gate_passed: boolean
+      media_requests: integer
+      object_body_bytes_read: integer
+      historical_size_comparator_count: integer
+      historical_md5_comparator_count: integer
+      historical_crc32c_comparator_count: integer
+      historical_generation_comparator_count: integer
+      historical_object_identity_authority: string
+      source_summary_sha256: string
+      batch_table_sha256: string
+      original_source_safety_gate_sha256: string
+      object_listing_repeated: boolean
+      storage_audit_repeated: boolean
+
+  c3_cost_authority_adjudication_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 32768
+    required_top_level_keys: &c3_cost_authority_adjudication_keys
+      - schema_version
+      - status
+      - attempt_id
+      - source_scheduler_job_id
+      - cost_authority
+      - cost_authority_scope
+      - currency
+      - source_inventory_authority_status
+      - effective_autoclass_semantic_state
+      - autoclass_authoritatively_disabled
+      - bucket_location_authoritative
+      - bucket_location_rate_match
+      - bucket_location_type_authoritative
+      - bucket_default_storage_class_standard
+      - targeted_metadata_consistent_with_source_summary
+      - requester_pays_enabled
+      - selected_storage_classes_all_standard
+      - exact_source_bytes
+      - exact_source_gib
+      - metadata_list_class_a_operations
+      - original_bucket_metadata_class_a_operations
+      - total_bucket_metadata_class_b_operations
+      - future_body_get_class_b_operations
+      - internet_egress_usd_per_gib
+      - class_a_usd_per_1000_operations
+      - class_b_usd_per_10000_operations
+      - one_pass_retrieval_cost_usd
+      - metadata_list_operation_cost_usd
+      - bucket_metadata_operation_cost_usd
+      - one_pass_source_egress_cost_usd
+      - one_pass_body_get_operation_cost_usd
+      - retry_fraction
+      - retry_contingency_cost_usd
+      - general_contingency_fraction
+      - general_contingency_cost_usd
+      - original_low_usd
+      - original_base_usd
+      - original_high_usd
+      - revised_low_usd
+      - revised_base_usd
+      - revised_high_usd
+      - low_delta_usd
+      - base_delta_usd
+      - high_delta_usd
+      - numeric_values_changed
+      - numeric_change_reason
+      - pricing_verified_date
+      - exact_rate_policy_match
+      - official_pricing_evidence_sha256
+      - owner_reported_trial_credit_used_as_billing_authority
+      - planning_estimate_below_owner_reported_credit
+      - scenario_definitions
+      - assumptions
+      - exclusions
+      - unrelated_prior_control_plane_operations_included
+      - invoice_guarantee
+    allowed_top_level_keys: *c3_cost_authority_adjudication_keys
+    field_types:
+      schema_version: integer
+      status: string
+      attempt_id: string
+      source_scheduler_job_id: integer
+      cost_authority: boolean
+      cost_authority_scope: string
+      currency: string
+      source_inventory_authority_status: string
+      effective_autoclass_semantic_state: string
+      autoclass_authoritatively_disabled: boolean
+      bucket_location_authoritative: boolean
+      bucket_location_rate_match: boolean
+      bucket_location_type_authoritative: boolean
+      bucket_default_storage_class_standard: boolean
+      targeted_metadata_consistent_with_source_summary: boolean
+      requester_pays_enabled: boolean
+      selected_storage_classes_all_standard: boolean
+      exact_source_bytes: integer
+      exact_source_gib: string
+      metadata_list_class_a_operations: integer
+      original_bucket_metadata_class_a_operations: integer
+      total_bucket_metadata_class_b_operations: integer
+      future_body_get_class_b_operations: integer
+      internet_egress_usd_per_gib: string
+      class_a_usd_per_1000_operations: string
+      class_b_usd_per_10000_operations: string
+      one_pass_retrieval_cost_usd: string
+      metadata_list_operation_cost_usd: string
+      bucket_metadata_operation_cost_usd: string
+      one_pass_source_egress_cost_usd: string
+      one_pass_body_get_operation_cost_usd: string
+      retry_fraction: string
+      retry_contingency_cost_usd: string
+      general_contingency_fraction: string
+      general_contingency_cost_usd: string
+      original_low_usd: string
+      original_base_usd: string
+      original_high_usd: string
+      revised_low_usd: string
+      revised_base_usd: string
+      revised_high_usd: string
+      low_delta_usd: string
+      base_delta_usd: string
+      high_delta_usd: string
+      numeric_values_changed: boolean
+      numeric_change_reason: string
+      pricing_verified_date: string
+      exact_rate_policy_match: boolean
+      official_pricing_evidence_sha256: string
+      owner_reported_trial_credit_used_as_billing_authority: boolean
+      planning_estimate_below_owner_reported_credit: boolean
+      scenario_definitions: array
+      assumptions: array
+      exclusions: array
+      unrelated_prior_control_plane_operations_included: boolean
+      invoice_guarantee: boolean
+
+  c3_autoclass_combined_validation_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 16384
+    required_top_level_keys: &c3_autoclass_combined_validation_keys
+      - schema_version
+      - status
+      - attempt_id
+      - governing_commit
+      - original_output_hash_gate_passed
+      - original_output_schema_gate_passed
+      - restricted_receipt_gate_passed
+      - autoclass_adjudication_gate_passed
+      - source_inventory_gate_passed
+      - historical_identity_limitation_preserved
+      - cost_authority_gate_passed
+      - new_output_schema_gate_passed
+      - aggregate_provenance_gate_passed
+      - aggregate_safety_gate_passed
+      - autoclass_summary_sha256
+      - source_authority_sha256
+      - cost_authority_sha256
+      - provenance_manifest_sha256
+      - safety_gate_sha256
+      - full_c3_authorized
+      - section5_run
+    allowed_top_level_keys: *c3_autoclass_combined_validation_keys
+    field_types:
+      schema_version: integer
+      status: string
+      attempt_id: string
+      governing_commit: string
+      original_output_hash_gate_passed: boolean
+      original_output_schema_gate_passed: boolean
+      restricted_receipt_gate_passed: boolean
+      autoclass_adjudication_gate_passed: boolean
+      source_inventory_gate_passed: boolean
+      historical_identity_limitation_preserved: boolean
+      cost_authority_gate_passed: boolean
+      new_output_schema_gate_passed: boolean
+      aggregate_provenance_gate_passed: boolean
+      aggregate_safety_gate_passed: boolean
+      autoclass_summary_sha256: string
+      source_authority_sha256: string
+      cost_authority_sha256: string
+      provenance_manifest_sha256: string
+      safety_gate_sha256: string
+      full_c3_authorized: boolean
+      section5_run: boolean
+
+  c3_autoclass_adjudication_provenance_manifest_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 131072
+    required_top_level_keys: &c3_autoclass_provenance_manifest_keys
+      - schema_version
+      - status
+      - attempt_id
+      - source_scheduler_job_id
+      - starting_commit
+      - implementation_commit
+      - adjudication_timestamp_utc
+      - new_bucket_request_performed
+      - object_listing_repeated
+      - storage_audit_repeated
+      - object_bodies_downloaded
+      - bigquery_rows_returned
+      - original_artifact_count
+      - original_artifacts
+      - restricted_artifact_count
+      - restricted_artifacts
+      - official_evidence_registry_sha256
+      - code_authorities
+      - derived_artifact_count
+      - derived_artifacts
+    allowed_top_level_keys: *c3_autoclass_provenance_manifest_keys
+    field_types:
+      schema_version: integer
+      status: string
+      attempt_id: string
+      source_scheduler_job_id: integer
+      starting_commit: string
+      implementation_commit: string
+      adjudication_timestamp_utc: string
+      new_bucket_request_performed: boolean
+      object_listing_repeated: boolean
+      storage_audit_repeated: boolean
+      object_bodies_downloaded: boolean
+      bigquery_rows_returned: boolean
+      original_artifact_count: integer
+      original_artifacts: array
+      restricted_artifact_count: integer
+      restricted_artifacts: array
+      official_evidence_registry_sha256: string
+      code_authorities: array
+      derived_artifact_count: integer
+      derived_artifacts: array
+
+  c3_autoclass_adjudication_safety_gate_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 32768
+    required_top_level_keys: &c3_autoclass_safety_gate_keys
+      - schema_version
+      - status
+      - attempt_id
+      - aggregate_files_checked
+      - all_closed_schemas_passed
+      - restricted_receipts_regular_files
+      - restricted_receipts_mode_600
+      - restricted_receipts_symlinked
+      - raw_response_regular_file
+      - raw_response_mode_600
+      - raw_response_symlinked
+      - restricted_outputs_outside_repository
+      - forbidden_keys_detected
+      - forbidden_values_detected
+      - cloud_identifiers_exported
+      - credential_content_exported
+      - source_job_outputs_modified
+      - object_listing_repeated
+      - storage_audit_repeated
+      - targeted_bucket_requests
+      - media_requests
+      - object_list_requests
+      - object_get_requests
+      - object_body_bytes_read
+      - bigquery_requests
+      - dicom_bodies_downloaded
+      - safe_export_policy_sha256
+      - provenance_manifest_sha256
+      - safety_gate_passed
+    allowed_top_level_keys: *c3_autoclass_safety_gate_keys
+    field_types:
+      schema_version: integer
+      status: string
+      attempt_id: string
+      aggregate_files_checked: integer
+      all_closed_schemas_passed: boolean
+      restricted_receipts_regular_files: boolean
+      restricted_receipts_mode_600: boolean
+      restricted_receipts_symlinked: boolean
+      raw_response_regular_file: boolean
+      raw_response_mode_600: boolean
+      raw_response_symlinked: boolean
+      restricted_outputs_outside_repository: boolean
+      forbidden_keys_detected: integer
+      forbidden_values_detected: integer
+      cloud_identifiers_exported: boolean
+      credential_content_exported: boolean
+      source_job_outputs_modified: boolean
+      object_listing_repeated: boolean
+      storage_audit_repeated: boolean
+      targeted_bucket_requests: integer
+      media_requests: integer
+      object_list_requests: integer
+      object_get_requests: integer
+      object_body_bytes_read: integer
+      bigquery_requests: integer
+      dicom_bodies_downloaded: boolean
+      safe_export_policy_sha256: string
+      provenance_manifest_sha256: string
+      safety_gate_passed: boolean
 
   clinical_metadata_adjudication_summary_csv:
     kind: csv
