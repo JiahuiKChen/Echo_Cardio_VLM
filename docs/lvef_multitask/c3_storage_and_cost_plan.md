@@ -36,9 +36,9 @@ This strategy retains all selected raw DICOMs and all extracted NPZ clips simult
 
 | Component | Current authority |
 |---|---|
-| Current projectnb usage | Pending sealed `pquota` output |
+| Current projectnb quota/usage | Live standard `pquota` display: 989 GB quota and 140.04 GB usage; usage remains explicitly rounded until the exact nonenumerating `du` receipt is sealed |
 | Migrated disaster-tier usage | `RUNTIME_CLASSIFIED_WITNESS_REQUIRED`; 10,954,752,000 bytes is the observed inventory ceiling, not the migrated-byte authority |
-| Selected raw DICOMs | `PENDING_COMPLETE_GCS_METADATA_PREFLIGHT` |
+| Selected raw DICOMs | 1,216,569,133,322 bytes across 335,984 current metadata-verified selected objects |
 | All extracted clips | Historical planning estimate approximately 288 GB; not an authority for the prospective run |
 | Clip embeddings | About 378,007,552 bytes for 184,574 vectors at `float32 x 512`; final prospective count may differ |
 | Study embeddings | About 9,267,200 bytes for 4,525 vectors at `float32 x 512`; final imaging eligibility may differ |
@@ -106,32 +106,48 @@ The cost report separates:
 
 The rate-explicit planning estimate is now authoritative within its stated assumptions: low $136.101850, base $142.906680, and high $171.488015. The original-formula values were $136.101859, $142.906689, and $171.488027. The only numeric correction reclassifies the original bucket metadata GET from Class A to Class B and includes the supplemental GET as a second Class B operation. This remains a planning estimate, not an invoice guarantee.
 
+### Frozen owner disposition
+
+```text
+COST_ESTIMATE_DISPOSITION=OWNER_ACCEPTED_FOR_PLANNING
+REQUESTER_PAYS_LOW_ESTIMATE_USD=136.101850
+REQUESTER_PAYS_BASE_ESTIMATE_USD=142.906680
+REQUESTER_PAYS_HIGH_ESTIMATE_USD=171.488015
+REQUESTER_PAYS_HIGH_SCENARIO_ACCEPTED_FOR_PLANNING=YES
+SCC_STORAGE_ESTIMATE_ACCEPTED_AS_OWNER_PROVIDED=YES
+FURTHER_COST_VERIFICATION_REQUIRED=NO
+ACTUAL_DICOM_TRANSFER_AUTHORIZATION=NOT_YET_GRANTED
+```
+
+These values are frozen for the current planning stage. No additional cost investigation, recalculation, or independent verification is required. This disposition closes only the planning-cost gate; it neither guarantees an invoice nor authorizes a transfer.
+
 ## Completed 2-TB rolling-cache projection
 
 The immutable aggregate resource plan uses a 2,000,000,000,000-byte quota, 152,275,355,648 bytes of current usage, a one-batch 92,286,910,464-byte active extraction cache, 1,376,190,464 bytes of clip embeddings, 18,554,880 bytes of study embeddings, and a 50,000,000,000-byte safety reserve. It projects a peak of 1,611,642,076,332 bytes and 388,357,923,668 bytes of headroom. Thus, the planned 2-TB allocation passes the 200-GB headroom rule. The minimum effective quota under this exact plan is 1,811,642,076,332 bytes; the preferred nominal quota remains 2 TB.
 
-These calculations do not prove that the intended quota is active. Before the first body transfer, contemporaneous `pquota`, filesystem identity/unit, and integer-byte project-root usage evidence must replace the planning assumption and reconfirm the same peak/headroom rule.
+These calculations do not prove that the intended quota is active. The 2026-08-10 standard `pquota` report shows only 989 GB on the research tier, so the live gate fails: the current allocation is below both the raw source corpus and the 1,811,642,076,332-byte minimum effective quota. Before the first body transfer, the additional one-terabyte allocation must be active and contemporaneous `pquota`, filesystem identity/unit, and exact nonenumerating project-root usage evidence must reconfirm the same peak/headroom rule.
 
 ## SCC quota cost authority
 
-Current BU documentation states **$22 per TB per year**, with a six-month minimum and fiscal-year-prorated billing. For one additional TB, the planning estimates are therefore **$11 for the six-month minimum** and **$22 for 12 months**. These are rate-derived estimates, not invoice guarantees. The exact charge remains pending the effective start date and the resulting RCS quote within the applicable fiscal year.
+The owner-provided SCC storage estimate is accepted for planning. The previously recorded planning basis is **$22 per TB per year**, with a six-month minimum and fiscal-year-prorated billing, corresponding to **$11 for the six-month minimum** or **$22 for 12 months** for one additional TB. No further cost verification is required for this project-stage gate.
 
 The SCC quota charge is an administrative purchasing gate, not a scientific gate. No monthly storage rate is used or implied by this plan.
 
 ## Copy-ready quota request
 
-> Please reallocate the mimicecho project's 200-GB restricted backed-up baseline allocation into `/restricted/projectnb` if RCS confirms that the exchange is supported, and add one 1-TB Storage-as-a-Service increment to `/restricted/projectnb`. The intended final research-tier quota is 2,000 GB. The project will retain the selected 4,530-study raw DICOM source set and use a one-batch rolling extracted-clip cache; it will not mirror all 7,243 public studies. The exact C3 peak and headroom will be attached from the metadata-only source preflight before transfer authorization. BU's published rate is $22 per TB per year with a six-month minimum and fiscal-year-prorated billing; the estimated charge is $11 for one TB over six months or $22 over 12 months. Please provide the exact invoice amount for the requested effective start date. Before any full exchange of backed-up space, we will checksum, migrate/recreate, and recovery-test the shared Git worktrees and preserve irreplaceable restricted authorities in an approved disaster-recovery location.
+> The current standard SCC quota report shows 989 GB on `/restricted/projectnb` and 11 GB on the backed-up tier. Please activate one additional 1-TB Storage-as-a-Service increment on `/restricted/projectnb`; do not further reduce the current backed-up allocation. The minimum effective research quota under the frozen one-batch plan is 1,811,642,076,332 bytes and the preferred nominal allocation is 2,000 GB. If current accounting persists, a one-TB increment would produce approximately 1,989 GB and must be verified with a fresh `pquota` receipt before any transfer. The project will retain the selected 4,530-study raw DICOM set and use a one-batch rolling extracted cache. The owner accepts the supplied SCC storage estimate for planning. Backup, migration, and recovery testing of the shared Git worktrees and irreplaceable restricted authorities remain separate prerequisites.
 
-If partial reallocation is supported, retaining 50 GB in `/restricted/project` is a **provisional planning option, not an established requirement or sufficiency claim**. The exact retained allocation must be at least the checksum-verified classified size of all authorities that require disaster-recovery protection, plus an approved operating margin. Only the resulting classified migration witness may supply the migrated-byte term, and the resource plan must be recalculated against the actual resulting research-tier byte quota.
+The historical 50-GB retained-backup option was provisional and was never a sufficiency authority. The live backed-up quota is now 11 GB. Do not reduce it further. Its final required size must be justified by the checksum-verified classified size of every authority requiring disaster-recovery protection plus an approved operating margin. Only the resulting classified migration witness may supply the migrated-byte term, and the resource plan must be reconciled against the actual research-tier quota without double counting.
 
 ## Authorization rule
 
-Full C3 can be recommended under the intended 2-TB quota only after the generated resource report proves:
+Full C3 can be recommended only after the generated live resource report proves:
 
-- `projected_peak_bytes <= 1,800,000,000,000`;
+- `effective_quota_bytes - projected_peak_bytes >= 200,000,000,000`;
 - one-batch cache concurrency is sufficient;
 - no raw-DICOM deletion is needed;
 - the backed-up authority plan is complete;
-- requester-pays budget and the SCC quota quote are approved.
+- requester-pays and SCC planning costs retain their frozen owner-accepted disposition;
+- an explicit owner authorization for the first DICOM transfer is subsequently granted.
 
 If the one-batch rolling plan misses the threshold, first reduce derivative concurrency and temporary/retry retention. If a policy-compliant one-batch plan still misses it, request another 1-TB increment; do not weaken raw retention, preservation, or safety gates.

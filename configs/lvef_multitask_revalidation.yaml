@@ -1,6 +1,6 @@
 schema_version: 7
-analysis_version: phase1e-bc-autoclass-source-cost-adjudication-v1
-status: phase1e_bc_source_and_cost_authority_passed_full_c3_and_confirmatory_access_blocked
+analysis_version: phase1e-d-live-pretransfer-lock-v1
+status: phase1e_d_live_quota_failed_cost_planning_passed_backup_migration_orchestration_transfer_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -469,26 +469,45 @@ phase1e_bc_resource_metadata_preflight:
     revised_high: '171.488015'
     invoice_guarantee: false
     owner_trial_credit_is_independent_billing_authority: false
+    cost_estimate_disposition: OWNER_ACCEPTED_FOR_PLANNING
+    high_scenario_accepted_for_planning: true
+    further_cost_verification_required: false
+    actual_dicom_transfer_authorization: NOT_YET_GRANTED
   storage:
-    storage_expansion_status: APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION
+    storage_expansion_status: PARTIAL_REALLOCATION_OBSERVED_ADDITIONAL_ONE_TB_NOT_ACTIVE
     project_and_projectnb_are_separate_filesystems: true
     project_root_symlink: false
     projectnb_root_symlink: false
     project_root_bind_mount_observed: false
     projectnb_root_bind_mount_observed: false
-    disaster_tier_allocated_bytes_observed: 10954752000
+    historical_disaster_tier_inventory_allocated_bytes: 10954752000
     both_current_worktrees_depend_on_project_common_git: true
     research_target_quota_bytes: 2000000000000
     required_free_bytes: 200000000000
     complete_200gb_reallocation_recommended_now: false
-    partial_retained_backed_up_quota_preference_gb: 50
+    historical_provisional_retained_backed_up_quota_option_gb: 50
+    historical_provisional_retention_option_superseded_by_live_quota: true
+    current_backed_up_quota_must_not_be_reduced_further: true
     resource_plan_current_usage_bytes: 152275355648
     exact_projected_peak_bytes: 1611642076332
     exact_projected_headroom_bytes: 388357923668
     minimum_effective_quota_bytes_under_current_plan: 1811642076332
     planned_two_tb_headroom_gate_passed: true
     live_quota_activation_verified: false
-    additional_tb_required_under_two_tb_plan: false
+    live_quota_capture_date: '2026-08-10'
+    live_disaster_quota_display_gb: '11'
+    live_disaster_usage_display_gb: '10.19'
+    live_research_quota_display_gb: '989'
+    live_research_usage_display_gb: '140.04'
+    live_research_quota_bytes: 989000000000
+    live_minimum_effective_quota_gate_passed: false
+    live_quota_deficit_to_minimum_bytes: 822642076332
+    live_quota_deficit_to_selected_source_bytes: 227569133322
+    additional_tb_required_before_first_dicom_transfer: true
+    additional_one_tb_activation_required_to_reach_intended_plan: true
+    additional_tb_required_beyond_intended_two_tb_plan: false
+    scc_storage_estimate_accepted_as_owner_provided: true
+    further_cost_verification_required: false
   lvef_authority:
     separate_from_canonical_multitask_mapping: true
     synthetic_mapping_row_required: false
@@ -974,7 +993,12 @@ prefit_gates:
   backed_up_authority_copy_verified: false
   two_tb_resource_plan_headroom_gate_passed: true
   two_tb_headroom_gate_passed: false
-  requester_pays_budget_approved: false
+  requester_pays_budget_approved_for_transfer: false
+  requester_pays_planning_estimate_owner_accepted: true
+  requester_pays_high_scenario_accepted_for_planning: true
+  scc_storage_estimate_accepted_as_owner_provided: true
+  further_cost_verification_required: false
+  actual_dicom_transfer_authorized: false
   c3_production_runner_implemented_and_validated: false
   full_c3_execution_authorized: false
   five_study_attrition_rule_locked: true

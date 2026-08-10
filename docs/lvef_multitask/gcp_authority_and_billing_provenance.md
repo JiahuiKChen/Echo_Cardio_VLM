@@ -1,6 +1,6 @@
 # Google Cloud authority and billing provenance
 
-Status: **prospective authority nominated, runtime authentication and billing verification pending**. This record does not authorize the full selected-cohort DICOM transfer, extraction, embedding, modeling, or confirmatory-performance access.
+Status: **prospective metadata authority verified and planning-cost disposition accepted; DICOM transfer remains unauthorized**. This record does not authorize the full selected-cohort DICOM transfer, extraction, embedding, modeling, or confirmatory-performance access.
 
 Recorded: 2026-08-07.
 
@@ -49,7 +49,7 @@ They may not contain the compared identity, project ID, billing-account ID, toke
 
 Project existence is not evidence of active billing. An active Cloud Billing link must be verified separately and recorded as an aggregate Boolean. Likewise, successful requester-pays access does not prove that a Free Trial credit is available.
 
-The Cloud Billing project API can establish whether billing is enabled, but it does not reliably expose the end-user Free Trial credit balance, expiration, or remaining eligibility. Therefore the current trial disposition is `NOT_API_VERIFIABLE_REQUIRES_OWNER_CONSOLE_OR_BILLING_RECORD`. This is not converted to `PASS` merely because the project exists or billing is enabled. Before body transfer, budget approval must remain independently documented; trial credit is a contingency source, not a scientific authority.
+The Cloud Billing project API can establish whether billing is enabled, but it does not reliably expose the end-user Free Trial credit balance, expiration, or remaining eligibility. Trial credit remains owner-console context rather than scientific or billing authority. The owner has independently accepted the frozen low/base/high requester-pays estimates of $136.101850/$142.906680/$171.488015 and the owner-provided SCC storage estimate for planning, with no further cost verification required. This planning disposition does not authorize a body transfer, and it does not depend on treating trial credit as a guarantee.
 
 ## Portability boundary
 
@@ -62,4 +62,5 @@ The API client rejects redirects, non-JSON responses, oversized control-plane re
 - Completed SCC storage audits and their run root remain preserved.
 - Prospective metadata outputs may be regenerated only when their billing/authentication provenance changes or an earlier attempt failed before producing an authoritative output.
 - Object bodies remain prohibited.
-- Full C3 remains **NO-GO** until all preauthorization gates, including prospective authentication/billing, exact source metadata, resource headroom, budget approval, frozen authorities, implementation validation, and explicit owner authorization, pass.
+- The planning-cost gate is closed as `OWNER_ACCEPTED_FOR_PLANNING`; actual DICOM transfer authorization remains `NOT_YET_GRANTED`.
+- Full C3 remains **NO-GO** until all remaining preauthorization gates, including live resource headroom, backup/migration authority, frozen production authorities, implementation validation, and explicit owner authorization, pass.

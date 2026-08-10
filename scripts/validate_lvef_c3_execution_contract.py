@@ -63,6 +63,8 @@ REQUIRED_PREAUTHORIZATION_GATES = {
     "backed_up_authority_copy_verified",
     "quota_headroom_gate_passed",
     "requester_pays_budget_approved",
+    "requester_pays_planning_estimate_owner_accepted",
+    "actual_dicom_transfer_authorized",
     "selected_source_manifest_frozen",
     "checkpoint_and_environment_contract_frozen",
     "production_runner_implemented_and_validated",

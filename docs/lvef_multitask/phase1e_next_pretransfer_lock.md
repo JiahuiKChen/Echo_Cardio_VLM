@@ -6,13 +6,15 @@ Status: proposed owner-review phase only. This document does not authorize a DIC
 
 Convert the passed current-source inventory, Autoclass, cost, and 2-TB planning authorities into a contemporaneous pre-transfer decision. The phase should verify live quota activation and current usage, seal the backup/migration and production-command authorities, and return a later full-C3 authorization packet without executing it.
 
+The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.488015 and the owner-provided SCC storage estimate are already accepted for planning. Phase 1E-D did not investigate, recalculate, or independently reverify them. This acceptance does not authorize the DICOM transfer. The live SCC quota report subsequently showed only 989 GB on the research tier, so the additional one-terabyte allocation is required before the first body request.
+
 ## Permitted scope
 
 - revalidate the six immutable job-7104307 outputs and six supplemental attempt-002 aggregates;
 - read current SCC filesystem, `pquota`, mount, and integer-byte usage evidence;
 - finish the checksum-bound disaster-tier migration/backup witness without moving or deleting data unless separately authorized;
 - reconcile the existing 2-TB resource calculation against live quota and usage;
-- record owner budget disposition for the $171.488015 high requester-pays planning estimate and the SCC quota quote;
+- preserve the frozen owner cost disposition without recalculation;
 - finish and smoke-test production download/extraction/embedding orchestration without cloud media access;
 - freeze command, config, checkpoint, environment, source, resume, preservation, and safety checksums;
 - prepare—but do not execute—the exact full-C3 authorization block.
@@ -27,4 +29,4 @@ The current plan projects 1,611,642,076,332 peak bytes and requires 200,000,000,
 
 ## Decision boundary
 
-The phase may recommend a later full-C3 authorization only if the live resource/headroom calculation passes, backup/migration authority passes, the requester-pays and SCC budgets are owner-approved, the production orchestration and recovery tests pass, and all command/config/source/checkpoint/environment authorities are checksum-frozen. It may not itself start the reconstruction.
+The cost-planning gate is closed as `OWNER_ACCEPTED_FOR_PLANNING`, including the $171.488015 high requester-pays scenario and owner-provided SCC storage estimate. Phase 1E-D records `NO_GO`: the current 989,000,000,000-byte research quota is below the 1,811,642,076,332-byte minimum effective quota, backup/migration completion is unverified, and the production downloader/batch/finalizer implementations are absent. A later phase may recommend full-C3 authorization only after those gates pass and all command/config/source/checkpoint/environment authorities are checksum-frozen. A separate explicit owner authorization for the first DICOM transfer remains mandatory.

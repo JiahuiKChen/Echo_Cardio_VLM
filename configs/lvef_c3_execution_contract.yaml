@@ -268,6 +268,8 @@ preauthorization_gates:
   backed_up_authority_copy_verified: false
   quota_headroom_gate_passed: false
   requester_pays_budget_approved: false
+  requester_pays_planning_estimate_owner_accepted: true
+  actual_dicom_transfer_authorized: false
   selected_source_manifest_frozen: false
   checkpoint_and_environment_contract_frozen: false
   production_runner_implemented_and_validated: false

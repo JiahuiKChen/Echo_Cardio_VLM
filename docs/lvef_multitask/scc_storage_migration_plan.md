@@ -1,6 +1,6 @@
 # SCC storage migration plan for prospective C3
 
-Status: **planning complete at the filesystem-policy level; migration not executed; exact quota state and backup-copy completion remain gates**.
+Status: **planning complete at the filesystem-policy level; administrative quota reallocation is partially visible, but data migration and backup-copy completion remain unproven gates**.
 
 This document concerns storage placement only. It does not authorize a DICOM body transfer, extraction, embedding, modeling, prediction generation, or confirmatory-performance access.
 
@@ -45,11 +45,13 @@ Current Boston University documentation distinguishes the tiers as follows:
 - scheduler-local `/scratch` has no snapshots and is automatically cleaned after about 30 days;
 - scheduler `$TMPDIR` is node-local and removed when the job finishes;
 - Storage-as-a-Service allocations are sold in whole terabytes defined as 1,000 GB.
-- the published Storage-as-a-Service rate is $22 per TB per year, subject to a six-month minimum and fiscal-year proration; one additional TB is therefore estimated at $11 for six months or $22 for 12 months, while the exact invoice remains pending the effective start date and RCS quote.
+- the owner-provided Storage-as-a-Service estimate is accepted for planning: the recorded basis is $22 per TB per year, subject to a six-month minimum and fiscal-year proration, corresponding to $11 for six months or $22 for 12 months for one additional TB. No further cost verification is required for the current project-stage gate.
 
 Sources: [BU Project Disk Space](https://www.bu.edu/tech/support/research/computing-resources/file-storage/proj-diskspace/), [BU storage protection table](https://www.bu.edu/tech/support/research/computing-resources/file-storage/), and [BU job scratch guidance](https://www.bu.edu/tech/support/research/system-usage/running-jobs/resources-jobs/).
 
 All C3 arithmetic therefore uses integer bytes and treats a requested 2-TB quota as `2,000,000,000,000` bytes. Human-readable `df -h` values are binary-formatted displays and are not the allocation authority. The SCC `pquota -u mimicecho` report is the required final quota witness because the audited `df` views were not mutually interpretable with the path inventory.
+
+The 2026-08-10 live report shows 11 GB allocated on the backed-up tier (10.19 GB displayed usage) and 989 GB on the non-backed-up research tier (140.04 GB displayed usage). This is consistent with a substantial administrative reallocation, but it is not evidence that files were migrated, backed up, or recovery-tested. The additional one-terabyte research allocation is not active. The current 989,000,000,000-byte research quota fails the unchanged 1,811,642,076,332-byte minimum effective quota and is smaller than the 1,216,569,133,322-byte selected raw source corpus.
 
 ## Migration classification and actions
 
@@ -86,13 +88,13 @@ Action: make a separately approved restricted backup (prefer retained `/restrict
 
 Action: use node-local `$TMPDIR` only for job-lifetime scratch. Place resumable transfer state on `/restricted/projectnb`; never depend on scratch for the sole copy of a completed object or preservation authority.
 
-## Recommendation on the 200-GB reallocation
+## Current-state recommendation after administrative reallocation
 
-**Do not reallocate all 200 GB yet.** If partial transfer is administratively possible, **50 GB is only a provisional backed-up retention option**. It has not been shown to be sufficient. The retained allocation must instead be derived from the completed path-level classification and include every checksum-verified irreplaceable authority plus an approved operating margin; bulk public and regenerable data can remain on `/restricted/projectnb`.
+The live quota is already reduced to 11 GB on the backed-up tier, with 10.19 GB displayed usage. **Do not reduce it further, move files, or delete files.** The quota change does not prove that backup or data migration occurred. Preserve the current state while the retained allocation is derived from the completed path-level classification and every irreplaceable authority is checksum-verified in an approved disaster-recovery copy with an operating margin.
 
 The resource calculator may not use the observed 10,954,752,000-byte inventory as the migrated amount. Before resource sealing, an SCC-only classification witness must record the complete inventory bytes, exact bytes selected for migration, exact bytes retained on the backed-up tier, classification completion, migration state, and checksums of both the inventory and classification decision. The migrated and retained values must reconcile exactly to the inventory. If migration has already occurred, the witness must state that the migrated bytes are already included in the contemporaneous `/restricted/projectnb` usage so they are not added twice.
 
-The full 200 GB can be reallocated only after all of the following are true:
+No further backed-up-tier reduction or retirement may occur until all of the following are true:
 
 1. every restricted path is classified and the restricted path-level inventory is complete;
 2. all irreplaceable items have a checksum-verified approved backup outside `/restricted/projectnb`;
@@ -102,11 +104,13 @@ The full 200 GB can be reallocated only after all of the following are true:
 6. RCS confirms that partial/full quota exchange is supported and records the effective decimal-byte quota;
 7. no queued/running job or live environment refers to the old paths.
 
+The owner-accepted SCC storage estimate closes only the planning-cost gate. It does not establish live quota activation, complete the migration witness, authorize a move or deletion, or authorize the first DICOM transfer.
+
 If RCS permits only all-or-none reallocation, the safer sequence is: obtain an approved backed-up copy first, migrate/recreate and verify everything under `/restricted/projectnb`, retain the original until an independent recovery test passes, and only then request the complete exchange. No move or deletion is authorized by this plan.
 
-## Exact pre-reallocation checklist
+## Exact recovery and migration checklist
 
-- [ ] Save `pquota -u mimicecho` before-state output in the restricted audit root.
+- [ ] Preserve the current standard `pquota -u mimicecho` state in the restricted audit root.
 - [ ] Freeze the 126-record restricted inventory and SHA-256 it.
 - [ ] Classify every non-Git file as recoverable, regenerable, irreplaceable, or temporary.
 - [ ] Create the checksum-bound classified migration witness; confirm migrated plus retained bytes equal the complete inventory.

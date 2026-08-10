@@ -85,10 +85,25 @@ Cost authority passes as `PASS_RATE_EXPLICIT_PLANNING_ESTIMATE`. The original es
 | Base | $142.906689 | $142.906680 | -$0.000009 |
 | High | $171.488027 | $171.488015 | -$0.000011 |
 
-The exact unrounded low/base correction is -$0.0000092; 20% propagation gives -$0.00001104 for high. Independent six-decimal rounding explains the displayed micro-dollar differences. These are planning estimates, not invoice guarantees. They appear below the owner-reported trial credit; that credit is not independent billing authority or budget approval.
+The exact unrounded low/base correction is -$0.0000092; 20% propagation gives -$0.00001104 for high. Independent six-decimal rounding explains the displayed micro-dollar differences. These are planning estimates, not invoice guarantees. They appear below the owner-reported trial credit; that credit was not itself treated as independent billing authority or budget approval.
+
+The owner subsequently froze the following project-stage disposition:
+
+```text
+COST_ESTIMATE_DISPOSITION=OWNER_ACCEPTED_FOR_PLANNING
+REQUESTER_PAYS_LOW_ESTIMATE_USD=136.101850
+REQUESTER_PAYS_BASE_ESTIMATE_USD=142.906680
+REQUESTER_PAYS_HIGH_ESTIMATE_USD=171.488015
+REQUESTER_PAYS_HIGH_SCENARIO_ACCEPTED_FOR_PLANNING=YES
+SCC_STORAGE_ESTIMATE_ACCEPTED_AS_OWNER_PROVIDED=YES
+FURTHER_COST_VERIFICATION_REQUIRED=NO
+ACTUAL_DICOM_TRANSFER_AUTHORIZATION=NOT_YET_GRANTED
+```
+
+This closes further cost review for planning but does not authorize the transfer or convert the estimate into an invoice guarantee.
 
 ## Safety and authorization boundary
 
 The completed supplemental attempt made exactly one bucket metadata request and zero object-list, object-GET, media, object-body, or BigQuery requests. It repeated neither the 526-page listing nor the storage audit. The aggregate safety gate and combined validator passed. No DICOM, extraction, EchoPrime, embedding, model, prediction, or confirmatory-performance operation occurred.
 
-Full C3 remains **NO-GO pending owner review**. Before the first DICOM body transfer, live SCC evidence must establish the effective research quota and current usage. The existing aggregate plan assumes 2,000,000,000,000 quota bytes, projects a peak of 1,611,642,076,332 bytes, and leaves 388,357,923,668 bytes. The minimum effective quota under the unchanged 200-GB headroom rule is therefore 1,811,642,076,332 bytes (approximately 1.812 TB); the preferred nominal quota remains 2 TB. An approval email or planned quota is not a substitute for contemporaneous `pquota`, filesystem, and integer-byte usage evidence.
+Full C3 remains **NO-GO**. The existing aggregate plan assumes 2,000,000,000,000 quota bytes, projects a peak of 1,611,642,076,332 bytes, and leaves 388,357,923,668 bytes. The minimum effective quota under the unchanged 200-GB headroom rule is therefore 1,811,642,076,332 bytes (approximately 1.812 TB); the preferred nominal quota remains 2 TB. The 2026-08-10 live standard SCC quota report shows only 989,000,000,000 research-tier quota bytes, so the gate fails even before exact current usage is considered. The additional one-terabyte allocation and a fresh exact-usage/filesystem receipt are required before the first body request.

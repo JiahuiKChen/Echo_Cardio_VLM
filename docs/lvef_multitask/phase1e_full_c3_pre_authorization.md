@@ -12,6 +12,23 @@ During Phase 1E-B/C the only GCS operation authorized is metadata reconciliation
 
 The prospective Google Cloud pivot is governed by [`gcp_authority_and_billing_provenance.md`](gcp_authority_and_billing_provenance.md). Historical cloud provenance must not be rewritten. The owner-entered requester-pays value produced `PREFLIGHT_ENV_READY`, which proves only controlled SCC-side capture. It does not prove authentication, project equality, billing linkage, Free Trial credit, requester-pays access, or BigQuery access. Exact prospective account/project values and all credentials remain SCC-only.
 
+## Phase 1E-D owner cost disposition
+
+The owner has accepted the frozen requester-pays and SCC storage estimates for planning. This closes only the cost-planning review gate. It does not authorize a DICOM body request, cloud transfer, quota mutation, storage migration, reconstruction, or modeling.
+
+```text
+COST_ESTIMATE_DISPOSITION=OWNER_ACCEPTED_FOR_PLANNING
+REQUESTER_PAYS_LOW_ESTIMATE_USD=136.101850
+REQUESTER_PAYS_BASE_ESTIMATE_USD=142.906680
+REQUESTER_PAYS_HIGH_ESTIMATE_USD=171.488015
+REQUESTER_PAYS_HIGH_SCENARIO_ACCEPTED_FOR_PLANNING=YES
+SCC_STORAGE_ESTIMATE_ACCEPTED_AS_OWNER_PROVIDED=YES
+FURTHER_COST_VERIFICATION_REQUIRED=NO
+ACTUAL_DICOM_TRANSFER_AUTHORIZATION=NOT_YET_GRANTED
+```
+
+The established planning values are frozen for this phase. No further cost investigation, recalculation, or independent verification is required. Actual charges may differ, but that limitation does not reopen the planning-cost gate. The separate live-quota, backup/migration, production-orchestration, and explicit transfer-authorization gates remain closed.
+
 ## Gate table
 
 | Gate | Current disposition | Evidence required to pass | Effect |
@@ -19,10 +36,10 @@ The prospective Google Cloud pivot is governed by [`gcp_authority_and_billing_pr
 | Prospective cloud tooling resolved | `PASS_PINNED_579_0_0` | Supported Cloud SDK resolved with nonsecret tool provenance | Does not authorize body transfer |
 | Prospective Google identity verified | `PASS` | CLI and ADC identities matched the owner-approved SCC-only identity | Does not authorize body transfer |
 | Prospective project verified | `PASS` | Configured, requester-pays, and BigQuery project values matched the owner-approved SCC-only project | Does not authorize body transfer |
-| Prospective billing link verified | `PASS` | Active billing link verified without exporting billing-account identity | Budget approval remains separate |
+| Prospective billing link verified | `PASS` | Active billing link verified without exporting billing-account identity | Planning-cost acceptance is recorded separately; transfer authorization remains absent |
 | Requester-pays metadata access verified | `PASS_METADATA_ONLY` | Bucket/object metadata probes and the targeted Autoclass receipt passed with zero media/body bytes | Does not authorize body transfer |
 | BigQuery billing/access verified | `PASS_DRY_RUN_ZERO_ROWS` | Job-project, MIMIC-IV-ECHO, and MIMIC-IV dry runs passed | Does not authorize row-returning work |
-| Free Trial status | `NOT_API_VERIFIABLE_REQUIRES_OWNER_CONSOLE_OR_BILLING_RECORD` | Owner console/billing record or separate approved budget; project existence/billing-enabled status is insufficient | Does not invalidate metadata science; blocks reliance on trial credit |
+| Free Trial status | `NOT_REQUIRED_FOR_PLANNING_COST_GATE` | The owner accepted the frozen estimate without relying on trial credit as independent authority | Does not authorize transfer or represent a credit-balance guarantee |
 | Exact selected-source metadata complete | `PASS_CURRENT_SOURCE_INVENTORY` | 335,984 selected requests metadata-verified; 526-page listing is immutable | Historical object identity remains unestablished |
 | Exact selected-source byte total known | `PASS_1216569133322_BYTES` | Integer byte sum over the complete verified request set | Supports resource/cost plan only |
 | No unresolved selected-study source deficit | `PASS` | Zero missing/unexpected objects, zero zero-record studies, and zero ownership conflicts | Does not authorize body transfer |
@@ -30,12 +47,12 @@ The prospective Google Cloud pivot is governed by [`gcp_authority_and_billing_pr
 | Storage reallocation migration plan complete | `PASS_PLAN_ONLY` | Written classification and exact migration/recovery sequence | Migration execution remains absent |
 | Classified migration-byte witness | `ABSENT` | SCC-only checksum-bound witness reconciles complete inventory into exact migrated and retained bytes and records whether migration is already included in current research usage | Blocks authoritative peak arithmetic |
 | Backed-up authority plan complete | `PASS_PLAN_ONLY` | Approved destination and checksum/recovery procedure specified | Actual verified backup still blocks reallocation |
-| Backed-up authority copy verified | `ABSENT` | Exact safe-relative-path size/SHA-256 manifest and independent restore check | Blocks complete 200-GB reallocation |
-| Storage expansion administrative status | `APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION` | Owner reports the reallocation and one-TB rental as approved or imminent; actual activation must be verified with `pquota` | Does not block metadata-only audits; blocks body transfer until activated |
-| Final 2-TB peak leaves required headroom | `PASS_PLAN_PENDING_LIVE_QUOTA` | Peak 1,611,642,076,332 bytes; planned headroom 388,357,923,668 bytes | Live quota/usage evidence still blocks body transfer |
-| Requester-pays budget approved | `PENDING_OWNER_REVIEW` | Owner/financial approval for high planning estimate $171.488015; trial credit is not billing authority | Blocks body transfer |
+| Backed-up authority copy verified | `ABSENT` | Exact safe-relative-path size/SHA-256 manifest and independent restore check | Blocks any further backed-up-tier reduction or retirement |
+| Storage expansion administrative status | `PARTIAL_REALLOCATION_OBSERVED_ADDITIONAL_ONE_TB_NOT_ACTIVE` | Standard `pquota` reports 11 GB disaster-tier and 989 GB research-tier allocations; quota state does not prove file migration | Blocks body transfer until the additional research allocation is active |
+| Final 2-TB peak leaves required headroom | `FAIL_LIVE_QUOTA_PASS_FROZEN_PLAN` | Frozen peak 1,611,642,076,332 bytes and minimum effective quota 1,811,642,076,332 bytes; current research quota is 989,000,000,000 bytes | Additional one-terabyte allocation and a fresh exact-usage receipt are required |
+| Requester-pays planning estimate | `PASS_OWNER_ACCEPTED_FOR_PLANNING` | Frozen low/base/high estimates $136.101850/$142.906680/$171.488015; high scenario accepted | Cost-planning gate closed; body transfer still requires explicit owner authorization |
 | Storage-class/Autoclass operation pricing authoritative | `PASS_RATE_EXPLICIT_PLANNING_ESTIMATE` | All objects `STANDARD`; raw key absent; effective state default-disabled; primary rates frozen | Planning estimate, not invoice guarantee |
-| SCC quota charge confirmed | `APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION` | Published authority is $22/TB/year, six-month minimum, fiscal-year-prorated: $11 estimated for one TB over six months or $22 over 12 months; exact invoice requires the effective start date | Does not block metadata-only work; actual `pquota` activation still blocks body transfer |
+| SCC storage estimate | `PASS_OWNER_PROVIDED_ESTIMATE_ACCEPTED_FOR_PLANNING` | Owner accepts the supplied SCC storage estimate; no further cost verification is required | Actual `pquota` activation and migration readiness still block body transfer |
 | Selected source request manifest frozen | `PASS_STRUCTURAL_ONLY` | Existing hash-locked 4,530-study, 335,984-request authority | Not yet public-object authority |
 | Enriched selected public-object inventory frozen | `PASS_CURRENT_INVENTORY` | Immutable job-7104307 outputs plus supplemental source-authority/provenance/safety chain | Does not establish historical byte identity |
 | Checkpoint identity frozen | `PASS_CANDIDATE` | 138,642,379-byte checkpoint with SHA-256 `7ca32e...e64f3b` | Historical linkage remains unclaimed |
@@ -68,7 +85,7 @@ The five historical studies with readable DICOM but no multiframe cine candidate
 
 The preferred lifecycle is full selected raw retention plus a one-batch rolling extracted cache. `/restricted/project` and `/restricted/projectnb` are distinct devices. Both existing worktrees and their common Git repository are on the backed-up tier, so quota exchange requires worktree recreation or coherent common-repository migration. The exact observed disaster-tier inventory was 10,954,752,000 allocated bytes.
 
-Retaining 50 GB of backed-up quota is only a provisional planning option if partial exchange is supported; it is not yet a sufficiency finding. The final retained and migrated amounts require a complete checksum-bound path classification. Full reallocation is permitted only after all irreplaceable restricted authorities have a separately approved checksum-verified backup and both worktrees pass a recovery test.
+The historical 50-GB retention option was provisional and never established sufficiency. The live backed-up allocation is now only 11 GB, with 10.19 GB displayed usage. It must not be reduced further. The quota change does not establish file migration, backup-copy completion, or recovery testing; those remain blocked pending a complete checksum-bound path classification, an approved disaster-recovery copy of every irreplaceable authority, and recovery tests for both worktrees.
 
 ## LVEF authority ruling
 
@@ -103,17 +120,17 @@ The human packet must contain exactly the eight prespecified echocardiographer q
 
 The contract now also makes the three Google Cloud provenance classes machine-checkable: preserved-or-unknown historical association, an SCC-only active prospective identity/project authority, and nonexportable credential state. It requires identity, project, billing-link, requester-pays metadata, and BigQuery billing gates before future execution. The exact prospective account/project values are intentionally absent from Git.
 
-The scheduler interface prints a future 19-task SGE array (`-t 1-19 -tc 1`) and dependent finalizer without exporting the ambient environment. Every current production entry point exits 78, and `--submit` is refused. Before that interface can be authorized, the repository still needs a generic exact-generation downloader, streaming batch runner, batch preservation/audit receipts, cross-batch finalizer, selected-source freeze, migrated/revalidated environment, Phase 1E-A equivalence tests, resume/failure tests, command/config manifest, budget approval, and owner authorization. The four-study smoke implementation cannot be relabeled as the production runner.
+The scheduler interface prints a future 19-task SGE array (`-t 1-19 -tc 1`) and dependent finalizer without exporting the ambient environment. Every current production entry point exits 78, and `--submit` is refused. Before that interface can be authorized, the repository still needs a generic exact-generation downloader, streaming batch runner, batch preservation/audit receipts, cross-batch finalizer, selected-source freeze, migrated/revalidated environment, Phase 1E-A equivalence tests, resume/failure tests, command/config manifest, live quota and migration authority, and explicit owner transfer authorization. The four-study smoke implementation cannot be relabeled as the production runner.
 
 ## Full C3 decision
 
 **NO-GO.** The current phase may complete source metadata, resource arithmetic, restricted technical metadata review, packet preparation, implementation, and dry-run validation. The following remain absolute prerequisites before a later owner authorization can be considered:
 
 1. contemporaneous live research-quota, filesystem, and integer-byte usage evidence proving at least 1,811,642,076,332 effective bytes under the current plan (preferred nominal allocation 2 TB);
-2. requester-pays budget approval for the $171.488015 high planning estimate without treating trial credit as independent authority;
+2. contemporaneous quota and usage arithmetic consistent with the owner-accepted planning envelope; the cost-planning gate itself is closed;
 3. verified backup/migration readiness and final quota activation;
 4. production exact-generation download, streaming batch, preservation, and finalization implementation plus smoke-equivalence/resume/failure tests;
 5. frozen production source, command, config, checkpoint, and environment identities;
-6. written owner authorization for full C3.
+6. written owner authorization for the first DICOM transfer and full C3; neither has been granted.
 
 Confirmatory modeling additionally requires qualified clinician signoff, final aliases/units/dependencies/panels, exact common denominators, final SAP/config checksums, and a separate explicit owner authorization.
