@@ -72,7 +72,7 @@ EVIDENCE_REGISTRY="$WORKTREE/docs/lvef_multitask/c3_autoclass_official_evidence_
 GCP_AUTHORITY_RECEIPT="$RUN_ROOT/restricted/gcp_authority_receipt.restricted.json"
 ORIGINAL_AGGREGATE_DIR="$RUN_ROOT/aggregate"
 ATTEMPT_PARENT="$RUN_ROOT/autoclass_adjudication"
-ATTEMPT_ROOT="$ATTEMPT_PARENT/phase1ebc_autoclass_adjudication_attempt_001"
+ATTEMPT_ROOT="$ATTEMPT_PARENT/phase1ebc_autoclass_adjudication_attempt_002"
 
 test ! -L "$GCP_AUTHORITY_RECEIPT"
 test -f "$GCP_AUTHORITY_RECEIPT"

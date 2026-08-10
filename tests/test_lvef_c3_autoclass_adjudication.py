@@ -817,12 +817,61 @@ def test_targeted_wrapper_uses_billing_value_only_as_environment() -> None:
     assert "echo $LVEF_C3_GCP_BILLING_PROJECT" not in text
 
 
+def test_authority_validation_precedes_billing_environment_consumption() -> None:
+    environment_name = "SYNTHETIC_REQUESTER_PAYS_PROJECT"
+    synthetic_project = "synthetic-project"
+    os.environ[environment_name] = synthetic_project
+    observed = []
+
+    def validator(path, *, expected_sha256, billing_project):
+        assert path == Path("synthetic-receipt.json")
+        assert expected_sha256 == "a" * 64
+        assert billing_project == synthetic_project
+        assert os.environ[environment_name] == synthetic_project
+        observed.append(True)
+
+    with mock.patch.object(adjudicator, "validate_restricted_receipt", side_effect=validator):
+        returned = adjudicator._validate_authority_and_consume_billing_project(
+            authority_receipt=Path("synthetic-receipt.json"),
+            expected_receipt_sha256="a" * 64,
+            billing_project_env=environment_name,
+        )
+
+    assert returned == synthetic_project
+    assert observed == [True]
+    assert environment_name not in os.environ
+
+
+def test_failed_authority_validation_still_consumes_billing_environment() -> None:
+    environment_name = "SYNTHETIC_REQUESTER_PAYS_PROJECT"
+    os.environ[environment_name] = "synthetic-project"
+    with mock.patch.object(
+        adjudicator,
+        "validate_restricted_receipt",
+        side_effect=RuntimeError("synthetic failure"),
+    ):
+        try:
+            adjudicator._validate_authority_and_consume_billing_project(
+                authority_receipt=Path("synthetic-receipt.json"),
+                expected_receipt_sha256="a" * 64,
+                billing_project_env=environment_name,
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Synthetic authority failure was accepted")
+    assert environment_name not in os.environ
+
+
 def test_adjudication_policy_preserves_no_go_boundary() -> None:
     policy = yaml.safe_load(
         (ROOT / "configs" / "lvef_c3_autoclass_adjudication.yaml").read_text()
     )
     assert policy["status"] == "SUPPLEMENTAL_METADATA_ONLY_NOT_C3_EXECUTION_AUTHORITY"
     assert policy["attempt"]["targeted_bucket_get_requests"] == 1
+    assert policy["attempt"]["attempt_id"] == adjudicator.ATTEMPT_ID
+    assert policy["attempt"]["prior_failed_attempt_targeted_bucket_get_requests"] == 0
+    assert policy["attempt"]["prior_failed_attempt_preserved"] is True
     assert policy["attempt"]["object_list_requests"] == 0
     assert policy["source_inventory"]["autoclass_is_source_inventory_gate"] is False
     assert policy["provenance"]["supplemental_output_count"] == 6

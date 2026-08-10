@@ -1,9 +1,13 @@
 schema_version: 1
-policy_id: lvef_c3_autoclass_adjudication_v1
+policy_id: lvef_c3_autoclass_adjudication_v2
 status: SUPPLEMENTAL_METADATA_ONLY_NOT_C3_EXECUTION_AUTHORITY
 
 attempt:
-  attempt_id: phase1ebc_autoclass_adjudication_attempt_001
+  attempt_id: phase1ebc_autoclass_adjudication_attempt_002
+  prior_failed_attempt_id: phase1ebc_autoclass_adjudication_attempt_001
+  prior_failed_attempt_preserved: true
+  prior_failed_attempt_targeted_bucket_get_requests: 0
+  prior_failed_attempt_failure: GCP_AUTHORITY_ENVIRONMENT_CONSUMED_BEFORE_VALIDATION
   source_scheduler_job_id: 7104307
   starting_commit: 223eed3bfc9566eea818425e69e74ca1c8960b5f
   targeted_bucket_get_requests: 1

@@ -51,7 +51,7 @@ from lvef_multitask_analysis_modes import (
 from preflight_lvef_c3_full_source import BUCKET
 
 
-ATTEMPT_ID = "phase1ebc_autoclass_adjudication_attempt_001"
+ATTEMPT_ID = "phase1ebc_autoclass_adjudication_attempt_002"
 SOURCE_SCHEDULER_JOB_ID = 7104307
 STARTING_COMMIT = "223eed3bfc9566eea818425e69e74ca1c8960b5f"
 SOURCE_AUTHORITY_PASS = "PASS_CURRENT_SELECTED_SOURCE_INVENTORY_FOR_PROSPECTIVE_C3"
@@ -631,6 +631,36 @@ def _safe_capture_summary(
     }
 
 
+def _validate_authority_and_consume_billing_project(
+    *,
+    authority_receipt: Path,
+    expected_receipt_sha256: str,
+    billing_project_env: str,
+) -> str:
+    """Validate while the authority module can still read its billing binding.
+
+    The billing helper deliberately exposes the requester-pays project only to
+    this subprocess.  The receipt validator independently reconstructs its
+    expected authority from that environment, so consuming the value before
+    validation makes an otherwise valid receipt fail closed.  Remove the value
+    immediately after validation (including on failure) so it is unavailable
+    to token acquisition and the network-request implementation except through
+    the returned local value.
+    """
+    billing_project = os.environ.get(billing_project_env, "")
+    try:
+        validate_restricted_receipt(
+            authority_receipt,
+            expected_sha256=expected_receipt_sha256,
+            billing_project=billing_project,
+        )
+    finally:
+        consumed = os.environ.pop(billing_project_env, "")
+    if consumed != billing_project:
+        raise AdjudicationError("REQUESTER_PAYS_PROJECT_ENVIRONMENT_CHANGED")
+    return billing_project
+
+
 def capture_command(args: argparse.Namespace) -> int:
     safe_policy, _ = load_safe_export_policy(args.safe_export_policy)
     attempt_root = bind_approved_restricted_path(
@@ -680,7 +710,6 @@ def capture_command(args: argparse.Namespace) -> int:
     write_exclusive_no_follow(request_path, request_bytes)
     request_sha = sha256_bytes(request_bytes)
 
-    billing_project = os.environ.pop(args.billing_project_env, "")
     authority_receipt = bind_approved_restricted_path(
         args.gcp_authority_receipt,
         policy=safe_policy,
@@ -688,10 +717,10 @@ def capture_command(args: argparse.Namespace) -> int:
         expect="file",
         root_kind="direct",
     )
-    validate_restricted_receipt(
-        authority_receipt,
-        expected_sha256=args.expected_gcp_authority_receipt_sha256,
-        billing_project=billing_project,
+    billing_project = _validate_authority_and_consume_billing_project(
+        authority_receipt=authority_receipt,
+        expected_receipt_sha256=args.expected_gcp_authority_receipt_sha256,
+        billing_project_env=args.billing_project_env,
     )
     token = acquire_access_token_for_preflight(
         gcloud_bin=args.gcloud_bin,
