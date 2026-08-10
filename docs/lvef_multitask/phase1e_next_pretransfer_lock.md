@@ -31,6 +31,11 @@ The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.48801
   lexical launcher as a no-follow byte-authority role. The repaired topology
   executes through the lexical venv launcher but binds the resolved, pinned
   regular target in the packet. Generic symlink authorities remain forbidden.
+- Immutable production-lock attempt `lvef_c3_phase1ee_production_lock_004`
+  stopped before a production attempt root because a response-generated wrapper
+  named the wrong historical environment-receipt location. A hash-only SCC
+  lookup identified exactly one regular Phase 1E-A receipt matching attempt
+  003's bound source-receipt hash. No committed execution path was changed.
 - Prior immutable aggregates: all 12 original/supplemental authorities passed filename, size, SHA-256, and closed-schema revalidation; their generating cloud/storage work was not repeated.
 - Research quota/usage/available: 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes.
 - Research physical filesystem available: 2,092,672,483,328 bytes.

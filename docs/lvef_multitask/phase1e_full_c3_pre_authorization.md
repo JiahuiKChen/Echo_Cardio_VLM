@@ -48,6 +48,14 @@ retains the lexical venv launcher for execution, binds only its resolved pinned
 regular target as packet byte authority, and does not weaken generic symlink or
 no-follow rules. A fresh no-clobber authority-packet attempt remains required.
 
+Attempt 004 then stopped during environment capture, before a production
+attempt root, because a response-generated wrapper named an incorrect prior
+environment-receipt location. The committed command was not implicated. A
+restricted hash-only lookup found one and only one regular Phase 1E-A receipt
+matching the source-environment hash already bound by attempt 003. Attempt 004
+remains immutable, and the next no-clobber attempt must use that matched
+authority without exporting its path or contents.
+
 ## Gate table
 
 | Gate | Current disposition | Evidence required to pass | Effect |

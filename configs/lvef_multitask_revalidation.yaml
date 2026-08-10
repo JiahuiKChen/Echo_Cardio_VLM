@@ -648,7 +648,15 @@ phase1e_bc_resource_metadata_preflight:
     production_lock_attempt_003_cloud_requests: 0
     production_lock_attempt_003_scheduler_jobs: 0
     production_lock_attempt_003_preserved_immutable: true
-    production_lock_attempt_004_required: true
+    production_lock_attempt_004_id: lvef_c3_phase1ee_production_lock_004
+    production_lock_attempt_004_status: FAILED_RESPONSE_WRAPPER_PRIOR_ENVIRONMENT_PATH_PRE_ROOT
+    production_lock_attempt_004_error_code: PRIOR_ENVIRONMENT_COMPONENT_MISSING
+    production_lock_attempt_004_environment_capture_passed: false
+    production_lock_attempt_004_attempt_root_created: false
+    production_lock_attempt_004_cloud_requests: 0
+    production_lock_attempt_004_scheduler_jobs: 0
+    production_lock_attempt_004_preserved_immutable: true
+    production_lock_attempt_005_required: true
     production_batch_runner_implemented_and_validated: true
     production_finalizer_implemented_and_validated: true
     execution_authorized: false

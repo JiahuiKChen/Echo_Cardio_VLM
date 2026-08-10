@@ -184,6 +184,15 @@ The control-plane environment likewise retains the lexical launcher required by
 future scheduler execution while binding its resolved target hash. A fresh
 attempt is required.
 
+The first post-repair wrapper, `lvef_c3_phase1ee_production_lock_004`, stopped
+in environment capture with `PRIOR_ENVIRONMENT_COMPONENT_MISSING` before a
+production attempt root. The response-generated wrapper supplied an incorrect
+historical receipt location; the committed command retains a restricted
+placeholder and was not defective. A restricted hash-only lookup found exactly
+one regular Phase 1E-A environment receipt matching the source-receipt hash
+already bound by attempt 003. Attempt 004 remains immutable; a fresh attempt
+must use that uniquely matched authority without printing its path or contents.
+
 ## Authorization boundaries
 
 The future execution packet keeps these decisions separate:
