@@ -1,8 +1,8 @@
 # SCC Phase 1E-D live-quota and pre-transfer commands
 
-Status: read-only quota/filesystem capture and offline specification lock only. This runbook does not authorize a cloud request, scheduler submission, quota change, file move/deletion, object-body transfer, DICOM processing, extraction, EchoPrime inference, embedding generation, modeling, prediction, or confirmatory-performance access.
+Status: **COMPLETED_HISTORICAL_NO_RERUN**. This execution record does not authorize a cloud request, scheduler submission, quota change, file move/deletion, object-body transfer, DICOM processing, extraction, EchoPrime inference, embedding generation, modeling, prediction, or confirmatory-performance access.
 
-Run every block in a strict child Bash process. Replace `__PHASE1ED_IMPLEMENTATION_COMMIT__` only with the reviewed implementation commit after local, origin, and SCC equality is established. The existing Phase 1E-B/C run root and immutable job-7104307/Autoclass outputs remain unchanged. Attempts 001–003 are immutable failed evidence and must not be reused: attempt 001 stopped before capture because its safe SCC setgid-only directory mode was not yet accepted; attempt 002 completed all four authorized read-only commands but its offline validator did not yet recognize SCC's native two-line `pquota` header; and attempt 003 produced a valid live-quota aggregate before the separate offline specification lock rejected the producer's exact `PASS_SUPPLEMENTAL_ADJUDICATION` status because the consumer expected a generic `PASS`. The commands below use the fresh no-clobber attempt 004.
+Do not execute these blocks again. They are preserved to show the exact completed command lineage. Attempts 001 and 002 are immutable failed restricted evidence: attempt 001 stopped before capture because its safe SCC setgid-only directory mode was not yet accepted, and attempt 002 completed all four authorized read-only commands but its offline validator did not yet recognize SCC's native two-line `pquota` header. Attempt 003, governed by `f50e89b936d9db55a0cb5843adef4f316126fe01`, produced valid receipt/provenance evidence and the authoritative `FAIL_LIVE_QUOTA_GATE` capacity result; only its later specification consumer failed because it expected generic `PASS` instead of the producer's exact `PASS_SUPPLEMENTAL_ADJUDICATION`. Attempt 004, governed by `ebe7fa8cd18dd06c41db2ff77e1753c9a1cbcc18`, is the completed offline-only successor and produced `PASS_SPECIFICATION_ONLY_EXECUTION_UNIMPLEMENTED`. Every attempt root is immutable.
 
 ## 1. Bind the existing authorities and create an offline-only attempt
 
@@ -13,7 +13,7 @@ umask 077
 
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
-TARGET_COMMIT=__PHASE1ED_IMPLEMENTATION_COMMIT__
+TARGET_COMMIT=ebe7fa8cd18dd06c41db2ff77e1753c9a1cbcc18
 PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_004
 
 test -f "$SESSION_ENV"
@@ -79,7 +79,7 @@ set -euo pipefail
 umask 077
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
-TARGET_COMMIT=__PHASE1ED_IMPLEMENTATION_COMMIT__
+TARGET_COMMIT=ebe7fa8cd18dd06c41db2ff77e1753c9a1cbcc18
 PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_004
 CHECKPOINT=/restricted/project/mimicecho/echoprime_weights/echo_prime_encoder.pt
 
@@ -122,9 +122,11 @@ PHASE1ED_SPEC_LOCK
 
 The Phase 1E-A environment and command copy are hash-frozen canary evidence, not a production environment/command manifest. The output must therefore remain `PASS_SPECIFICATION_ONLY_EXECUTION_UNIMPLEMENTED`, `execution_authorized=false`, and `full_c3_status=NO_GO`.
 
+The completed attempt-004 output is `lvef_c3_production_pretransfer_lock.summary.json`, 11,792 bytes, SHA-256 `94f6df58e21f31e7582bade34527eccd1e14d2300ad1966c8ba67b9da69b1461`. It must not be regenerated or overwritten.
+
 ## 4. Aggregate-safe review
 
-Keep both outputs under their separate immutable restricted attempt roots during this phase. Review only their self-validated aggregate fields, byte sizes, and SHA-256 values; never paste raw command output or the restricted receipt.
+Both outputs remain under their separate immutable restricted attempt roots. The completed review used only their self-validated aggregate fields, byte sizes, and SHA-256 values; raw command output and the restricted receipt were not exported.
 
 ```bash
 bash --noprofile --norc <<'PHASE1ED_REVIEW'

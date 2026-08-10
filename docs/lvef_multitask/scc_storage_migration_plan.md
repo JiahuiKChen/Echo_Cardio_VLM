@@ -49,9 +49,9 @@ Current Boston University documentation distinguishes the tiers as follows:
 
 Sources: [BU Project Disk Space](https://www.bu.edu/tech/support/research/computing-resources/file-storage/proj-diskspace/), [BU storage protection table](https://www.bu.edu/tech/support/research/computing-resources/file-storage/), and [BU job scratch guidance](https://www.bu.edu/tech/support/research/system-usage/running-jobs/resources-jobs/).
 
-All C3 arithmetic therefore uses integer bytes and treats a requested 2-TB quota as `2,000,000,000,000` bytes. Human-readable `df -h` values are binary-formatted displays and are not the allocation authority. The SCC `pquota -u mimicecho` report is the required final quota witness because the audited `df` views were not mutually interpretable with the path inventory.
+All C3 arithmetic therefore uses integer bytes and treats a requested 2-TB quota as `2,000,000,000,000` bytes. Human-readable `df -h` values are binary-formatted displays and are not the allocation authority. The SCC `pquota -u mimicecho` report is the project-quota witness; exact `df -B1` plus filesystem identity and nonenumerating `du -x -s -B1` evidence are separately mandatory for filesystem availability and exact allocated usage.
 
-The 2026-08-10 live report shows 11 GB allocated on the backed-up tier (10.19 GB displayed usage) and 989 GB on the non-backed-up research tier (140.04 GB displayed usage). This is consistent with a substantial administrative reallocation, but it is not evidence that files were migrated, backed up, or recovery-tested. The additional one-terabyte research allocation is not active. The current 989,000,000,000-byte research quota fails the unchanged 1,811,642,076,332-byte minimum effective quota and is smaller than the 1,216,569,133,322-byte selected raw source corpus.
+The sealed 2026-08-10 live report shows 11 GB allocated on the backed-up tier (10.19 GB displayed usage) and 989 GB on the non-backed-up research tier (140.04 GB displayed usage). The separate nonenumerating exact-usage receipt records 150,386,971,136 bytes under the research project root. This is consistent with a substantial administrative reallocation, but it is not evidence that files were migrated, backed up, or recovery-tested. The additional one-terabyte research allocation is not active. The current 989,000,000,000-byte research quota fails the unchanged 1,811,642,076,332-byte minimum effective quota and is smaller than the 1,216,569,133,322-byte selected raw source corpus. Filesystem availability independently misses its 1,661,255,105,196-byte requirement by 643,503,045,292 bytes.
 
 ## Migration classification and actions
 
@@ -92,7 +92,7 @@ Action: use node-local `$TMPDIR` only for job-lifetime scratch. Place resumable 
 
 The live quota is already reduced to 11 GB on the backed-up tier, with 10.19 GB displayed usage. **Do not reduce it further, move files, or delete files.** The quota change does not prove that backup or data migration occurred. Preserve the current state while the retained allocation is derived from the completed path-level classification and every irreplaceable authority is checksum-verified in an approved disaster-recovery copy with an operating margin.
 
-The resource calculator may not use the observed 10,954,752,000-byte inventory as the migrated amount. Before resource sealing, an SCC-only classification witness must record the complete inventory bytes, exact bytes selected for migration, exact bytes retained on the backed-up tier, classification completion, migration state, and checksums of both the inventory and classification decision. The migrated and retained values must reconcile exactly to the inventory. If migration has already occurred, the witness must state that the migrated bytes are already included in the contemporaneous `/restricted/projectnb` usage so they are not added twice.
+The resource calculator may not use the observed 10,954,752,000-byte historical inventory as the migrated amount. The SCC-only planning classification passed and records 2,841,265,664 bytes selected for planned migration, with state `PLANNED_NOT_EXECUTED`; it is not an executed-migration or backup authority. A future completion witness must bind the exact bytes actually migrated and retained, reconcile them to its contemporaneous source inventory, and state whether migrated bytes are already included in `/restricted/projectnb` usage so they are not added twice.
 
 No further backed-up-tier reduction or retirement may occur until all of the following are true:
 
@@ -110,10 +110,10 @@ If RCS permits only all-or-none reallocation, the safer sequence is: obtain an a
 
 ## Exact recovery and migration checklist
 
-- [ ] Preserve the current standard `pquota -u mimicecho` state in the restricted audit root.
-- [ ] Freeze the 126-record restricted inventory and SHA-256 it.
-- [ ] Classify every non-Git file as recoverable, regenerable, irreplaceable, or temporary.
-- [ ] Create the checksum-bound classified migration witness; confirm migrated plus retained bytes equal the complete inventory.
+- [x] Preserve and validate the current standard `pquota -u` plus nonenumerating exact-usage/filesystem state in the owner-private attempt-003 authority.
+- [x] Preserve the historical 126-record restricted inventory and its checksum-bound planning authority.
+- [x] Complete the planning-only direct-child classification and seal the 2,841,265,664-byte proposed migration scope.
+- [x] Create the checksum-bound planning witness; retain `PLANNED_NOT_EXECUTED`, backup false, and owner execution authorization false.
 - [ ] Create and independently verify the backed-up authority copy.
 - [ ] Recreate the shared Git repository and both linked worktrees at exact commits.
 - [ ] Recreate or relink the EchoPrime environment without changing the pinned interpreter/checkpoint authority.
@@ -121,3 +121,5 @@ If RCS permits only all-or-none reallocation, the safer sequence is: obtain an a
 - [ ] Verify scheduler jobs see the new paths from a compute node.
 - [ ] Record RCS confirmation of partial-reallocation policy and quota units.
 - [ ] Record the after-state quota and restore test.
+
+The completed first item is a before-state witness only. A new after-expansion capture remains mandatory; the other backup, migration, worktree-recovery, and restore-test items remain open.

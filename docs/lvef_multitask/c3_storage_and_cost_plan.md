@@ -25,10 +25,11 @@ At exactly 2 TB, the requirement is 200,000,000,000 bytes and the maximum allowe
 
 - owner-reported `/restricted/projectnb` use before this audit: 139.17 GB;
 - exact allocated bytes found under `/restricted/project/mimicecho`: 10,954,752,000 bytes;
-- final quota/allocation witness: contemporaneous `pquota -u mimicecho` output;
-- final current project-root usage input: contemporaneous integer-byte `du -x -B1` output for `/restricted/projectnb/mimicecho`, because the quota display may round usage.
+- sealed 2026-08-10 research quota: 989,000,000,000 bytes from the standard project-quota report;
+- sealed 2026-08-10 exact research-root allocated usage: 150,386,971,136 bytes from nonenumerating `du -x -s -B1`;
+- sealed filesystem capacity/used/available: 1,168,126,246,912 / 150,374,187,008 / 1,017,752,059,904 bytes.
 
-The runtime resource calculator refuses to use the older 139.17-GB report as authority; an explicit contemporaneous integer-byte usage input is mandatory. The migration term is also runtime evidence, not a policy constant. It requires an SCC-only checksum-bound classification witness that reconciles the complete disaster-tier inventory into exact migrated and retained byte counts and states whether migration is planned or already included in the contemporaneous research-tier usage. It must not blindly add the whole `/restricted/project` tree if an approved backed-up authority subset remains there.
+The sealed live evidence supersedes the older 139.17-GB report for current-state interpretation. The migration term is runtime evidence, not a policy constant. Its checksum-bound planning witness records 2,841,265,664 planned bytes but remains `PLANNED_NOT_EXECUTED`; it neither proves migration nor permits adding those bytes to current usage. A future completion witness must state whether migrated bytes are already included in contemporaneous research-tier usage and must not blindly add the whole `/restricted/project` tree if an approved backed-up authority subset remains there.
 
 ## Strategy A: raw plus every extracted derivative retained
 
@@ -36,8 +37,8 @@ This strategy retains all selected raw DICOMs and all extracted NPZ clips simult
 
 | Component | Current authority |
 |---|---|
-| Current projectnb quota/usage | Live standard `pquota` display: 989 GB quota and 140.04 GB usage; usage remains explicitly rounded until the exact nonenumerating `du` receipt is sealed |
-| Migrated disaster-tier usage | `RUNTIME_CLASSIFIED_WITNESS_REQUIRED`; 10,954,752,000 bytes is the observed inventory ceiling, not the migrated-byte authority |
+| Current projectnb quota/usage | Sealed evidence: 989,000,000,000-byte quota and 150,386,971,136 exact allocated usage bytes; the separate 140.04-GB display remains rounded and is not used as exact |
+| Planned disaster-tier migration | Planning classification passed for 2,841,265,664 bytes and remains `PLANNED_NOT_EXECUTED`; 10,954,752,000 bytes is the separate historical inventory total, not an executed-migration amount |
 | Selected raw DICOMs | 1,216,569,133,322 bytes across 335,984 current metadata-verified selected objects |
 | All extracted clips | Historical planning estimate approximately 288 GB; not an authority for the prospective run |
 | Clip embeddings | About 378,007,552 bytes for 184,574 vectors at `float32 x 512`; final prospective count may differ |
@@ -123,9 +124,9 @@ These values are frozen for the current planning stage. No additional cost inves
 
 ## Completed 2-TB rolling-cache projection
 
-The immutable aggregate resource plan uses a 2,000,000,000,000-byte quota, 152,275,355,648 bytes of current usage, a one-batch 92,286,910,464-byte active extraction cache, 1,376,190,464 bytes of clip embeddings, 18,554,880 bytes of study embeddings, and a 50,000,000,000-byte safety reserve. It projects a peak of 1,611,642,076,332 bytes and 388,357,923,668 bytes of headroom. Thus, the planned 2-TB allocation passes the 200-GB headroom rule. The minimum effective quota under this exact plan is 1,811,642,076,332 bytes; the preferred nominal quota remains 2 TB.
+The immutable aggregate resource plan uses a 2,000,000,000,000-byte quota, a frozen planning input of 152,275,355,648 current-usage bytes, a one-batch 92,286,910,464-byte active extraction cache, 1,376,190,464 bytes of clip embeddings, 18,554,880 bytes of study embeddings, and a 50,000,000,000-byte safety reserve. It projects a peak of 1,611,642,076,332 bytes and 388,357,923,668 bytes of headroom. Thus, the planned 2-TB allocation passes the 200-GB headroom rule. The minimum effective quota under this exact frozen plan is 1,811,642,076,332 bytes; the preferred nominal quota remains 2 TB. Phase 1E-D did not silently recompute this immutable plan using the later 150,386,971,136-byte live-usage observation.
 
-These calculations do not prove that the intended quota is active. The 2026-08-10 standard `pquota` report shows only 989 GB on the research tier, so the live gate fails: the current allocation is below both the raw source corpus and the 1,811,642,076,332-byte minimum effective quota. Before the first body transfer, the additional one-terabyte allocation must be active and contemporaneous `pquota`, filesystem identity/unit, and exact nonenumerating project-root usage evidence must reconfirm the same peak/headroom rule.
+The sealed 2026-08-10 live receipt proves that the intended quota is not active. The effective capacity ceiling is 989,000,000,000 bytes, with -622,642,076,332 bytes of headroom relative to the frozen peak. Independently, filesystem available space is 1,017,752,059,904 bytes versus 1,661,255,105,196 required, a -643,503,045,292-byte deficit. Before the first body transfer, the additional one-terabyte allocation must be active and fresh `pquota`, filesystem identity/unit, and exact nonenumerating project-root usage evidence must show that both the project-quota and filesystem-availability gates pass.
 
 ## SCC quota cost authority
 
@@ -135,7 +136,7 @@ The SCC quota charge is an administrative purchasing gate, not a scientific gate
 
 ## Copy-ready quota request
 
-> The current standard SCC quota report shows 989 GB on `/restricted/projectnb` and 11 GB on the backed-up tier. Please activate one additional 1-TB Storage-as-a-Service increment on `/restricted/projectnb`; do not further reduce the current backed-up allocation. The minimum effective research quota under the frozen one-batch plan is 1,811,642,076,332 bytes and the preferred nominal allocation is 2,000 GB. If current accounting persists, a one-TB increment would produce approximately 1,989 GB and must be verified with a fresh `pquota` receipt before any transfer. The project will retain the selected 4,530-study raw DICOM set and use a one-batch rolling extracted cache. The owner accepts the supplied SCC storage estimate for planning. Backup, migration, and recovery testing of the shared Git worktrees and irreplaceable restricted authorities remain separate prerequisites.
+> The current standard SCC quota report shows 989 GB on `/restricted/projectnb` and 11 GB on the backed-up tier. Please activate one additional 1-TB Storage-as-a-Service increment on `/restricted/projectnb`; do not further reduce the current backed-up allocation. The minimum effective research quota under the frozen one-batch plan is 1,811,642,076,332 bytes and the preferred nominal allocation is 2,000 GB. If current accounting persists, a one-TB increment would produce approximately 1,989 GB. Before any transfer, fresh `pquota`, filesystem identity, exact `df -B1`, and nonenumerating exact-usage evidence must show that both the project-quota and filesystem-availability gates pass. The project will retain the selected 4,530-study raw DICOM set and use a one-batch rolling extracted cache. The owner accepts the supplied SCC storage estimate for planning. Backup, migration, and recovery testing of the shared Git worktrees and irreplaceable restricted authorities remain separate prerequisites.
 
 The historical 50-GB retained-backup option was provisional and was never a sufficiency authority. The live backed-up quota is now 11 GB. Do not reduce it further. Its final required size must be justified by the checksum-verified classified size of every authority requiring disaster-recovery protection plus an approved operating margin. Only the resulting classified migration witness may supply the migrated-byte term, and the resource plan must be reconciled against the actual research-tier quota without double counting.
 

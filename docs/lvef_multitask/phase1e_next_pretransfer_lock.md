@@ -1,32 +1,38 @@
-# Next bounded phase: live quota and pre-transfer lock
+# Phase 1E-D handoff: next bounded pre-transfer phase
 
-Status: proposed owner-review phase only. This document does not authorize a DICOM body transfer or full C3.
+Status: **Phase 1E-D complete with `NO_GO`; successor implementation and administrative work remain unauthorized until separately approved**.
 
-## Objective
+Phase 1E-D sealed current SCC resource evidence and an offline production specification. Attempt 003 passed capture/provenance validation but failed every capacity gate. Attempt 004 passed only as `PASS_SPECIFICATION_ONLY_EXECUTION_UNIMPLEMENTED`; it implemented and authorized no production action.
 
-Convert the passed current-source inventory, Autoclass, cost, and 2-TB planning authorities into a contemporaneous pre-transfer decision. The phase should verify live quota activation and current usage, seal the backup/migration and production-command authorities, and return a later full-C3 authorization packet without executing it.
+The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.488015 and the owner-provided SCC storage estimate remain accepted and frozen for planning. No further cost verification is required. This acceptance does not authorize a DICOM transfer.
 
-The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.488015 and the owner-provided SCC storage estimate are already accepted for planning. Phase 1E-D did not investigate, recalculate, or independently reverify them. This acceptance does not authorize the DICOM transfer. The live SCC quota report subsequently showed only 989 GB on the research tier, so the additional one-terabyte allocation is required before the first body request.
+## Current closed and open gates
 
-## Permitted scope
+- Current selected-source inventory: `PASS_CURRENT_SELECTED_SOURCE_INVENTORY_FOR_PROSPECTIVE_C3`.
+- Live evidence validation: `PASS_READ_ONLY_CAPTURE`.
+- Live research quota: 989,000,000,000 bytes.
+- Minimum effective quota: 1,811,642,076,332 bytes; preferred nominal allocation: 2 TB.
+- Project-quota slack against the frozen peak: -622,642,076,332 bytes.
+- Filesystem-availability slack: -643,503,045,292 bytes.
+- Planning migration classification: passed for 2,841,265,664 planned bytes.
+- Migration: `PLANNED_NOT_EXECUTED`.
+- Backup and recovery test: not verified.
+- Production semantic/source-receipt validation: not implemented.
+- Production downloader, batch runner, and finalizer: not implemented.
+- First DICOM body transfer authorization: absent.
+- Full C3: `NO_GO`.
 
-- revalidate the six immutable job-7104307 outputs and six supplemental attempt-002 aggregates;
-- read current SCC filesystem, `pquota`, mount, and integer-byte usage evidence;
-- finish the checksum-bound disaster-tier migration/backup witness without moving or deleting data unless separately authorized;
-- reconcile the existing 2-TB resource calculation against live quota and usage;
-- preserve the frozen owner cost disposition without recalculation;
-- finish and smoke-test production download/extraction/embedding orchestration without cloud media access;
-- freeze command, config, checkpoint, environment, source, resume, preservation, and safety checksums;
-- prepare—but do not execute—the exact full-C3 authorization block.
+## Proposed next bounded phase
+
+A later owner-authorized phase may perform only the following two independent workstreams:
+
+1. Implement and validate, without cloud media access, the production exact-generation downloader, batch runner, stage receipts, no-clobber/resume behavior, preservation gates, and finalizer. Use synthetic/local fixtures and a versioned successor to the immutable attempt-004 contract; do not rewrite `configs/lvef_c3_execution_contract.yaml`.
+2. Complete the approved backup/migration actions, activate the additional research-tier terabyte, and then capture one fresh read-only `pquota`/filesystem/exact-usage receipt. Both project-quota and filesystem-availability gates must pass without reducing the 200,000,000,000-byte headroom requirement.
+
+These workstreams may proceed independently. Production implementation does not authorize a body request, and administrative quota activation does not establish backup/migration or production readiness.
 
 ## Hard stops
 
-No GCS body or media request, DICOM transfer, `alt=media`, object listing, storage audit repetition, quota mutation, file migration/deletion, extraction, EchoPrime inference, embedding generation, model fitting, prediction generation, confirmatory-performance access, Section 5, or full-C3 submission is permitted without a new explicit owner authorization.
+No GCS body/media request, DICOM transfer, `alt=media`, object listing, storage-audit repetition, unauthorized quota mutation, file move/deletion, extraction, EchoPrime inference, embedding generation, model fitting, prediction generation, confirmatory-performance access, Section 5, or full-C3 submission is authorized by this handoff.
 
-## Required live quota proof
-
-The current plan projects 1,611,642,076,332 peak bytes and requires 200,000,000,000 free bytes. The live effective research quota must therefore be at least 1,811,642,076,332 bytes; the preferred nominal allocation is 2,000,000,000,000 bytes. Evidence must include contemporaneous `pquota`, filesystem identity and unit interpretation, and integer-byte `/restricted/projectnb/mimicecho` usage. It must distinguish bytes already included in current usage from bytes still planned for migration and must not double count them.
-
-## Decision boundary
-
-The cost-planning gate is closed as `OWNER_ACCEPTED_FOR_PLANNING`, including the $171.488015 high requester-pays scenario and owner-provided SCC storage estimate. Phase 1E-D records `NO_GO`: the current 989,000,000,000-byte research quota is below the 1,811,642,076,332-byte minimum effective quota, backup/migration completion is unverified, and the production downloader/batch/finalizer implementations are absent. A later phase may recommend full-C3 authorization only after those gates pass and all command/config/source/checkpoint/environment authorities are checksum-frozen. A separate explicit owner authorization for the first DICOM transfer remains mandatory.
+Even after every technical and resource gate passes, the first selected-DICOM body request requires a separate written owner authorization naming the governing commit, versioned contract, source authority, resource receipt, checkpoint/environment authorities, exact commands, and preservation plan.
