@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shlex
 import subprocess
@@ -31,6 +32,51 @@ def test_runtime_environment_is_sorted_literal_and_private_value_not_emitted() -
         assert str(exc) == "RUNTIME_ENVIRONMENT_VALUE_NOT_LITERAL"
     else:
         raise AssertionError("shell syntax was accepted in the private environment")
+
+
+def test_python_launcher_authority_preserves_lexical_venv_path() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "python-target"
+        target.write_bytes(b"synthetic pinned python target\n")
+        target.chmod(0o700)
+        launcher = root / "venv-python"
+        launcher.symlink_to(target)
+        expected_sha = hashlib.sha256(target.read_bytes()).hexdigest()
+
+        observed_launcher, observed_target = prepare.validate_python_launcher_authority(
+            launcher,
+            expected_launcher=launcher,
+            expected_sha256=expected_sha,
+        )
+        assert observed_launcher == launcher.absolute()
+        assert observed_launcher.is_symlink()
+        assert observed_target == target.resolve(strict=True)
+        assert not observed_target.is_symlink()
+
+        try:
+            prepare.validate_python_launcher_authority(
+                launcher,
+                expected_launcher=launcher,
+                expected_sha256="0" * 64,
+            )
+        except prepare.ControlPlanePreparationError as exc:
+            assert str(exc) == "RUNNING_PYTHON_AUTHORITY_MISMATCH"
+        else:
+            raise AssertionError("changed Python target authority was accepted")
+
+
+def test_future_packet_uses_resolved_python_authority_but_launcher_executes() -> None:
+    source = (
+        ROOT / "docs/lvef_multitask/scc_phase1ee_production_commands.md"
+    ).read_text(encoding="utf-8")
+    preparation = source.split("## Future dispatcher topology", 1)[0]
+    assert "PY_LAUNCHER='/restricted/project/mimicecho/code/" in preparation
+    assert 'PY_AUTHORITY="$(readlink -f -- "$PY_LAUNCHER")"' in preparation
+    assert '[[ -f "$PY_AUTHORITY" && ! -L "$PY_AUTHORITY" && -x "$PY_AUTHORITY" ]]' in preparation
+    assert '--artifact "python_executable=$PY_AUTHORITY"' in preparation
+    assert '--artifact "python_executable=$PY_LAUNCHER"' not in preparation
+    assert preparation.count('"$PY_LAUNCHER" "$AUTHORITY_WORKTREE/scripts/') == 4
 
 
 def test_scc_setgid_only_private_directory_mode_is_accepted() -> None:

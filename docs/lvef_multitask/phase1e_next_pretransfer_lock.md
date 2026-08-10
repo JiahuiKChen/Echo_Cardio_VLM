@@ -22,6 +22,15 @@ The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.48801
   `52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5`)
   and a tracked, persistent, isolated digest worker. A fresh no-clobber
   environment/packet attempt is required.
+- Immutable production-lock attempt `lvef_c3_phase1ee_production_lock_002`
+  passed environment capture and failed before a production attempt root when
+  runtime validation hashed the unresolved venv launcher symlink.
+- Immutable production-lock attempt `lvef_c3_phase1ee_production_lock_003`
+  passed environment capture and complete control-plane preparation, then
+  failed before packet creation because the packet command supplied that same
+  lexical launcher as a no-follow byte-authority role. The repaired topology
+  executes through the lexical venv launcher but binds the resolved, pinned
+  regular target in the packet. Generic symlink authorities remain forbidden.
 - Prior immutable aggregates: all 12 original/supplemental authorities passed filename, size, SHA-256, and closed-schema revalidation; their generating cloud/storage work was not repeated.
 - Research quota/usage/available: 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes.
 - Research physical filesystem available: 2,092,672,483,328 bytes.

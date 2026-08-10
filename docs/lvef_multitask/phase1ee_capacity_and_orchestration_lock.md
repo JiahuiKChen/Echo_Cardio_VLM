@@ -151,7 +151,7 @@ every production authorization to false. Merely creating files cannot advance
 state. Changed commit, contract, plan, source metadata, environment, checkpoint,
 or manifest identity requires a new attempt.
 
-Offline dependency-light validation passed 542 tests with zero failures and two
+Offline dependency-light validation passed 544 tests with zero failures and two
 intentional fixture skips. Python compilation, Bash and fenced-command syntax,
 strict JSON/YAML parsing, state/resume checks, scheduler portability, symlink and
 no-follow checks, split-runtime probes, persistent-worker checks, and the
@@ -161,14 +161,28 @@ mode allowance; the current lock extends that same exact rule to the scheduler
 gate. No production launcher can be created from the current capacity receipt
 because the backed control-tier gate is false.
 
-The next no-clobber preflight, `lvef_c3_phase1ee_production_lock_002`, passed
+The no-clobber preflight `lvef_c3_phase1ee_production_lock_002` passed
 the split-runtime environment capture and then stopped before creating a
 production attempt root. Live runtime revalidation had hashed the unresolved
 virtual-environment `sys.executable` symlink instead of the already governed
 regular target, yielding `HASH_INPUT_NOT_REGULAR`. Attempt 002 remains
 immutable. Runtime validation now resolves that expected virtual-environment
 link strictly and hashes the regular target; other scientific and artifact
-paths retain their no-follow rules. A fresh attempt is required.
+paths retain their no-follow rules.
+
+The subsequent no-clobber attempt, `lvef_c3_phase1ee_production_lock_003`,
+passed environment capture and the complete 19-batch control-plane build, then
+failed before authority-packet creation with
+`INPUT_NOT_REGULAR_NOFOLLOW_FILE`. The packet command had passed the lexical
+virtual-environment launcher as a no-follow byte-authority input. Read-only SCC
+diagnosis proved that the launcher is the expected symlink, its resolved target
+is regular, hashing the launcher fails closed, and hashing the target passes.
+Attempt 003 remains immutable. The command boundary now keeps the lexical
+launcher for venv execution, separately resolves and hash-verifies the pinned
+regular target for the packet role, and preserves generic symlink rejection.
+The control-plane environment likewise retains the lexical launcher required by
+future scheduler execution while binding its resolved target hash. A fresh
+attempt is required.
 
 ## Authorization boundaries
 

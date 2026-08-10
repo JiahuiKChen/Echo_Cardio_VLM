@@ -26,6 +26,9 @@ import lvef_c3_production_stages as stages
 ATTEMPT_RE = re.compile(r"^lvef_c3_phase1ee_[a-z0-9][a-z0-9_-]{5,63}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 PRIVATE_BILLING_ENV = "LVEF_C3_GCP_BILLING_PROJECT"
+EXPECTED_ECHOPRIME_PYTHON_LAUNCHER = Path(
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python"
+)
 
 
 class ControlPlanePreparationError(RuntimeError):
@@ -127,6 +130,30 @@ def _runtime_environment_text(values: Mapping[str, str]) -> str:
     return "".join(f"{key}={values[key]}\n" for key in sorted(values))
 
 
+def validate_python_launcher_authority(
+    launcher: Path, *, expected_launcher: Path, expected_sha256: str
+) -> tuple[Path, Path]:
+    """Bind a lexical venv launcher to its pinned regular executable target."""
+    lexical = launcher.absolute()
+    expected = expected_launcher.absolute()
+    if lexical != expected:
+        raise ControlPlanePreparationError("RUNNING_PYTHON_LAUNCHER_MISMATCH")
+    _require_no_symlink_ancestors(lexical, "RUNNING_PYTHON_LAUNCHER")
+    if not lexical.exists() or not os.access(lexical, os.X_OK):
+        raise ControlPlanePreparationError("RUNNING_PYTHON_LAUNCHER_INVALID")
+    try:
+        target = lexical.resolve(strict=True)
+    except OSError as exc:
+        raise ControlPlanePreparationError(
+            "RUNNING_PYTHON_TARGET_RESOLUTION_FAILED"
+        ) from exc
+    if target.is_symlink() or not target.is_file() or not os.access(target, os.X_OK):
+        raise ControlPlanePreparationError("RUNNING_PYTHON_TARGET_INVALID")
+    if core.sha256_file(target) != expected_sha256:
+        raise ControlPlanePreparationError("RUNNING_PYTHON_AUTHORITY_MISMATCH")
+    return lexical, target
+
+
 def prepare(args: argparse.Namespace) -> Mapping[str, Any]:
     if not COMMIT_RE.fullmatch(args.governing_commit) or not ATTEMPT_RE.fullmatch(
         args.attempt_id
@@ -180,8 +207,11 @@ def prepare(args: argparse.Namespace) -> Mapping[str, Any]:
     ):
         if core.sha256_file(path) != expected:
             raise ControlPlanePreparationError(f"{code}_AUTHORITY_HASH_MISMATCH")
-    if core.sha256_file(Path(sys.executable).resolve()) != args.python_sha256:
-        raise ControlPlanePreparationError("RUNNING_PYTHON_AUTHORITY_MISMATCH")
+    python_launcher, _python_target = validate_python_launcher_authority(
+        Path(sys.executable),
+        expected_launcher=EXPECTED_ECHOPRIME_PYTHON_LAUNCHER,
+        expected_sha256=args.python_sha256,
+    )
     if (
         core.sha256_file(args.crc32c_python) != args.crc32c_python_sha256
         or args.crc32c_worker.resolve(strict=True)
@@ -335,7 +365,7 @@ def prepare(args: argparse.Namespace) -> Mapping[str, Any]:
         "LVEF_C3_BATCH_PLAN": str(plan_path),
         "LVEF_C3_BATCH_PLAN_SHA256": plan_sha,
         "LVEF_C3_PRODUCTION_ROOT": str(production_root),
-        "LVEF_C3_PYTHON": str(Path(sys.executable).resolve(strict=True)),
+        "LVEF_C3_PYTHON": str(python_launcher),
         "LVEF_C3_PYTHON_SHA256": args.python_sha256,
         "LVEF_C3_ENVIRONMENT_RECEIPT": str(args.environment_receipt.resolve(strict=True)),
         "LVEF_C3_ENVIRONMENT_RECEIPT_SHA256": core.sha256_file(args.environment_receipt),

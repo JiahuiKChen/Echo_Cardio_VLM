@@ -66,7 +66,11 @@ umask 077
 
 AUTHORITY_WORKTREE='/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask'
 GOVERNING_COMMIT="$(git -C "$AUTHORITY_WORKTREE" rev-parse HEAD)"
-PY='/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python'
+PY_LAUNCHER='/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python'
+PY_AUTHORITY="$(readlink -f -- "$PY_LAUNCHER")"
+PY_AUTHORITY_SHA256='1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb'
+[[ -f "$PY_AUTHORITY" && ! -L "$PY_AUTHORITY" && -x "$PY_AUTHORITY" ]]
+[[ "$(sha256sum -- "$PY_AUTHORITY" | awk '{print $1}')" == "$PY_AUTHORITY_SHA256" ]]
 CRC32C_PY='/restricted/projectnb/mimicecho/tools/google-cloud-cli-579.0.0/google-cloud-sdk/platform/bundledpythonunix/bin/python3.14'
 CRC32C_PY_SHA256='52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5'
 CRC32C_WORKER="$AUTHORITY_WORKTREE/scripts/lvef_c3_crc32c_worker.py"
@@ -79,7 +83,7 @@ GCLOUD='/restricted/projectnb/mimicecho/tools/google-cloud-cli-579.0.0/google-cl
 GCLOUD_RECEIPT='<OWNER_PRIVATE_GCLOUD_RESOLUTION_RECEIPT>'
 CLOUDSDK_CONFIG='<OWNER_PRIVATE_ISOLATED_CLOUDSDK_CONFIG>'
 
-"$PY" "$AUTHORITY_WORKTREE/scripts/capture_lvef_c3_production_environment.py" \
+"$PY_LAUNCHER" "$AUTHORITY_WORKTREE/scripts/capture_lvef_c3_production_environment.py" \
   --prior-environment '<PINNED_PHASE1EA_ENVIRONMENT_RECEIPT>' \
   --governing-commit "$GOVERNING_COMMIT" \
   --checkout-root "$AUTHORITY_WORKTREE" \
@@ -93,7 +97,7 @@ CLOUDSDK_CONFIG='<OWNER_PRIVATE_ISOLATED_CLOUDSDK_CONFIG>'
 : "${LVEF_C3_GCP_BILLING_PROJECT:?owner-private value required}"
 export -n LVEF_C3_GCP_BILLING_PROJECT
 LVEF_C3_GCP_BILLING_PROJECT="$LVEF_C3_GCP_BILLING_PROJECT" \
-"$PY" "$AUTHORITY_WORKTREE/scripts/prepare_lvef_c3_production_control_plane.py" \
+"$PY_LAUNCHER" "$AUTHORITY_WORKTREE/scripts/prepare_lvef_c3_production_control_plane.py" \
   --governing-commit "$GOVERNING_COMMIT" \
   --attempt-id "$ATTEMPT_ID" \
   --checkout-root "$AUTHORITY_WORKTREE" \
@@ -125,7 +129,7 @@ BATCH_PLAN="$ATTEMPT_ROOT/authority/batch_plan.restricted.json"
 AUTHORITY_PACKET="$ATTEMPT_ROOT/authority/lvef_c3_production_authority_packet.restricted.json"
 
 # Exactly all 38 closed authority roles. No role may be omitted or duplicated.
-"$PY" "$AUTHORITY_WORKTREE/scripts/build_lvef_c3_production_authority_packet.py" \
+"$PY_LAUNCHER" "$AUTHORITY_WORKTREE/scripts/build_lvef_c3_production_authority_packet.py" \
   --governing-commit "$GOVERNING_COMMIT" \
   --checkout-root "$AUTHORITY_WORKTREE" \
   --attempt-id "$ATTEMPT_ID" \
@@ -155,7 +159,7 @@ AUTHORITY_PACKET="$ATTEMPT_ROOT/authority/lvef_c3_production_authority_packet.re
   --artifact "post_expansion_capacity_summary=$CAPACITY_SUMMARY" \
   --artifact "preservation_policy=$AUTHORITY_WORKTREE/configs/lvef_c3_preservation_policy_v2.yaml" \
   --artifact "prior_batch_finalization_validator=$AUTHORITY_WORKTREE/scripts/validate_lvef_c3_prior_batch_finalization.py" \
-  --artifact "python_executable=$PY" \
+  --artifact "python_executable=$PY_AUTHORITY" \
   --artifact "resume_ledger_schema=$AUTHORITY_WORKTREE/configs/lvef_c3_resume_ledger_v2.json" \
   --artifact "scheduler_batch_runner=$AUTHORITY_WORKTREE/scripts/scc_run_lvef_c3_production_batch_v2.sh" \
   --artifact "scheduler_common=$AUTHORITY_WORKTREE/scripts/lvef_c3_production_scheduler_common.sh" \
@@ -172,7 +176,7 @@ AUTHORITY_PACKET="$ATTEMPT_ROOT/authority/lvef_c3_production_authority_packet.re
 # This last-created envelope is impossible while any byte-capacity,
 # file-quota, physical-filesystem, reserve, or backed-control gate is false.
 LAUNCH_AUTHORITY="$ATTEMPT_ROOT/authority/lvef_c3_production_launch_authority.restricted.json"
-"$PY" "$AUTHORITY_WORKTREE/scripts/build_lvef_c3_production_launch_authority.py" build \
+"$PY_LAUNCHER" "$AUTHORITY_WORKTREE/scripts/build_lvef_c3_production_launch_authority.py" build \
   --attempt-id "$ATTEMPT_ID" \
   --governing-commit "$GOVERNING_COMMIT" \
   --execution-environment "$EXECUTION_ENV" \

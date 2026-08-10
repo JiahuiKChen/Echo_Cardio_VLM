@@ -639,7 +639,16 @@ phase1e_bc_resource_metadata_preflight:
     production_lock_attempt_002_cloud_requests: 0
     production_lock_attempt_002_scheduler_jobs: 0
     production_lock_attempt_002_preserved_immutable: true
-    production_lock_attempt_003_required: true
+    production_lock_attempt_003_id: lvef_c3_phase1ee_production_lock_003
+    production_lock_attempt_003_status: FAILED_PACKET_PYTHON_LAUNCHER_SYMLINK_POST_CONTROL_PLANE
+    production_lock_attempt_003_error_code: INPUT_NOT_REGULAR_NOFOLLOW_FILE
+    production_lock_attempt_003_environment_capture_passed: true
+    production_lock_attempt_003_control_plane_passed: true
+    production_lock_attempt_003_authority_packet_created: false
+    production_lock_attempt_003_cloud_requests: 0
+    production_lock_attempt_003_scheduler_jobs: 0
+    production_lock_attempt_003_preserved_immutable: true
+    production_lock_attempt_004_required: true
     production_batch_runner_implemented_and_validated: true
     production_finalizer_implemented_and_validated: true
     execution_authorized: false
@@ -654,7 +663,7 @@ phase1e_bc_resource_metadata_preflight:
     phase1ee_implementation_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
     phase1ee_scc_setgid_portability_commit: d2f94d4fb050347605933d922ae64a6d59f32531
     phase1ee_orchestration_contract_version: 2
-    phase1ee_dependency_light_tests_passed: 542
+    phase1ee_dependency_light_tests_passed: 544
     phase1ee_dependency_light_tests_failed: 0
     phase1ee_dependency_light_tests_skipped: 2
     phase1ee_scheduler_submission_performed: false

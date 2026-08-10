@@ -38,6 +38,16 @@ CRC32C as a distinct, checksummed Cloud-SDK-bundled Python 3.14 helper while
 leaving EchoPrime on the validated Python 3.10 environment. A fresh no-clobber
 attempt is required; attempt 001 must not be repaired or reused in place.
 
+Attempt 002 subsequently passed the split-runtime environment capture and
+failed before a production attempt root because runtime validation hashed the
+unresolved virtual-environment launcher symlink. Attempt 003 passed environment
+capture and the complete 19-batch control-plane build, then failed before
+authority-packet creation because the command supplied the lexical launcher as
+a no-follow byte-authority role. Both remain immutable. The repaired topology
+retains the lexical venv launcher for execution, binds only its resolved pinned
+regular target as packet byte authority, and does not weaken generic symlink or
+no-follow rules. A fresh no-clobber authority-packet attempt remains required.
+
 ## Gate table
 
 | Gate | Current disposition | Evidence required to pass | Effect |
