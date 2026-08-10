@@ -25,7 +25,8 @@ or SCC storage-cost investigation and did not authorize expenditure.
 
 ## Post-expansion capacity ruling
 
-The no-clobber post-expansion research capture records an exact
+The immutable parent research attempt
+`lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` records an exact
 1,989,000,000,000-byte project quota, 150,387,011,072 exact allocated bytes,
 and 1,838,612,988,928 quota-available bytes. The underlying research
 filesystem records 2,092,672,483,328 physically available bytes. Against the
@@ -53,12 +54,34 @@ temporary files, caches, state, logs, scheduler stdout/stderr, extracted data,
 embeddings, and preservation artifacts are explicitly bound to the research
 tier; the backed tier remains a read-mostly authority/control dependency.
 
+The parent aggregate is `lvef_c3_live_quota.summary.json` (2,257 bytes;
+SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`).
+The no-clobber successor attempt
+`lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` is governed by
+implementation commit `0800a0b4de93911cc39467acf2460a8d5ed6135a`. Its closed
+aggregate is `lvef_c3_post_expansion_capacity.summary.json` (5,003 bytes;
+SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`).
+It revalidated the immutable research receipt and ran only current control-tier
+`findmnt`, `df`, and nonenumerating `du`; research `pquota` and filesystem
+commands were not repeated.
+
+The exact backed quota is 11,000,000,000 bytes, exact allocated usage is
+10,959,364,608 bytes, and quota availability is 40,635,392 bytes. The backed
+filesystem has 2,046,820,352 bytes physically available. Its 360,448-file
+quota has 47,189 files used and 313,259 available, so the file-count gate
+passes while its prespecified 10,000,000,000-byte additional-write burden
+leaves a 9,959,364,608-byte deficit and the byte-safety gate fails. The research
+file quota is 33,554,432,
+with 106,228 used and 33,448,204 available; its file-count gate passes.
+
 A 25-GB backed / 1,975-GB research free-pool allocation preserves
 363,357,923,668 bytes above the projected peak. The preferred 50-GB backed /
 1,950-GB research allocation preserves 338,357,923,668 bytes. Both exceed the
-unchanged 200-GB reserve and 1,811,642,076,332-byte minimum research quota. The
-purchased 1,000-GB SAAS allocation remains entirely assigned to the research
-tier. No quota was changed in this phase. The 50-GB backed option is preferred;
+unchanged 200-GB reserve and 1,811,642,076,332-byte minimum research quota.
+Under the owner-attested administrative composition, the purchased 1,000-GB
+SAAS allocation remains entirely assigned to the research tier; the machine
+receipt proves the exact effective quota, not its funding source. No quota was
+changed in this phase. The 50-GB backed option is preferred;
 the 25-GB option is the minimum acceptable administrative alternative after a
 fresh receipt proves it active.
 
@@ -94,6 +117,13 @@ The scripts are executable implementations, but their committed contract sets
 every production authorization to false. Merely creating files cannot advance
 state. Changed commit, contract, plan, source metadata, environment, checkpoint,
 or manifest identity requires a new attempt.
+
+Offline dependency-light validation passed 534 tests with zero failures and two
+intentional fixture skips. Python compilation, Bash and fenced-command syntax,
+strict JSON/YAML parsing, state/resume checks, scheduler portability, symlink and
+no-follow checks, and the staged Git export gate passed. No production launcher
+can be created from the current capacity receipt because the backed control-tier
+gate is false.
 
 ## Authorization boundaries
 

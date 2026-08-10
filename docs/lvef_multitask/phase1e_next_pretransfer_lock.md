@@ -1,38 +1,46 @@
-# Phase 1E-D handoff: next bounded pre-transfer phase
+# Phase 1E-E handoff: next bounded pre-transfer phase
 
-Status: **Phase 1E-D complete with `NO_GO`; successor implementation and administrative work remain unauthorized until separately approved**.
+Status: **Phase 1E-E remains `NO_GO` because the backed control tier fails its byte-margin gate; research capacity and the prospective production implementation are no longer the blocking capacity items**.
 
-Phase 1E-D sealed current SCC resource evidence and an offline production specification. Attempt 003 passed capture/provenance validation but failed every capacity gate. Attempt 004 passed only as `PASS_SPECIFICATION_ONLY_EXECUTION_UNIMPLEMENTED`; it implemented and authorized no production action.
+Phase 1E-E implemented the prospective selected-cohort C3 production orchestration and validated it offline without a cloud request, scheduler submission, DICOM-body download, real DICOM decode/extraction, EchoPrime inference, embedding generation, modeling, predictions, or confirmatory-performance access. The immutable selected-source authority remains 4,530 studies, 335,984 verified objects, and 1,216,569,133,322 bytes.
 
 The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.488015 and the owner-provided SCC storage estimate remain accepted and frozen for planning. No further cost verification is required. This acceptance does not authorize a DICOM transfer.
 
 ## Current closed and open gates
 
-- Current selected-source inventory: `PASS_CURRENT_SELECTED_SOURCE_INVENTORY_FOR_PROSPECTIVE_C3`.
-- Live evidence validation: `PASS_READ_ONLY_CAPTURE`.
-- Live research quota: 989,000,000,000 bytes.
-- Minimum effective quota: 1,811,642,076,332 bytes; preferred nominal allocation: 2 TB.
-- Project-quota slack against the frozen peak: -622,642,076,332 bytes.
-- Filesystem-availability slack: -643,503,045,292 bytes.
-- Planning migration classification: passed for 2,841,265,664 planned bytes.
-- Migration: `PLANNED_NOT_EXECUTED`.
-- Backup and recovery test: not verified.
-- Production semantic/source-receipt validation: not implemented.
-- Production downloader, batch runner, and finalizer: not implemented.
-- First DICOM body transfer authorization: absent.
+- Immutable parent research attempt: `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001`; aggregate `lvef_c3_live_quota.summary.json`, 2,257 bytes, SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`.
+- Composite control-tier successor: `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002`; it hash-revalidated the parent without repeating research quota/filesystem commands.
+- Aggregate receipt: 5,003 bytes; SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`.
+- Governing implementation commit: `0800a0b4de93911cc39467acf2460a8d5ed6135a`.
+- Prior immutable aggregates: all 12 original/supplemental authorities passed filename, size, SHA-256, and closed-schema revalidation; their generating cloud/storage work was not repeated.
+- Research quota/usage/available: 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes.
+- Research physical filesystem available: 2,092,672,483,328 bytes.
+- Research file quota/used/available: 33,554,432 / 106,228 / 33,448,204.
+- Frozen projected peak/minimum effective quota: 1,611,642,076,332 / 1,811,642,076,332 bytes.
+- Research quota slack after peak: 377,357,923,668 bytes; physical-filesystem slack after required writes/reserve: 431,417,418,068 bytes.
+- Research byte-quota, file-quota, minimum-effective-quota, physical-filesystem, and 200-GB-reserve gates: `PASS`.
+- Backed control quota/usage/available: 11,000,000,000 / 10,959,364,608 / 40,635,392 bytes.
+- Backed control physical filesystem available: 2,046,820,352 bytes.
+- Backed control file quota/used/available: 360,448 / 47,189 / 313,259.
+- Backed control byte-margin gate: `FAIL`; file-count gate: `PASS`; overall backed-control-tier gate: `FAIL`.
+- Purchased 1-TB SAAS allocation: owner-attested administrative composition keeps it unchanged and wholly assigned to `/restricted/projectnb`; machine evidence proves the exact total quota, not its funding source.
+- Backup/migration completion and recovery test: not verified.
+- First DICOM body-transfer authorization: absent.
 - Full C3: `NO_GO`.
 
-## Proposed next bounded phase
+## Recommended next bounded phase
 
-A later owner-authorized phase may perform only the following two independent workstreams:
+Request an administrative free-pool reallocation that leaves the purchased 1-TB SAAS increment untouched on `/restricted/projectnb`:
 
-1. Implement and validate, without cloud media access, the production exact-generation downloader, batch runner, stage receipts, no-clobber/resume behavior, preservation gates, and finalizer. Use synthetic/local fixtures and a versioned successor to the immutable attempt-004 contract; do not rewrite `configs/lvef_c3_execution_contract.yaml`.
-2. Complete the approved backup/migration actions, activate the additional research-tier terabyte, and then capture one fresh read-only `pquota`/filesystem/exact-usage receipt. Both project-quota and filesystem-availability gates must pass without reducing the 200,000,000,000-byte headroom requirement.
+1. preferred: 50,000,000,000 bytes backed and 1,950,000,000,000 bytes research;
+2. minimum: 25,000,000,000 bytes backed and 1,975,000,000,000 bytes research.
 
-These workstreams may proceed independently. Production implementation does not authorize a body request, and administrative quota activation does not establish backup/migration or production readiness.
+Both options preserve the frozen research minimum and 200-GB reserve. At the frozen 1,611,642,076,332-byte peak, the preferred and minimum research allocations leave 338,357,923,668 and 363,357,923,668 bytes, respectively. No quota mutation is authorized by this handoff.
+
+After an owner-approved adjustment becomes active, capture one new read-only, no-clobber capacity receipt. Revalidate the research byte/file/physical/reserve gates and the backed control byte/file gates, then rebuild the offline authority packet against the exact final commit. Do not repeat object listing, targeted bucket metadata, source reconciliation, or storage inventory.
 
 ## Hard stops
 
-No GCS body/media request, DICOM transfer, `alt=media`, object listing, storage-audit repetition, unauthorized quota mutation, file move/deletion, extraction, EchoPrime inference, embedding generation, model fitting, prediction generation, confirmatory-performance access, Section 5, or full-C3 submission is authorized by this handoff.
+No GCS body/media request, DICOM transfer, `alt=media`, object listing, storage-audit repetition, unauthorized quota mutation, file move/deletion, extraction, EchoPrime inference, embedding generation, model fitting, prediction generation, confirmatory-performance access, Section 5, or production scheduler submission is authorized by this handoff.
 
-Even after every technical and resource gate passes, the first selected-DICOM body request requires a separate written owner authorization naming the governing commit, versioned contract, source authority, resource receipt, checkpoint/environment authorities, exact commands, and preservation plan.
+Even after every technical and resource gate passes, the first selected-DICOM body request requires separate written owner authorization naming the governing commit, frozen authority packet, source/resource receipts, checkpoint/environment authorities, exact first-batch command, and preservation plan.

@@ -1,6 +1,6 @@
 # SCC storage migration plan for prospective C3
 
-Status: **planning complete at the filesystem-policy level; administrative quota reallocation is partially visible, but data migration and backup-copy completion remain unproven gates**.
+Status: **research expansion is active and passes; the backed control tier remains undersized, and migration/backup-copy completion remains unproven**.
 
 This document concerns storage placement only. It does not authorize a DICOM body transfer, extraction, embedding, modeling, prediction generation, or confirmatory-performance access.
 
@@ -51,7 +51,9 @@ Sources: [BU Project Disk Space](https://www.bu.edu/tech/support/research/comput
 
 All C3 arithmetic therefore uses integer bytes and treats a requested 2-TB quota as `2,000,000,000,000` bytes. Human-readable `df -h` values are binary-formatted displays and are not the allocation authority. The SCC `pquota -u mimicecho` report is the project-quota witness; exact `df -B1` plus filesystem identity and nonenumerating `du -x -s -B1` evidence are separately mandatory for filesystem availability and exact allocated usage.
 
-The sealed 2026-08-10 live report shows 11 GB allocated on the backed-up tier (10.19 GB displayed usage) and 989 GB on the non-backed-up research tier (140.04 GB displayed usage). The separate nonenumerating exact-usage receipt records 150,386,971,136 bytes under the research project root. This is consistent with a substantial administrative reallocation, but it is not evidence that files were migrated, backed up, or recovery-tested. The additional one-terabyte research allocation is not active. The current 989,000,000,000-byte research quota fails the unchanged 1,811,642,076,332-byte minimum effective quota and is smaller than the 1,216,569,133,322-byte selected raw source corpus. Filesystem availability independently misses its 1,661,255,105,196-byte requirement by 643,503,045,292 bytes.
+Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` produced `lvef_c3_live_quota.summary.json` (2,257 bytes; SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`). Post-expansion composite successor `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002`, bound to implementation commit `0800a0b4de93911cc39467acf2460a8d5ed6135a`, hash-revalidated that parent and captured only contemporaneous control-tier evidence; its 5,003-byte aggregate has SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`. Research quota/usage/available are 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes; physical availability is 2,092,672,483,328 bytes; and file quota/used/available are 33,554,432 / 106,228 / 33,448,204. Research byte, file, minimum-effective-quota, physical-filesystem, and 200-GB-reserve gates pass. The owner-attested administrative composition keeps the purchased 1-TB SAAS allocation wholly assigned to the non-backed research tier; the machine receipt proves the exact effective quota, not its funding source.
+
+The backed tier remains at 11,000,000,000 quota bytes with 10,959,364,608 used and only 40,635,392 available; its physical filesystem has 2,046,820,352 bytes available. Its file quota/used/available are 360,448 / 47,189 / 313,259, so file capacity passes but the control-plane byte-margin gate fails. Capacity evidence does not prove that files were migrated, backed up, or recovery-tested.
 
 ## Migration classification and actions
 
@@ -88,9 +90,9 @@ Action: make a separately approved restricted backup (prefer retained `/restrict
 
 Action: use node-local `$TMPDIR` only for job-lifetime scratch. Place resumable transfer state on `/restricted/projectnb`; never depend on scratch for the sole copy of a completed object or preservation authority.
 
-## Current-state recommendation after administrative reallocation
+## Current-state recommendation after research expansion
 
-The live quota is already reduced to 11 GB on the backed-up tier, with 10.19 GB displayed usage. **Do not reduce it further, move files, or delete files.** The quota change does not prove that backup or data migration occurred. Preserve the current state while the retained allocation is derived from the completed path-level classification and every irreplaceable authority is checksum-verified in an approved disaster-recovery copy with an operating margin.
+The live backed quota is 11 GB and is nearly exhausted. **Do not reduce it further, move files, or delete files.** The preferred free-pool adjustment is 50 GB backed and 1,950 GB total research; the minimum option is 25/1,975 GB. Under the owner-attested administrative composition, the purchased 1,000-GB SAAS allocation must remain unchanged on `/restricted/projectnb`. Both options preserve the frozen 1,811,642,076,332-byte research minimum and 200-GB reserve: preferred research slack is 338,357,923,668 bytes, and minimum-option slack is 363,357,923,668 bytes. No quota change is authorized by this plan.
 
 The resource calculator may not use the observed 10,954,752,000-byte historical inventory as the migrated amount. The SCC-only planning classification passed and records 2,841,265,664 bytes selected for planned migration, with state `PLANNED_NOT_EXECUTED`; it is not an executed-migration or backup authority. A future completion witness must bind the exact bytes actually migrated and retained, reconcile them to its contemporaneous source inventory, and state whether migrated bytes are already included in `/restricted/projectnb` usage so they are not added twice.
 
@@ -101,25 +103,26 @@ No further backed-up-tier reduction or retirement may occur until all of the fol
 3. both Git worktrees are recreated under the destination and a clean checkout/recovery test passes;
 4. the exact checkpoint and environment authorities have a verified backup;
 5. the Phase 1A-1E historical audit packets and Phase 1E-A preservation authority have a verified backup;
-6. RCS confirms that partial/full quota exchange is supported and records the effective decimal-byte quota;
+6. RCS activates an approved 50/1,950-GB preferred or 25/1,975-GB minimum free-pool allocation and records the effective decimal-byte quotas;
 7. no queued/running job or live environment refers to the old paths.
 
-The owner-accepted SCC storage estimate closes only the planning-cost gate. It does not establish live quota activation, complete the migration witness, authorize a move or deletion, or authorize the first DICOM transfer.
+The owner-accepted SCC storage estimate closes only the planning-cost gate. It does not establish the pending control-tier reallocation, complete the migration/backup witness, authorize a move or deletion, or authorize the first DICOM transfer.
 
 If RCS permits only all-or-none reallocation, the safer sequence is: obtain an approved backed-up copy first, migrate/recreate and verify everything under `/restricted/projectnb`, retain the original until an independent recovery test passes, and only then request the complete exchange. No move or deletion is authorized by this plan.
 
 ## Exact recovery and migration checklist
 
-- [x] Preserve and validate the current standard `pquota -u` plus nonenumerating exact-usage/filesystem state in the owner-private attempt-003 authority.
+- [x] Preserve and validate the pre-expansion standard `pquota -u` plus nonenumerating exact-usage/filesystem state in the owner-private attempt-003 authority.
+- [x] Capture and validate the post-expansion research capacity and successor control-tier evidence in `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` without repeating research quota/filesystem commands.
 - [x] Preserve the historical 126-record restricted inventory and its checksum-bound planning authority.
 - [x] Complete the planning-only direct-child classification and seal the 2,841,265,664-byte proposed migration scope.
 - [x] Create the checksum-bound planning witness; retain `PLANNED_NOT_EXECUTED`, backup false, and owner execution authorization false.
 - [ ] Create and independently verify the backed-up authority copy.
 - [ ] Recreate the shared Git repository and both linked worktrees at exact commits.
 - [ ] Recreate or relink the EchoPrime environment without changing the pinned interpreter/checkpoint authority.
-- [ ] Update future C3 commands to `/restricted/projectnb` only; retain no hidden dependency on the old root.
+- [x] Bind substantial future C3 writes, temporary state, scheduler logs, partial downloads, and production state to `/restricted/projectnb`; retain the backed tier only for the bounded control plane.
 - [ ] Verify scheduler jobs see the new paths from a compute node.
-- [ ] Record RCS confirmation of partial-reallocation policy and quota units.
-- [ ] Record the after-state quota and restore test.
+- [ ] Activate and record the preferred 50/1,950-GB or minimum 25/1,975-GB free-pool allocation without moving the purchased research terabyte.
+- [ ] Capture a fresh post-adjustment byte/file/filesystem receipt and complete the restore test.
 
-The completed first item is a before-state witness only. A new after-expansion capture remains mandatory; the other backup, migration, worktree-recovery, and restore-test items remain open.
+Research expansion has been captured and passes. A new receipt remains mandatory after the control-tier adjustment; backup, migration, worktree-recovery, and restore-test items remain open.

@@ -21,15 +21,22 @@ SCC Storage-as-a-Service uses whole terabytes of 1,000 GB. This plan therefore t
 
 At exactly 2 TB, the requirement is 200,000,000,000 bytes and the maximum allowed projected peak is 1,800,000,000,000 bytes.
 
-## Current retained usage
+## Current retained usage and live capacity
 
-- owner-reported `/restricted/projectnb` use before this audit: 139.17 GB;
-- exact allocated bytes found under `/restricted/project/mimicecho`: 10,954,752,000 bytes;
-- sealed 2026-08-10 research quota: 989,000,000,000 bytes from the standard project-quota report;
-- sealed 2026-08-10 exact research-root allocated usage: 150,386,971,136 bytes from nonenumerating `du -x -s -B1`;
-- sealed filesystem capacity/used/available: 1,168,126,246,912 / 150,374,187,008 / 1,017,752,059,904 bytes.
+Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` produced `lvef_c3_live_quota.summary.json` (2,257 bytes; SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`). Composite successor `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` is bound to implementation commit `0800a0b4de93911cc39467acf2460a8d5ed6135a`; its 5,003-byte aggregate has SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`. It hash-revalidated the immutable parent and captured only contemporaneous control-tier evidence; no project-quota or research-filesystem command, storage inventory, source reconciliation, or cloud operation was repeated.
 
-The sealed live evidence supersedes the older 139.17-GB report for current-state interpretation. The migration term is runtime evidence, not a policy constant. Its checksum-bound planning witness records 2,841,265,664 planned bytes but remains `PLANNED_NOT_EXECUTED`; it neither proves migration nor permits adding those bytes to current usage. A future completion witness must state whether migrated bytes are already included in contemporaneous research-tier usage and must not blindly add the whole `/restricted/project` tree if an approved backed-up authority subset remains there.
+| Capacity authority | Exact value |
+|---|---:|
+| Research quota / usage / quota-available | 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes |
+| Research physical filesystem available | 2,092,672,483,328 bytes |
+| Research file quota / used / available | 33,554,432 / 106,228 / 33,448,204 |
+| Backed control quota / usage / quota-available | 11,000,000,000 / 10,959,364,608 / 40,635,392 bytes |
+| Backed control physical filesystem available | 2,046,820,352 bytes |
+| Backed control file quota / used / available | 360,448 / 47,189 / 313,259 |
+
+Research byte quota, file quota, minimum effective quota, underlying physical availability, and the frozen 200-GB reserve all pass. The research quota leaves 377,357,923,668 bytes after the 1,611,642,076,332-byte frozen peak; the physical filesystem leaves 431,417,418,068 bytes after required projected writes and reserve. The backed control tier passes file count but fails its byte-margin gate: 40,635,392 quota bytes are not sufficient for the prespecified 10,000,000,000-byte maximum additional control-plane write burden.
+
+The migration term remains runtime evidence rather than a policy constant. Its checksum-bound planning witness records 2,841,265,664 planned bytes but remains `PLANNED_NOT_EXECUTED`; it neither proves migration nor permits adding those bytes to current usage. A future completion witness must state whether migrated bytes are already included in contemporaneous research-tier usage and must not blindly add the whole `/restricted/project` tree if an approved backed-up authority subset remains there.
 
 ## Strategy A: raw plus every extracted derivative retained
 
@@ -37,7 +44,7 @@ This strategy retains all selected raw DICOMs and all extracted NPZ clips simult
 
 | Component | Current authority |
 |---|---|
-| Current projectnb quota/usage | Sealed evidence: 989,000,000,000-byte quota and 150,386,971,136 exact allocated usage bytes; the separate 140.04-GB display remains rounded and is not used as exact |
+| Current projectnb quota/usage | Sealed evidence: 1,989,000,000,000-byte quota and 150,387,011,072 usage bytes; the separate management-page display remains rounded and is not used as exact |
 | Planned disaster-tier migration | Planning classification passed for 2,841,265,664 bytes and remains `PLANNED_NOT_EXECUTED`; 10,954,752,000 bytes is the separate historical inventory total, not an executed-migration amount |
 | Selected raw DICOMs | 1,216,569,133,322 bytes across 335,984 current metadata-verified selected objects |
 | All extracted clips | Historical planning estimate approximately 288 GB; not an authority for the prospective run |
@@ -126,7 +133,7 @@ These values are frozen for the current planning stage. No additional cost inves
 
 The immutable aggregate resource plan uses a 2,000,000,000,000-byte quota, a frozen planning input of 152,275,355,648 current-usage bytes, a one-batch 92,286,910,464-byte active extraction cache, 1,376,190,464 bytes of clip embeddings, 18,554,880 bytes of study embeddings, and a 50,000,000,000-byte safety reserve. It projects a peak of 1,611,642,076,332 bytes and 388,357,923,668 bytes of headroom. Thus, the planned 2-TB allocation passes the 200-GB headroom rule. The minimum effective quota under this exact frozen plan is 1,811,642,076,332 bytes; the preferred nominal quota remains 2 TB. Phase 1E-D did not silently recompute this immutable plan using the later 150,386,971,136-byte live-usage observation.
 
-The sealed 2026-08-10 live receipt proves that the intended quota is not active. The effective capacity ceiling is 989,000,000,000 bytes, with -622,642,076,332 bytes of headroom relative to the frozen peak. Independently, filesystem available space is 1,017,752,059,904 bytes versus 1,661,255,105,196 required, a -643,503,045,292-byte deficit. Before the first body transfer, the additional one-terabyte allocation must be active and fresh `pquota`, filesystem identity/unit, and exact nonenumerating project-root usage evidence must show that both the project-quota and filesystem-availability gates pass.
+The post-expansion receipt proves the research allocation is active at 1,989,000,000,000 bytes. It leaves 377,357,923,668 quota bytes after the frozen peak, exceeding the unchanged 200,000,000,000-byte reserve by 177,357,923,668 bytes. Independently, 2,092,672,483,328 physical filesystem bytes are available, leaving 431,417,418,068 bytes after required projected writes and reserve. Another purchased terabyte is not indicated by the current one-batch plan. This research-capacity ruling does not cure the backed control-tier byte failure or authorize transfer.
 
 ## SCC quota cost authority
 
@@ -134,21 +141,23 @@ The owner-provided SCC storage estimate is accepted for planning. The previously
 
 The SCC quota charge is an administrative purchasing gate, not a scientific gate. No monthly storage rate is used or implied by this plan.
 
-## Copy-ready quota request
+## Copy-ready free-pool reallocation request
 
-> The current standard SCC quota report shows 989 GB on `/restricted/projectnb` and 11 GB on the backed-up tier. Please activate one additional 1-TB Storage-as-a-Service increment on `/restricted/projectnb`; do not further reduce the current backed-up allocation. The minimum effective research quota under the frozen one-batch plan is 1,811,642,076,332 bytes and the preferred nominal allocation is 2,000 GB. If current accounting persists, a one-TB increment would produce approximately 1,989 GB. Before any transfer, fresh `pquota`, filesystem identity, exact `df -B1`, and nonenumerating exact-usage evidence must show that both the project-quota and filesystem-availability gates pass. The project will retain the selected 4,530-study raw DICOM set and use a one-batch rolling extracted cache. The owner accepts the supplied SCC storage estimate for planning. Backup, migration, and recovery testing of the shared Git worktrees and irreplaceable restricted authorities remain separate prerequisites.
+> The machine receipt proves a current research quota of 1,989,000,000,000 bytes, which passes the frozen C3 minimum, physical-filesystem, file-count, and 200-GB-reserve gates. The owner-attested administrative composition assigns the purchased 1,000-GB Storage-as-a-Service allocation wholly to `/restricted/projectnb`; please leave that purchased allocation unchanged. The current backed tier is only 11,000,000,000 bytes, with 10,959,364,608 bytes used and 40,635,392 bytes available, so it fails the control-plane operating-margin gate. Please reallocate the free baseline pool to the preferred 50-GB backed / 950-GB non-backed split, producing total quotas of 50,000,000,000 bytes backed and 1,950,000,000,000 bytes research. If 50 GB cannot be retained, the minimum acceptable option is 25 GB backed and 1,975 GB research. After activation, the project will capture one fresh read-only quota/filesystem/file-count receipt before any DICOM body request.
 
-The historical 50-GB retained-backup option was provisional and was never a sufficiency authority. The live backed-up quota is now 11 GB. Do not reduce it further. Its final required size must be justified by the checksum-verified classified size of every authority requiring disaster-recovery protection plus an approved operating margin. Only the resulting classified migration witness may supply the migrated-byte term, and the resource plan must be reconciled against the actual research-tier quota without double counting.
+Both options preserve the frozen research gate. At the 1,611,642,076,332-byte peak, the preferred 1,950-GB research allocation leaves 338,357,923,668 bytes; the minimum 1,975-GB allocation leaves 363,357,923,668 bytes. The preferred 50-GB control tier gives the safer margin for Git/common-repository writes, owner-private receipts, scheduler logs, environment metadata, and preservation control artifacts. No administrative change is authorized by this document.
 
 ## Authorization rule
 
 Full C3 can be recommended only after the generated live resource report proves:
 
 - `effective_quota_bytes - projected_peak_bytes >= 200,000,000,000`;
+- sufficient physical-filesystem and file-count capacity independently of quota;
+- a backed control allocation with its required byte and file operating margins;
 - one-batch cache concurrency is sufficient;
 - no raw-DICOM deletion is needed;
 - the backed-up authority plan is complete;
 - requester-pays and SCC planning costs retain their frozen owner-accepted disposition;
 - an explicit owner authorization for the first DICOM transfer is subsequently granted.
 
-If the one-batch rolling plan misses the threshold, first reduce derivative concurrency and temporary/retry retention. If a policy-compliant one-batch plan still misses it, request another 1-TB increment; do not weaken raw retention, preservation, or safety gates.
+The current research tier already passes the one-batch threshold, so another purchased terabyte is not indicated. The remaining administrative capacity action is a free-pool reallocation that restores the backed control margin while retaining at least the 1,811,642,076,332-byte research minimum. Do not weaken raw retention, preservation, or safety gates.

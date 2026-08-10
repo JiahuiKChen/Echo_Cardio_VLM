@@ -1,6 +1,6 @@
 schema_version: 7
-analysis_version: phase1e-d-live-pretransfer-lock-v2
-status: phase1e_d_live_evidence_valid_capacity_failed_specification_lock_passed_execution_unimplemented_backup_migration_transfer_and_confirmatory_access_blocked
+analysis_version: phase1e-e-post-expansion-capacity-production-orchestration-lock-v1
+status: phase1e_e_research_capacity_passed_backed_control_failed_orchestration_implemented_offline_backup_final_packet_transfer_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -474,7 +474,7 @@ phase1e_bc_resource_metadata_preflight:
     further_cost_verification_required: false
     actual_dicom_transfer_authorization: NOT_YET_GRANTED
   storage:
-    storage_expansion_status: PARTIAL_REALLOCATION_OBSERVED_ADDITIONAL_ONE_TB_NOT_ACTIVE
+    storage_expansion_status: POST_EXPANSION_RESEARCH_ACTIVE_CONTROL_TIER_GATE_FAILED
     project_and_projectnb_are_separate_filesystems: true
     project_root_symlink: false
     projectnb_root_symlink: false
@@ -495,50 +495,79 @@ phase1e_bc_resource_metadata_preflight:
     minimum_effective_quota_bytes_under_current_plan: 1811642076332
     planned_two_tb_headroom_gate_passed: true
     planned_two_tb_headroom_gate_authority: FROZEN_HYPOTHETICAL_RESOURCE_PLAN
-    live_quota_capture_attempt_id: lvef_multitask_phase1ed_live_pretransfer_attempt_003
-    live_quota_capture_governing_commit: f50e89b936d9db55a0cb5843adef4f316126fe01
-    live_quota_aggregate_filename: lvef_c3_live_quota.summary.json
-    live_quota_aggregate_bytes: 2261
-    live_quota_aggregate_sha256: e0714eb4260973a118a6eab585ba87e55437bc48410b51ceee50182f43c961b9
-    live_quota_aggregate_status: FAIL_LIVE_QUOTA_GATE
+    live_quota_capture_attempt_id: lvef_multitask_phase1ee_post_expansion_capacity_attempt_002
+    live_quota_capture_governing_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
+    live_quota_aggregate_filename: lvef_c3_post_expansion_capacity.summary.json
+    live_quota_aggregate_bytes: 5003
+    live_quota_aggregate_sha256: 28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c
+    live_quota_aggregate_status: PASS_RESEARCH_CAPACITY_FAIL_BACKED_CONTROL_TIER
+    live_research_parent_attempt_id: lvef_multitask_phase1ee_post_expansion_capacity_attempt_001
+    live_research_parent_aggregate_filename: lvef_c3_live_quota.summary.json
+    live_research_parent_aggregate_bytes: 2257
+    live_research_parent_aggregate_sha256: 267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71
+    live_research_parent_revalidated_by_successor: true
+    live_research_quota_or_filesystem_commands_repeated_by_successor: false
     live_quota_receipt_validated: true
     live_quota_capture_validation_passed: true
     live_quota_capacity_gate_passed: false
-    live_quota_activation_definition: intended_two_tb_research_allocation_is_active
-    live_quota_activation_verified: false
+    live_quota_activation_definition: owner_attested_1000gb_saas_plus_989gb_baseline_research_allocation_matches_exact_1989gb_quota
+    live_quota_activation_verified: true
+    live_quota_activation_evidence_scope: machine_quota_proves_total_bytes_owner_attestation_provides_allocation_composition
     live_quota_capture_date: '2026-08-10'
     live_disaster_quota_display_gb: '11'
     live_disaster_usage_display_gb: '10.19'
-    live_research_quota_display_gb: '989'
+    live_research_quota_display_gb: '1989'
     live_research_usage_display_gb: '140.04'
-    live_research_quota_bytes: 989000000000
-    live_research_exact_allocated_usage_bytes: 150386971136
-    live_research_quota_available_bytes: 838613028864
-    live_filesystem_capacity_bytes: 1168126246912
+    live_research_quota_bytes: 1989000000000
+    live_research_exact_allocated_usage_bytes: 150387011072
+    live_research_quota_available_bytes: 1838612988928
+    live_filesystem_capacity_bytes: 2243046670336
     live_filesystem_used_bytes: 150374187008
-    live_filesystem_available_bytes: 1017752059904
+    live_filesystem_available_bytes: 2092672483328
     live_filesystem_unavailable_or_reserved_bytes: 0
-    live_project_quota_slack_bytes: -622642076332
-    live_filesystem_required_available_bytes: 1661255105196
-    live_filesystem_slack_bytes: -643503045292
-    live_effective_capacity_ceiling_bytes: 989000000000
-    live_effective_headroom_bytes: -622642076332
-    live_source_fit_gate_passed: false
-    live_project_quota_gate_passed: false
-    live_filesystem_availability_gate_passed: false
-    live_minimum_effective_quota_gate_passed: false
-    live_quota_deficit_to_minimum_bytes: 822642076332
-    live_quota_deficit_to_selected_source_bytes: 227569133322
+    live_project_quota_slack_bytes: 377357923668
+    live_filesystem_required_available_bytes: 1661255065260
+    live_filesystem_slack_bytes: 431417418068
+    live_effective_capacity_ceiling_bytes: 1989000000000
+    live_effective_headroom_bytes: 377357923668
+    live_source_fit_gate_passed: true
+    live_project_quota_gate_passed: true
+    live_filesystem_availability_gate_passed: true
+    live_minimum_effective_quota_gate_passed: true
+    live_quota_deficit_to_minimum_bytes: 0
+    live_quota_deficit_to_selected_source_bytes: 0
     live_migration_classification_authority_passed: true
     live_planned_migration_bytes: 2841265664
     live_migration_state: PLANNED_NOT_EXECUTED
     live_migration_completion_authority_passed: false
     live_backup_authority_passed: false
-    additional_tb_required_before_first_dicom_transfer: true
-    additional_one_tb_activation_required_to_reach_intended_plan: true
+    additional_tb_required_before_first_dicom_transfer: false
+    additional_one_tb_activation_required_to_reach_intended_plan: false
     additional_tb_required_beyond_intended_two_tb_plan: false
     scc_storage_estimate_accepted_as_owner_provided: true
     further_cost_verification_required: false
+    live_research_file_quota_count: 33554432
+    live_research_file_usage_count: 106228
+    live_research_file_available_count: 33448204
+    live_research_file_gate_passed: true
+    live_control_quota_bytes: 11000000000
+    live_control_exact_allocated_usage_bytes: 10959364608
+    live_control_quota_available_bytes: 40635392
+    live_control_filesystem_available_bytes: 2046820352
+    live_control_file_quota_count: 360448
+    live_control_file_usage_count: 47189
+    live_control_file_available_count: 313259
+    live_control_maximum_additional_write_burden_bytes: 10000000000
+    live_control_available_after_burden_bytes: -9959364608
+    live_control_byte_gate_passed: false
+    live_control_file_gate_passed: true
+    live_backed_control_tier_gate_passed: false
+    preferred_control_tier_quota_bytes: 50000000000
+    preferred_research_tier_quota_bytes: 1950000000000
+    minimum_control_tier_quota_bytes: 25000000000
+    minimum_research_tier_quota_bytes: 1975000000000
+    purchased_saas_allocation_projectnb_bytes: 1000000000000
+    purchased_saas_allocation_composition_authority: OWNER_ATTESTED_ADMINISTRATIVE_COMPOSITION
   lvef_authority:
     separate_from_canonical_multitask_mapping: true
     synthetic_mapping_row_required: false
@@ -570,7 +599,7 @@ phase1e_bc_resource_metadata_preflight:
     specification_lock_bytes: 11792
     specification_lock_sha256: 94f6df58e21f31e7582bade34527eccd1e14d2300ad1966c8ba67b9da69b1461
     specification_lock_status: PASS_SPECIFICATION_ONLY_EXECUTION_UNIMPLEMENTED
-    execution_mode: SPECIFICATION_ONLY
+    execution_mode: IMPLEMENTED_OFFLINE_LOCK_UNAUTHORIZED
     specification_lock_passed: true
     immutable_aggregate_authorities_expected: 12
     immutable_aggregate_authorities_hash_verified: 12
@@ -578,27 +607,35 @@ phase1e_bc_resource_metadata_preflight:
     all_supplied_authority_file_hashes_verified_from_actual_paths: true
     provided_unverified_authority_count: 0
     hash_verification_establishes_semantic_authority: false
-    production_semantic_and_source_receipt_validation_implemented: false
-    live_quota_and_headroom_gate_bound_to_lock: false
-    backup_migration_authority_bound_to_lock: false
+    production_semantic_and_source_receipt_validation_implemented: true
+    live_quota_and_headroom_gate_bound_to_lock: true
+    backup_migration_authority_bound_to_lock: true
     source_body_download_authorized: false
     production_batches: 19
     maximum_concurrent_batches: 1
     dependent_finalizer_required: true
-    production_downloader_implemented_and_validated: false
-    production_batch_runner_implemented_and_validated: false
-    production_finalizer_implemented_and_validated: false
+    production_downloader_implemented_and_validated: true
+    production_batch_runner_implemented_and_validated: true
+    production_finalizer_implemented_and_validated: true
     execution_authorized: false
     submission_authorized: false
     scientific_execution_authorized: false
     remaining_execution_blockers:
-      - PRODUCTION_AUTHORITY_SEMANTIC_AND_SOURCE_RECEIPT_VALIDATION_NOT_IMPLEMENTED
-      - LIVE_QUOTA_AND_HEADROOM_GATE_NOT_BOUND_TO_LOCK
-      - BACKUP_MIGRATION_AUTHORITY_NOT_BOUND_TO_LOCK
-      - PRODUCTION_DOWNLOADER_NOT_IMPLEMENTED
-      - PRODUCTION_BATCH_RUNNER_NOT_IMPLEMENTED
-      - PRODUCTION_FINALIZER_NOT_IMPLEMENTED
+      - BACKED_CONTROL_TIER_BYTE_GATE_FAILED
+      - POST_REALLOCATION_CAPACITY_RECEIPT_REQUIRED
+      - VERIFIED_BACKUP_AND_RECOVERY_WITNESS_ABSENT
+      - FINAL_CURRENT_COMMIT_ENVIRONMENT_AUTHORITY_PACKET_AND_LAUNCH_ENVELOPE_NOT_FROZEN
       - SEPARATE_OWNER_TRANSFER_AUTHORIZATION_ABSENT
+    phase1ee_implementation_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
+    phase1ee_orchestration_contract_version: 2
+    phase1ee_dependency_light_tests_passed: 534
+    phase1ee_dependency_light_tests_failed: 0
+    phase1ee_dependency_light_tests_skipped: 2
+    phase1ee_scheduler_submission_performed: false
+    phase1ee_cloud_requests_performed: 0
+    phase1ee_real_dicom_extraction_performed: false
+    phase1ee_echoprime_inference_performed: false
+    phase1ee_model_fitting_performed: false
     full_c3_owner_authorization: false
   targeted_openevidence_status: NOT_GENERATED_ZERO_LITERATURE_ANSWERABLE_AMBIGUITIES
   confirmatory_access_open: false
