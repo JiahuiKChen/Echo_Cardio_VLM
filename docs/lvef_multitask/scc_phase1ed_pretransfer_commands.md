@@ -2,7 +2,7 @@
 
 Status: read-only quota/filesystem capture and offline specification lock only. This runbook does not authorize a cloud request, scheduler submission, quota change, file move/deletion, object-body transfer, DICOM processing, extraction, EchoPrime inference, embedding generation, modeling, prediction, or confirmatory-performance access.
 
-Run every block in a strict child Bash process. Replace `__PHASE1ED_IMPLEMENTATION_COMMIT__` only with the reviewed implementation commit after local, origin, and SCC equality is established. The existing Phase 1E-B/C run root and immutable job-7104307/Autoclass outputs remain unchanged.
+Run every block in a strict child Bash process. Replace `__PHASE1ED_IMPLEMENTATION_COMMIT__` only with the reviewed implementation commit after local, origin, and SCC equality is established. The existing Phase 1E-B/C run root and immutable job-7104307/Autoclass outputs remain unchanged. Attempt 001 is preserved after its pre-capture portability stop: its owner-private root carried SCC's inherited setgid-only mode `2700`, no capture environment or live-quota output was created, and it must not be reused. The commands below use the fresh no-clobber attempt 002.
 
 ## 1. Bind the existing owner-private authorities
 
@@ -14,7 +14,7 @@ umask 077
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
 TARGET_COMMIT=__PHASE1ED_IMPLEMENTATION_COMMIT__
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_001
+PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_002
 
 test -f "$SESSION_ENV"
 test -O "$SESSION_ENV"
@@ -26,10 +26,20 @@ EXPECTED_COMMIT="$TARGET_COMMIT"
 test "$(git -C "$WORKTREE" branch --show-current)" = codex/lvef-multitask-revalidation
 test "$(git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test -z "$(git -C "$WORKTREE" status --porcelain --untracked-files=no)"
+test ! -e "$PHASE1ED_ATTEMPT_ROOT"
+install -d -m 700 "$PHASE1ED_ATTEMPT_ROOT"
+install -d -m 700 "$PHASE1ED_ATTEMPT_ROOT/restricted"
 test -d "$PHASE1ED_ATTEMPT_ROOT"
 test -O "$PHASE1ED_ATTEMPT_ROOT"
 test ! -L "$PHASE1ED_ATTEMPT_ROOT"
-test "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT")" = 700
+case "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT")" in
+  700|2700) ;;
+  *) exit 2 ;;
+esac
+case "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT/restricted")" in
+  700|2700) ;;
+  *) exit 2 ;;
+esac
 
 CAPTURE_ENV="$PHASE1ED_ATTEMPT_ROOT/restricted/phase1ed_live_quota_capture.env"
 test ! -e "$CAPTURE_ENV"
@@ -63,7 +73,7 @@ The capture environment contains SCC paths and the quota principal, so it remain
 bash --noprofile --norc <<'PHASE1ED_CAPTURE'
 set -euo pipefail
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_001
+PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_002
 CAPTURE_ENV="$PHASE1ED_ATTEMPT_ROOT/restricted/phase1ed_live_quota_capture.env"
 
 "$WORKTREE/scripts/scc_capture_lvef_c3_live_quota.sh" \
@@ -84,7 +94,7 @@ umask 077
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
 TARGET_COMMIT=__PHASE1ED_IMPLEMENTATION_COMMIT__
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_001
+PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_002
 CHECKPOINT=/restricted/project/mimicecho/echoprime_weights/echo_prime_encoder.pt
 
 test -f "$SESSION_ENV"
@@ -133,7 +143,7 @@ Keep both outputs under the restricted attempt root during this phase. Review on
 ```bash
 bash --noprofile --norc <<'PHASE1ED_REVIEW'
 set -euo pipefail
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_001
+PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_002
 for artifact in \
   "$PHASE1ED_ATTEMPT_ROOT/aggregate/lvef_c3_live_quota.summary.json" \
   "$PHASE1ED_ATTEMPT_ROOT/aggregate/lvef_c3_production_pretransfer_lock.summary.json"; do

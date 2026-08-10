@@ -20,6 +20,13 @@ stat_mode() {
   stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
+is_owner_private_directory() {
+  case "$(stat_mode "$1")" in
+    700|2700) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 stat_follow_size() {
   stat -Lc '%s' "$1" 2>/dev/null || stat -Lf '%z' "$1"
 }
@@ -125,7 +132,7 @@ done
 
 [[ ! -L "$PHASE1ED_ATTEMPT_ROOT" && -d "$PHASE1ED_ATTEMPT_ROOT" && \
   -O "$PHASE1ED_ATTEMPT_ROOT" ]] || safe_fail ATTEMPT_ROOT_IDENTITY_INVALID
-[[ "$(stat_mode "$PHASE1ED_ATTEMPT_ROOT")" = '700' ]] || \
+is_owner_private_directory "$PHASE1ED_ATTEMPT_ROOT" || \
   safe_fail ATTEMPT_ROOT_MODE_INVALID
 ATTEMPT_ROOT_REAL="$(cd "$PHASE1ED_ATTEMPT_ROOT" && pwd -P)"
 case "$ATTEMPT_ROOT_REAL/" in
@@ -145,7 +152,7 @@ ensure_private_directory() {
   fi
   [[ -d "$lvef_directory" && -O "$lvef_directory" ]] || \
     safe_fail OUTPUT_DIRECTORY_IDENTITY_INVALID
-  [[ "$(stat_mode "$lvef_directory")" = '700' ]] || \
+  is_owner_private_directory "$lvef_directory" || \
     safe_fail OUTPUT_DIRECTORY_MODE_INVALID
 }
 
@@ -156,6 +163,10 @@ CAPTURE_DIR="$ATTEMPT_ROOT_REAL/restricted/live_quota_capture"
   safe_fail CAPTURE_OUTPUT_COLLISION
 mkdir -- "$CAPTURE_DIR"
 chmod 700 "$CAPTURE_DIR"
+[[ -d "$CAPTURE_DIR" && -O "$CAPTURE_DIR" && ! -L "$CAPTURE_DIR" ]] || \
+  safe_fail CAPTURE_DIRECTORY_IDENTITY_INVALID
+is_owner_private_directory "$CAPTURE_DIR" || \
+  safe_fail CAPTURE_DIRECTORY_MODE_INVALID
 
 RESTRICTED_RECEIPT="$CAPTURE_DIR/live_quota_raw_receipt.json"
 AGGREGATE_OUTPUT="$ATTEMPT_ROOT_REAL/aggregate/lvef_c3_live_quota.summary.json"

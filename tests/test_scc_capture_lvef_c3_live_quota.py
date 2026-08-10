@@ -110,7 +110,12 @@ def _git(*args: str, cwd: Path) -> str:
     return result.stdout.strip()
 
 
-def _fixture(root: Path, *, malformed_pquota: bool = False) -> tuple[Path, Path, str]:
+def _fixture(
+    root: Path,
+    *,
+    malformed_pquota: bool = False,
+    attempt_mode: int = 0o700,
+) -> tuple[Path, Path, str]:
     worktree = root / "worktree"
     scripts = worktree / "scripts"
     scripts.mkdir(parents=True)
@@ -132,6 +137,7 @@ def _fixture(root: Path, *, malformed_pquota: bool = False) -> tuple[Path, Path,
     for directory in (evidence, attempt, research, tools):
         directory.mkdir()
         directory.chmod(0o700)
+    attempt.chmod(attempt_mode)
 
     classification_path = evidence / "classification.json"
     witness_path = evidence / "witness.json"
@@ -207,8 +213,15 @@ def _run(worktree: Path, capture_env: Path, root: Path) -> subprocess.CompletedP
 
 def test_wrapper_is_strict_and_contains_only_bounded_read_only_commands() -> None:
     source = WRAPPER.read_text(encoding="utf-8")
+    runbook = (ROOT / "docs" / "lvef_multitask" / "scc_phase1ed_pretransfer_commands.md").read_text(
+        encoding="utf-8"
+    )
     assert "set -euo pipefail" in source
     assert "umask 077" in source
+    assert "700|2700" in source
+    assert "700|2700" in runbook
+    assert 'stat_mode "$PHASE1ED_ATTEMPT_ROOT")" = \'700\'' not in source
+    assert 'stat -c \'%a\' "$PHASE1ED_ATTEMPT_ROOT")" = 700' not in runbook
     for required in (
         '"$PQUOTA_BIN" -u',
         '"$FINDMNT_BIN" --json',
@@ -255,6 +268,45 @@ def test_valid_989gb_capture_is_operational_pass_but_quota_no_go() -> None:
         assert stat.S_IMODE(aggregate.stat().st_mode) == 0o600
         for path in receipt.parent.glob("*.txt"):
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_setgid_owner_private_attempt_root_is_accepted() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        worktree, capture_env, _ = _fixture(root, attempt_mode=0o2700)
+        for output_directory in (
+            root / "attempt" / "restricted",
+            root / "attempt" / "aggregate",
+        ):
+            output_directory.mkdir()
+            output_directory.chmod(0o2700)
+        result = _run(worktree, capture_env, root)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "LIVE_QUOTA_CAPTURE_VALIDATION=PASS" in result.stdout
+        assert "PASS_CAPTURED_NO_GO" in result.stdout
+
+
+def test_group_readable_attempt_root_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        worktree, capture_env, _ = _fixture(root, attempt_mode=0o750)
+        result = _run(worktree, capture_env, root)
+        assert result.returncode == 2
+        assert "FAILED_ATTEMPT_ROOT_MODE_INVALID" in result.stdout
+        assert not (root / "attempt" / "restricted").exists()
+
+
+def test_group_readable_existing_output_directory_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        worktree, capture_env, _ = _fixture(root)
+        restricted = root / "attempt" / "restricted"
+        restricted.mkdir()
+        restricted.chmod(0o750)
+        result = _run(worktree, capture_env, root)
+        assert result.returncode == 2
+        assert "FAILED_OUTPUT_DIRECTORY_MODE_INVALID" in result.stdout
+        assert not (root / "attempt" / "aggregate").exists()
 
 
 def test_invalid_raw_evidence_fails_and_never_creates_aggregate() -> None:
