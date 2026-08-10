@@ -167,7 +167,11 @@ HIGH_CONFIDENCE_CLOUD_SECRET_RES = (
     re.compile(r"\bGOCSPX-[A-Za-z0-9_-]{20,}"),
     re.compile(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----"),
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.gserviceaccount\.com\b", re.IGNORECASE),
-    re.compile(r"\b[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?=[A-Z0-9-]{20}\b)(?=[A-Z0-9-]*[0-9])"
+        r"[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}\b",
+        re.IGNORECASE,
+    ),
 )
 CLOUD_CREDENTIAL_JSON_KEY_RE = re.compile(
     r"(?i)[\"'](?:refresh_token|access_token|id_token|client_secret|private_key|private_key_id)"

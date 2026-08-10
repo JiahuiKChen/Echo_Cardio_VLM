@@ -150,3 +150,22 @@ def test_git_gate_blocks_forced_cloud_session_file_and_high_confidence_token() -
             except SafetyPolicyError:
                 continue
             raise AssertionError(f"Cloud credential artifact passed Git safety gate: {filename}")
+
+
+def test_git_gate_does_not_treat_digit_free_kebab_option_as_billing_identifier() -> None:
+    policy, policy_sha = load_policy(SAFE_EXPORT_POLICY)
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory)
+        _git(repo, "init", "-q")
+        path = repo / "runbook.md"
+        path.write_text(
+            "Use --resume-ledger-schema for the frozen schema.\n",
+            encoding="utf-8",
+        )
+        _git(repo, "add", "--", path.name)
+        result = scan_staged_git_safety(
+            repo=repo,
+            policy=policy,
+            policy_sha256=policy_sha,
+        )
+        assert result["status"] == "PASS"

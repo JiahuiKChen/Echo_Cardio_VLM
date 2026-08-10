@@ -1,0 +1,167 @@
+schema_version: 2
+contract_id: lvef_multitask_c3_production_orchestration_v2
+status: IMPLEMENTED_OFFLINE_LOCK_UNAUTHORIZED
+mode: PRODUCTION_IMPLEMENTED_OWNER_GATED_UNAUTHORIZED
+
+cohort:
+  release: mimic-iv-echo/1.0
+  selected_studies: 4530
+  selected_subjects: 4530
+  normalized_source_objects: 335984
+  selected_source_bytes: 1216569133322
+  selected_manifest_sha256: 920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1
+  split_map_sha256: c5101cea1d76b38c6bb4517edf4b463b338d7505032cfa40bc8f27ca5b97e517
+  selected_source_manifest_sha256: 35071385477515e40e6cc1503561b7c7aa434127435ce91aa3ae8b0a009188ff
+  outside_selected_studies_permitted: false
+  implicit_cohort_expansion_permitted: false
+  object_listing_permitted: false
+
+batching:
+  algorithm: numeric_subject_then_numeric_study_contiguous_v1
+  batch_prefix: c3_batch_
+  batch_count: 19
+  studies_per_full_batch: 250
+  final_batch_studies: 30
+  default_active_batches: 1
+  maximum_active_batches_after_capacity_proof: 2
+  study_may_span_batches: false
+
+authority:
+  branch: codex/lvef-multitask-revalidation
+  execution_contract_version: 2
+  state_machine_schema_filename: lvef_c3_state_machine_v2.json
+  state_machine_schema_sha256: 6d00975595eb15f87d6c00e3104a4f3d00630d8d2738ddaaaa4c2fced2e06e94
+  resume_ledger_schema_filename: lvef_c3_resume_ledger_v2.json
+  resume_ledger_schema_sha256: 6fcc6d6bdeac8c430e22599f82cfd1501124e6049552fd3b38f0f78af4175926
+  runtime_bindings_required:
+    - git_commit
+    - orchestration_contract_sha256
+    - selected_manifest_sha256
+    - selected_source_manifest_sha256
+    - source_metadata_sha256
+    - split_map_sha256
+    - batch_plan_sha256
+    - checkpoint_sha256
+    - environment_receipt_sha256
+    - state_machine_schema_sha256
+    - resume_ledger_schema_sha256
+    - gcloud_resolution_receipt_sha256
+    - gcloud_executable_sha256
+  changed_authority_requires_new_attempt: true
+
+storage:
+  production_root: /restricted/projectnb/mimicecho/lvef_multitask_c3_v2
+  raw_root: /restricted/projectnb/mimicecho/lvef_multitask_c3_v2/attempts/{attempt_id}/raw
+  extracted_cache_root: /restricted/projectnb/mimicecho/lvef_multitask_c3_v2/attempts/{attempt_id}/extracted_cache
+  state_root: /restricted/projectnb/mimicecho/lvef_multitask_c3_v2/attempts/{attempt_id}/state
+  partial_suffix: .partial
+  largest_active_extraction_cache_bytes: 92286910464
+  required_free_reserve_bytes: 200000000000
+  one_batch_default_enforced: true
+  two_batch_overlap_authorized: false
+  raw_deletion_enabled: false
+  extracted_cache_retirement_implemented: true
+  extracted_cache_retirement_authorized: false
+  owner_cache_retirement_authorization_required: true
+
+downloader:
+  implementation_mode: AUTHORIZATION_GATED_EXACT_OBJECT_TRANSPORT
+  live_transport_present: true
+  live_requests_authorized: false
+  exact_manifest_objects_only: true
+  billing_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
+  cloudsdk_config_environment_variable: LVEF_C3_CLOUDSDK_CONFIG
+  cloudsdk_config_receipt_environment_variable: LVEF_C3_CLOUDSDK_CONFIG_RECEIPT
+  cloudsdk_config_receipt_sha256_environment_variable: LVEF_C3_CLOUDSDK_CONFIG_RECEIPT_SHA256
+  billing_project_in_argv_permitted: false
+  billing_project_in_logs_permitted: false
+  maximum_attempts_per_object: 5
+  retry_backoff_initial_seconds: 2
+  retry_backoff_max_seconds: 30
+  token_refresh_interval_seconds: 2400
+  streaming_digest_backend: google_crc32c_c
+  streaming_digest_chunk_bytes: 8388608
+  retryable_failure_classes:
+    - TRANSIENT_NETWORK
+    - TIMEOUT
+    - HTTP_408
+    - HTTP_429
+    - HTTP_5XX
+  nonretryable_failure_classes:
+    - AUTHENTICATION
+    - AUTHORIZATION
+    - BILLING
+    - MANIFEST
+    - OWNERSHIP_CONFLICT
+    - GENERATION_MISMATCH
+    - SIZE_MISMATCH
+    - CHECKSUM_MISMATCH
+    - ZERO_BYTE
+    - HTTP_OTHER_4XX
+  verification_required:
+    - size_bytes
+    - generation
+    - md5_base64
+    - crc32c_base64
+    - local_sha256
+  atomic_no_clobber_finalization: true
+
+state_machine:
+  initial_state: PLANNED
+  states:
+    - PLANNED
+    - DOWNLOAD_IN_PROGRESS
+    - DOWNLOAD_VERIFIED
+    - DICOM_AUDIT_COMPLETE
+    - EXTRACTION_COMPLETE
+    - EMBEDDING_COMPLETE
+    - STUDY_POOLING_COMPLETE
+    - PRESERVATION_COMPLETE
+    - CACHE_RETIREMENT_ELIGIBLE
+    - FINALIZED
+    - FAILED_RETRYABLE
+    - FAILED_NONRETRYABLE
+    - QUARANTINED
+  terminal_states:
+    - FINALIZED
+    - FAILED_NONRETRYABLE
+    - QUARANTINED
+  file_existence_may_promote_state: false
+  checksummed_receipt_required_for_every_transition: true
+  prior_attempt_overwrite_permitted: false
+
+cache_retirement:
+  raw_dicom_deletion_default_authorized: false
+  raw_dicom_deletion_owner_authorizable: false
+  extracted_cache_retirement_default_authorized: false
+  extracted_cache_retirement_owner_authorizable: true
+  required_state: CACHE_RETIREMENT_ELIGIBLE
+  required_completed_states:
+    - DOWNLOAD_VERIFIED
+    - DICOM_AUDIT_COMPLETE
+    - EXTRACTION_COMPLETE
+    - EMBEDDING_COMPLETE
+    - STUDY_POOLING_COMPLETE
+    - PRESERVATION_COMPLETE
+  explicit_owner_authorization_required: true
+  preservation_receipt_required: true
+
+embedding:
+  checkpoint_filename: echo_prime_encoder.pt
+  checkpoint_sha256: 7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b
+  clip_dimension: 512
+  clip_dtype: float32
+  encoder_only: true
+  view_classifier_used: false
+
+authorization:
+  source_body_download: false
+  scheduler_submission: false
+  real_dicom_decode: false
+  cine_extraction: false
+  echoprime_inference: false
+  embedding_generation: false
+  cache_retirement: false
+  model_fitting: false
+  prediction_generation: false
+  confirmatory_performance_access: false

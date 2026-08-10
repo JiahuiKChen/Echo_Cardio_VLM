@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "artifact_type": "lvef_c3_resume_ledger_schema_v2",
+  "authority_fields": [
+    "git_commit",
+    "orchestration_contract_sha256",
+    "selected_manifest_sha256",
+    "selected_source_manifest_sha256",
+    "source_metadata_sha256",
+    "split_map_sha256",
+    "batch_plan_sha256",
+    "checkpoint_sha256",
+    "environment_receipt_sha256",
+    "state_machine_schema_sha256",
+    "resume_ledger_schema_sha256",
+    "gcloud_resolution_receipt_sha256",
+    "gcloud_executable_sha256"
+  ],
+  "authorization_state": "UNAUTHORIZED",
+  "ledger_fields": [
+    "schema_version",
+    "artifact_type",
+    "attempt_id",
+    "status",
+    "authority",
+    "journal_sequence",
+    "journal_head_sha256",
+    "batches"
+  ],
+  "batch_fields": [
+    "state",
+    "resume_state",
+    "completed_states",
+    "events",
+    "download_attempts",
+    "download_verification_receipts",
+    "download_recovery_receipts",
+    "download_manifest_sha256",
+    "selected_batch_manifest_sha256"
+  ],
+  "batch_scoped_ledgers_required": true,
+  "shared_array_task_ledger_mutation_permitted": false,
+  "download_start_transition_receipt_required": true,
+  "download_transaction_recovery_receipt_required": true,
+  "journal_artifact_type": "lvef_c3_resume_journal_delta_v2",
+  "journal_operation_set": [
+    "TRANSITION",
+    "SELECTED_BATCH_MANIFEST",
+    "DOWNLOAD_ATTEMPT",
+    "DOWNLOAD_VERIFIED",
+    "DOWNLOAD_MANIFEST"
+  ],
+  "full_ledger_snapshot_per_object_permitted": false,
+  "no_clobber": true,
+  "schema_version": 2,
+  "stale_or_partial_artifact_may_promote_state": false
+}

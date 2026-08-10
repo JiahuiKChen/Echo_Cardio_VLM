@@ -1,0 +1,20 @@
+{
+  "additional_control_write_burden_components": {
+    "authority_and_receipt_growth": 1000000000,
+    "environment_checkpoint_control_metadata": 1000000000,
+    "git_pack_repack_and_recovery_transient": 6000000000,
+    "operational_contingency": 2000000000
+  },
+  "all_substantial_production_writes_must_target_projectnb": true,
+  "current_control_quota_may_be_reduced": false,
+  "maximum_additional_control_file_count_burden": 100000,
+  "maximum_additional_control_write_burden_bytes": 10000000000,
+  "minimum_control_quota_option_bytes": 25000000000,
+  "minimum_option_research_quota_bytes": 1975000000000,
+  "policy_id": "lvef_c3_backed_control_tier_v1",
+  "preferred_control_quota_option_bytes": 50000000000,
+  "preferred_option_research_quota_bytes": 1950000000000,
+  "production_additional_research_file_count_upper_bound": 3500000,
+  "purchased_saas_bytes_remaining_on_projectnb": 1000000000000,
+  "schema_version": 1
+}

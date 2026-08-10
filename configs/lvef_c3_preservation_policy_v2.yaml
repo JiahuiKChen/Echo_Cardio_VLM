@@ -1,0 +1,67 @@
+schema_version: 2
+policy_id: lvef_c3_prospective_preservation_v2
+status: IMPLEMENTED_UNAUTHORIZED
+
+source_authority:
+  selected_only: true
+  outside_selected_studies_permitted: false
+  exact_batch_accounting_required: true
+  source_receipt_checksums_required: true
+
+retention:
+  raw_dicom_deletion_enabled: false
+  raw_dicoms_retained_during_active_analysis: true
+  extracted_cache_retirement_implemented: true
+  extracted_cache_retirement_authorized_by_default: false
+  extracted_cache_retirement_scope: EXTRACTED_NPZ_CLIP_SUBTREE_ONLY
+  dicom_extraction_metadata_retained: true
+  extracted_cache_owner_authorization_required: true
+  failed_attempt_evidence_preserved: true
+  overwrite_prior_attempt_permitted: false
+
+cache_retirement_prerequisites:
+  - DOWNLOAD_VERIFIED
+  - DICOM_AUDIT_COMPLETE
+  - EXTRACTION_COMPLETE
+  - EMBEDDING_COMPLETE
+  - STUDY_POOLING_COMPLETE
+  - PRESERVATION_COMPLETE
+  - CACHE_RETIREMENT_ELIGIBLE
+
+finalization:
+  expected_batches: 19
+  expected_selected_studies: 4530
+  expected_selected_subjects: 4530
+  expected_source_objects: 335984
+  expected_source_bytes: 1216569133322
+  expected_historical_no_cine_disposition_count: 5
+  outside_selected_studies_allowed: 0
+  missing_finalized_batches_allowed: 0
+  symlinks_allowed: false
+  aggregate_schemas_closed: true
+  silent_scientific_repair_permitted: false
+
+provenance_fields:
+  - safe_relative_path
+  - file_size_bytes
+  - sha256
+  - source_commit
+  - command_checksum
+  - config_checksum
+  - checkpoint_checksum
+  - python_version
+  - pytorch_version
+  - torchvision_version
+  - cuda_version
+  - cudnn_version
+  - scheduler_job_identity
+  - run_timestamp_utc
+  - cohort_version
+  - split_version
+  - execution_contract_version
+  - aggregate_safety_gate_result
+
+authorization:
+  preservation_execution: false
+  extracted_cache_retirement: false
+  raw_dicom_deletion: false

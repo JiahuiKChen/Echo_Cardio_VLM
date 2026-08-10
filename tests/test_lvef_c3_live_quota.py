@@ -186,9 +186,9 @@ def _bundle(root: Path, *, quota_gb: str = "2000") -> tuple[Path, dict]:
         "                              quota     quota     usage     usage\n"
         "project space                 (GB)      (files)   (GB)      (files)\n"
         "----------------------------- --------- --------- --------- ---------\n"
-        f"/rproject/{PRINCIPAL}          11        25000        10.19     20123\n"
+        f"/rproject/{PRINCIPAL}          11        500000       10.19     20123\n"
         "synthetic_owner                10.19     20122\n"
-        f"/rprojectnb/{PRINCIPAL}        {quota_gb}      500000       140.04    335984\n"
+        f"/rprojectnb/{PRINCIPAL}        {quota_gb}      10000000     140.04    335984\n"
         "synthetic_owner                140.04    335983\n"
     ).encode("utf-8")
     df_payload = (
@@ -253,7 +253,7 @@ def _bundle(root: Path, *, quota_gb: str = "2000") -> tuple[Path, dict]:
             "research_row_role": "RESEARCH_NOT_BACKED_UP",
             "quota_display_value": quota_gb,
             "quota_display_unit": "GB",
-            "quota_files_display_value": "500000",
+            "quota_files_display_value": "10000000",
             "usage_display_value": "140.04",
             "usage_display_unit": "GB",
             "usage_files_display_value": "335984",
@@ -370,7 +370,10 @@ def test_pquota_file_count_columns_are_bound_but_never_used_as_bytes() -> None:
         path, receipt = _bundle(Path(directory), quota_gb="989")
         raw = Path(receipt["commands"]["pquota"]["stdout"]["path"])
         text = raw.read_text(encoding="utf-8")
-        text = text.replace("500000       140.04    335984", "999999999999 140.04    888888888888")
+        text = text.replace(
+            "10000000     140.04    335984",
+            "999999999999 140.04    888888888888",
+        )
         _rewrite_raw(receipt, "pquota", "stdout", text.encode("utf-8"))
         mapping = receipt["pquota_research_mapping"]
         mapping["quota_files_display_value"] = "999999999999"
