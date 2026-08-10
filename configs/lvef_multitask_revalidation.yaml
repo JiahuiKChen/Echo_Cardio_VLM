@@ -1,6 +1,6 @@
 schema_version: 7
-analysis_version: phase1e-bc-gcp-authentication-portability-repair-v2
-status: phase1e_bc_gcp_authentication_and_metadata_preflight_only_full_c3_and_confirmatory_access_blocked
+analysis_version: phase1e-bc-autoclass-source-cost-adjudication-v1
+status: phase1e_bc_source_and_cost_authority_passed_full_c3_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -74,10 +74,10 @@ google_cloud_provenance:
     bigquery_billing_project_environment_variable: LVEF_C3_GCP_BILLING_PROJECT
     exact_identifiers_may_be_written_to_git: false
     requester_pays_value_capture_status: PASS_PREFLIGHT_ENV_READY
-    authentication_status: PENDING_PORTABLE_TOOLING_REPAIR_AND_RUNTIME_GATE
-    billing_link_status: PENDING_RUNTIME_GATE
-    metadata_access_status: NOT_RUN_UNDER_NEW_AUTHORITY
-    bigquery_access_status: NOT_RUN_UNDER_NEW_AUTHORITY
+    authentication_status: PASS_PINNED_GCLOUD_AND_ADC
+    billing_link_status: PASS
+    metadata_access_status: PASS_METADATA_ONLY
+    bigquery_access_status: PASS_DRY_RUN_ZERO_ROWS
   credential_state:
     classification: CREDENTIAL_STATE
     credentials_remain_scc_only: true
@@ -434,17 +434,41 @@ phase1e_bc_resource_metadata_preflight:
   export_mode: MANUSCRIPT_OR_GIT_EXPORT
   authorization_recorded_date: '2026-08-05'
   full_selected_object_metadata_preflight:
-    status: PENDING_SCC_EXECUTION
+    status: PASS_CURRENT_SELECTED_SOURCE_INVENTORY_FOR_PROSPECTIVE_C3
+    source_scheduler_job_id: 7104307
     selected_studies: 4530
     selected_subjects: 4530
     normalized_requests: 335984
     smoke_verified_requests: 252
-    requests_without_full_phase1e_bc_metadata_verification: 335732
-    exact_source_bytes: PENDING
-    missing_objects: PENDING
-    changed_objects: PENDING
-    ownership_conflicts: PENDING
+    requests_without_full_phase1e_bc_metadata_verification: 0
+    metadata_verified_requests: 335984
+    exact_source_bytes: 1216569133322
+    missing_objects: 0
+    unexpected_selected_objects: 0
+    ownership_conflicts: 0
+    historical_object_identity_authority: NOT_ESTABLISHED_NO_HISTORICAL_COMPARATORS
     object_bodies_authorized: false
+  autoclass_adjudication:
+    attempt_id: phase1ebc_autoclass_adjudication_attempt_002
+    targeted_bucket_get_requests: 1
+    raw_observation_state: KEY_ABSENT
+    effective_semantic_state: ABSENT_CONFIGURATION_DEFAULT_DISABLED
+    authoritatively_disabled: true
+    object_listing_repeated: false
+    storage_audit_repeated: false
+    object_body_bytes_read: 0
+    aggregate_safety_gate_passed: true
+  requester_pays_cost:
+    status: PASS_RATE_EXPLICIT_PLANNING_ESTIMATE
+    currency: USD
+    original_low: '136.101859'
+    original_base: '142.906689'
+    original_high: '171.488027'
+    revised_low: '136.101850'
+    revised_base: '142.906680'
+    revised_high: '171.488015'
+    invoice_guarantee: false
+    owner_trial_credit_is_independent_billing_authority: false
   storage:
     storage_expansion_status: APPROVED_OR_IMMINENT_PENDING_PQUOTA_ACTIVATION
     project_and_projectnb_are_separate_filesystems: true
@@ -458,10 +482,13 @@ phase1e_bc_resource_metadata_preflight:
     required_free_bytes: 200000000000
     complete_200gb_reallocation_recommended_now: false
     partial_retained_backed_up_quota_preference_gb: 50
-    exact_current_research_usage_bytes: PENDING_CONTEMPORANEOUS_SCC_WITNESS
-    exact_projected_peak_bytes: PENDING_FULL_METADATA_PREFLIGHT
-    exact_projected_headroom_bytes: PENDING_FULL_METADATA_PREFLIGHT
-    additional_tb_required: PENDING_FULL_METADATA_PREFLIGHT
+    resource_plan_current_usage_bytes: 152275355648
+    exact_projected_peak_bytes: 1611642076332
+    exact_projected_headroom_bytes: 388357923668
+    minimum_effective_quota_bytes_under_current_plan: 1811642076332
+    planned_two_tb_headroom_gate_passed: true
+    live_quota_activation_verified: false
+    additional_tb_required_under_two_tb_plan: false
   lvef_authority:
     separate_from_canonical_multitask_mapping: true
     synthetic_mapping_row_required: false
@@ -928,17 +955,24 @@ prefit_gates:
   phase1e_a_preservation_second_pass_passed: true
   institutional_restricted_agent_authority_recorded: true
   direct_restricted_and_reviewed_export_modes_separated: true
-  prospective_gcp_tooling_resolved: false
-  prospective_gcp_identity_verified: false
-  prospective_gcp_project_verified: false
-  prospective_gcp_billing_link_verified: false
-  prospective_requester_pays_metadata_access_verified: false
-  prospective_bigquery_billing_access_verified: false
-  free_trial_status_owner_verified_or_separately_budgeted: false
-  full_selected_gcs_metadata_preflight_complete: false
-  exact_selected_source_bytes_known: false
+  prospective_gcp_tooling_resolved: true
+  prospective_gcp_identity_verified: true
+  prospective_gcp_project_verified: true
+  prospective_gcp_billing_link_verified: true
+  prospective_requester_pays_metadata_access_verified: true
+  prospective_bigquery_billing_access_verified: true
+  free_trial_status_owner_verified_or_separately_budgeted: true
+  full_selected_gcs_metadata_preflight_complete: true
+  exact_selected_source_bytes_known: true
+  current_selected_source_inventory_authority_valid: true
+  historical_selected_object_identity_authority_valid: false
+  historical_selected_object_identity_limitation: NOT_ESTABLISHED_NO_HISTORICAL_COMPARATORS
+  autoclass_raw_evidence_capture_passed: true
+  autoclass_authoritatively_disabled: true
+  requester_pays_cost_authority_passed: true
   storage_migration_plan_complete: true
   backed_up_authority_copy_verified: false
+  two_tb_resource_plan_headroom_gate_passed: true
   two_tb_headroom_gate_passed: false
   requester_pays_budget_approved: false
   c3_production_runner_implemented_and_validated: false

@@ -1,6 +1,6 @@
 # C3 storage lifecycle and requester-pays cost plan
 
-Status: **contract design frozen; exact-byte calculation awaits the complete metadata-only GCS preflight; full C3 remains unauthorized**.
+Status: **exact source, rolling-cache resource, and rate-explicit cost plans adjudicated; full C3 remains unauthorized**.
 
 ## Scope and byte conventions
 
@@ -11,7 +11,7 @@ The primary project is the 4,530-study, one-study-per-subject cohort. It does no
 | Full public MIMIC-IV-ECHO 1.0 DICOM release | 7,243 studies and approximately 525,000 DICOM objects | Remote recoverability authority; not a primary C3 local-storage requirement |
 | Historically eligible repeated-study set | approximately 7,104 studies | Separate all-study/longitudinal expansion; not C3 |
 | Primary selected cohort | 4,530 studies and 4,530 subjects | Scientific cohort; every selected raw source object is retained locally during active analysis |
-| Normalized selected-source requests | 335,984 candidate requests | Must be promoted by the complete metadata-only preflight before any full body transfer |
+| Normalized selected-source requests | 335,984 verified requests totaling 1,216,569,133,322 bytes | Current public-source inventory authority; not historical byte-identity authority |
 
 MIMIC-IV-ECHO 1.0 remains recoverable through credentialed, requester-pays GCS access. Extracted clips are deterministic derivatives and may be a rolling cache after each batch's source, extraction, embedding, pooling, checksum, preservation, and safety gates pass.
 
@@ -91,7 +91,7 @@ For a standard-storage US multi-region source downloaded over the public Interne
 - Nearline/Coldline/Archive retrieval, if observed, must be added at the current per-GiB rate;
 - metadata-only listing transfers no object bodies; listing response bytes are separately bounded and recorded.
 
-The bucket metadata request also records the complete Autoclass fields exposed by the Cloud Storage API. The present operation-price model is authoritative only when every selected object is currently `STANDARD`, the bucket Autoclass metadata is present, and Autoclass is disabled. If any selected object is non-Standard, Autoclass is enabled, or the Autoclass status is unavailable, the cost artifact remains nonauthoritative until a storage-class/Autoclass-specific operation model is frozen. Retrieval estimates alone do not repair that operation-price gap.
+The immutable listing established that every selected object is currently `STANDARD`. A subsequent one-request receipt proved that the `autoclass` key was absent from a successful explicitly projected JSON API v1 `buckets.get`. Primary JSON API v1 and Storage v2 documentation establishes that absent configuration is disabled, so the effective state is `ABSENT_CONFIGURATION_DEFAULT_DISABLED`. JSON null, malformed values, and empty/incomplete mappings remain unresolved rather than being treated as absence.
 
 Cloud Storage prices use binary GiB (`2^30` bytes). The future body-transfer estimate is therefore calculated from the exact source-byte total, not decimal TB. Requester Pays shifts request, retrieval, and network charges to the named billing project. The billing-project identifier is provided only through an SCC environment variable and must not enter Git.
 
@@ -104,7 +104,13 @@ The cost report separates:
 5. a bounded retry allowance;
 6. a recommended budget contingency.
 
-No “exact” requester-pays total is reported until bucket location, object storage classes, exact bytes, pages/operations, and destination category are all observed or explicitly frozen.
+The rate-explicit planning estimate is now authoritative within its stated assumptions: low $136.101850, base $142.906680, and high $171.488015. The original-formula values were $136.101859, $142.906689, and $171.488027. The only numeric correction reclassifies the original bucket metadata GET from Class A to Class B and includes the supplemental GET as a second Class B operation. This remains a planning estimate, not an invoice guarantee.
+
+## Completed 2-TB rolling-cache projection
+
+The immutable aggregate resource plan uses a 2,000,000,000,000-byte quota, 152,275,355,648 bytes of current usage, a one-batch 92,286,910,464-byte active extraction cache, 1,376,190,464 bytes of clip embeddings, 18,554,880 bytes of study embeddings, and a 50,000,000,000-byte safety reserve. It projects a peak of 1,611,642,076,332 bytes and 388,357,923,668 bytes of headroom. Thus, the planned 2-TB allocation passes the 200-GB headroom rule. The minimum effective quota under this exact plan is 1,811,642,076,332 bytes; the preferred nominal quota remains 2 TB.
+
+These calculations do not prove that the intended quota is active. Before the first body transfer, contemporaneous `pquota`, filesystem identity/unit, and integer-byte project-root usage evidence must replace the planning assumption and reconfirm the same peak/headroom rule.
 
 ## SCC quota cost authority
 
