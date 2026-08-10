@@ -2710,6 +2710,11 @@ CONTENT_RANGE_RE = re.compile(
 )
 
 
+def owner_private_directory_mode_ok(mode: int) -> bool:
+    """Accept private directories with SCC's inherited setgid bit only."""
+    return stat.S_IMODE(mode) in {0o700, 0o2700}
+
+
 def validate_resume_content_range(value: Any, *, offset: int, total_size: int) -> None:
     if offset <= 0 or total_size <= offset:
         raise OrchestrationError("CONTENT_RANGE_EXPECTATION_INVALID")
@@ -2753,7 +2758,7 @@ class GcloudADCTokenProvider:
         config_stat = self.cloudsdk_config.stat()
         if (
             config_stat.st_uid != os.getuid()
-            or stat.S_IMODE(config_stat.st_mode) != 0o700
+            or not owner_private_directory_mode_ok(config_stat.st_mode)
         ):
             raise DownloadTransportError("CLOUDSDK_CONFIG_NOT_PRIVATE", "AUTHENTICATION")
         try:

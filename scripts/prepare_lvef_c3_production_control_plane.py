@@ -69,7 +69,9 @@ def _require_projectnb_directory(path: Path, code: str, *, create: bool = False)
         path.is_symlink()
         or not path.is_dir()
         or path.stat().st_uid != os.getuid()
-        or stat.S_IMODE(path.stat(follow_symlinks=False).st_mode) != 0o700
+        or not core.owner_private_directory_mode_ok(
+            path.stat(follow_symlinks=False).st_mode
+        )
     ):
         raise ControlPlanePreparationError(f"{code}_INVALID")
 

@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import lvef_multitask_analysis_modes as analysis_modes
+import lvef_c3_orchestration_core as core
 import prepare_lvef_c3_production_control_plane as prepare
 
 
@@ -27,6 +28,13 @@ def test_runtime_environment_is_sorted_literal_and_private_value_not_emitted() -
         assert str(exc) == "RUNTIME_ENVIRONMENT_VALUE_NOT_LITERAL"
     else:
         raise AssertionError("shell syntax was accepted in the private environment")
+
+
+def test_scc_setgid_only_private_directory_mode_is_accepted() -> None:
+    assert core.owner_private_directory_mode_ok(0o700)
+    assert core.owner_private_directory_mode_ok(0o2700)
+    for mode in (0o770, 0o750, 0o2770, 0o2777):
+        assert not core.owner_private_directory_mode_ok(mode)
 
 
 def test_control_plane_aggregate_profile_is_closed_and_safe() -> None:

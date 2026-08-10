@@ -643,6 +643,16 @@ def test_gcloud_adc_provider_is_private_receipt_and_binary_bound() -> None:
             "gcloud_executable_sha256": executable_sha,
         }
         assert provider.validate_authority() == expected
+        cloudsdk.chmod(0o2700)
+        assert provider.validate_authority() == expected
+        cloudsdk.chmod(0o770)
+        try:
+            provider.validate_authority()
+        except core.DownloadTransportError as exc:
+            assert str(exc) == "CLOUDSDK_CONFIG_NOT_PRIVATE"
+        else:
+            raise AssertionError("group-writable Cloud SDK config was accepted")
+        cloudsdk.chmod(0o2700)
         with mock.patch.object(
             core.subprocess,
             "run",

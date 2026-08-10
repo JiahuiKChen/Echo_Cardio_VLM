@@ -523,7 +523,7 @@ def _validate_execution_environment(
         cloudsdk.is_symlink()
         or not cloudsdk.is_dir()
         or cloudsdk.stat().st_uid != os.getuid()
-        or stat.S_IMODE(cloudsdk.stat().st_mode) != 0o700
+        or not core.owner_private_directory_mode_ok(cloudsdk.stat().st_mode)
     ):
         raise AuthorityPacketError("EXECUTION_CLOUDSDK_CONFIG_NOT_PRIVATE")
     _require_owner_private(
