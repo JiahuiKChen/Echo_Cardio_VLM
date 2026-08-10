@@ -632,7 +632,14 @@ phase1e_bc_resource_metadata_preflight:
     production_lock_attempt_001_cloud_requests: 0
     production_lock_attempt_001_scheduler_jobs: 0
     production_lock_attempt_001_preserved_immutable: true
-    production_lock_attempt_002_required: true
+    production_lock_attempt_002_id: lvef_c3_phase1ee_production_lock_002
+    production_lock_attempt_002_status: FAILED_RUNTIME_PYTHON_SYMLINK_HASH_PRE_ROOT
+    production_lock_attempt_002_error_code: HASH_INPUT_NOT_REGULAR
+    production_lock_attempt_002_environment_capture_passed: true
+    production_lock_attempt_002_cloud_requests: 0
+    production_lock_attempt_002_scheduler_jobs: 0
+    production_lock_attempt_002_preserved_immutable: true
+    production_lock_attempt_003_required: true
     production_batch_runner_implemented_and_validated: true
     production_finalizer_implemented_and_validated: true
     execution_authorized: false
@@ -647,7 +654,7 @@ phase1e_bc_resource_metadata_preflight:
     phase1ee_implementation_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
     phase1ee_scc_setgid_portability_commit: d2f94d4fb050347605933d922ae64a6d59f32531
     phase1ee_orchestration_contract_version: 2
-    phase1ee_dependency_light_tests_passed: 541
+    phase1ee_dependency_light_tests_passed: 542
     phase1ee_dependency_light_tests_failed: 0
     phase1ee_dependency_light_tests_skipped: 2
     phase1ee_scheduler_submission_performed: false

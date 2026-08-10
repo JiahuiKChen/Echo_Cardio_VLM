@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,18 @@ def test_environment_receipt_retains_exact_closed_package_preimage() -> None:
     stages.validate_environment_receipt_payload(
         _receipt(), live_packages=_packages(), live_runtime=_runtime()
     )
+
+
+def test_runtime_python_authority_resolves_virtual_environment_symlink() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "python-target"
+        target.write_bytes(b"synthetic interpreter authority")
+        link = root / "python"
+        link.symlink_to(target)
+        assert stages.resolved_python_executable_sha256(link) == hashlib.sha256(
+            target.read_bytes()
+        ).hexdigest()
 
 
 def test_environment_receipt_rejects_tampered_package_preimage() -> None:

@@ -148,6 +148,15 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def resolved_python_executable_sha256(path: Path) -> str:
+    """Hash the regular target of an expected virtual-environment symlink."""
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise ProductionStageError("PYTHON_EXECUTABLE_RESOLUTION_FAILED") from exc
+    return sha256_file(resolved)
+
+
 def _validate_hash(value: Any, code: str) -> str:
     text = str(value)
     if not SHA256_RE.fullmatch(text):
@@ -609,7 +618,9 @@ def validate_environment_receipt_against_current_runtime(
         receipt,
         live_packages=packages,
         live_runtime={
-            "python_executable_sha256": sha256_file(Path(sys.executable)),
+            "python_executable_sha256": resolved_python_executable_sha256(
+                Path(sys.executable)
+            ),
             "python_version": platform.python_version(),
             "torch_version": str(torch.__version__),
             "torchvision_version": str(torchvision.__version__),
