@@ -113,19 +113,53 @@ The version-2 contract implements:
   log, stdout, and stderr locations are on `/restricted/projectnb` and which
   reject concurrent duplicate batch ownership.
 
+### Split CRC32C runtime authority
+
+The first no-clobber production-lock preflight,
+`lvef_c3_phase1ee_production_lock_001`, stopped during environment capture with
+the aggregate-safe code `ENVIRONMENT_RUNTIME_IMPORT_FAILED`. It created the
+owner-private authority-input directory only: no production attempt root,
+batch plan, packet, launch envelope, scheduler job, cloud request, DICOM read,
+or scientific output was created. Its evidence remains immutable and will not
+be reused in place.
+
+The failure exposed a real portability boundary rather than a source or model
+defect. The pinned EchoPrime Python 3.10 runtime does not contain
+`google-crc32c`; the independently pinned Cloud SDK 579.0.0 installation
+contains a compiled `google-crc32c` 1.8.0 implementation under its resolved,
+non-symlink bundled Python 3.14 executable. The executable SHA-256 is
+`52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5`.
+
+The repaired design keeps these runtimes separate. EchoPrime preprocessing and
+inference remain on the validated Python 3.10 environment. A minimal isolated
+worker, launched once per download batch with `-I` and a minimal environment,
+computes SHA-256, MD5, and CRC32C in one bounded-memory pass. Its protocol is
+closed, path-free on output, no-follow, stable-file checked, and terminates on
+the first malformed or failed request. Environment authority v3 binds the
+auxiliary interpreter hash/version, tracked worker hash, complete
+`google-crc32c` distribution-file tree hash, compiled-backend identity, and
+the standard CRC32C known-answer vector. These hashes also enter the batch
+plan, resume authority, private execution environment, scheduler gate, and
+38-role production packet. No package was installed or altered.
+
+SCC may apply the private setgid-only directory mode `2700`. Both Python and
+Bash execution gates accept exactly `0700` or `02700`; group/other access bits
+remain prohibited.
+
 The scripts are executable implementations, but their committed contract sets
 every production authorization to false. Merely creating files cannot advance
 state. Changed commit, contract, plan, source metadata, environment, checkpoint,
 or manifest identity requires a new attempt.
 
-Offline dependency-light validation passed 535 tests with zero failures and two
+Offline dependency-light validation passed 541 tests with zero failures and two
 intentional fixture skips. Python compilation, Bash and fenced-command syntax,
 strict JSON/YAML parsing, state/resume checks, scheduler portability, symlink and
-no-follow checks, and the staged Git export gate passed. Portability commit
-`d2f94d4fb050347605933d922ae64a6d59f32531` accepts SCC's private inherited
-setgid-only directory mode `2700` while continuing to reject every group/other
-permission bit. No production launcher can be created from the current capacity
-receipt because the backed control-tier gate is false.
+no-follow checks, split-runtime probes, persistent-worker checks, and the
+staged Git export gate passed. Portability commit
+`d2f94d4fb050347605933d922ae64a6d59f32531` introduced the Python-side SCC
+mode allowance; the current lock extends that same exact rule to the scheduler
+gate. No production launcher can be created from the current capacity receipt
+because the backed control-tier gate is false.
 
 ## Authorization boundaries
 

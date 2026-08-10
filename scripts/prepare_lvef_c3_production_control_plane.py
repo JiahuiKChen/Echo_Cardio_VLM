@@ -163,6 +163,8 @@ def prepare(args: argparse.Namespace) -> Mapping[str, Any]:
         (args.split, "SPLIT"),
         (args.checkpoint, "CHECKPOINT"),
         (args.environment_receipt, "ENVIRONMENT_RECEIPT"),
+        (args.crc32c_python, "CRC32C_PYTHON"),
+        (args.crc32c_worker, "CRC32C_WORKER"),
         (args.state_machine_schema, "STATE_MACHINE_SCHEMA"),
         (args.resume_ledger_schema, "RESUME_LEDGER_SCHEMA"),
         (args.gcloud_executable, "GCLOUD_EXECUTABLE"),
@@ -180,7 +182,18 @@ def prepare(args: argparse.Namespace) -> Mapping[str, Any]:
             raise ControlPlanePreparationError(f"{code}_AUTHORITY_HASH_MISMATCH")
     if core.sha256_file(Path(sys.executable).resolve()) != args.python_sha256:
         raise ControlPlanePreparationError("RUNNING_PYTHON_AUTHORITY_MISMATCH")
-    stages.validate_checkpoint_and_environment(args.checkpoint, args.environment_receipt)
+    if (
+        core.sha256_file(args.crc32c_python) != args.crc32c_python_sha256
+        or args.crc32c_worker.resolve(strict=True)
+        != (checkout / "scripts/lvef_c3_crc32c_worker.py").resolve(strict=True)
+    ):
+        raise ControlPlanePreparationError("CRC32C_FILE_AUTHORITY_MISMATCH")
+    stages.validate_checkpoint_and_environment(
+        args.checkpoint,
+        args.environment_receipt,
+        crc32c_python=args.crc32c_python,
+        crc32c_worker=args.crc32c_worker,
+    )
     environment_authority = core.load_strict_json(args.environment_receipt)
     if (
         not isinstance(environment_authority, Mapping)
@@ -255,6 +268,13 @@ def prepare(args: argparse.Namespace) -> Mapping[str, Any]:
         "split_map_sha256": core.sha256_file(args.split),
         "checkpoint_sha256": core.sha256_file(args.checkpoint),
         "environment_receipt_sha256": core.sha256_file(args.environment_receipt),
+        "crc32c_python_executable_sha256": core.sha256_file(
+            args.crc32c_python
+        ),
+        "crc32c_worker_sha256": core.sha256_file(args.crc32c_worker),
+        "crc32c_distribution_sha256": str(
+            environment_authority["google_crc32c_distribution_sha256"]
+        ),
         "state_machine_schema_sha256": core.sha256_file(args.state_machine_schema),
         "resume_ledger_schema_sha256": core.sha256_file(args.resume_ledger_schema),
         **gcloud_authority,
@@ -319,6 +339,13 @@ def prepare(args: argparse.Namespace) -> Mapping[str, Any]:
         "LVEF_C3_PYTHON_SHA256": args.python_sha256,
         "LVEF_C3_ENVIRONMENT_RECEIPT": str(args.environment_receipt.resolve(strict=True)),
         "LVEF_C3_ENVIRONMENT_RECEIPT_SHA256": core.sha256_file(args.environment_receipt),
+        "LVEF_C3_CRC32C_PYTHON": str(args.crc32c_python.resolve(strict=True)),
+        "LVEF_C3_CRC32C_PYTHON_SHA256": core.sha256_file(args.crc32c_python),
+        "LVEF_C3_CRC32C_WORKER": str(args.crc32c_worker.resolve(strict=True)),
+        "LVEF_C3_CRC32C_WORKER_SHA256": core.sha256_file(args.crc32c_worker),
+        "LVEF_C3_CRC32C_DISTRIBUTION_SHA256": str(
+            environment_authority["google_crc32c_distribution_sha256"]
+        ),
         "LVEF_C3_CHECKPOINT": str(args.checkpoint.resolve(strict=True)),
         "LVEF_C3_CHECKPOINT_SHA256": core.sha256_file(args.checkpoint),
         "LVEF_C3_GCLOUD_BINARY": str(args.gcloud_executable.resolve(strict=True)),
@@ -397,6 +424,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--split", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--environment-receipt", type=Path, required=True)
+    parser.add_argument("--crc32c-python", type=Path, required=True)
+    parser.add_argument(
+        "--crc32c-python-expected-sha256",
+        dest="crc32c_python_sha256",
+        required=True,
+    )
+    parser.add_argument("--crc32c-worker", type=Path, required=True)
     parser.add_argument("--state-machine-schema", type=Path, required=True)
     parser.add_argument("--resume-ledger-schema", type=Path, required=True)
     parser.add_argument("--gcloud-executable", type=Path, required=True)

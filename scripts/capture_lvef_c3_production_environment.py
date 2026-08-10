@@ -20,6 +20,19 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_PYTHON_SHA256 = "1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
+CRC32C_PROBE_KEYS = frozenset(
+    {
+        "protocol_version",
+        "status",
+        "python_version",
+        "google_crc32c_version",
+        "google_crc32c_implementation",
+        "google_crc32c_distribution_sha256",
+        "google_crc32c_distribution_file_count",
+        "known_vector_crc32c_base64",
+        "cloud_requests",
+    }
+)
 
 
 class EnvironmentAuthorityError(RuntimeError):
@@ -137,15 +150,22 @@ def build_receipt(
     torchvision_version: str,
     cuda_version: str,
     cudnn_version: str,
-    crc32c_version: str,
-    crc32c_implementation: str,
+    crc32c_python_executable_sha256: str,
+    crc32c_worker_sha256: str,
+    crc32c_probe: Mapping[str, Any],
     packages: Sequence[Mapping[str, str]],
     captured_at_utc: str,
 ) -> Mapping[str, Any]:
     if not COMMIT_RE.fullmatch(governing_commit):
         raise EnvironmentAuthorityError("GOVERNING_COMMIT_INVALID")
-    if not SHA_RE.fullmatch(prior_sha256) or not SHA_RE.fullmatch(
-        python_executable_sha256
+    if any(
+        SHA_RE.fullmatch(value) is None
+        for value in (
+            prior_sha256,
+            python_executable_sha256,
+            crc32c_python_executable_sha256,
+            crc32c_worker_sha256,
+        )
     ):
         raise EnvironmentAuthorityError("ENVIRONMENT_HASH_INVALID")
     if python_executable_sha256 != EXPECTED_PYTHON_SHA256:
@@ -159,12 +179,34 @@ def build_receipt(
     ):
         if str(prior.get(key)) != str(observed):
             raise EnvironmentAuthorityError("PRIOR_ENVIRONMENT_RUNTIME_MISMATCH")
-    if crc32c_implementation != "c" or not crc32c_version:
-        raise EnvironmentAuthorityError("GOOGLE_CRC32C_C_BACKEND_REQUIRED")
+    if (
+        set(crc32c_probe) != CRC32C_PROBE_KEYS
+        or crc32c_probe.get("protocol_version") != 1
+        or crc32c_probe.get("status") != "PASS_CRC32C_AUXILIARY_RUNTIME"
+        or crc32c_probe.get("google_crc32c_implementation") != "c"
+        or not isinstance(crc32c_probe.get("google_crc32c_version"), str)
+        or not crc32c_probe["google_crc32c_version"]
+        or not isinstance(crc32c_probe.get("python_version"), str)
+        or not crc32c_probe["python_version"]
+        or crc32c_probe.get("known_vector_crc32c_base64") != "4waSgw=="
+        or crc32c_probe.get("cloud_requests") != 0
+        or SHA_RE.fullmatch(
+            str(crc32c_probe.get("google_crc32c_distribution_sha256"))
+        )
+        is None
+        or not isinstance(
+            crc32c_probe.get("google_crc32c_distribution_file_count"), int
+        )
+        or isinstance(
+            crc32c_probe.get("google_crc32c_distribution_file_count"), bool
+        )
+        or crc32c_probe["google_crc32c_distribution_file_count"] < 1
+    ):
+        raise EnvironmentAuthorityError("GOOGLE_CRC32C_AUXILIARY_AUTHORITY_INVALID")
     inventory = validate_package_inventory(packages)
     return {
-        "schema_version": 2,
-        "artifact_type": "lvef_c3_production_environment_authority_v2",
+        "schema_version": 3,
+        "artifact_type": "lvef_c3_production_environment_authority_v3",
         "status": "PASS_OFFLINE_RUNTIME_AUTHORITY_NO_GPU_EXECUTION",
         "governing_commit": governing_commit,
         "captured_at_utc": captured_at_utc,
@@ -175,8 +217,24 @@ def build_receipt(
         "torchvision_version": torchvision_version,
         "cuda_version": cuda_version,
         "cudnn_version": cudnn_version,
-        "google_crc32c_version": crc32c_version,
-        "google_crc32c_implementation": crc32c_implementation,
+        "crc32c_runtime_source": "PINNED_CLOUDSDK_BUNDLED_PYTHON",
+        "crc32c_python_executable_sha256": crc32c_python_executable_sha256,
+        "crc32c_python_version": crc32c_probe["python_version"],
+        "crc32c_worker_sha256": crc32c_worker_sha256,
+        "crc32c_worker_protocol_version": crc32c_probe["protocol_version"],
+        "google_crc32c_version": crc32c_probe["google_crc32c_version"],
+        "google_crc32c_implementation": crc32c_probe[
+            "google_crc32c_implementation"
+        ],
+        "google_crc32c_distribution_sha256": crc32c_probe[
+            "google_crc32c_distribution_sha256"
+        ],
+        "google_crc32c_distribution_file_count": crc32c_probe[
+            "google_crc32c_distribution_file_count"
+        ],
+        "google_crc32c_known_vector_base64": crc32c_probe[
+            "known_vector_crc32c_base64"
+        ],
         "package_inventory_sha256": package_inventory_sha256(inventory),
         "package_count": len(inventory),
         "package_inventory": inventory,
@@ -188,6 +246,49 @@ def build_receipt(
         "prediction_generated": False,
         "confirmatory_performance_accessed": False,
     }
+
+
+def probe_crc32c_runtime(
+    python_executable: Path,
+    worker_script: Path,
+    *,
+    expected_python_sha256: str,
+) -> Mapping[str, Any]:
+    for path, code in (
+        (python_executable, "CRC32C_PYTHON"),
+        (worker_script, "CRC32C_WORKER"),
+    ):
+        require_no_symlink_ancestors(path, code=code)
+        if path.is_symlink() or not path.is_file():
+            raise EnvironmentAuthorityError(f"{code}_NOT_REGULAR")
+    if not os.access(python_executable, os.X_OK):
+        raise EnvironmentAuthorityError("CRC32C_PYTHON_NOT_EXECUTABLE")
+    if not SHA_RE.fullmatch(expected_python_sha256):
+        raise EnvironmentAuthorityError("CRC32C_PYTHON_EXPECTED_HASH_INVALID")
+    if sha256_file(python_executable) != expected_python_sha256:
+        raise EnvironmentAuthorityError("CRC32C_PYTHON_HASH_MISMATCH")
+    completed = subprocess.run(
+        [str(python_executable), "-I", str(worker_script), "--probe"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+        cwd="/",
+        env={
+            "LC_ALL": "C",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise EnvironmentAuthorityError("CRC32C_RUNTIME_PROBE_FAILED")
+    try:
+        value = json.loads(completed.stdout, object_pairs_hook=_pairs)
+    except Exception as exc:
+        raise EnvironmentAuthorityError("CRC32C_RUNTIME_PROBE_INVALID") from exc
+    if not isinstance(value, Mapping) or set(value) != CRC32C_PROBE_KEYS:
+        raise EnvironmentAuthorityError("CRC32C_RUNTIME_PROBE_INVALID")
+    return value
 
 
 def write_no_clobber(path: Path, value: Mapping[str, Any]) -> None:
@@ -254,6 +355,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prior-environment", type=Path, required=True)
     parser.add_argument("--governing-commit", required=True)
     parser.add_argument("--checkout-root", type=Path, required=True)
+    parser.add_argument("--crc32c-python", type=Path, required=True)
+    parser.add_argument(
+        "--crc32c-python-expected-sha256",
+        dest="crc32c_python_sha256",
+        required=True,
+    )
+    parser.add_argument("--crc32c-worker", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args(argv)
 
@@ -261,7 +369,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        import google_crc32c
         import torch
         import torchvision
 
@@ -269,6 +376,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         executable = Path(sys.executable).resolve(strict=True)
         prior = load_json(args.prior_environment)
         packages = package_inventory()
+        expected_worker = args.checkout_root / "scripts/lvef_c3_crc32c_worker.py"
+        if args.crc32c_worker.resolve(strict=True) != expected_worker.resolve(strict=True):
+            raise EnvironmentAuthorityError("CRC32C_WORKER_NOT_CHECKOUT_BOUND")
+        crc32c_probe = probe_crc32c_runtime(
+            args.crc32c_python,
+            args.crc32c_worker,
+            expected_python_sha256=args.crc32c_python_sha256,
+        )
         cudnn = torch.backends.cudnn.version()
         if torch.version.cuda is None or cudnn is None:
             raise EnvironmentAuthorityError("CUDA_CUDNN_RUNTIME_UNAVAILABLE")
@@ -282,8 +397,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             torchvision_version=str(torchvision.__version__),
             cuda_version=str(torch.version.cuda),
             cudnn_version=str(cudnn),
-            crc32c_version=importlib.metadata.version("google-crc32c"),
-            crc32c_implementation=str(getattr(google_crc32c, "implementation", "")),
+            crc32c_python_executable_sha256=args.crc32c_python_sha256,
+            crc32c_worker_sha256=sha256_file(args.crc32c_worker),
+            crc32c_probe=crc32c_probe,
             packages=packages,
             captured_at_utc=datetime.now(timezone.utc).isoformat(),
         )

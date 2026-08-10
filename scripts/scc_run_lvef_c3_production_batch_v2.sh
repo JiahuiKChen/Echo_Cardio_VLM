@@ -94,6 +94,8 @@ run_download_batch() {
       --environment-receipt "$LVEF_C3_ENVIRONMENT_RECEIPT" \
       --output-root "$LVEF_C3_PRODUCTION_ROOT/attempts/$LVEF_C3_ATTEMPT_ID/raw" \
       --gcloud-binary "$LVEF_C3_GCLOUD_BINARY" \
+      --crc32c-python "$LVEF_C3_CRC32C_PYTHON" \
+      --crc32c-worker "$LVEF_C3_CRC32C_WORKER" \
       --ledger-output "$output_ledger"
 }
 

@@ -615,6 +615,24 @@ phase1e_bc_resource_metadata_preflight:
     maximum_concurrent_batches: 1
     dependent_finalizer_required: true
     production_downloader_implemented_and_validated: true
+    production_digest_runtime_architecture: split_runtime_pinned_echoprime_python_plus_pinned_cloudsdk_bundled_crc32c_python
+    production_crc32c_worker_protocol: persistent_per_batch_closed_json_v1
+    production_crc32c_python_path_class: pinned_cloudsdk_579_0_0_resolved_nonsymlink_python3_14
+    production_crc32c_python_sha256: 52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5
+    production_crc32c_distribution_version_observed: 1.8.0
+    production_crc32c_distribution_tree_hash_required: true
+    production_crc32c_known_vector_required: e3069283
+    production_environment_receipt_schema_version: 3
+    production_authority_packet_schema_version: 2
+    production_authority_packet_roles_expected: 38
+    production_authority_packet_semantic_gates_expected: 17
+    production_lock_attempt_001_id: lvef_c3_phase1ee_production_lock_001
+    production_lock_attempt_001_status: FAILED_ENVIRONMENT_CAPTURE_NO_PRODUCTION_ATTEMPT_ROOT
+    production_lock_attempt_001_error_code: ENVIRONMENT_RUNTIME_IMPORT_FAILED
+    production_lock_attempt_001_cloud_requests: 0
+    production_lock_attempt_001_scheduler_jobs: 0
+    production_lock_attempt_001_preserved_immutable: true
+    production_lock_attempt_002_required: true
     production_batch_runner_implemented_and_validated: true
     production_finalizer_implemented_and_validated: true
     execution_authorized: false
@@ -629,7 +647,7 @@ phase1e_bc_resource_metadata_preflight:
     phase1ee_implementation_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
     phase1ee_scc_setgid_portability_commit: d2f94d4fb050347605933d922ae64a6d59f32531
     phase1ee_orchestration_contract_version: 2
-    phase1ee_dependency_light_tests_passed: 535
+    phase1ee_dependency_light_tests_passed: 541
     phase1ee_dependency_light_tests_failed: 0
     phase1ee_dependency_light_tests_skipped: 2
     phase1ee_scheduler_submission_performed: false

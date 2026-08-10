@@ -20,9 +20,13 @@ qsub-dispatch authorization receipt, and a separate operation-specific
 scientific authorization receipt. The dispatch and scientific receipts have
 different closed schemas and must never be reused for one another. The base
 execution environment binds the exact governing commit,
-orchestration contract, 19-batch plan, Python/environment/checkpoint
+orchestration contract, 19-batch plan, EchoPrime Python/environment/checkpoint
 authorities, isolated Cloud SDK configuration, production root, attempt ID,
-and authorization-receipt roots. The requester-pays project remains private;
+authorization-receipt roots, and the separately pinned Cloud-SDK-bundled
+Python plus compiled CRC32C worker authority. The two Python runtimes are not
+interchangeable: EchoPrime stays on the validated 3.10 environment, while the
+isolated 3.14 helper performs only one-pass SHA-256/MD5/CRC32C verification.
+The requester-pays project remains private;
 it is never placed in an argument, committed file, aggregate log, or scheduler
 environment export. The dispatcher never uses `qsub -V`.
 
@@ -63,6 +67,9 @@ umask 077
 AUTHORITY_WORKTREE='/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask'
 GOVERNING_COMMIT="$(git -C "$AUTHORITY_WORKTREE" rev-parse HEAD)"
 PY='/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python'
+CRC32C_PY='/restricted/projectnb/mimicecho/tools/google-cloud-cli-579.0.0/google-cloud-sdk/platform/bundledpythonunix/bin/python3.14'
+CRC32C_PY_SHA256='52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5'
+CRC32C_WORKER="$AUTHORITY_WORKTREE/scripts/lvef_c3_crc32c_worker.py"
 PRODUCTION_ROOT='/restricted/projectnb/mimicecho/lvef_multitask_c3_v2'
 ATTEMPT_ID='<NEW_NO_CLOBBER_PHASE1EE_PRODUCTION_ATTEMPT_ID>'
 AUTHORITY_INPUT_ROOT='<OWNER_PRIVATE_PROJECTNB_AUTHORITY_INPUT_ROOT>'
@@ -76,6 +83,9 @@ CLOUDSDK_CONFIG='<OWNER_PRIVATE_ISOLATED_CLOUDSDK_CONFIG>'
   --prior-environment '<PINNED_PHASE1EA_ENVIRONMENT_RECEIPT>' \
   --governing-commit "$GOVERNING_COMMIT" \
   --checkout-root "$AUTHORITY_WORKTREE" \
+  --crc32c-python "$CRC32C_PY" \
+  --crc32c-python-expected-sha256 "$CRC32C_PY_SHA256" \
+  --crc32c-worker "$CRC32C_WORKER" \
   --output "$ENVIRONMENT_RECEIPT"
 
 # The requester-pays project must already be a nonexported owner-private shell
@@ -94,6 +104,9 @@ LVEF_C3_GCP_BILLING_PROJECT="$LVEF_C3_GCP_BILLING_PROJECT" \
   --split '<FROZEN_SUBJECT_SPLIT_MAP>' \
   --checkpoint '<PINNED_ECHOPRIME_CHECKPOINT>' \
   --environment-receipt "$ENVIRONMENT_RECEIPT" \
+  --crc32c-python "$CRC32C_PY" \
+  --crc32c-python-expected-sha256 "$CRC32C_PY_SHA256" \
+  --crc32c-worker "$CRC32C_WORKER" \
   --state-machine-schema "$AUTHORITY_WORKTREE/configs/lvef_c3_state_machine_v2.json" \
   --resume-ledger-schema "$AUTHORITY_WORKTREE/configs/lvef_c3_resume_ledger_v2.json" \
   --gcloud-executable "$GCLOUD" \
@@ -111,7 +124,7 @@ EXECUTION_ENV="$ATTEMPT_ROOT/authority/c3_execution_environment.restricted.env"
 BATCH_PLAN="$ATTEMPT_ROOT/authority/batch_plan.restricted.json"
 AUTHORITY_PACKET="$ATTEMPT_ROOT/authority/lvef_c3_production_authority_packet.restricted.json"
 
-# Exactly all 36 closed authority roles. No role may be omitted or duplicated.
+# Exactly all 38 closed authority roles. No role may be omitted or duplicated.
 "$PY" "$AUTHORITY_WORKTREE/scripts/build_lvef_c3_production_authority_packet.py" \
   --governing-commit "$GOVERNING_COMMIT" \
   --checkout-root "$AUTHORITY_WORKTREE" \
@@ -124,6 +137,8 @@ AUTHORITY_PACKET="$ATTEMPT_ROOT/authority/lvef_c3_production_authority_packet.re
   --artifact "checkpoint=<PINNED_ECHOPRIME_CHECKPOINT>" \
   --artifact "cloudsdk_config_receipt=$GCLOUD_RECEIPT" \
   --artifact "control_plane_preparer=$AUTHORITY_WORKTREE/scripts/prepare_lvef_c3_production_control_plane.py" \
+  --artifact "crc32c_python_executable=$CRC32C_PY" \
+  --artifact "crc32c_worker=$CRC32C_WORKER" \
   --artifact "dicom_audit_and_extractor=$AUTHORITY_WORKTREE/scripts/lvef_c3_production_stages.py" \
   --artifact "downloader=$AUTHORITY_WORKTREE/scripts/lvef_c3_orchestration_core.py" \
   --artifact "echoprime_wrapper=$AUTHORITY_WORKTREE/scripts/lvef_c3_production_stages.py" \

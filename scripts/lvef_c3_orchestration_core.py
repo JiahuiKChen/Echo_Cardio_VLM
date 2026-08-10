@@ -29,7 +29,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Any, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 import yaml
 
@@ -114,6 +114,9 @@ PLAN_AUTHORITY_KEYS = frozenset(
         "resume_ledger_schema_sha256",
         "gcloud_resolution_receipt_sha256",
         "gcloud_executable_sha256",
+        "crc32c_python_executable_sha256",
+        "crc32c_worker_sha256",
+        "crc32c_distribution_sha256",
     }
 )
 RUNTIME_AUTHORITY_KEYS = frozenset({*PLAN_AUTHORITY_KEYS, "batch_plan_sha256"})
@@ -368,7 +371,10 @@ def stream_regular_file_digests(
         raise OrchestrationError("GOOGLE_CRC32C_C_BACKEND_UNAVAILABLE")
     descriptor, before = _open_regular_nofollow(path)
     sha256 = hashlib.sha256()
-    md5 = hashlib.md5()
+    try:
+        md5 = hashlib.md5(usedforsecurity=False)
+    except TypeError:  # pragma: no cover - compatibility with older Python.
+        md5 = hashlib.md5()
     crc32c = google_crc32c.Checksum()
     observed_size = 0
     try:
@@ -402,6 +408,237 @@ def stream_regular_file_digests(
         "chunk_size_bytes": chunk_size,
         "backend": "google_crc32c_c",
     }
+
+
+def _inprocess_digest_provider(path: Path, request_id: str) -> Mapping[str, Any]:
+    """Dependency-light test provider; production injects the external worker."""
+    _require_sha256(request_id, "DIGEST_REQUEST_ID_INVALID")
+    return stream_regular_file_digests(path)
+
+
+class ExternalCRC32CDigestWorker:
+    """Persistent, isolated C-backed digest helper for one production batch."""
+
+    READY_KEYS = frozenset(
+        {
+            "protocol_version",
+            "status",
+            "google_crc32c_version",
+            "google_crc32c_implementation",
+            "google_crc32c_distribution_sha256",
+            "google_crc32c_distribution_file_count",
+            "known_vector_crc32c_base64",
+        }
+    )
+    RESPONSE_KEYS = frozenset(
+        {
+            "protocol_version",
+            "status",
+            "request_id",
+            "size_bytes",
+            "sha256",
+            "md5_base64",
+            "crc32c_base64",
+            "file_device",
+            "file_inode",
+            "file_mtime_ns",
+            "chunk_size_bytes",
+            "backend",
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        python_executable: Path,
+        worker_script: Path,
+        expected_python_sha256: str,
+        expected_worker_sha256: str,
+        expected_distribution_sha256: str,
+        allowed_root: Path = Path("/restricted/projectnb"),
+    ) -> None:
+        for value, code in (
+            (expected_python_sha256, "CRC32C_PYTHON_HASH_INVALID"),
+            (expected_worker_sha256, "CRC32C_WORKER_HASH_INVALID"),
+            (expected_distribution_sha256, "CRC32C_DISTRIBUTION_HASH_INVALID"),
+        ):
+            _require_sha256(value, code)
+        if (
+            python_executable.is_symlink()
+            or not python_executable.is_file()
+            or not os.access(python_executable, os.X_OK)
+            or sha256_file(python_executable) != expected_python_sha256
+        ):
+            raise OrchestrationError("CRC32C_PYTHON_AUTHORITY_MISMATCH")
+        if (
+            worker_script.is_symlink()
+            or not worker_script.is_file()
+            or sha256_file(worker_script) != expected_worker_sha256
+        ):
+            raise OrchestrationError("CRC32C_WORKER_AUTHORITY_MISMATCH")
+        if (
+            not allowed_root.is_absolute()
+            or allowed_root.is_symlink()
+            or not allowed_root.is_dir()
+        ):
+            raise OrchestrationError("CRC32C_ALLOWED_ROOT_INVALID")
+        self._expected_distribution_sha256 = expected_distribution_sha256
+        self._process: subprocess.Popen[str] | None = subprocess.Popen(
+            [
+                str(python_executable),
+                "-I",
+                "-u",
+                str(worker_script),
+                "--serve",
+                "--allowed-root",
+                str(allowed_root),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            cwd="/",
+            env={
+                "LC_ALL": "C",
+                "PYTHONNOUSERSITE": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+        )
+        try:
+            ready = self._read_response("CRC32C_WORKER_STARTUP_FAILED")
+            if (
+                set(ready) != self.READY_KEYS
+                or ready.get("protocol_version") != 1
+                or ready.get("status") != "READY"
+                or ready.get("google_crc32c_implementation") != "c"
+                or not isinstance(ready.get("google_crc32c_version"), str)
+                or not ready["google_crc32c_version"]
+                or ready.get("known_vector_crc32c_base64") != "4waSgw=="
+                or ready.get("google_crc32c_distribution_sha256")
+                != expected_distribution_sha256
+                or not isinstance(
+                    ready.get("google_crc32c_distribution_file_count"), int
+                )
+                or isinstance(
+                    ready.get("google_crc32c_distribution_file_count"), bool
+                )
+                or ready["google_crc32c_distribution_file_count"] < 1
+            ):
+                raise OrchestrationError("CRC32C_WORKER_STARTUP_AUTHORITY_MISMATCH")
+        except Exception:
+            self._terminate()
+            raise
+
+    def _read_response(self, code: str) -> Mapping[str, Any]:
+        process = self._process
+        if process is None or process.stdout is None:
+            raise OrchestrationError(code)
+        line = process.stdout.readline()
+        if not line or len(line.encode("utf-8")) > 65_536:
+            raise OrchestrationError(code)
+        try:
+            value = json.loads(line, object_pairs_hook=_strict_pairs)
+        except (json.JSONDecodeError, OrchestrationError) as exc:
+            raise OrchestrationError(code) from exc
+        if not isinstance(value, Mapping):
+            raise OrchestrationError(code)
+        return value
+
+    def digest(
+        self, path: Path, request_id: str, *, chunk_size: int = 8 * 1024 * 1024
+    ) -> dict[str, Any]:
+        if SHA256_RE.fullmatch(request_id) is None:
+            raise OrchestrationError("CRC32C_WORKER_REQUEST_ID_INVALID")
+        process = self._process
+        if process is None or process.stdin is None or process.poll() is not None:
+            raise OrchestrationError("CRC32C_WORKER_NOT_RUNNING")
+        request = {
+            "protocol_version": 1,
+            "command": "DIGEST",
+            "request_id": request_id,
+            "path": str(path),
+            "chunk_size": chunk_size,
+        }
+        try:
+            process.stdin.write(json.dumps(request, sort_keys=True) + "\n")
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise OrchestrationError("CRC32C_WORKER_REQUEST_FAILED") from exc
+        response = self._read_response("CRC32C_WORKER_RESPONSE_INVALID")
+        if response.get("status") == "FAIL":
+            error_code = response.get("error_code")
+            self._terminate()
+            if isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]+", error_code):
+                raise OrchestrationError(f"CRC32C_WORKER_{error_code}")
+            raise OrchestrationError("CRC32C_WORKER_DIGEST_FAILED")
+        try:
+            if (
+                set(response) != self.RESPONSE_KEYS
+                or response.get("protocol_version") != 1
+                or response.get("status") != "PASS"
+                or response.get("request_id") != request_id
+                or response.get("backend") != "google_crc32c_c_external_worker_v1"
+            ):
+                raise OrchestrationError("CRC32C_WORKER_RESPONSE_AUTHORITY_MISMATCH")
+            _require_sha256(response.get("sha256"), "CRC32C_WORKER_DIGEST_INVALID")
+            _base64_digest(
+                response.get("md5_base64"), 16, "CRC32C_WORKER_MD5_INVALID"
+            )
+            _base64_digest(
+                response.get("crc32c_base64"), 4, "CRC32C_WORKER_CRC_INVALID"
+            )
+            for key in (
+                "size_bytes",
+                "file_device",
+                "file_inode",
+                "file_mtime_ns",
+                "chunk_size_bytes",
+            ):
+                value = response.get(key)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise OrchestrationError("CRC32C_WORKER_FILE_METADATA_INVALID")
+            if response["chunk_size_bytes"] != chunk_size:
+                raise OrchestrationError("CRC32C_WORKER_CHUNK_SIZE_MISMATCH")
+        except OrchestrationError:
+            self._terminate()
+            raise
+        return dict(response)
+
+    def _terminate(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+    def close(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        self._terminate()
+        if process.returncode != 0:
+            raise OrchestrationError("CRC32C_WORKER_EXIT_INVALID")
+
+    def __enter__(self) -> "ExternalCRC32CDigestWorker":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
+        if exc_type is None:
+            self.close()
+        else:
+            self._terminate()
+        return False
 
 
 def load_strict_json(path: Path) -> Any:
@@ -715,6 +952,8 @@ def load_orchestration_contract(path: Path) -> Mapping[str, Any]:
             "retry_backoff_max_seconds",
             "token_refresh_interval_seconds",
             "streaming_digest_backend",
+            "crc32c_runtime_source",
+            "crc32c_worker_protocol_version",
             "streaming_digest_chunk_bytes",
             "retryable_failure_classes",
             "nonretryable_failure_classes",
@@ -823,7 +1062,11 @@ def load_orchestration_contract(path: Path) -> Mapping[str, Any]:
     ):
         raise OrchestrationError("DOWNLOADER_CONTRACT_SEMANTICS_CHANGED")
     if (
-        downloader.get("streaming_digest_backend") != "google_crc32c_c"
+        downloader.get("streaming_digest_backend")
+        != "google_crc32c_c_external_worker_v1"
+        or downloader.get("crc32c_runtime_source")
+        != "PINNED_CLOUDSDK_BUNDLED_PYTHON"
+        or downloader.get("crc32c_worker_protocol_version") != 1
         or downloader.get("streaming_digest_chunk_bytes") != 8 * 1024 * 1024
         or downloader.get("token_refresh_interval_seconds") != 2_400
         or downloader.get("retry_backoff_initial_seconds") != 2
@@ -2030,7 +2273,8 @@ def _crc32c_base64(data: bytes) -> str:
 
 def verify_downloaded_partial(
     expectation: DownloadExpectation, *, partial_path: Path,
-    transfer_receipt: Mapping[str, Any], attempt_id: str
+    transfer_receipt: Mapping[str, Any], attempt_id: str,
+    digest_provider: Callable[[Path, str], Mapping[str, Any]] = _inprocess_digest_provider,
 ) -> dict[str, Any]:
     expected_receipt_keys = {
         "schema_version",
@@ -2057,7 +2301,7 @@ def verify_downloaded_partial(
         raise OrchestrationError("TRANSFER_RECEIPT_IDENTITY_INVALID")
     if partial_path.name != planned_partial_name(expectation, attempt_id):
         raise OrchestrationError("STALE_OR_FOREIGN_DOWNLOAD_PARTIAL")
-    digests = stream_regular_file_digests(partial_path)
+    digests = digest_provider(partial_path, expectation.source_object_key)
     if not digests["size_bytes"]:
         raise OrchestrationError("ZERO_BYTE_DOWNLOAD")
     observed_size = digests["size_bytes"]
@@ -2131,7 +2375,8 @@ def atomic_finalize_verified_file(
         or metadata.st_dev != verification.get("file_device")
         or metadata.st_ino != verification.get("file_inode")
         or metadata.st_mtime_ns != verification.get("file_mtime_ns")
-        or verification.get("digest_backend") != "google_crc32c_c"
+        or verification.get("digest_backend")
+        not in {"google_crc32c_c", "google_crc32c_c_external_worker_v1"}
     ):
         raise OrchestrationError("PARTIAL_CHANGED_AFTER_VERIFICATION")
     partial_parent = partial_path.parent.resolve(strict=True)
@@ -2161,9 +2406,10 @@ def atomic_finalize_verified_file(
 
 
 def _verification_from_exact_final(
-    expectation: DownloadExpectation, *, final_path: Path
+    expectation: DownloadExpectation, *, final_path: Path,
+    digest_provider: Callable[[Path, str], Mapping[str, Any]] = _inprocess_digest_provider,
 ) -> dict[str, Any]:
-    digests = stream_regular_file_digests(final_path)
+    digests = digest_provider(final_path, expectation.source_object_key)
     observed_size = digests["size_bytes"]
     observed_md5 = digests["md5_base64"]
     observed_crc = digests["crc32c_base64"]
@@ -2212,7 +2458,8 @@ def _validate_recovery_receipt(
 def recover_unbound_download_transaction(
     ledger: Mapping[str, Any], *, batch_id: str,
     expectation: DownloadExpectation, final_path: Path, partial_path: Path,
-    receipt_path: Path, recovery_path: Path, ledger_root: Path
+    receipt_path: Path, recovery_path: Path, ledger_root: Path,
+    digest_provider: Callable[[Path, str], Mapping[str, Any]] = _inprocess_digest_provider,
 ) -> dict[str, Any]:
     """Adopt an interrupted verified final only through a bound recovery receipt."""
     if not final_path.exists() or final_path.is_symlink():
@@ -2221,7 +2468,9 @@ def recover_unbound_download_transaction(
     key = expectation.source_object_key
     if batch["download_attempts"].get(key, 0) <= 0:
         raise OrchestrationError("UNBOUND_DOWNLOAD_WITHOUT_RECORDED_REQUEST")
-    verification = _verification_from_exact_final(expectation, final_path=final_path)
+    verification = _verification_from_exact_final(
+        expectation, final_path=final_path, digest_provider=digest_provider
+    )
     verification_sha = canonical_json_sha256(verification)
     receipt_preexisting = receipt_path.exists() or receipt_path.is_symlink()
     if receipt_path.is_symlink():
@@ -3057,7 +3306,8 @@ def execute_exact_batch_download(
     launch_authority_sha256: str,
     argv: Sequence[str], token_provider: Any, transport: Any,
     now: datetime | None = None, monotonic_clock: Any = time.monotonic,
-    sleeper: Any = time.sleep
+    sleeper: Any = time.sleep,
+    digest_provider: Callable[[Path, str], Mapping[str, Any]] = _inprocess_digest_provider,
 ) -> dict[str, Any]:
     """Execute one authorization-scoped exact batch; callers persist returned ledger."""
     plan_sha = validate_batch_plan(plan, requirements=requirements)
@@ -3210,7 +3460,7 @@ def execute_exact_batch_download(
                 raise OrchestrationError("RESUME_VERIFICATION_RECEIPT_MISMATCH")
             verification = load_strict_json(receipt_path)
             expected_verification = _verification_from_exact_final(
-                expectation, final_path=final_path
+                expectation, final_path=final_path, digest_provider=digest_provider
             )
             if verification != expected_verification:
                 raise OrchestrationError("RESUME_FINAL_DOWNLOAD_INVALID")
@@ -3282,6 +3532,7 @@ def execute_exact_batch_download(
                 receipt_path=receipt_path,
                 recovery_path=recovery_path,
                 ledger_root=ledger_root,
+                digest_provider=digest_provider,
             )
             continue
         while True:
@@ -3318,6 +3569,7 @@ def execute_exact_batch_download(
                     partial_path=partial_path,
                     transfer_receipt=transfer_receipt,
                     attempt_id=updated["attempt_id"],
+                    digest_provider=digest_provider,
                 )
             except DownloadTransportError as exc:
                 disposition = classify_download_failure(
@@ -3732,20 +3984,37 @@ def _main_download_batch(args: argparse.Namespace, raw_argv: Sequence[str]) -> N
         token_provider.validate_authority(),
         expected_runtime_authority=current_authority,
     )
-    updated = execute_exact_batch_download(
-        plan=plan,
-        requirements=production_requirements(contract),
-        ledger=ledger,
-        contract=contract,
-        batch_id=args.batch_id,
-        expected_runtime_authority=current_authority,
-        authorization_receipt=authorization,
-        output_root=args.output_root,
-        launch_authority_sha256=args.launch_authority_sha256,
-        argv=raw_argv,
-        token_provider=token_provider,
-        transport=GCSExactObjectBodyTransport(),
+    canonical_worker = Path(__file__).resolve(strict=True).with_name(
+        "lvef_c3_crc32c_worker.py"
     )
+    if args.crc32c_worker.resolve(strict=True) != canonical_worker:
+        raise OrchestrationError("CRC32C_WORKER_NOT_AUTHORITY_BOUND")
+    with ExternalCRC32CDigestWorker(
+        python_executable=args.crc32c_python,
+        worker_script=args.crc32c_worker,
+        expected_python_sha256=current_authority[
+            "crc32c_python_executable_sha256"
+        ],
+        expected_worker_sha256=current_authority["crc32c_worker_sha256"],
+        expected_distribution_sha256=current_authority[
+            "crc32c_distribution_sha256"
+        ],
+    ) as digest_worker:
+        updated = execute_exact_batch_download(
+            plan=plan,
+            requirements=production_requirements(contract),
+            ledger=ledger,
+            contract=contract,
+            batch_id=args.batch_id,
+            expected_runtime_authority=current_authority,
+            authorization_receipt=authorization,
+            output_root=args.output_root,
+            launch_authority_sha256=args.launch_authority_sha256,
+            argv=raw_argv,
+            token_provider=token_provider,
+            transport=GCSExactObjectBodyTransport(),
+            digest_provider=digest_worker.digest,
+        )
     digest = atomic_write_json_no_clobber(
         args.ledger_output, updated, attempt_id=str(updated["attempt_id"])
     )
@@ -3799,6 +4068,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     download.add_argument("--environment-receipt", type=Path, required=True)
     download.add_argument("--output-root", type=Path, required=True)
     download.add_argument("--gcloud-binary", type=Path, required=True)
+    download.add_argument("--crc32c-python", type=Path, required=True)
+    download.add_argument("--crc32c-worker", type=Path, required=True)
     download.add_argument("--ledger-output", type=Path, required=True)
     return parser.parse_args(argv)
 

@@ -29,6 +29,15 @@ ACTUAL_DICOM_TRANSFER_AUTHORIZATION=NOT_YET_GRANTED
 
 The established planning values are frozen for this phase. No further cost investigation, recalculation, or independent verification is required. Actual charges may differ, but that limitation does not reopen the planning-cost gate. Research capacity now passes; the backed control-tier, backup/recovery, final offline-authority, and explicit transfer-authorization gates remain separate.
 
+The immutable first production-lock preflight,
+`lvef_c3_phase1ee_production_lock_001`, failed before a production attempt root
+was created because the pinned EchoPrime Python correctly lacked the separately
+needed compiled CRC32C module. No cloud, scheduler, DICOM, extraction,
+embedding, or model action occurred. The executable contract now treats
+CRC32C as a distinct, checksummed Cloud-SDK-bundled Python 3.14 helper while
+leaving EchoPrime on the validated Python 3.10 environment. A fresh no-clobber
+attempt is required; attempt 001 must not be repaired or reused in place.
+
 ## Gate table
 
 | Gate | Current disposition | Evidence required to pass | Effect |
@@ -60,7 +69,7 @@ The established planning values are frozen for this phase. No further cost inves
 | Selected source request manifest frozen | `PASS_STRUCTURAL_ONLY` | Existing hash-locked 4,530-study, 335,984-request authority | Not yet public-object authority |
 | Enriched selected public-object inventory frozen | `PASS_CURRENT_INVENTORY` | Immutable job-7104307 outputs plus supplemental source-authority/provenance/safety chain | Does not establish historical byte identity |
 | Checkpoint identity frozen | `PASS_CANDIDATE` | 138,642,379-byte checkpoint with SHA-256 `7ca32e...e64f3b` | Historical linkage remains unclaimed |
-| Prospective production environment plan | `PASS_IMPLEMENTED_OFFLINE` | Pinned Python/checkpoint/package receipt capture and exact environment-authority validation are implemented without GPU execution | Current-run authority must be frozen before transfer |
+| Prospective production environment plan | `PASS_SPLIT_RUNTIME_IMPLEMENTED_FRESH_CAPTURE_REQUIRED` | Environment-authority v3 binds the pinned EchoPrime Python plus the isolated compiled CRC32C Python/worker/distribution tree; attempt 001 remains an immutable pre-root failure | A fresh current-commit environment receipt is required before transfer |
 | Prospective preprocessing/cine plan | `PASS_IMPLEMENTED_SYNTHETIC_ONLY` | Explicit multiframe candidacy, decoder/color/mask/signal gates, deterministic 32-frame sampling, atomic outputs, and failure dispositions are synthetically validated | No real DICOM decode or extraction occurred |
 | Production streaming/batch implementation validated | `PASS_IMPLEMENTED_OFFLINE` | Exact-manifest downloader, deterministic 19-batch control plane, stage receipts, no-clobber resume, preservation, cache-retirement gate, and finalizer are versioned | Does not authorize a request, scheduler submission, or scientific execution |
 | Technical metadata review complete | `PENDING_RESTRICTED_AUDIT` | All nine fixed issues receive evidence-bound dispositions without performance access | Does not block outcome-blind imaging reconstruction; blocks modeling |
@@ -69,7 +78,7 @@ The established planning values are frozen for this phase. No further cost inves
 | Direct restricted-agent mode documented | `PASS_IMPLEMENTED` | Approved-root enforcement, restricted run receipts, and synthetic path/authority tests | Does not grant prohibited scientific actions |
 | Git/manuscript export gate documented | `PASS_IMPLEMENTED` | Two-stage exact-hash approval, schema/value safety, staged-Git gate, and synthetic tests | Every actual export still needs separate human review |
 | Offline production specification lock | `SUPERSEDED_BY_PHASE1EE_IMPLEMENTATION` | Attempt 004 remains immutable historical specification evidence | It is not production authority and was not rewritten |
-| Production command/config implementation | `PASS_IMPLEMENTED_OFFLINE` | Versioned orchestration, closed state machine, resume ledger, exact authority packet, scheduler scripts, preservation policy, and aggregate export gates were implemented at `0800a0b4...135a`; SCC setgid-only portability is fixed at `d2f94d4f...2531` | Final packet/checksums and explicit staged authorization remain required |
+| Production command/config implementation | `PASS_IMPLEMENTED_OFFLINE` | Versioned orchestration, closed state machine, resume ledger, split-runtime CRC32C worker, exact 38-role authority packet, scheduler scripts, preservation policy, and aggregate export gates are implemented; SCC `2700` portability is enforced in Python and Bash | Fresh current-commit packet/checksums and explicit staged authorization remain required |
 | Full C3 owner authorization | `ABSENT` | Written authorization naming commit, config/checksums, source, resources, commands, checkpoint, environment, and preservation contract | Absolute block |
 
 ## Current scientific cohort authority

@@ -14,7 +14,10 @@
     "state_machine_schema_sha256",
     "resume_ledger_schema_sha256",
     "gcloud_resolution_receipt_sha256",
-    "gcloud_executable_sha256"
+    "gcloud_executable_sha256",
+    "crc32c_python_executable_sha256",
+    "crc32c_worker_sha256",
+    "crc32c_distribution_sha256"
   ],
   "authorization_state": "UNAUTHORIZED",
   "ledger_fields": [

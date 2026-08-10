@@ -16,7 +16,6 @@ import lvef_c3_production_stages as stages
 
 def _packages() -> list[dict[str, str]]:
     return [
-        {"name": "google-crc32c", "version": "1.7.1"},
         {"name": "torch", "version": "2.11.0+cu130"},
     ]
 
@@ -29,8 +28,6 @@ def _runtime() -> dict[str, str]:
         "torchvision_version": "0.26.0+cu130",
         "cuda_version": "13.0",
         "cudnn_version": "91002",
-        "google_crc32c_implementation": "c",
-        "google_crc32c_version": "1.7.1",
         "operating_system": "synthetic-linux",
     }
 
@@ -38,13 +35,23 @@ def _runtime() -> dict[str, str]:
 def _receipt() -> dict[str, object]:
     packages = _packages()
     return {
-        "schema_version": 2,
-        "artifact_type": "lvef_c3_production_environment_authority_v2",
+        "schema_version": 3,
+        "artifact_type": "lvef_c3_production_environment_authority_v3",
         "status": "PASS_OFFLINE_RUNTIME_AUTHORITY_NO_GPU_EXECUTION",
         "governing_commit": "b" * 40,
         "captured_at_utc": "2026-08-10T12:00:00+00:00",
         "source_environment_receipt_sha256": "c" * 64,
         **_runtime(),
+        "crc32c_runtime_source": "PINNED_CLOUDSDK_BUNDLED_PYTHON",
+        "crc32c_python_executable_sha256": "d" * 64,
+        "crc32c_python_version": "3.14.0",
+        "crc32c_worker_sha256": "e" * 64,
+        "crc32c_worker_protocol_version": 1,
+        "google_crc32c_version": "1.8.0",
+        "google_crc32c_implementation": "c",
+        "google_crc32c_distribution_sha256": "f" * 64,
+        "google_crc32c_distribution_file_count": 20,
+        "google_crc32c_known_vector_base64": "4waSgw==",
         "package_inventory_sha256": hashlib.sha256(
             json.dumps(packages, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
@@ -81,9 +88,9 @@ def test_environment_receipt_rejects_tampered_package_preimage() -> None:
 def test_environment_receipt_rejects_duplicate_normalized_package_names() -> None:
     receipt = _receipt()
     receipt["package_inventory"].append(
-        {"name": "google_crc32c", "version": "1.7.1"}
+        {"name": "Torch", "version": "2.11.0+cu130"}
     )
-    receipt["package_count"] = 3
+    receipt["package_count"] = 2
     receipt["package_inventory_sha256"] = hashlib.sha256(
         json.dumps(
             receipt["package_inventory"],
@@ -110,7 +117,7 @@ def test_environment_receipt_rejects_extra_key_and_changed_runtime() -> None:
     changed["google_crc32c_implementation"] = "python"
     for receipt, expected in (
         (extra, "ENVIRONMENT_RECEIPT_SCHEMA_MISMATCH"),
-        (changed, "RUNNING_ENVIRONMENT_RUNTIME_MISMATCH"),
+        (changed, "CRC32C_AUXILIARY_AUTHORITY_INVALID"),
     ):
         try:
             stages.validate_environment_receipt_payload(

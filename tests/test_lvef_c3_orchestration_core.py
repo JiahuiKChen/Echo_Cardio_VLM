@@ -54,6 +54,9 @@ def _authority() -> dict[str, str]:
         "resume_ledger_schema_sha256": "a" * 64,
         "gcloud_resolution_receipt_sha256": "b" * 64,
         "gcloud_executable_sha256": "c" * 64,
+        "crc32c_python_executable_sha256": "d" * 64,
+        "crc32c_worker_sha256": "e" * 64,
+        "crc32c_distribution_sha256": "f" * 64,
     }
 
 
@@ -386,6 +389,9 @@ def test_ledger_must_match_independently_derived_current_runtime_authority() -> 
         ],
         "gcloud_resolution_receipt_sha256": "b" * 64,
         "gcloud_executable_sha256": "c" * 64,
+        "crc32c_python_executable_sha256": "d" * 64,
+        "crc32c_worker_sha256": "e" * 64,
+        "crc32c_distribution_sha256": "f" * 64,
     }
     runtime = {**plan["authority"], "batch_plan_sha256": core.canonical_json_sha256(plan)}
     ledger = core.initialize_resume_ledger(
@@ -1249,8 +1255,15 @@ def test_exact_download_batch_cli_contract_runs_with_synthetic_transport_only() 
             "--environment-receipt", str(environment_receipt),
             "--output-root", str(raw_root),
             "--gcloud-binary", str(gcloud),
+            "--crc32c-python", str(Path(sys.executable).resolve()),
+            "--crc32c-worker", str(ROOT / "scripts/lvef_c3_crc32c_worker.py"),
             "--ledger-output", str(output_ledger),
         ]
+        synthetic_digest_worker = mock.MagicMock()
+        synthetic_digest_worker.__enter__.return_value.digest = (
+            core._inprocess_digest_provider
+        )
+        synthetic_digest_worker.__exit__.return_value = False
         with (
             mock.patch.object(core, "load_orchestration_contract", return_value=contract),
             mock.patch.object(core, "validate_plan_authority_against_contract"),
@@ -1265,6 +1278,11 @@ def test_exact_download_batch_cli_contract_runs_with_synthetic_transport_only() 
             ),
             mock.patch.object(
                 core, "GCSExactObjectBodyTransport", return_value=SyntheticTransport()
+            ),
+            mock.patch.object(
+                core,
+                "ExternalCRC32CDigestWorker",
+                return_value=synthetic_digest_worker,
             ),
             mock.patch.dict(
                 "os.environ",

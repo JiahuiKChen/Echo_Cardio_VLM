@@ -81,8 +81,16 @@ ENVIRONMENT_RECEIPT_KEYS = frozenset(
         "torchvision_version",
         "cuda_version",
         "cudnn_version",
+        "crc32c_runtime_source",
+        "crc32c_python_executable_sha256",
+        "crc32c_python_version",
+        "crc32c_worker_sha256",
+        "crc32c_worker_protocol_version",
         "google_crc32c_version",
         "google_crc32c_implementation",
+        "google_crc32c_distribution_sha256",
+        "google_crc32c_distribution_file_count",
+        "google_crc32c_known_vector_base64",
         "package_inventory_sha256",
         "package_count",
         "package_inventory",
@@ -481,9 +489,9 @@ def validate_environment_receipt_payload(
     if set(receipt) != ENVIRONMENT_RECEIPT_KEYS:
         raise ProductionStageError("ENVIRONMENT_RECEIPT_SCHEMA_MISMATCH")
     if (
-        receipt.get("schema_version") != 2
+        receipt.get("schema_version") != 3
         or receipt.get("artifact_type")
-        != "lvef_c3_production_environment_authority_v2"
+        != "lvef_c3_production_environment_authority_v3"
         or receipt.get("status")
         != "PASS_OFFLINE_RUNTIME_AUTHORITY_NO_GPU_EXECUTION"
         or not COMMIT_RE.fullmatch(str(receipt.get("governing_commit")))
@@ -494,7 +502,35 @@ def validate_environment_receipt_payload(
         "SOURCE_ENVIRONMENT_HASH_INVALID",
     )
     _validate_hash(receipt.get("python_executable_sha256"), "PYTHON_HASH_INVALID")
+    _validate_hash(
+        receipt.get("crc32c_python_executable_sha256"),
+        "CRC32C_PYTHON_HASH_INVALID",
+    )
+    _validate_hash(receipt.get("crc32c_worker_sha256"), "CRC32C_WORKER_HASH_INVALID")
+    _validate_hash(
+        receipt.get("google_crc32c_distribution_sha256"),
+        "CRC32C_DISTRIBUTION_HASH_INVALID",
+    )
     _validate_hash(receipt.get("package_inventory_sha256"), "PACKAGE_HASH_INVALID")
+    if (
+        receipt.get("crc32c_runtime_source")
+        != "PINNED_CLOUDSDK_BUNDLED_PYTHON"
+        or receipt.get("crc32c_worker_protocol_version") != 1
+        or receipt.get("google_crc32c_implementation") != "c"
+        or receipt.get("google_crc32c_known_vector_base64") != "4waSgw=="
+        or not isinstance(receipt.get("crc32c_python_version"), str)
+        or not receipt["crc32c_python_version"]
+        or not isinstance(receipt.get("google_crc32c_version"), str)
+        or not receipt["google_crc32c_version"]
+        or not isinstance(
+            receipt.get("google_crc32c_distribution_file_count"), int
+        )
+        or isinstance(
+            receipt.get("google_crc32c_distribution_file_count"), bool
+        )
+        or receipt["google_crc32c_distribution_file_count"] < 1
+    ):
+        raise ProductionStageError("CRC32C_AUXILIARY_AUTHORITY_INVALID")
     try:
         captured = datetime.fromisoformat(str(receipt.get("captured_at_utc")))
     except ValueError as exc:
@@ -554,11 +590,8 @@ def validate_environment_receipt_against_current_runtime(
 ) -> dict[str, Any]:
     receipt = load_json_object(environment_receipt, "ENVIRONMENT_RECEIPT")
     try:
-        import google_crc32c
         import torch
         import torchvision
-
-        crc32c_version = importlib.metadata.version("google-crc32c")
     except Exception as exc:
         raise ProductionStageError("ENVIRONMENT_RUNTIME_UNAVAILABLE") from exc
     cudnn_version = torch.backends.cudnn.version()
@@ -582,18 +615,61 @@ def validate_environment_receipt_against_current_runtime(
             "torchvision_version": str(torchvision.__version__),
             "cuda_version": str(torch.version.cuda),
             "cudnn_version": str(cudnn_version),
-            "google_crc32c_implementation": str(
-                getattr(google_crc32c, "implementation", "")
-            ),
-            "google_crc32c_version": str(crc32c_version),
             "operating_system": platform.platform(),
         },
     )
     return receipt
 
 
+def validate_crc32c_external_authority(
+    environment_receipt: Path,
+    crc32c_python: Path,
+    crc32c_worker: Path,
+) -> Mapping[str, Any]:
+    import capture_lvef_c3_production_environment as capture
+
+    receipt = load_json_object(environment_receipt, "ENVIRONMENT_RECEIPT")
+    if sha256_file(crc32c_python) != receipt.get(
+        "crc32c_python_executable_sha256"
+    ) or sha256_file(crc32c_worker) != receipt.get("crc32c_worker_sha256"):
+        raise ProductionStageError("CRC32C_EXTERNAL_FILE_AUTHORITY_MISMATCH")
+    try:
+        probe = capture.probe_crc32c_runtime(
+            crc32c_python,
+            crc32c_worker,
+            expected_python_sha256=str(
+                receipt["crc32c_python_executable_sha256"]
+            ),
+        )
+    except (capture.EnvironmentAuthorityError, OSError, subprocess.SubprocessError) as exc:
+        raise ProductionStageError("CRC32C_EXTERNAL_RUNTIME_UNAVAILABLE") from exc
+    expected = {
+        "python_version": receipt.get("crc32c_python_version"),
+        "google_crc32c_version": receipt.get("google_crc32c_version"),
+        "google_crc32c_implementation": receipt.get(
+            "google_crc32c_implementation"
+        ),
+        "google_crc32c_distribution_sha256": receipt.get(
+            "google_crc32c_distribution_sha256"
+        ),
+        "google_crc32c_distribution_file_count": receipt.get(
+            "google_crc32c_distribution_file_count"
+        ),
+        "known_vector_crc32c_base64": receipt.get(
+            "google_crc32c_known_vector_base64"
+        ),
+    }
+    if any(probe.get(key) != value for key, value in expected.items()):
+        raise ProductionStageError("CRC32C_EXTERNAL_RUNTIME_AUTHORITY_MISMATCH")
+    return receipt
+
+
 def validate_checkpoint_and_environment(
-    checkpoint: Path, environment_receipt: Path
+    checkpoint: Path,
+    environment_receipt: Path,
+    *,
+    crc32c_python: Path | None = None,
+    crc32c_worker: Path | None = None,
 ) -> dict[str, Any]:
     if checkpoint.name != CHECKPOINT_FILENAME:
         raise ProductionStageError("CHECKPOINT_FILENAME_MISMATCH")
@@ -604,6 +680,12 @@ def validate_checkpoint_and_environment(
     if sha256_file(checkpoint) != CHECKPOINT_SHA256:
         raise ProductionStageError("CHECKPOINT_SHA256_MISMATCH")
     validate_environment_receipt_against_current_runtime(environment_receipt)
+    if (crc32c_python is None) is not (crc32c_worker is None):
+        raise ProductionStageError("CRC32C_EXTERNAL_AUTHORITY_PAIR_INCOMPLETE")
+    if crc32c_python is not None and crc32c_worker is not None:
+        validate_crc32c_external_authority(
+            environment_receipt, crc32c_python, crc32c_worker
+        )
     return {
         "checkpoint_identity_passed": True,
         "environment_receipt_complete": True,

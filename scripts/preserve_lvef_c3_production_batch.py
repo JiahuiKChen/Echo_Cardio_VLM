@@ -127,7 +127,13 @@ ENVIRONMENT_RECEIPT_KEYS = {
     "captured_at_utc", "source_environment_receipt_sha256",
     "python_executable_sha256", "python_version", "torch_version",
     "torchvision_version", "cuda_version", "cudnn_version",
+    "crc32c_runtime_source", "crc32c_python_executable_sha256",
+    "crc32c_python_version", "crc32c_worker_sha256",
+    "crc32c_worker_protocol_version",
     "google_crc32c_version", "google_crc32c_implementation",
+    "google_crc32c_distribution_sha256",
+    "google_crc32c_distribution_file_count",
+    "google_crc32c_known_vector_base64",
     "package_inventory", "package_inventory_sha256", "package_count",
     "operating_system",
     "gpu_execution_performed", "cloud_request_performed", "dicom_body_read",
@@ -832,13 +838,24 @@ def preserve_batch(
     environment = load_json(external["environment_receipt"], "ENVIRONMENT_RECEIPT")
     if (
         set(environment) != ENVIRONMENT_RECEIPT_KEYS
-        or environment.get("schema_version") != 2
+        or environment.get("schema_version") != 3
         or environment.get("artifact_type")
-        != "lvef_c3_production_environment_authority_v2"
+        != "lvef_c3_production_environment_authority_v3"
         or environment.get("status")
         != "PASS_OFFLINE_RUNTIME_AUTHORITY_NO_GPU_EXECUTION"
         or environment.get("governing_commit") != governing_commit
         or environment.get("google_crc32c_implementation") != "c"
+        or environment.get("crc32c_runtime_source")
+        != "PINNED_CLOUDSDK_BUNDLED_PYTHON"
+        or environment.get("crc32c_worker_protocol_version") != 1
+        or environment.get("google_crc32c_known_vector_base64") != "4waSgw=="
+        or not isinstance(
+            environment.get("google_crc32c_distribution_file_count"), int
+        )
+        or isinstance(
+            environment.get("google_crc32c_distribution_file_count"), bool
+        )
+        or environment["google_crc32c_distribution_file_count"] < 1
         or not TIMESTAMP_RE.fullmatch(str(environment.get("captured_at_utc")))
         or any(
             environment.get(key) is not False
@@ -852,7 +869,8 @@ def preserve_batch(
             not isinstance(environment.get(key), str) or not environment[key]
             for key in (
                 "python_version", "torch_version", "torchvision_version",
-                "cuda_version", "cudnn_version",
+                "cuda_version", "cudnn_version", "crc32c_python_version",
+                "google_crc32c_version",
             )
         )
         or any(
@@ -860,6 +878,8 @@ def preserve_batch(
             for key in (
                 "python_executable_sha256", "package_inventory_sha256",
                 "source_environment_receipt_sha256",
+                "crc32c_python_executable_sha256", "crc32c_worker_sha256",
+                "google_crc32c_distribution_sha256",
             )
         )
         or not isinstance(environment.get("package_inventory"), list)

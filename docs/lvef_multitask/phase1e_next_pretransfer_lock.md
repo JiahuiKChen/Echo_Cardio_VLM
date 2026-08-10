@@ -13,6 +13,15 @@ The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.48801
 - Aggregate receipt: 5,003 bytes; SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`.
 - Capacity-attempt governing implementation commit: `0800a0b4de93911cc39467acf2460a8d5ed6135a`.
 - SCC setgid-only private-directory portability commit: `d2f94d4fb050347605933d922ae64a6d59f32531`.
+- Immutable production-lock attempt `lvef_c3_phase1ee_production_lock_001`:
+  failed during environment capture with `ENVIRONMENT_RUNTIME_IMPORT_FAILED`
+  before any production attempt root, plan, packet, launch envelope, cloud
+  request, or scheduler job was created.
+- Split-runtime repair: the EchoPrime Python remains unchanged; compiled
+  CRC32C uses the pinned Cloud SDK bundled Python 3.14 executable (SHA-256
+  `52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5`)
+  and a tracked, persistent, isolated digest worker. A fresh no-clobber
+  environment/packet attempt is required.
 - Prior immutable aggregates: all 12 original/supplemental authorities passed filename, size, SHA-256, and closed-schema revalidation; their generating cloud/storage work was not repeated.
 - Research quota/usage/available: 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes.
 - Research physical filesystem available: 2,092,672,483,328 bytes.

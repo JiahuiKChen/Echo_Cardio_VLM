@@ -19,8 +19,12 @@ lvef_c3_require_private_projectnb_directory() {
   [[ -d "$candidate" && ! -L "$candidate" ]] || lvef_c3_die PRIVATE_DIRECTORY_INVALID
   [[ "$(stat -c '%U' "$candidate")" == "$(id -un)" ]] || \
     lvef_c3_die PRIVATE_DIRECTORY_WRONG_OWNER
-  [[ "$(stat -c '%a' "$candidate")" == "700" ]] || \
+  lvef_c3_private_directory_mode_ok "$(stat -c '%a' "$candidate")" || \
     lvef_c3_die PRIVATE_DIRECTORY_WRONG_MODE
+}
+
+lvef_c3_private_directory_mode_ok() {
+  [[ "$1" == "700" || "$1" == "2700" ]]
 }
 
 lvef_c3_require_projectnb_path() {
@@ -47,6 +51,9 @@ lvef_c3_runtime_key_allowed() {
     LVEF_C3_BATCH_PLAN|LVEF_C3_BATCH_PLAN_SHA256|LVEF_C3_PRODUCTION_ROOT|\
     LVEF_C3_PYTHON|LVEF_C3_PYTHON_SHA256|LVEF_C3_ENVIRONMENT_RECEIPT|\
     LVEF_C3_ENVIRONMENT_RECEIPT_SHA256|LVEF_C3_CHECKPOINT|\
+    LVEF_C3_CRC32C_PYTHON|LVEF_C3_CRC32C_PYTHON_SHA256|\
+    LVEF_C3_CRC32C_WORKER|LVEF_C3_CRC32C_WORKER_SHA256|\
+    LVEF_C3_CRC32C_DISTRIBUTION_SHA256|\
     LVEF_C3_CHECKPOINT_SHA256|LVEF_C3_GCLOUD_BINARY|LVEF_C3_GCLOUD_BINARY_SHA256|\
     LVEF_C3_GCLOUD_RESOLUTION_RECEIPT|LVEF_C3_GCLOUD_RESOLUTION_RECEIPT_SHA256|\
     LVEF_C3_CLOUDSDK_CONFIG|\
@@ -106,6 +113,11 @@ lvef_c3_load_runtime() {
   : "${LVEF_C3_PYTHON_SHA256:?}"
   : "${LVEF_C3_ENVIRONMENT_RECEIPT:?}"
   : "${LVEF_C3_ENVIRONMENT_RECEIPT_SHA256:?}"
+  : "${LVEF_C3_CRC32C_PYTHON:?}"
+  : "${LVEF_C3_CRC32C_PYTHON_SHA256:?}"
+  : "${LVEF_C3_CRC32C_WORKER:?}"
+  : "${LVEF_C3_CRC32C_WORKER_SHA256:?}"
+  : "${LVEF_C3_CRC32C_DISTRIBUTION_SHA256:?}"
   : "${LVEF_C3_CHECKPOINT:?}"
   : "${LVEF_C3_CHECKPOINT_SHA256:?}"
   : "${LVEF_C3_GCLOUD_BINARY:?}"
@@ -136,6 +148,26 @@ lvef_c3_load_runtime() {
     lvef_c3_die PYTHON_EXPECTED_HASH_INVALID
   [[ "$(sha256sum "$LVEF_C3_PYTHON" | awk '{print $1}')" == "$LVEF_C3_PYTHON_SHA256" ]] || \
     lvef_c3_die PYTHON_HASH_MISMATCH
+  [[ -f "$LVEF_C3_CRC32C_PYTHON" && ! -L "$LVEF_C3_CRC32C_PYTHON" && \
+    -x "$LVEF_C3_CRC32C_PYTHON" ]] || lvef_c3_die CRC32C_PYTHON_INVALID
+  [[ "$LVEF_C3_CRC32C_PYTHON" == \
+    '/restricted/projectnb/mimicecho/tools/google-cloud-cli-579.0.0/google-cloud-sdk/platform/bundledpythonunix/bin/python3.14' ]] || \
+    lvef_c3_die CRC32C_PYTHON_NOT_FROZEN_AUTHORITY
+  [[ "$LVEF_C3_CRC32C_PYTHON_SHA256" =~ ^[0-9a-f]{64}$ ]] || \
+    lvef_c3_die CRC32C_PYTHON_EXPECTED_HASH_INVALID
+  [[ "$(sha256sum "$LVEF_C3_CRC32C_PYTHON" | awk '{print $1}')" == \
+    "$LVEF_C3_CRC32C_PYTHON_SHA256" ]] || lvef_c3_die CRC32C_PYTHON_HASH_MISMATCH
+  [[ -f "$LVEF_C3_CRC32C_WORKER" && ! -L "$LVEF_C3_CRC32C_WORKER" ]] || \
+    lvef_c3_die CRC32C_WORKER_INVALID
+  [[ "$LVEF_C3_CRC32C_WORKER" == \
+    "$canonical_worktree/scripts/lvef_c3_crc32c_worker.py" ]] || \
+    lvef_c3_die CRC32C_WORKER_NOT_FROZEN_AUTHORITY
+  [[ "$LVEF_C3_CRC32C_WORKER_SHA256" =~ ^[0-9a-f]{64}$ ]] || \
+    lvef_c3_die CRC32C_WORKER_EXPECTED_HASH_INVALID
+  [[ "$(sha256sum "$LVEF_C3_CRC32C_WORKER" | awk '{print $1}')" == \
+    "$LVEF_C3_CRC32C_WORKER_SHA256" ]] || lvef_c3_die CRC32C_WORKER_HASH_MISMATCH
+  [[ "$LVEF_C3_CRC32C_DISTRIBUTION_SHA256" =~ ^[0-9a-f]{64}$ ]] || \
+    lvef_c3_die CRC32C_DISTRIBUTION_HASH_INVALID
   [[ -x "$LVEF_C3_GCLOUD_BINARY" ]] || lvef_c3_die GCLOUD_BINARY_INVALID
   [[ "$LVEF_C3_GCLOUD_BINARY" == \
     '/restricted/projectnb/mimicecho/tools/google-cloud-cli-579.0.0/google-cloud-sdk/bin/gcloud' ]] || \
@@ -150,7 +182,8 @@ lvef_c3_load_runtime() {
     lvef_c3_die CLOUDSDK_CONFIG_INVALID
   [[ "$(stat -c '%U' "$LVEF_C3_CLOUDSDK_CONFIG")" == "$(id -un)" ]] || \
     lvef_c3_die CLOUDSDK_CONFIG_WRONG_OWNER
-  [[ "$(stat -c '%a' "$LVEF_C3_CLOUDSDK_CONFIG")" == "700" ]] || \
+  lvef_c3_private_directory_mode_ok \
+    "$(stat -c '%a' "$LVEF_C3_CLOUDSDK_CONFIG")" || \
     lvef_c3_die CLOUDSDK_CONFIG_WRONG_MODE
   export CLOUDSDK_CONFIG="$LVEF_C3_CLOUDSDK_CONFIG"
   lvef_c3_require_private_regular_file \

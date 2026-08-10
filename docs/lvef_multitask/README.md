@@ -28,6 +28,13 @@ The Phase 1E-A four-training-study technical smoke passed: 252 public objects we
 
 The current selected-source inventory, Autoclass, and rate-explicit cost adjudications have passed. The owner-accepted requester-pays estimates ($136.101850/$142.906680/$171.488015) and SCC storage estimate are frozen for planning; no further cost verification is required. This closes only the planning-cost gate. Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` produced `lvef_c3_live_quota.summary.json` (2,257 bytes; SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`). Composite successor `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` is bound to implementation commit `0800a0b4de93911cc39467acf2460a8d5ed6135a`; its 5,003-byte aggregate has SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`. It hash-revalidated the parent research authority and added only contemporaneous control-tier evidence. The research tier passes byte quota, file quota, underlying-filesystem, minimum-quota, and 200-GB-reserve gates: quota/usage/available are 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes, physical availability is 2,092,672,483,328 bytes, and quota/physical slack after the frozen peak are 377,357,923,668 / 431,417,418,068 bytes. The backed control tier is the remaining capacity blocker: its 11,000,000,000-byte quota has 10,959,364,608 bytes used and only 40,635,392 bytes available, although its file-count gate passes. The preferred adjustment is 50 GB backed and 1,950 GB research; 25/1,975 GB is the minimum safe option. The owner-attested administrative composition keeps the purchased 1-TB SAAS allocation on the research tier; machine evidence establishes the exact total quota but not that funding composition. Full C3 remains `NO_GO` pending an active control-tier adjustment with a fresh receipt, verified backup/recovery evidence, a final current-commit authority packet/launch envelope, and explicit owner transfer authorization.
 
+The production environment is now a closed split-runtime authority: the
+validated EchoPrime Python is unchanged, while a separately checksummed,
+isolated Cloud-SDK-bundled Python 3.14 process supplies compiled CRC32C through
+one persistent worker per download batch. The immutable first lock attempt
+failed before creating a production attempt root; a fresh no-clobber lock is
+required after the repair.
+
 ## Terminology
 
 New documents use:

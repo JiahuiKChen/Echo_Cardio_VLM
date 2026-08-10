@@ -27,8 +27,8 @@ import lvef_c3_orchestration_core as core
 import lvef_c3_production_stages as stages
 
 
-SCHEMA_VERSION = 1
-ARTIFACT_TYPE = "lvef_c3_production_authority_packet_v1"
+SCHEMA_VERSION = 2
+ARTIFACT_TYPE = "lvef_c3_production_authority_packet_v2"
 STATUS = "PASS_OFFLINE_IMPLEMENTATION_LOCK_UNAUTHORIZED"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -47,6 +47,8 @@ REQUIRED_ROLES = frozenset(
         "echoprime_wrapper",
         "checkpoint",
         "python_executable",
+        "crc32c_python_executable",
+        "crc32c_worker",
         "environment_receipt",
         "environment_receipt_capture",
         "execution_environment",
@@ -110,6 +112,7 @@ SEMANTIC_VALIDATION_KEYS = frozenset(
         "batch_plan_schema_verified",
         "batch_plan_exact_rederivation_verified",
         "checkpoint_and_environment_verified",
+        "crc32c_external_runtime_verified",
         "execution_environment_verified",
         "gcloud_resolution_authority_verified",
         "state_and_resume_schemas_verified",
@@ -146,6 +149,7 @@ TRACKED_ROLE_PATHS = {
     "authority_packet_builder": "scripts/build_lvef_c3_production_authority_packet.py",
     "control_plane_preparer": "scripts/prepare_lvef_c3_production_control_plane.py",
     "environment_receipt_capture": "scripts/capture_lvef_c3_production_environment.py",
+    "crc32c_worker": "scripts/lvef_c3_crc32c_worker.py",
 }
 
 GCLOUD_RESOLUTION_KEYS = frozenset(
@@ -185,6 +189,11 @@ RUNTIME_ENVIRONMENT_KEYS = frozenset(
         "LVEF_C3_PYTHON_SHA256",
         "LVEF_C3_ENVIRONMENT_RECEIPT",
         "LVEF_C3_ENVIRONMENT_RECEIPT_SHA256",
+        "LVEF_C3_CRC32C_PYTHON",
+        "LVEF_C3_CRC32C_PYTHON_SHA256",
+        "LVEF_C3_CRC32C_WORKER",
+        "LVEF_C3_CRC32C_WORKER_SHA256",
+        "LVEF_C3_CRC32C_DISTRIBUTION_SHA256",
         "LVEF_C3_CHECKPOINT",
         "LVEF_C3_CHECKPOINT_SHA256",
         "LVEF_C3_GCLOUD_BINARY",
@@ -457,6 +466,8 @@ def _validate_execution_environment(
         "LVEF_C3_BATCH_PLAN": "batch_plan",
         "LVEF_C3_PYTHON": "python_executable",
         "LVEF_C3_ENVIRONMENT_RECEIPT": "environment_receipt",
+        "LVEF_C3_CRC32C_PYTHON": "crc32c_python_executable",
+        "LVEF_C3_CRC32C_WORKER": "crc32c_worker",
         "LVEF_C3_CHECKPOINT": "checkpoint",
         "LVEF_C3_GCLOUD_BINARY": "gcloud_executable",
         "LVEF_C3_GCLOUD_RESOLUTION_RECEIPT": "gcloud_resolution_receipt",
@@ -470,6 +481,12 @@ def _validate_execution_environment(
         "LVEF_C3_PYTHON_SHA256": core.sha256_file(artifacts["python_executable"]),
         "LVEF_C3_ENVIRONMENT_RECEIPT_SHA256": core.sha256_file(
             artifacts["environment_receipt"]
+        ),
+        "LVEF_C3_CRC32C_PYTHON_SHA256": core.sha256_file(
+            artifacts["crc32c_python_executable"]
+        ),
+        "LVEF_C3_CRC32C_WORKER_SHA256": core.sha256_file(
+            artifacts["crc32c_worker"]
         ),
         "LVEF_C3_CHECKPOINT_SHA256": core.sha256_file(artifacts["checkpoint"]),
         "LVEF_C3_GCLOUD_BINARY_SHA256": core.sha256_file(
@@ -496,6 +513,12 @@ def _validate_execution_environment(
         != values["LVEF_C3_GCLOUD_RESOLUTION_RECEIPT"]
         or values["LVEF_C3_CLOUDSDK_CONFIG_RECEIPT_SHA256"]
         != values["LVEF_C3_GCLOUD_RESOLUTION_RECEIPT_SHA256"]
+        or values["LVEF_C3_CRC32C_DISTRIBUTION_SHA256"]
+        != str(
+            core.load_strict_json(artifacts["environment_receipt"])[
+                "google_crc32c_distribution_sha256"
+            ]
+        )
         or not values["LVEF_C3_EXTRACTION_WORKERS"].isdigit()
         or int(values["LVEF_C3_EXTRACTION_WORKERS"]) < 1
         or not values["LVEF_C3_EMBEDDING_BATCH_SIZE"].isdigit()
@@ -572,6 +595,10 @@ def validate_artifact_semantics(
         "environment_receipt_sha256": core.sha256_file(
             artifacts["environment_receipt"]
         ),
+        "crc32c_python_executable_sha256": core.sha256_file(
+            artifacts["crc32c_python_executable"]
+        ),
+        "crc32c_worker_sha256": core.sha256_file(artifacts["crc32c_worker"]),
     }
     if any(plan_authority.get(key) != value for key, value in exact_plan_authorities.items()):
         raise AuthorityPacketError("BATCH_PLAN_RUNTIME_AUTHORITY_MISMATCH")
@@ -593,7 +620,10 @@ def validate_artifact_semantics(
         raise AuthorityPacketError("BATCH_PLAN_NOT_EXACT_REDERIVATION")
 
     stages.validate_checkpoint_and_environment(
-        checkpoint, artifacts["environment_receipt"]
+        checkpoint,
+        artifacts["environment_receipt"],
+        crc32c_python=artifacts["crc32c_python_executable"],
+        crc32c_worker=artifacts["crc32c_worker"],
     )
     environment = core.load_strict_json(artifacts["environment_receipt"])
     if not isinstance(environment, Mapping) or environment.get(
@@ -602,6 +632,15 @@ def validate_artifact_semantics(
         "governing_commit"
     ) != governing_commit:
         raise AuthorityPacketError("PYTHON_ENVIRONMENT_BINDING_MISMATCH")
+    if (
+        environment.get("crc32c_python_executable_sha256")
+        != core.sha256_file(artifacts["crc32c_python_executable"])
+        or environment.get("crc32c_worker_sha256")
+        != core.sha256_file(artifacts["crc32c_worker"])
+        or plan_authority.get("crc32c_distribution_sha256")
+        != environment.get("google_crc32c_distribution_sha256")
+    ):
+        raise AuthorityPacketError("CRC32C_ENVIRONMENT_BINDING_MISMATCH")
 
     _validate_gcloud_resolution_authority(
         artifacts["gcloud_resolution_receipt"], artifacts["gcloud_executable"]

@@ -23,6 +23,17 @@ def _prior() -> dict[str, str]:
 
 
 def _receipt(implementation: str = "c"):
+    probe = {
+        "protocol_version": 1,
+        "status": "PASS_CRC32C_AUXILIARY_RUNTIME",
+        "python_version": "3.14.0",
+        "google_crc32c_version": "1.8.0",
+        "google_crc32c_implementation": implementation,
+        "google_crc32c_distribution_sha256": "d" * 64,
+        "google_crc32c_distribution_file_count": 20,
+        "known_vector_crc32c_base64": "4waSgw==",
+        "cloud_requests": 0,
+    }
     return capture.build_receipt(
         prior=_prior(),
         prior_sha256="a" * 64,
@@ -33,9 +44,10 @@ def _receipt(implementation: str = "c"):
         torchvision_version="0.26.0+cu130",
         cuda_version="13.0",
         cudnn_version="91002",
-        crc32c_version="1.7.1",
-        crc32c_implementation=implementation,
-        packages=[{"name": "google-crc32c", "version": "1.7.1"}],
+        crc32c_python_executable_sha256="c" * 64,
+        crc32c_worker_sha256="e" * 64,
+        crc32c_probe=probe,
+        packages=[{"name": "torch", "version": "2.11.0+cu130"}],
         captured_at_utc="2026-08-10T00:00:00+00:00",
     )
 
@@ -54,7 +66,11 @@ def test_production_environment_receipt_is_safe_and_c_backend_bound() -> None:
 
 def test_production_environment_rejects_python_or_crc_authority_change() -> None:
     for implementation, python_hash, expected in (
-        ("python", capture.EXPECTED_PYTHON_SHA256, "GOOGLE_CRC32C_C_BACKEND_REQUIRED"),
+        (
+            "python",
+            capture.EXPECTED_PYTHON_SHA256,
+            "GOOGLE_CRC32C_AUXILIARY_AUTHORITY_INVALID",
+        ),
         ("c", "f" * 64, "PYTHON_AUTHORITY_CHANGED"),
     ):
         try:
@@ -68,9 +84,20 @@ def test_production_environment_rejects_python_or_crc_authority_change() -> None
                 torchvision_version="0.26.0+cu130",
                 cuda_version="13.0",
                 cudnn_version="91002",
-                crc32c_version="1.7.1",
-                crc32c_implementation=implementation,
-                packages=[{"name": "google-crc32c", "version": "1.7.1"}],
+                crc32c_python_executable_sha256="c" * 64,
+                crc32c_worker_sha256="e" * 64,
+                crc32c_probe={
+                    "protocol_version": 1,
+                    "status": "PASS_CRC32C_AUXILIARY_RUNTIME",
+                    "python_version": "3.14.0",
+                    "google_crc32c_version": "1.8.0",
+                    "google_crc32c_implementation": implementation,
+                    "google_crc32c_distribution_sha256": "d" * 64,
+                    "google_crc32c_distribution_file_count": 20,
+                    "known_vector_crc32c_base64": "4waSgw==",
+                    "cloud_requests": 0,
+                },
+                packages=[{"name": "torch", "version": "2.11.0+cu130"}],
                 captured_at_utc="2026-08-10T00:00:00+00:00",
             )
         except capture.EnvironmentAuthorityError as exc:

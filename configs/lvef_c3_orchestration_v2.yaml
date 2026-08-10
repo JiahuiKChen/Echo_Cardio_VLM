@@ -32,7 +32,7 @@ authority:
   state_machine_schema_filename: lvef_c3_state_machine_v2.json
   state_machine_schema_sha256: 6d00975595eb15f87d6c00e3104a4f3d00630d8d2738ddaaaa4c2fced2e06e94
   resume_ledger_schema_filename: lvef_c3_resume_ledger_v2.json
-  resume_ledger_schema_sha256: 6fcc6d6bdeac8c430e22599f82cfd1501124e6049552fd3b38f0f78af4175926
+  resume_ledger_schema_sha256: a88b967ced663d8e8fffd60f69764eb739bc959ebd71811595576de7abbdf405
   runtime_bindings_required:
     - git_commit
     - orchestration_contract_sha256
@@ -47,6 +47,9 @@ authority:
     - resume_ledger_schema_sha256
     - gcloud_resolution_receipt_sha256
     - gcloud_executable_sha256
+    - crc32c_python_executable_sha256
+    - crc32c_worker_sha256
+    - crc32c_distribution_sha256
   changed_authority_requires_new_attempt: true
 
 storage:
@@ -79,7 +82,9 @@ downloader:
   retry_backoff_initial_seconds: 2
   retry_backoff_max_seconds: 30
   token_refresh_interval_seconds: 2400
-  streaming_digest_backend: google_crc32c_c
+  streaming_digest_backend: google_crc32c_c_external_worker_v1
+  crc32c_runtime_source: PINNED_CLOUDSDK_BUNDLED_PYTHON
+  crc32c_worker_protocol_version: 1
   streaming_digest_chunk_bytes: 8388608
   retryable_failure_classes:
     - TRANSIENT_NETWORK

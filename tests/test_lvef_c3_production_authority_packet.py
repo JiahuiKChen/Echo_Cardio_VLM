@@ -24,6 +24,11 @@ def _artifacts(root: Path) -> dict[str, Path]:
 
 
 def test_authority_packet_is_closed_unexecuted_and_path_free() -> None:
+    assert len(packet.REQUIRED_ROLES) == 38
+    assert len(packet.SEMANTIC_VALIDATION_KEYS) == 17
+    assert packet.TRACKED_ROLE_PATHS["crc32c_worker"] == (
+        "scripts/lvef_c3_crc32c_worker.py"
+    )
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         value = packet.build_packet(
@@ -187,6 +192,30 @@ def test_execution_environment_parser_is_closed_private_and_duplicate_safe() -> 
             assert str(exc) == "EXECUTION_ENVIRONMENT_KEY_DUPLICATE"
         else:
             raise AssertionError("duplicate execution environment key was accepted")
+
+
+def test_split_crc32c_runtime_is_closed_across_packet_and_future_commands() -> None:
+    for key in (
+        "LVEF_C3_CRC32C_PYTHON",
+        "LVEF_C3_CRC32C_PYTHON_SHA256",
+        "LVEF_C3_CRC32C_WORKER",
+        "LVEF_C3_CRC32C_WORKER_SHA256",
+        "LVEF_C3_CRC32C_DISTRIBUTION_SHA256",
+    ):
+        assert key in packet.RUNTIME_ENVIRONMENT_KEYS
+    commands = (ROOT / "docs/lvef_multitask/scc_phase1ee_production_commands.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Exactly all 38 closed authority roles" in commands
+    assert '--artifact "crc32c_python_executable=$CRC32C_PY"' in commands
+    assert '--artifact "crc32c_worker=$CRC32C_WORKER"' in commands
+    assert '--crc32c-python "$CRC32C_PY"' in commands
+    assert '--crc32c-worker "$CRC32C_WORKER"' in commands
+    runner = (ROOT / "scripts/scc_run_lvef_c3_production_batch_v2.sh").read_text(
+        encoding="utf-8"
+    )
+    assert '--crc32c-python "$LVEF_C3_CRC32C_PYTHON"' in runner
+    assert '--crc32c-worker "$LVEF_C3_CRC32C_WORKER"' in runner
 
 
 def test_authority_packet_rejects_symlinked_ancestor_for_read_and_output() -> None:

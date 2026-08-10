@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
 import tempfile
 from pathlib import Path
 import sys
@@ -35,6 +38,56 @@ def test_scc_setgid_only_private_directory_mode_is_accepted() -> None:
     assert core.owner_private_directory_mode_ok(0o2700)
     for mode in (0o770, 0o750, 0o2770, 0o2777):
         assert not core.owner_private_directory_mode_ok(mode)
+
+
+def test_scheduler_private_directory_gate_accepts_only_700_or_2700() -> None:
+    common = ROOT / "scripts/lvef_c3_production_scheduler_common.sh"
+    source = common.read_text(encoding="utf-8")
+    assert source.count('== "700"') == 1
+    assert '== "700" || "$1" == "2700"' in source
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        candidate = root / "private"
+        candidate.mkdir()
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        fake_stat = fake_bin / "stat"
+        fake_stat.write_text(
+            "#!/bin/sh\n"
+            "case \"$2\" in\n"
+            "  %U) id -un ;;\n"
+            "  %a) printf '%s\\n' \"$SYNTHETIC_MODE\" ;;\n"
+            "  *) exit 64 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_stat.chmod(0o700)
+        command = (
+            f"source {shlex.quote(str(common))}; "
+            "lvef_c3_require_projectnb_path(){ :; }; "
+            "lvef_c3_require_private_projectnb_directory "
+            f"{shlex.quote(str(candidate))}"
+        )
+        for mode, expected_status in (
+            ("700", 0),
+            ("2700", 0),
+            ("750", 78),
+            ("770", 78),
+            ("2770", 78),
+            ("2777", 78),
+        ):
+            completed = subprocess.run(
+                ["bash", "-c", command],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                    "SYNTHETIC_MODE": mode,
+                },
+            )
+            assert completed.returncode == expected_status
 
 
 def test_control_plane_aggregate_profile_is_closed_and_safe() -> None:
