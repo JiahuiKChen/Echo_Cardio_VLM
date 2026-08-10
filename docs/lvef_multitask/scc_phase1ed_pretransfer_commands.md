@@ -2,9 +2,9 @@
 
 Status: read-only quota/filesystem capture and offline specification lock only. This runbook does not authorize a cloud request, scheduler submission, quota change, file move/deletion, object-body transfer, DICOM processing, extraction, EchoPrime inference, embedding generation, modeling, prediction, or confirmatory-performance access.
 
-Run every block in a strict child Bash process. Replace `__PHASE1ED_IMPLEMENTATION_COMMIT__` only with the reviewed implementation commit after local, origin, and SCC equality is established. The existing Phase 1E-B/C run root and immutable job-7104307/Autoclass outputs remain unchanged. Attempts 001 and 002 are immutable failed evidence and must not be reused: attempt 001 stopped before capture because its safe SCC setgid-only directory mode was not yet accepted, while attempt 002 completed all four authorized read-only commands but its offline validator did not yet recognize SCC's native two-line `pquota` header. The commands below use the fresh no-clobber attempt 003.
+Run every block in a strict child Bash process. Replace `__PHASE1ED_IMPLEMENTATION_COMMIT__` only with the reviewed implementation commit after local, origin, and SCC equality is established. The existing Phase 1E-B/C run root and immutable job-7104307/Autoclass outputs remain unchanged. Attempts 001–003 are immutable failed evidence and must not be reused: attempt 001 stopped before capture because its safe SCC setgid-only directory mode was not yet accepted; attempt 002 completed all four authorized read-only commands but its offline validator did not yet recognize SCC's native two-line `pquota` header; and attempt 003 produced a valid live-quota aggregate before the separate offline specification lock rejected the producer's exact `PASS_SUPPLEMENTAL_ADJUDICATION` status because the consumer expected a generic `PASS`. The commands below use the fresh no-clobber attempt 004.
 
-## 1. Bind the existing owner-private authorities
+## 1. Bind the existing authorities and create an offline-only attempt
 
 ```bash
 bash --noprofile --norc <<'PHASE1ED_BIND'
@@ -14,7 +14,7 @@ umask 077
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
 TARGET_COMMIT=__PHASE1ED_IMPLEMENTATION_COMMIT__
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_003
+PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_004
 
 test -f "$SESSION_ENV"
 test -O "$SESSION_ENV"
@@ -35,53 +35,39 @@ case "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT")" in
   700|2700) ;;
   *) exit 2 ;;
 esac
-mkdir -m 700 -- "$PHASE1ED_ATTEMPT_ROOT/restricted"
-case "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT/restricted")" in
+mkdir -m 700 -- "$PHASE1ED_ATTEMPT_ROOT/aggregate"
+case "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT/aggregate")" in
   700|2700) ;;
   *) exit 2 ;;
 esac
-
-CAPTURE_ENV="$PHASE1ED_ATTEMPT_ROOT/restricted/phase1ed_live_quota_capture.env"
-test ! -e "$CAPTURE_ENV"
-install -m 600 /dev/null "$CAPTURE_ENV"
-{
-  printf 'WORKTREE=%q\n' "$WORKTREE"
-  printf 'EXPECTED_COMMIT=%q\n' "$EXPECTED_COMMIT"
-  printf 'PYTHON=%q\n' "$PYTHON"
-  printf 'EXPECTED_PYTHON_SHA256=%q\n' "$EXPECTED_PYTHON_SHA256"
-  printf 'PHASE1ED_ATTEMPT_ROOT=%q\n' "$PHASE1ED_ATTEMPT_ROOT"
-  printf 'LVEF_C3_LIVE_QUOTA_RESEARCH_ROOT=%q\n' /restricted/projectnb/mimicecho
-  printf 'LVEF_C3_LIVE_QUOTA_PRINCIPAL=%q\n' mimicecho
-  printf 'MIGRATION_WITNESS=%q\n' "$MIGRATION_WITNESS"
-  printf 'EXPECTED_MIGRATION_WITNESS_SHA256=%q\n' "$EXPECTED_MIGRATION_WITNESS_SHA256"
-  printf 'MIGRATION_CLASSIFICATION=%q\n' "$MIGRATION_CLASSIFICATION"
-  printf 'EXPECTED_MIGRATION_CLASSIFICATION_SHA256=%q\n' "$EXPECTED_MIGRATION_CLASSIFICATION_SHA256"
-} >"$CAPTURE_ENV"
-chmod 600 "$CAPTURE_ENV"
-
-printf '%s\n' PHASE1ED_CAPTURE_ENV_READY=YES
+printf '%s\n' PHASE1ED_OFFLINE_SPEC_ATTEMPT_READY=YES
 printf '%s\n' PHASE1ED_CLOUD_REQUESTS=0
 printf '%s\n' PHASE1ED_SCHEDULER_SUBMISSIONS=0
 PHASE1ED_BIND
 ```
 
-The capture environment contains SCC paths and the quota principal, so it remains owner-private and must not enter Git or an ordinary response.
+Attempt 004 is an offline-only successor. It must not contain or copy the attempt-003 raw quota receipt or aggregate.
 
-## 2. Capture and validate the live quota evidence
+## 2. Bind the already validated attempt-003 live-quota aggregate
 
 ```bash
-bash --noprofile --norc <<'PHASE1ED_CAPTURE'
+bash --noprofile --norc <<'PHASE1ED_QUOTA_BIND'
 set -euo pipefail
-WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_003
-CAPTURE_ENV="$PHASE1ED_ATTEMPT_ROOT/restricted/phase1ed_live_quota_capture.env"
-
-"$WORKTREE/scripts/scc_capture_lvef_c3_live_quota.sh" \
-  --capture-env "$CAPTURE_ENV"
-PHASE1ED_CAPTURE
+LIVE_QUOTA=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_003/aggregate/lvef_c3_live_quota.summary.json
+EXPECTED_BYTES=2261
+EXPECTED_SHA256=e0714eb4260973a118a6eab585ba87e55437bc48410b51ceee50182f43c961b9
+test -f "$LIVE_QUOTA"
+test -O "$LIVE_QUOTA"
+test ! -L "$LIVE_QUOTA"
+test "$(stat -c '%a' "$LIVE_QUOTA")" = 600
+test "$(stat -c '%s' "$LIVE_QUOTA")" = "$EXPECTED_BYTES"
+test "$(sha256sum "$LIVE_QUOTA" | awk '{print $1}')" = "$EXPECTED_SHA256"
+printf '%s\n' PHASE1ED_ATTEMPT_003_LIVE_QUOTA_BOUND=YES
+printf '%s\n' PHASE1ED_READ_ONLY_QUOTA_COMMANDS_REPEATED=NO
+PHASE1ED_QUOTA_BIND
 ```
 
-The wrapper executes exactly `pquota -u`, `findmnt --json --target`, `df -B1`, and `du -x -s -B1`. It writes raw output only below the owner-private attempt root, binds the exact command/tool/file identities, and treats a valid but insufficient quota as an operationally successful capture with a scientific `NO-GO`. It never runs `pquota -v`.
+Attempt 003 already executed exactly one each of `pquota -u`, `findmnt --json --target`, `df -B1`, and non-enumerating `du -x -s -B1`. Its validator passed and its aggregate records the quota `NO-GO`. Do not repeat those commands merely to co-locate evidence under a newer commit.
 
 ## 3. Build the offline production specification lock
 
@@ -94,7 +80,7 @@ umask 077
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
 TARGET_COMMIT=__PHASE1ED_IMPLEMENTATION_COMMIT__
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_003
+PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_004
 CHECKPOINT=/restricted/project/mimicecho/echoprime_weights/echo_prime_encoder.pt
 
 test -f "$SESSION_ENV"
@@ -138,15 +124,16 @@ The Phase 1E-A environment and command copy are hash-frozen canary evidence, not
 
 ## 4. Aggregate-safe review
 
-Keep both outputs under the restricted attempt root during this phase. Review only their self-validated aggregate fields, byte sizes, and SHA-256 values; never paste raw command output or the restricted receipt.
+Keep both outputs under their separate immutable restricted attempt roots during this phase. Review only their self-validated aggregate fields, byte sizes, and SHA-256 values; never paste raw command output or the restricted receipt.
 
 ```bash
 bash --noprofile --norc <<'PHASE1ED_REVIEW'
 set -euo pipefail
-PHASE1ED_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_003
+LIVE_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_003
+SPEC_ATTEMPT_ROOT=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ed_live_pretransfer_attempt_004
 for artifact in \
-  "$PHASE1ED_ATTEMPT_ROOT/aggregate/lvef_c3_live_quota.summary.json" \
-  "$PHASE1ED_ATTEMPT_ROOT/aggregate/lvef_c3_production_pretransfer_lock.summary.json"; do
+  "$LIVE_ATTEMPT_ROOT/aggregate/lvef_c3_live_quota.summary.json" \
+  "$SPEC_ATTEMPT_ROOT/aggregate/lvef_c3_production_pretransfer_lock.summary.json"; do
   test -f "$artifact"
   test -O "$artifact"
   test ! -L "$artifact"
@@ -158,6 +145,7 @@ for artifact in \
 done
 printf '%s\n' OBJECT_LISTING_REPEATED=NO
 printf '%s\n' STORAGE_AUDIT_REPEATED=NO
+printf '%s\n' READ_ONLY_QUOTA_COMMANDS_REPEATED=NO
 printf '%s\n' CLOUD_REQUESTS=0
 printf '%s\n' DICOM_BODIES_DOWNLOADED=NO
 printf '%s\n' FULL_C3_STATUS=NO_GO

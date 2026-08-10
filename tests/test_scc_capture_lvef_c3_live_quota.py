@@ -226,7 +226,8 @@ def test_wrapper_is_strict_and_contains_only_bounded_read_only_commands() -> Non
     assert "700|2700" in runbook
     assert 'stat_mode "$PHASE1ED_ATTEMPT_ROOT")" = \'700\'' not in source
     assert 'stat -c \'%a\' "$PHASE1ED_ATTEMPT_ROOT")" = 700' not in runbook
-    assert runbook.count("lvef_multitask_phase1ed_live_pretransfer_attempt_003") == 4
+    assert runbook.count("lvef_multitask_phase1ed_live_pretransfer_attempt_004") == 3
+    assert runbook.count("lvef_multitask_phase1ed_live_pretransfer_attempt_003") == 2
     assert "lvef_multitask_phase1ed_live_pretransfer_attempt_002" not in runbook
     assert "phase1ebc_autoclass_adjudication_attempt_002/aggregate" in runbook
     assert 'mkdir -m 700 -- "$PHASE1ED_ATTEMPT_ROOT"' in runbook

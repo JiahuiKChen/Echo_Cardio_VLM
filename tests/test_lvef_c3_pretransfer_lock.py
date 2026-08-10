@@ -122,7 +122,7 @@ def _write_synthetic_aggregate_authorities(
     }
     combined_payload = {
         "schema_version": 1,
-        "status": "PASS",
+        "status": production_lock.SUPPLEMENTAL_RECEIPT_PASS_STATUS,
         "attempt_id": "synthetic_attempt_002",
         "governing_commit": "d" * 40,
         **{
@@ -507,6 +507,62 @@ def test_pretransfer_lock_rejects_tampered_subordinate_receipt_binding() -> None
             assert str(exc) == "SUPPLEMENTAL_RECEIPT_HASH_BINDING_MISMATCH"
         else:
             raise AssertionError("Tampered subordinate receipt binding was accepted")
+
+
+def test_pretransfer_lock_requires_the_producer_defined_supplemental_pass_status() -> None:
+    producer_source = (
+        ROOT / "scripts" / "adjudicate_lvef_c3_autoclass.py"
+    ).read_text(encoding="utf-8")
+    assert production_lock.SUPPLEMENTAL_RECEIPT_PASS_STATUS == (
+        "PASS_SUPPLEMENTAL_ADJUDICATION"
+    )
+    assert (
+        f'"status": "{production_lock.SUPPLEMENTAL_RECEIPT_PASS_STATUS}"'
+        in producer_source
+    )
+
+    for index, invalid_status in enumerate(
+        (
+            "PASS",
+            "pass_supplemental_adjudication",
+            "PASS_SUPPLEMENTAL_ADJUDICATION ",
+            "FAIL_WITH_EXPLICIT_REASON",
+            "",
+            None,
+            True,
+        )
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / f"case_{index}"
+            aggregate_root = root / "aggregate"
+            original_root, supplemental_root, original, supplemental = (
+                _write_synthetic_aggregate_authorities(aggregate_root)
+            )
+            receipt = supplemental_root / production_lock.SUPPLEMENTAL_RECEIPT_FILENAME
+            payload = json.loads(receipt.read_text(encoding="utf-8"))
+            payload["status"] = invalid_status
+            receipt.write_text(
+                json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            supplemental[receipt.name] = (receipt.stat().st_size, _sha256(receipt))
+            try:
+                production_lock.build_lock_summary(
+                    contract_path=_write_validator_compatible_contract(root),
+                    original_aggregate_root=original_root,
+                    supplemental_aggregate_root=supplemental_root,
+                    governing_commit="d" * 40,
+                    selected_source_manifest_sha256="a" * 64,
+                    environment_receipt_sha256="b" * 64,
+                    command_config_manifest_sha256="c" * 64,
+                    original_authorities=original,
+                    supplemental_authorities=supplemental,
+                )
+            except production_lock.PretransferLockError as exc:
+                assert str(exc) == "SUPPLEMENTAL_VALIDATION_RECEIPT_NOT_PASS"
+            else:
+                raise AssertionError(
+                    f"Invalid supplemental status case {index} was accepted"
+                )
 
 
 def test_checkout_authority_is_read_from_git_metadata_without_subprocess() -> None:

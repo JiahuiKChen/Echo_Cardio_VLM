@@ -118,6 +118,7 @@ SUPPLEMENTAL_AGGREGATE_AUTHORITIES: Mapping[str, tuple[int, str]] = {
     ),
 }
 SUPPLEMENTAL_RECEIPT_FILENAME = "c3_autoclass_combined_validation.summary.json"
+SUPPLEMENTAL_RECEIPT_PASS_STATUS = "PASS_SUPPLEMENTAL_ADJUDICATION"
 SUPPLEMENTAL_RECEIPT_KEYS = {
     "schema_version",
     "status",
@@ -443,7 +444,10 @@ def validate_supplemental_validation_receipt(
         raise PretransferLockError("SUPPLEMENTAL_VALIDATION_RECEIPT_SCHEMA_NOT_EXACT")
     if type(payload.get("schema_version")) is not int or payload.get("schema_version") != 1:
         raise PretransferLockError("SUPPLEMENTAL_VALIDATION_RECEIPT_NOT_PASS")
-    if payload.get("status") != "PASS" or not isinstance(payload.get("attempt_id"), str):
+    if (
+        payload.get("status") != SUPPLEMENTAL_RECEIPT_PASS_STATUS
+        or not isinstance(payload.get("attempt_id"), str)
+    ):
         raise PretransferLockError("SUPPLEMENTAL_VALIDATION_RECEIPT_NOT_PASS")
     if any(payload.get(key) is not True for key in SUPPLEMENTAL_RECEIPT_TRUE_GATES):
         raise PretransferLockError("SUPPLEMENTAL_VALIDATION_RECEIPT_GATE_NOT_PASS")

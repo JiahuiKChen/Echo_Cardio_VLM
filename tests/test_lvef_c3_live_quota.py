@@ -654,7 +654,14 @@ def test_aggregate_tampering_and_authorization_expansion_fail_closed() -> None:
 def test_cli_writes_new_mode_600_aggregate_and_989gb_returns_gate_failure() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        path, _ = _bundle(root, quota_gb="989")
+        path, receipt = _bundle(root, quota_gb="989")
+        receipt["captured_at_utc"] = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        _rewrite_receipt(path, receipt)
         output = root / "aggregate.json"
         assert quota.main(
             [
