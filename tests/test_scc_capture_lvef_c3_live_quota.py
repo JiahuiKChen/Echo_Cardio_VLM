@@ -148,9 +148,13 @@ def _fixture(
     if not malformed_pquota:
         pquota_body = (
             "principal=\"$2\"\n"
-            "printf '%s\\n' 'Filesystem quota(GB) quota(files) usage(GB) usage(files)'\n"
+            "printf '%s\\n' 'quota quota usage usage'\n"
+            "printf '%s\\n' 'project space (GB) (files) (GB) (files)'\n"
+            "printf '%s\\n' '----------------------------- --------- --------- --------- ---------'\n"
             "printf '/rproject/%s 11 25000 10.19 20123\\n' \"$principal\"\n"
+            "printf '%s\\n' 'synthetic_owner 10.19 20122'\n"
             "printf '/rprojectnb/%s 989 500000 140.04 335984\\n' \"$principal\"\n"
+            "printf '%s\\n' 'synthetic_owner 140.04 335983'\n"
         )
     _write_executable(tools / "pquota", pquota_body)
     _write_executable(
@@ -222,6 +226,9 @@ def test_wrapper_is_strict_and_contains_only_bounded_read_only_commands() -> Non
     assert "700|2700" in runbook
     assert 'stat_mode "$PHASE1ED_ATTEMPT_ROOT")" = \'700\'' not in source
     assert 'stat -c \'%a\' "$PHASE1ED_ATTEMPT_ROOT")" = 700' not in runbook
+    assert runbook.count("lvef_multitask_phase1ed_live_pretransfer_attempt_003") == 4
+    assert "lvef_multitask_phase1ed_live_pretransfer_attempt_002" not in runbook
+    assert "phase1ebc_autoclass_adjudication_attempt_002/aggregate" in runbook
     for required in (
         '"$PQUOTA_BIN" -u',
         '"$FINDMNT_BIN" --json',

@@ -183,9 +183,13 @@ def _bundle(root: Path, *, quota_gb: str = "2000") -> tuple[Path, dict]:
         )
     )
     pquota_payload = (
-        "Filesystem                    quota(GB) quota(files) usage(GB) usage(files)\n"
+        "                              quota     quota     usage     usage\n"
+        "project space                 (GB)      (files)   (GB)      (files)\n"
+        "----------------------------- --------- --------- --------- ---------\n"
         f"/rproject/{PRINCIPAL}          11        25000        10.19     20123\n"
+        "synthetic_owner                10.19     20122\n"
         f"/rprojectnb/{PRINCIPAL}        {quota_gb}      500000       140.04    335984\n"
+        "synthetic_owner                140.04    335983\n"
     ).encode("utf-8")
     df_payload = (
         "Filesystem 1B-blocks Used Avail Mounted on\n"
@@ -387,6 +391,64 @@ def test_pquota_requires_exactly_one_research_filesystem_row() -> None:
         _rewrite_raw(receipt, "pquota", "stdout", payload)
         _rewrite_receipt(path, receipt)
         assert _error(path) == "PQUOTA_RESEARCH_FILESYSTEM_ROW_NOT_UNIQUE"
+
+
+def test_pquota_requires_native_two_line_header_schema() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path, receipt = _bundle(Path(directory))
+        raw = Path(receipt["commands"]["pquota"]["stdout"]["path"])
+        text = raw.read_text(encoding="utf-8")
+        text = text.replace(
+            "                              quota     quota     usage     usage\n"
+            "project space                 (GB)      (files)   (GB)      (files)\n"
+            "----------------------------- --------- --------- --------- ---------\n",
+            "Filesystem quota(GB) quota(files) usage(GB) usage(files)\n",
+        )
+        _rewrite_raw(receipt, "pquota", "stdout", text.encode("utf-8"))
+        _rewrite_receipt(path, receipt)
+        assert _error(path) == "PQUOTA_COLUMN_HEADER_NOT_FOUND"
+
+    with tempfile.TemporaryDirectory() as directory:
+        path, receipt = _bundle(Path(directory))
+        raw = Path(receipt["commands"]["pquota"]["stdout"]["path"])
+        text = raw.read_text(encoding="utf-8").replace(
+            "project space                 (GB)      (files)   (GB)      (files)",
+            "project space                 (files)   (GB)      (GB)      (files)",
+        )
+        _rewrite_raw(receipt, "pquota", "stdout", text.encode("utf-8"))
+        _rewrite_receipt(path, receipt)
+        assert _error(path) == "PQUOTA_COLUMN_HEADER_NOT_FOUND"
+
+
+def test_pquota_native_header_separator_and_uniqueness_fail_closed() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path, receipt = _bundle(Path(directory))
+        raw = Path(receipt["commands"]["pquota"]["stdout"]["path"])
+        text = raw.read_text(encoding="utf-8").replace(
+            "----------------------------- --------- --------- --------- ---------",
+            "----------------------------- --------- INVALID   --------- ---------",
+        )
+        _rewrite_raw(receipt, "pquota", "stdout", text.encode("utf-8"))
+        _rewrite_receipt(path, receipt)
+        assert _error(path) == "PQUOTA_COLUMN_SEPARATOR_INVALID"
+
+    with tempfile.TemporaryDirectory() as directory:
+        path, receipt = _bundle(Path(directory))
+        raw = Path(receipt["commands"]["pquota"]["stdout"]["path"])
+        text = raw.read_text(encoding="utf-8")
+        header = "\n".join(text.splitlines()[:3]) + "\n"
+        _rewrite_raw(receipt, "pquota", "stdout", (header + text).encode("utf-8"))
+        _rewrite_receipt(path, receipt)
+        assert _error(path) == "PQUOTA_COLUMN_HEADER_NOT_UNIQUE"
+
+
+def test_pquota_subordinate_owner_rows_are_not_project_rows() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path, _ = _bundle(Path(directory))
+        result = quota.validate_restricted_evidence(
+            path, expected_commit=COMMIT, now_utc=NOW
+        )
+        assert result["quota_bytes"] == 2_000_000_000_000
 
 
 def test_pquota_research_row_and_filesystem_mapping_fail_closed() -> None:

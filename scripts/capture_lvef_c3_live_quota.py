@@ -556,18 +556,36 @@ def _parse_pquota(
     ):
         raise LiveQuotaError("PQUOTA_RESEARCH_FILESYSTEM_MAPPING_INVALID")
     text = _decode_text(stdout, "PQUOTA_OUTPUT_UTF8_INVALID")
-    normalized_header_found = any(
-        all(
-            token in line.lower().replace(" ", "")
-            for token in ("quota(gb)", "quota(files)", "usage(gb)", "usage(files)")
-        )
-        for line in text.splitlines()
-    )
-    if not normalized_header_found:
+    lines = text.splitlines()
+    header_indices = []
+    for index in range(len(lines) - 2):
+        group_tokens = [token.casefold() for token in lines[index].split()]
+        column_tokens = [token.casefold() for token in lines[index + 1].split()]
+        if group_tokens != ["quota", "quota", "usage", "usage"]:
+            continue
+        if column_tokens != [
+            "project",
+            "space",
+            "(gb)",
+            "(files)",
+            "(gb)",
+            "(files)",
+        ]:
+            continue
+        separator_tokens = lines[index + 2].split()
+        if (
+            len(separator_tokens) != 5
+            or any(len(token) < 3 or set(token) != {"-"} for token in separator_tokens)
+        ):
+            raise LiveQuotaError("PQUOTA_COLUMN_SEPARATOR_INVALID")
+        header_indices.append(index)
+    if not header_indices:
         raise LiveQuotaError("PQUOTA_COLUMN_HEADER_NOT_FOUND")
+    if len(header_indices) != 1:
+        raise LiveQuotaError("PQUOTA_COLUMN_HEADER_NOT_UNIQUE")
     research_rows = [
         line.split()
-        for line in text.splitlines()
+        for line in lines
         if line.split() and line.split()[0].startswith("/rprojectnb/")
     ]
     if len(research_rows) != 1:
