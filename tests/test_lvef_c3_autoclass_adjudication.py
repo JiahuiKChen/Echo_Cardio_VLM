@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import adjudicate_lvef_c3_autoclass as adjudicator
+import audit_lvef_c3_gcp_authority as gcp_authority
 from lvef_c3_autoclass_states import (
     AutoclassStateError,
     adjudicate_autoclass,
@@ -817,10 +818,9 @@ def test_targeted_wrapper_uses_billing_value_only_as_environment() -> None:
     assert "echo $LVEF_C3_GCP_BILLING_PROJECT" not in text
 
 
-def test_authority_validation_precedes_billing_environment_consumption() -> None:
-    environment_name = "SYNTHETIC_REQUESTER_PAYS_PROJECT"
+def test_authority_and_token_checks_precede_billing_environment_consumption() -> None:
+    environment_name = "LVEF_C3_GCP_BILLING_PROJECT"
     synthetic_project = "synthetic-project"
-    os.environ[environment_name] = synthetic_project
     observed = []
 
     def validator(path, *, expected_sha256, billing_project):
@@ -830,16 +830,39 @@ def test_authority_validation_precedes_billing_environment_consumption() -> None
         assert os.environ[environment_name] == synthetic_project
         observed.append(True)
 
-    with mock.patch.object(adjudicator, "validate_restricted_receipt", side_effect=validator):
-        returned = adjudicator._validate_authority_and_consume_billing_project(
-            authority_receipt=Path("synthetic-receipt.json"),
-            expected_receipt_sha256="a" * 64,
-            billing_project_env=environment_name,
+    credential = gcp_authority.CredentialEvidence(
+        access_token="synthetic-token",
+        source_kind="PINNED_GCLOUD_EXECUTABLE",
+        observed_account="synthetic@example.edu",
+        configured_project=synthetic_project,
+        source_sha256="b" * 64,
+        gcloud_executable_pinned=True,
+        authorized_user_adc_pinned=False,
+    )
+    environment = {
+        environment_name: synthetic_project,
+        "LVEF_C3_EXPECTED_GCP_ACCOUNT": "synthetic@example.edu",
+        "LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME": "Synthetic Project",
+    }
+    with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+        adjudicator, "validate_restricted_receipt", side_effect=validator
+    ), mock.patch.object(
+        gcp_authority, "acquire_credentials", return_value=credential
+    ):
+        returned_project, returned_token = (
+            adjudicator._validate_authority_and_acquire_token(
+                authority_receipt=Path("synthetic-receipt.json"),
+                expected_receipt_sha256="a" * 64,
+                billing_project_env=environment_name,
+                gcloud_bin="/synthetic/gcloud",
+                timeout_seconds=7,
+            )
         )
+        assert environment_name not in os.environ
 
-    assert returned == synthetic_project
-    assert observed == [True]
-    assert environment_name not in os.environ
+        assert returned_project == synthetic_project
+        assert returned_token == "synthetic-token"
+        assert observed == [True]
 
 
 def test_failed_authority_validation_still_consumes_billing_environment() -> None:
@@ -851,15 +874,40 @@ def test_failed_authority_validation_still_consumes_billing_environment() -> Non
         side_effect=RuntimeError("synthetic failure"),
     ):
         try:
-            adjudicator._validate_authority_and_consume_billing_project(
+            adjudicator._validate_authority_and_acquire_token(
                 authority_receipt=Path("synthetic-receipt.json"),
                 expected_receipt_sha256="a" * 64,
                 billing_project_env=environment_name,
+                gcloud_bin="/synthetic/gcloud",
+                timeout_seconds=7,
             )
         except RuntimeError:
             pass
         else:
             raise AssertionError("Synthetic authority failure was accepted")
+    assert environment_name not in os.environ
+
+
+def test_failed_token_acquisition_still_consumes_billing_environment() -> None:
+    environment_name = "SYNTHETIC_REQUESTER_PAYS_PROJECT"
+    os.environ[environment_name] = "synthetic-project"
+    with mock.patch.object(adjudicator, "validate_restricted_receipt"), mock.patch.object(
+        adjudicator,
+        "acquire_access_token_for_preflight",
+        side_effect=RuntimeError("synthetic failure"),
+    ):
+        try:
+            adjudicator._validate_authority_and_acquire_token(
+                authority_receipt=Path("synthetic-receipt.json"),
+                expected_receipt_sha256="a" * 64,
+                billing_project_env=environment_name,
+                gcloud_bin="/synthetic/gcloud",
+                timeout_seconds=7,
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Synthetic token failure was accepted")
     assert environment_name not in os.environ
 
 

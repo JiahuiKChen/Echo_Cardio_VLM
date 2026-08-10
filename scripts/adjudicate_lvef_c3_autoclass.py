@@ -631,21 +631,23 @@ def _safe_capture_summary(
     }
 
 
-def _validate_authority_and_consume_billing_project(
+def _validate_authority_and_acquire_token(
     *,
     authority_receipt: Path,
     expected_receipt_sha256: str,
     billing_project_env: str,
-) -> str:
-    """Validate while the authority module can still read its billing binding.
+    gcloud_bin: str,
+    timeout_seconds: int,
+) -> tuple[str, str]:
+    """Validate and acquire a token before consuming the billing binding.
 
     The billing helper deliberately exposes the requester-pays project only to
-    this subprocess.  The receipt validator independently reconstructs its
-    expected authority from that environment, so consuming the value before
-    validation makes an otherwise valid receipt fail closed.  Remove the value
-    immediately after validation (including on failure) so it is unavailable
-    to token acquisition and the network-request implementation except through
-    the returned local value.
+    this subprocess.  Both the receipt validator and token-acquisition helper
+    independently reconstruct their expected authority from that environment,
+    so consuming the value before either check makes a valid authority fail
+    closed.  Remove the value immediately after both checks (including on
+    failure) so the network-request implementation receives only the returned
+    local value and token.
     """
     billing_project = os.environ.get(billing_project_env, "")
     try:
@@ -654,11 +656,15 @@ def _validate_authority_and_consume_billing_project(
             expected_sha256=expected_receipt_sha256,
             billing_project=billing_project,
         )
+        token = acquire_access_token_for_preflight(
+            gcloud_bin=gcloud_bin,
+            timeout_seconds=timeout_seconds,
+        )
     finally:
         consumed = os.environ.pop(billing_project_env, "")
     if consumed != billing_project:
         raise AdjudicationError("REQUESTER_PAYS_PROJECT_ENVIRONMENT_CHANGED")
-    return billing_project
+    return billing_project, token
 
 
 def capture_command(args: argparse.Namespace) -> int:
@@ -717,12 +723,10 @@ def capture_command(args: argparse.Namespace) -> int:
         expect="file",
         root_kind="direct",
     )
-    billing_project = _validate_authority_and_consume_billing_project(
+    billing_project, token = _validate_authority_and_acquire_token(
         authority_receipt=authority_receipt,
         expected_receipt_sha256=args.expected_gcp_authority_receipt_sha256,
         billing_project_env=args.billing_project_env,
-    )
-    token = acquire_access_token_for_preflight(
         gcloud_bin=args.gcloud_bin,
         timeout_seconds=args.timeout_seconds,
     )
