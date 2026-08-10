@@ -27,8 +27,7 @@ test "$(git -C "$WORKTREE" branch --show-current)" = codex/lvef-multitask-revali
 test "$(git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test -z "$(git -C "$WORKTREE" status --porcelain --untracked-files=no)"
 test ! -e "$PHASE1ED_ATTEMPT_ROOT"
-install -d -m 700 "$PHASE1ED_ATTEMPT_ROOT"
-install -d -m 700 "$PHASE1ED_ATTEMPT_ROOT/restricted"
+mkdir -m 700 -- "$PHASE1ED_ATTEMPT_ROOT"
 test -d "$PHASE1ED_ATTEMPT_ROOT"
 test -O "$PHASE1ED_ATTEMPT_ROOT"
 test ! -L "$PHASE1ED_ATTEMPT_ROOT"
@@ -36,6 +35,7 @@ case "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT")" in
   700|2700) ;;
   *) exit 2 ;;
 esac
+mkdir -m 700 -- "$PHASE1ED_ATTEMPT_ROOT/restricted"
 case "$(stat -c '%a' "$PHASE1ED_ATTEMPT_ROOT/restricted")" in
   700|2700) ;;
   *) exit 2 ;;

@@ -229,6 +229,8 @@ def test_wrapper_is_strict_and_contains_only_bounded_read_only_commands() -> Non
     assert runbook.count("lvef_multitask_phase1ed_live_pretransfer_attempt_003") == 4
     assert "lvef_multitask_phase1ed_live_pretransfer_attempt_002" not in runbook
     assert "phase1ebc_autoclass_adjudication_attempt_002/aggregate" in runbook
+    assert 'mkdir -m 700 -- "$PHASE1ED_ATTEMPT_ROOT"' in runbook
+    assert 'install -d -m 700 "$PHASE1ED_ATTEMPT_ROOT"' not in runbook
     for required in (
         '"$PQUOTA_BIN" -u',
         '"$FINDMNT_BIN" --json',

@@ -584,13 +584,15 @@ def _parse_pquota(
     if len(header_indices) != 1:
         raise LiveQuotaError("PQUOTA_COLUMN_HEADER_NOT_UNIQUE")
     research_rows = [
-        line.split()
-        for line in lines
+        (index, line.split())
+        for index, line in enumerate(lines)
         if line.split() and line.split()[0].startswith("/rprojectnb/")
     ]
     if len(research_rows) != 1:
         raise LiveQuotaError("PQUOTA_RESEARCH_FILESYSTEM_ROW_NOT_UNIQUE")
-    fields = research_rows[0]
+    research_row_index, fields = research_rows[0]
+    if research_row_index <= header_indices[0] + 2:
+        raise LiveQuotaError("PQUOTA_RESEARCH_ROW_OUTSIDE_NATIVE_TABLE")
     if len(fields) != 5 or fields[0] != research_filesystem_row:
         raise LiveQuotaError("PQUOTA_RESEARCH_ROW_LAYOUT_INVALID")
     quota_value_text, quota_files_text, usage_value_text, usage_files_text = fields[1:]

@@ -451,6 +451,28 @@ def test_pquota_subordinate_owner_rows_are_not_project_rows() -> None:
         assert result["quota_bytes"] == 2_000_000_000_000
 
 
+def test_pquota_research_row_must_follow_native_table_header() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path, receipt = _bundle(Path(directory))
+        raw = Path(receipt["commands"]["pquota"]["stdout"]["path"])
+        lines = raw.read_text(encoding="utf-8").splitlines()
+        research_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith(f"/rprojectnb/{PRINCIPAL}")
+        )
+        research_row = lines.pop(research_index)
+        lines.insert(0, research_row)
+        _rewrite_raw(
+            receipt,
+            "pquota",
+            "stdout",
+            ("\n".join(lines) + "\n").encode("utf-8"),
+        )
+        _rewrite_receipt(path, receipt)
+        assert _error(path) == "PQUOTA_RESEARCH_ROW_OUTSIDE_NATIVE_TABLE"
+
+
 def test_pquota_research_row_and_filesystem_mapping_fail_closed() -> None:
     with tempfile.TemporaryDirectory() as directory:
         path, receipt = _bundle(Path(directory))
