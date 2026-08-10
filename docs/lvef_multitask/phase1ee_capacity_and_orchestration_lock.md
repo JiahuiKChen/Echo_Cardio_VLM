@@ -118,12 +118,14 @@ every production authorization to false. Merely creating files cannot advance
 state. Changed commit, contract, plan, source metadata, environment, checkpoint,
 or manifest identity requires a new attempt.
 
-Offline dependency-light validation passed 534 tests with zero failures and two
+Offline dependency-light validation passed 535 tests with zero failures and two
 intentional fixture skips. Python compilation, Bash and fenced-command syntax,
 strict JSON/YAML parsing, state/resume checks, scheduler portability, symlink and
-no-follow checks, and the staged Git export gate passed. No production launcher
-can be created from the current capacity receipt because the backed control-tier
-gate is false.
+no-follow checks, and the staged Git export gate passed. Portability commit
+`d2f94d4fb050347605933d922ae64a6d59f32531` accepts SCC's private inherited
+setgid-only directory mode `2700` while continuing to reject every group/other
+permission bit. No production launcher can be created from the current capacity
+receipt because the backed control-tier gate is false.
 
 ## Authorization boundaries
 

@@ -11,7 +11,8 @@ The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.48801
 - Immutable parent research attempt: `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001`; aggregate `lvef_c3_live_quota.summary.json`, 2,257 bytes, SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`.
 - Composite control-tier successor: `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002`; it hash-revalidated the parent without repeating research quota/filesystem commands.
 - Aggregate receipt: 5,003 bytes; SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`.
-- Governing implementation commit: `0800a0b4de93911cc39467acf2460a8d5ed6135a`.
+- Capacity-attempt governing implementation commit: `0800a0b4de93911cc39467acf2460a8d5ed6135a`.
+- SCC setgid-only private-directory portability commit: `d2f94d4fb050347605933d922ae64a6d59f32531`.
 - Prior immutable aggregates: all 12 original/supplemental authorities passed filename, size, SHA-256, and closed-schema revalidation; their generating cloud/storage work was not repeated.
 - Research quota/usage/available: 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes.
 - Research physical filesystem available: 2,092,672,483,328 bytes.

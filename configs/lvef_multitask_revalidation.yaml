@@ -627,8 +627,9 @@ phase1e_bc_resource_metadata_preflight:
       - FINAL_CURRENT_COMMIT_ENVIRONMENT_AUTHORITY_PACKET_AND_LAUNCH_ENVELOPE_NOT_FROZEN
       - SEPARATE_OWNER_TRANSFER_AUTHORIZATION_ABSENT
     phase1ee_implementation_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
+    phase1ee_scc_setgid_portability_commit: d2f94d4fb050347605933d922ae64a6d59f32531
     phase1ee_orchestration_contract_version: 2
-    phase1ee_dependency_light_tests_passed: 534
+    phase1ee_dependency_light_tests_passed: 535
     phase1ee_dependency_light_tests_failed: 0
     phase1ee_dependency_light_tests_skipped: 2
     phase1ee_scheduler_submission_performed: false
