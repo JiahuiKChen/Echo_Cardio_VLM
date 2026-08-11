@@ -1,6 +1,12 @@
-# Phase 1E-B/C/D/E full C3 pre-authorization
+# Phase 1E-B/C/D/E/F full C3 pre-authorization
 
-Status: **NO-GO — selected-source authority, research capacity, and offline production implementation pass, but the backed control-tier byte gate and explicit owner transfer authorization remain open**.
+Status: **NO-GO pending the post-commit Phase 1E-F exact capacity,
+backup/restore, current packet, launch-envelope, and explicit owner-transfer
+gates**.
+
+Phase 1E-E's backed-tier failure is preserved as historical evidence. The
+owner now reports the preferred 50/1,950 allocation active; only the new native
+integer-KiB Phase 1E-F receipt may close that successor capacity gate.
 
 This is the controlling pre-authorization record for prospective selected-cohort reconstruction after the passed four-study Phase 1E-A canary. It does not alter accepted ASA abstract version 10, the historical results snapshot, or the historical primary binary endpoint `lvef < 40`.
 
@@ -56,9 +62,31 @@ matching the source-environment hash already bound by attempt 003. Attempt 004
 remains immutable, and the next no-clobber attempt must use that matched
 authority without exporting its path or contents.
 
+Attempt 005 subsequently passed the offline authority packet: 7,492 bytes,
+SHA-256 `2725570d1137640e0c00ae790f1ae3583d63b17c7f957e86e886892dd0e6ba07`,
+38/38 roles, 17/17 semantic gates, and zero scopes/executions. It remains
+immutable. Phase 1E-F rebuilds rather than edits it so the final commit, new
+capacity, backup/restore, exact command, and launch envelope are one authority.
+
+## Phase 1E-F successor overlay
+
+| Gate | Pre-live disposition |
+|---|---|
+| Owner-reported allocation | Preferred 50/1,950 active; purchased 1,000-GB SAAS share remains research |
+| Native expected quotas | 52,428,800 KiB backed; 2,044,723,200 KiB research |
+| Exact capacity/filesystem/file gates | Pending one current-commit read-only receipt |
+| Bounded owner-private backup and isolated restore | Implemented; pending one current-commit witness |
+| Production packet | Attempt 005 historical PASS; current-commit rebuild pending |
+| Launch envelope | Pending; must grant zero scopes |
+| Terminal final-chain recovery seal | Pending; exact current environment, packet, launch, command, and final aggregate must be recoverable from backed control storage |
+| First body request | Not authorized |
+
+The detailed gate table below preserves Phase 1E-E evidence as historical
+context. Its failed 11-GB backed allocation is not the current allocation.
+
 ## Gate table
 
-| Gate | Current disposition | Evidence required to pass | Effect |
+| Gate | Disposition recorded at Phase 1E-E close | Evidence required to pass | Effect |
 |---|---|---|---|
 | Prospective cloud tooling resolved | `PASS_PINNED_579_0_0` | Supported Cloud SDK resolved with nonsecret tool provenance | Does not authorize body transfer |
 | Prospective Google identity verified | `PASS` | CLI and ADC identities matched the owner-approved SCC-only identity | Does not authorize body transfer |
@@ -87,7 +115,7 @@ authority without exporting its path or contents.
 | Selected source request manifest frozen | `PASS_STRUCTURAL_ONLY` | Existing hash-locked 4,530-study, 335,984-request authority | Not yet public-object authority |
 | Enriched selected public-object inventory frozen | `PASS_CURRENT_INVENTORY` | Immutable job-7104307 outputs plus supplemental source-authority/provenance/safety chain | Does not establish historical byte identity |
 | Checkpoint identity frozen | `PASS_CANDIDATE` | 138,642,379-byte checkpoint with SHA-256 `7ca32e...e64f3b` | Historical linkage remains unclaimed |
-| Prospective production environment plan | `PASS_SPLIT_RUNTIME_IMPLEMENTED_FRESH_CAPTURE_REQUIRED` | Environment-authority v3 binds the pinned EchoPrime Python plus the isolated compiled CRC32C Python/worker/distribution tree; attempt 001 remains an immutable pre-root failure | A fresh current-commit environment receipt is required before transfer |
+| Prospective production environment plan | `PASS_SPLIT_RUNTIME_IMPLEMENTED_FRESH_CAPTURE_REQUIRED` | Environment-authority v3 binds the live exact EchoPrime Python plus the isolated compiled CRC32C Python/worker/distribution tree; attempt 001 remains an immutable pre-root failure | A fresh current-commit receipt validates the live canary environment, but deterministic EchoPrime-environment reacquisition after loss is not established; loss requires a new rebuild/equivalence authority before inference |
 | Prospective preprocessing/cine plan | `PASS_IMPLEMENTED_SYNTHETIC_ONLY` | Explicit multiframe candidacy, decoder/color/mask/signal gates, deterministic 32-frame sampling, atomic outputs, and failure dispositions are synthetically validated | No real DICOM decode or extraction occurred |
 | Production streaming/batch implementation validated | `PASS_IMPLEMENTED_OFFLINE` | Exact-manifest downloader, deterministic 19-batch control plane, stage receipts, no-clobber resume, preservation, cache-retirement gate, and finalizer are versioned | Does not authorize a request, scheduler submission, or scientific execution |
 | Technical metadata review complete | `PENDING_RESTRICTED_AUDIT` | All nine fixed issues receive evidence-bound dispositions without performance access | Does not block outcome-blind imaging reconstruction; blocks modeling |
@@ -113,11 +141,11 @@ authority without exporting its path or contents.
 
 The five historical studies with readable DICOM but no multiframe cine candidate remain provisionally imaging-ineligible, not unexplained processing failures. Prospective C3 must regenerate denominator evidence without using labels or performance. A new candidate decode/extraction failure is a technical blocker and may not be reclassified as no-cine attrition.
 
-## Storage ruling
+## Historical Phase 1E-E storage ruling
 
 The preferred lifecycle is full selected raw retention plus a one-batch rolling extracted cache. `/restricted/project` and `/restricted/projectnb` are distinct devices. Both existing worktrees and their common Git repository are on the backed-up tier, so quota exchange requires worktree recreation or coherent common-repository migration. The exact observed disaster-tier inventory was 10,954,752,000 allocated bytes.
 
-The current backed allocation is only 11,000,000,000 bytes. Exact quota usage is 10,959,364,608 bytes, leaving 40,635,392 bytes; this fails the prespecified control-plane write margin even though 313,259 file slots remain. The preferred free-pool allocation is therefore 50 GB backed plus 1,950 GB research; the minimum is 25/1,975 GB. Both preserve the research minimum and 200-GB reserve. Under the owner-attested administrative composition, neither changes the purchased 1-TB SAAS assignment to `/restricted/projectnb`; machine evidence independently proves only the exact effective research quota. No allocation change, migration, move, copy, or deletion is authorized here.
+At the Phase 1E-E capture, the backed allocation was only 11,000,000,000 bytes. Exact quota usage was 10,959,364,608 bytes, leaving 40,635,392 bytes; that historical state failed the prespecified control-plane write margin even though 313,259 file slots remained. The resulting preferred free-pool request was 50 GB backed plus 1,950 GB research; the minimum was 25/1,975 GB. Both preserved the research minimum and 200-GB reserve. The owner now reports the preferred allocation active, but only the Phase 1E-F native receipt may establish its exact machine capacity. Under the owner-attested administrative composition, the purchased 1-TB SAAS assignment remains on `/restricted/projectnb`.
 
 Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` produced `lvef_c3_live_quota.summary.json` (2,257 bytes; SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`). Post-expansion composite successor `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` binds that hash-revalidated research authority to contemporaneous control-tier capture. Research quota/usage/available are 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes; physical availability is 2,092,672,483,328 bytes. Research file quota/used/available are 33,554,432 / 106,228 / 33,448,204. Research byte, file, minimum-effective-quota, physical-filesystem, and 200-GB-reserve gates all pass, with 377,357,923,668 bytes of project-quota slack and 431,417,418,068 bytes of physical slack. The 5,003-byte composite aggregate has SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`. It made no cloud request and did not repeat project-quota or research-filesystem capture.
 
@@ -156,16 +184,22 @@ The human packet must contain exactly the eight prespecified echocardiographer q
 
 Attempt 004 remains immutable as `PASS_SPECIFICATION_ONLY_EXECUTION_UNIMPLEMENTED`. Phase 1E-E supersedes that implementation status without rewriting the attempt. Commit `0800a0b4de93911cc39467acf2460a8d5ed6135a` introduced the executable exact-manifest downloader, deterministic 19-batch planner/dispatcher, DICOM audit/extraction and EchoPrime stage wrappers, closed receipt-driven state machine, no-clobber resume ledger, preservation/finalization checks, owner-gated extracted-cache retirement, raw-deletion prohibition, authority packet builders, and spool-safe scheduler scripts. Portability commit `d2f94d4fb050347605933d922ae64a6d59f32531` adds exact SCC setgid-only private-directory handling without weakening group/other permission rejection. Offline/synthetic validation contacts no cloud service and performs no real DICOM or GPU operation.
 
-Future scheduler topology remains unexecuted. It defaults to one active batch, binds all substantial writes and temporary state to `/restricted/projectnb`, resolves helpers from an authority-bound worktree rather than the SGE spool directory, refuses concurrent duplicate batch ownership, and requires a finalized prior batch before advancing. It cannot become launch authority while the backed control-tier gate fails. After a control-tier adjustment and fresh receipt, the exact environment, authority packet, launch envelope, commands, and checksums must be regenerated against the final commit before a separately authorized first-batch request.
+Future scheduler topology remains unexecuted. It defaults to one active batch,
+binds all substantial writes and temporary state to `/restricted/projectnb`,
+resolves helpers from an authority-bound worktree rather than the SGE spool
+directory, refuses concurrent duplicate batch ownership, and requires a
+finalized prior batch before advancing. Phase 1E-F creates the launch envelope
+only after its current capacity and recovery gates pass; that envelope grants
+zero scopes.
 
 ## Full C3 decision
 
-**NO-GO.** Selected-source authority, research quota, physical-filesystem capacity, research file capacity, the frozen 200-GB reserve, and production implementation pass. The following remain absolute prerequisites before a first body request can be considered:
+**NO-GO pending Phase 1E-F live receipts.** The following remain absolute
+prerequisites before a first body request can be considered:
 
-1. activate either the preferred 50/1,950-GB or minimum 25/1,975-GB backed/research free-pool allocation while, under the owner-attested administrative composition, leaving the purchased 1-TB SAAS research assignment unchanged;
-2. capture a fresh read-only receipt proving both backed control byte/file gates and revalidating research byte/file/physical/reserve gates;
-3. complete the approved backup/recovery witness for irreplaceable authorities and the two linked worktrees;
-4. freeze the final production environment, packet, launch envelope, source, commands, configs, checkpoint, and checksums against one exact commit;
-5. obtain separate written owner authorization for the first-batch DICOM body transfer. Remaining-batch transfer, extraction, EchoPrime inference, preservation/cache retirement, model fitting, and confirmatory-test access remain distinct later authorizations.
+1. capture a native read-only receipt proving both backed control byte/file gates and revalidating research byte/file/physical/reserve gates;
+2. complete the approved bounded backup/recovery witness and isolated linked-worktree restore;
+3. freeze the final production environment, packet, zero-scope launch envelope, exact first-batch command, source, configs, checkpoint, and checksums against one exact commit, then preserve that exact final chain in a no-clobber backed-tier terminal recovery seal;
+4. obtain separate written owner authorization for the first-batch DICOM body transfer. Remaining-batch transfer, extraction, EchoPrime inference, preservation/cache retirement, model fitting, and confirmatory-test access remain distinct later authorizations.
 
 Confirmatory modeling additionally requires qualified clinician signoff, final aliases/units/dependencies/panels, exact common denominators, final SAP/config checksums, and a separate explicit owner authorization.

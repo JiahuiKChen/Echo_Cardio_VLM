@@ -26,6 +26,8 @@ def _artifacts(root: Path) -> dict[str, Path]:
 def test_authority_packet_is_closed_unexecuted_and_path_free() -> None:
     assert len(packet.REQUIRED_ROLES) == 38
     assert len(packet.SEMANTIC_VALIDATION_KEYS) == 17
+    assert "future_command_block" in packet.REQUIRED_ROLES
+    assert "future_command_block" not in packet.TRACKED_ROLE_PATHS
     assert packet.TRACKED_ROLE_PATHS["crc32c_worker"] == (
         "scripts/lvef_c3_crc32c_worker.py"
     )
@@ -135,6 +137,29 @@ def test_packet_cannot_claim_pass_without_every_semantic_validation() -> None:
             assert str(exc) == "SEMANTIC_VALIDATION_NOT_ALL_PASS"
         else:
             raise AssertionError("packet accepted an unverified semantic authority")
+
+
+def test_packet_rejects_command_not_bound_by_pretransfer_composite() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        command = Path(directory) / "first_batch_command.txt"
+        command.write_text("UNEXECUTED FULL C3\n", encoding="utf-8")
+        payload = command.read_bytes()
+        pretransfer = {
+            "authority": {
+                "future_first_batch_command": {
+                    "size_bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            }
+        }
+        packet._validate_pretransfer_command_binding(pretransfer, command)
+        command.write_text("UNEXECUTED FULL C3 changed\n", encoding="utf-8")
+        try:
+            packet._validate_pretransfer_command_binding(pretransfer, command)
+        except packet.AuthorityPacketError as exc:
+            assert str(exc) == "PRETRANSFER_COMMAND_BINDING_MISMATCH"
+        else:
+            raise AssertionError("packet accepted a mixed future-command authority")
 
 
 def test_gcloud_resolution_authority_is_closed_and_binary_bound() -> None:

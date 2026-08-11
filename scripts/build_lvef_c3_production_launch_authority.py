@@ -3,15 +3,16 @@
 
 The base execution environment is frozen before the production authority
 packet, so neither artifact can safely contain the other's digest.  This
-owner-private envelope is created last and binds both artifacts plus the live
-post-expansion capacity authority.  It performs no cloud, scheduler, DICOM,
-model, or deletion operation.
+owner-private envelope is created last and binds both artifacts plus the
+Phase 1E-F capacity/backup pretransfer authority.  It performs no cloud,
+scheduler, DICOM, model, or deletion operation.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -22,7 +23,7 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_lvef_c3_production_authority_packet as packet
-import capture_lvef_c3_post_expansion_capacity as capacity
+import build_lvef_c3_phase1ef_pretransfer_lock as pretransfer
 
 
 SCHEMA_VERSION = 1
@@ -54,18 +55,13 @@ TOP_LEVEL_KEYS = frozenset(
     }
 )
 FILE_BINDING_KEYS = frozenset({"path", "size_bytes", "sha256"})
-PASS_CAPACITY_KEYS = (
-    "live_quota_evidence_passed",
-    "minimum_effective_quota_gate_passed",
-    "physical_filesystem_capacity_gate_passed",
-    "projected_200gb_reserve_gate_passed",
-    "research_capacity_gate_passed",
-    "research_file_quota_gate_passed",
-    "control_tier_quota_evidence_passed",
-    "control_tier_operational_burden_authority_bound",
-    "backed_control_tier_gate_passed",
-    "control_file_quota_gate_passed",
+TERMINAL_FINAL_LOCK_FILENAME = (
+    "lvef_c3_phase1ef_final_pretransfer_lock.summary.json"
 )
+TERMINAL_RECOVERY_SEAL_FILENAME = (
+    "lvef_c3_phase1ef_terminal_recovery_seal.summary.json"
+)
+TERMINAL_RECOVERY_BACKED_PREFIX = Path("/restricted/project/mimicecho/audits")
 
 
 class LaunchAuthorityError(RuntimeError):
@@ -124,21 +120,19 @@ def _binding(path: Path) -> Mapping[str, Any]:
     }
 
 
-def _validate_capacity(value: Mapping[str, Any]) -> None:
+def _validate_capacity(value: Mapping[str, Any], *, governing_commit: str) -> None:
     try:
-        capacity.validate_aggregate_output(value)
-    except capacity.PostExpansionCapacityError as exc:
+        pretransfer.validate_aggregate_output(value)
+    except pretransfer.Phase1EFPretransferError as exc:
         raise LaunchAuthorityError("CAPACITY_SUMMARY_NOT_AUTHORITATIVE") from exc
-    if any(value.get(key) is not True for key in PASS_CAPACITY_KEYS):
+    if (
+        value.get("governing_commit") != governing_commit
+        or not pretransfer.launch_ready(value)
+    ):
         raise LaunchAuthorityError("PRETRANSFER_CAPACITY_GATE_NOT_PASS")
     if (
-        value.get("full_c3_authorized") is not False
-        or value.get("dicom_body_transfer_authorized") is not False
-        or value.get("cloud_requests") != 0
-        or value.get("object_bodies_downloaded") != 0
-        or value.get("quota_changed") is not False
-        or value.get("files_moved") != 0
-        or value.get("files_deleted") != 0
+        value.get("authorization_scopes_granted") != 0
+        or value.get("execution_attestations") != pretransfer.EXECUTION_ATTESTATIONS
     ):
         raise LaunchAuthorityError("CAPACITY_SUMMARY_EXECUTION_BOUNDARY_INVALID")
 
@@ -179,7 +173,7 @@ def build(
     ):
         raise LaunchAuthorityError("EXECUTION_ENVIRONMENT_IDENTITY_MISMATCH")
     capacity_value = _load_json(capacity_summary, "CAPACITY_SUMMARY")
-    _validate_capacity(capacity_value)
+    _validate_capacity(capacity_value, governing_commit=governing_commit)
     packet_value = _load_json(authority_packet, "PRODUCTION_AUTHORITY_PACKET")
     environment_sha = sha256_file(execution_environment)
     capacity_sha = sha256_file(capacity_summary)
@@ -211,6 +205,7 @@ def build(
 def validate(
     value: Mapping[str, Any], *, envelope_path: Path, attempt_id: str,
     governing_commit: str, execution_environment: Path,
+    require_terminal_lock: bool = True,
 ) -> Mapping[str, Any]:
     if set(value) != TOP_LEVEL_KEYS:
         raise LaunchAuthorityError("LAUNCH_AUTHORITY_SCHEMA_NOT_CLOSED")
@@ -260,7 +255,7 @@ def validate(
     capacity_value = _load_json(
         bindings["post_expansion_capacity_summary"], "CAPACITY_SUMMARY"
     )
-    _validate_capacity(capacity_value)
+    _validate_capacity(capacity_value, governing_commit=governing_commit)
     packet_value = _load_json(
         bindings["production_authority_packet"], "PRODUCTION_AUTHORITY_PACKET"
     )
@@ -272,6 +267,44 @@ def validate(
         capacity_sha256=str(value["post_expansion_capacity_summary"]["sha256"]),
     )
     _require_private_regular(envelope_path, "LAUNCH_AUTHORITY")
+    if require_terminal_lock:
+        terminal_path = (
+            bindings["post_expansion_capacity_summary"].parent
+            / TERMINAL_FINAL_LOCK_FILENAME
+        )
+        try:
+            finalizer = importlib.import_module(
+                "finalize_lvef_c3_phase1ef_pretransfer_lock"
+            )
+            finalizer.validate_terminal_for_launch(
+                terminal_path,
+                launch_envelope_path=envelope_path,
+                pretransfer_path=bindings["post_expansion_capacity_summary"],
+                packet_path=bindings["production_authority_packet"],
+                execution_environment=bindings["execution_environment"],
+                production_attempt_id=attempt_id,
+                governing_commit=governing_commit,
+            )
+            terminal_recovery = importlib.import_module(
+                "build_lvef_c3_terminal_recovery_seal"
+            )
+            terminal_recovery.validate_terminal_for_launch(
+                TERMINAL_RECOVERY_BACKED_PREFIX
+                / str(capacity_value["attempt_id"])
+                / "terminal_recovery_seal"
+                / TERMINAL_RECOVERY_SEAL_FILENAME,
+                launch_envelope_path=envelope_path,
+                final_lock_path=terminal_path,
+                pretransfer_path=bindings["post_expansion_capacity_summary"],
+                packet_path=bindings["production_authority_packet"],
+                execution_environment=bindings["execution_environment"],
+                production_attempt_id=attempt_id,
+                governing_commit=governing_commit,
+            )
+        except LaunchAuthorityError:
+            raise
+        except Exception as exc:
+            raise LaunchAuthorityError("TERMINAL_FINAL_LOCK_NOT_AUTHORITATIVE") from exc
     return value
 
 

@@ -1,6 +1,6 @@
-schema_version: 7
-analysis_version: phase1e-e-post-expansion-capacity-production-orchestration-lock-v1
-status: phase1e_e_research_capacity_passed_backed_control_failed_orchestration_implemented_offline_backup_final_packet_transfer_and_confirmatory_access_blocked
+schema_version: 8
+analysis_version: phase1e-f-post-reallocation-capacity-backup-and-pretransfer-authority-lock-v1
+status: phase1e_f_implementation_ready_post_commit_live_capacity_backup_packet_launch_and_terminal_recovery_seal_required_transfer_and_confirmatory_access_blocked
 base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 historical_base_commit: 23c74ccfd145ab9a423b6942a431a1894a34ab67
 phase1a_audit_commit: 62c982bb9fee602cdb7699a6cbebaab3c9852d1c
@@ -37,6 +37,15 @@ execution_authority:
   model_independent_statistical_spec_recorded: true
   clinical_panel_locked: false
   final_sap_locked: false
+  phase1ef_read_only_capacity_capture_authorized: true
+  phase1ef_bounded_control_authority_backup_authorized: true
+  phase1ef_isolated_restore_test_authorized: true
+  phase1ef_offline_packet_and_launch_rebuild_authorized: true
+  phase1ef_cloud_requests_authorized: false
+  phase1ef_scheduler_submission_authorized: false
+  phase1ef_dicom_body_transfer_authorized: false
+  phase1ef_real_dicom_processing_authorized: false
+  phase1ef_echoprime_inference_authorized: false
 
 authority:
   accepted_abstract: docs/lvef_multitask/accepted_abstract_version10_verbatim.txt
@@ -474,7 +483,7 @@ phase1e_bc_resource_metadata_preflight:
     further_cost_verification_required: false
     actual_dicom_transfer_authorization: NOT_YET_GRANTED
   storage:
-    storage_expansion_status: POST_EXPANSION_RESEARCH_ACTIVE_CONTROL_TIER_GATE_FAILED
+    storage_expansion_status: OWNER_REPORTED_PREFERRED_50_1950_ACTIVE_EXACT_PHASE1EF_NATIVE_RECEIPT_PENDING
     project_and_projectnb_are_separate_filesystems: true
     project_root_symlink: false
     projectnb_root_symlink: false
@@ -482,11 +491,13 @@ phase1e_bc_resource_metadata_preflight:
     projectnb_root_bind_mount_observed: false
     historical_disaster_tier_inventory_allocated_bytes: 10954752000
     both_current_worktrees_depend_on_project_common_git: true
-    research_target_quota_bytes: 2000000000000
+    research_target_quota_bytes: 1950000000000
+    research_target_quota_authority: OWNER_REPORTED_PREFERRED_NOMINAL_ALLOCATION
     required_free_bytes: 200000000000
     complete_200gb_reallocation_recommended_now: false
     historical_provisional_retained_backed_up_quota_option_gb: 50
-    historical_provisional_retention_option_superseded_by_live_quota: true
+    historical_provisional_retention_option_superseded_by_phase1ee_live_quota: true
+    preferred_50gb_retention_owner_reported_active_now: true
     current_backed_up_quota_must_not_be_reduced_further: true
     resource_plan_current_usage_bytes: 152275355648
     resource_plan_current_usage_bytes_authority: FROZEN_JOB_7104307_PLAN_INPUT_NOT_LIVE_RECOMPUTATION
@@ -495,6 +506,7 @@ phase1e_bc_resource_metadata_preflight:
     minimum_effective_quota_bytes_under_current_plan: 1811642076332
     planned_two_tb_headroom_gate_passed: true
     planned_two_tb_headroom_gate_authority: FROZEN_HYPOTHETICAL_RESOURCE_PLAN
+    phase1ee_live_quota_fields_below_authority: HISTORICAL_AT_CAPTURE_NOT_CURRENT_PHASE1EF_CAPACITY
     live_quota_capture_attempt_id: lvef_multitask_phase1ee_post_expansion_capacity_attempt_002
     live_quota_capture_governing_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
     live_quota_aggregate_filename: lvef_c3_post_expansion_capacity.summary.json
@@ -568,6 +580,56 @@ phase1e_bc_resource_metadata_preflight:
     minimum_research_tier_quota_bytes: 1975000000000
     purchased_saas_allocation_projectnb_bytes: 1000000000000
     purchased_saas_allocation_composition_authority: OWNER_ATTESTED_ADMINISTRATIVE_COMPOSITION
+    phase1ef_post_reallocation:
+      attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_001
+      execution_timing: AFTER_FINAL_IMPLEMENTATION_COMMIT_SYNC
+      native_quota_record_unit: KiB
+      native_quota_bytes_per_unit: 1024
+      pquota_display_unit_ruling: BINARY_GIB_ROUNDED
+      pquota_fileset_to_secure_mount_reconciliation_required: true
+      pquota_display_aliases_are_not_alternate_directory_authorities: true
+      pquota_current_record_requires_no_dated_snapshot_argument: true
+      mount_source_fileset_basename_must_match_native_fileset: true
+      mount_fsroot_must_be_root: true
+      snapshot_presence_independently_enumerated: false
+      snapshot_capacity_double_counting_avoided: true
+      snapshot_accounting_ruling: NO_SEPARATE_SNAPSHOT_ADDITION_EFFECTIVE_QUOTA_AND_DF_GOVERN
+      owner_reported_backed_free_pool_gb: 50
+      owner_reported_research_free_pool_gb: 950
+      owner_reported_research_saas_purchased_gb: 1000
+      owner_reported_total_research_quota_gb: 1950
+      expected_research_quota_kib: 2044723200
+      expected_research_quota_bytes: 2093796556800
+      expected_research_file_quota: 33554432
+      expected_backed_quota_kib: 52428800
+      expected_backed_quota_bytes: 53687091200
+      expected_backed_file_quota: 1638400
+      projected_peak_bytes: 1611642076332
+      required_free_headroom_bytes: 200000000000
+      minimum_effective_quota_bytes: 1811642076332
+      prespecified_control_burden_bytes: 10000000000
+      expected_research_quota_margin_above_minimum_bytes: 282154480468
+      expected_research_quota_slack_after_projected_peak_bytes: 482154480468
+      expected_research_margin_beyond_reserve_bytes: 282154480468
+      exact_usage_and_physical_availability_authority: PENDING_POST_COMMIT_LIVE_RECEIPT
+      research_quota_gate: PENDING_POST_COMMIT_LIVE_RECEIPT
+      physical_filesystem_gate: PENDING_POST_COMMIT_LIVE_RECEIPT
+      projected_200gb_reserve_gate: PENDING_POST_COMMIT_LIVE_RECEIPT
+      research_file_quota_gate: PENDING_POST_COMMIT_LIVE_RECEIPT
+      backed_control_tier_gate: PENDING_POST_COMMIT_LIVE_RECEIPT
+      current_environment_capture_precedes_primary_backup: true
+      primary_backup_must_bind_current_environment_receipt: true
+      echoprime_environment_recovery_classification: CHECKSUM_ONLY_NO_COPY_REQUIRED
+      echoprime_live_exact_environment_validated_for_canary: true
+      echoprime_deterministic_reacquisition_after_loss_established: false
+      echoprime_environment_loss_requires_new_rebuild_and_equivalence_authority: true
+      approved_restricted_control_manifests_may_contain_identifiers_or_locators: true
+      disallowed_bulk_scientific_payload_absence_required: true
+      literal_all_scientific_data_absence_attestation_permitted: false
+      backup_recovery_witness: PENDING_POST_COMMIT_LIVE_ATTEMPT
+      current_commit_packet: PENDING_POST_COMMIT_LIVE_ATTEMPT
+      launch_envelope: PENDING_POST_COMMIT_LIVE_ATTEMPT
+      terminal_current_authority_chain_recovery_seal: PENDING_POST_COMMIT_LIVE_ATTEMPT
   lvef_authority:
     separate_from_canonical_multitask_mapping: true
     synthetic_mapping_row_required: false
@@ -656,17 +718,28 @@ phase1e_bc_resource_metadata_preflight:
     production_lock_attempt_004_cloud_requests: 0
     production_lock_attempt_004_scheduler_jobs: 0
     production_lock_attempt_004_preserved_immutable: true
-    production_lock_attempt_005_required: true
+    production_lock_attempt_005_id: lvef_c3_phase1ee_production_lock_005
+    production_lock_attempt_005_status: PASS_OFFLINE_PRODUCTION_AUTHORITY_PACKET
+    production_lock_attempt_005_packet_bytes: 7492
+    production_lock_attempt_005_packet_sha256: 2725570d1137640e0c00ae790f1ae3583d63b17c7f957e86e886892dd0e6ba07
+    production_lock_attempt_005_authority_roles: 38
+    production_lock_attempt_005_semantic_gates: 17
+    production_lock_attempt_005_authorization_scopes_granted: 0
+    production_lock_attempt_005_cloud_requests: 0
+    production_lock_attempt_005_scheduler_jobs: 0
+    production_lock_attempt_005_preserved_immutable: true
+    phase1ef_current_commit_packet_required: true
+    phase1ef_zero_scope_launch_envelope_required: true
     production_batch_runner_implemented_and_validated: true
     production_finalizer_implemented_and_validated: true
     execution_authorized: false
     submission_authorized: false
     scientific_execution_authorized: false
     remaining_execution_blockers:
-      - BACKED_CONTROL_TIER_BYTE_GATE_FAILED
       - POST_REALLOCATION_CAPACITY_RECEIPT_REQUIRED
       - VERIFIED_BACKUP_AND_RECOVERY_WITNESS_ABSENT
       - FINAL_CURRENT_COMMIT_ENVIRONMENT_AUTHORITY_PACKET_AND_LAUNCH_ENVELOPE_NOT_FROZEN
+      - TERMINAL_CURRENT_AUTHORITY_CHAIN_RECOVERY_SEAL_REQUIRED
       - SEPARATE_OWNER_TRANSFER_AUTHORIZATION_ABSENT
     phase1ee_implementation_commit: 0800a0b4de93911cc39467acf2460a8d5ed6135a
     phase1ee_scc_setgid_portability_commit: d2f94d4fb050347605933d922ae64a6d59f32531
@@ -1134,13 +1207,17 @@ prefit_gates:
   live_quota_receipt_validated: true
   live_quota_capture_validation_passed: true
   live_quota_capacity_gate_passed: false
+  live_quota_capacity_gate_authority: HISTORICAL_PHASE1EE_SUPERSEDED_BY_PENDING_PHASE1EF_RECEIPT
+  phase1ef_post_reallocation_capacity_receipt_pending: true
+  phase1ef_current_environment_backup_pending: true
+  phase1ef_terminal_current_authority_chain_recovery_seal_pending: true
   migration_classification_authority_passed: true
   migration_completion_authority_passed: false
   backed_up_authority_copy_verified: false
   two_tb_resource_plan_headroom_gate_passed: true
   two_tb_resource_plan_headroom_gate_authority: FROZEN_HYPOTHETICAL_2TB_PLAN
   two_tb_headroom_gate_passed: false
-  two_tb_headroom_gate_authority: LIVE_CURRENT_CAPACITY_GATE
+  two_tb_headroom_gate_authority: HISTORICAL_PHASE1EE_GATE_SUPERSEDED_BY_PENDING_PHASE1EF_RECEIPT
   requester_pays_budget_approved_for_transfer: false
   requester_pays_planning_estimate_owner_accepted: true
   requester_pays_high_scenario_accepted_for_planning: true
@@ -1148,10 +1225,10 @@ prefit_gates:
   further_cost_verification_required: false
   actual_dicom_transfer_authorized: false
   c3_production_specification_lock_passed: true
-  c3_production_authority_semantic_validation_complete: false
-  c3_production_downloader_implemented_and_validated: false
-  c3_production_runner_implemented_and_validated: false
-  c3_production_finalizer_implemented_and_validated: false
+  c3_production_authority_semantic_validation_complete: true
+  c3_production_downloader_implemented_and_validated: true
+  c3_production_runner_implemented_and_validated: true
+  c3_production_finalizer_implemented_and_validated: true
   full_c3_execution_authorized: false
   five_study_attrition_rule_locked: true
   checkpoint_to_embedding_link_proven_or_dispositioned: false

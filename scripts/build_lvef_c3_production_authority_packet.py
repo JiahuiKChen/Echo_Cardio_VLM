@@ -22,7 +22,8 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 import yaml
 
-import capture_lvef_c3_post_expansion_capacity as capacity
+import build_lvef_c3_first_batch_command as first_batch_command
+import build_lvef_c3_phase1ef_pretransfer_lock as pretransfer
 import lvef_c3_orchestration_core as core
 import lvef_c3_production_stages as stages
 
@@ -87,6 +88,18 @@ AUTHORIZATION_SCOPES = (
     "confirmatory_test_access",
 )
 
+EXECUTION_ATTESTATIONS = {
+    "cloud_requests": 0,
+    "object_listing_repeated": False,
+    "storage_audit_repeated": False,
+    "scheduler_jobs_submitted": 0,
+    "dicom_bodies_downloaded": 0,
+    "real_dicom_extraction": False,
+    "echoprime_inference": False,
+    "model_fitting": False,
+    "confirmatory_performance_accessed": False,
+}
+
 TOP_LEVEL_KEYS = frozenset(
     {
         "schema_version",
@@ -145,7 +158,6 @@ TRACKED_ROLE_PATHS = {
     "scheduler_dispatcher": "scripts/scc_dispatch_lvef_c3_production_v2.sh",
     "scheduler_batch_runner": "scripts/scc_run_lvef_c3_production_batch_v2.sh",
     "scheduler_finalizer": "scripts/scc_finalize_lvef_c3_production_v2.sh",
-    "future_command_block": "docs/lvef_multitask/scc_phase1ee_production_commands.md",
     "authority_packet_builder": "scripts/build_lvef_c3_production_authority_packet.py",
     "control_plane_preparer": "scripts/prepare_lvef_c3_production_control_plane.py",
     "environment_receipt_capture": "scripts/capture_lvef_c3_production_environment.py",
@@ -554,6 +566,23 @@ def _validate_execution_environment(
     )
 
 
+def _validate_pretransfer_command_binding(
+    pretransfer_value: Mapping[str, Any], command_path: Path
+) -> None:
+    """Prove the packet's command is the command frozen by Phase 1E-F."""
+    authority = pretransfer_value.get("authority")
+    expected = authority.get("future_first_batch_command") if isinstance(
+        authority, Mapping
+    ) else None
+    payload = read_regular_nofollow(command_path)
+    observed = {
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    if expected != observed:
+        raise AuthorityPacketError("PRETRANSFER_COMMAND_BINDING_MISMATCH")
+
+
 def validate_artifact_semantics(
     *, governing_commit: str, attempt_id: str, checkout_root: Path,
     artifacts: Mapping[str, Path]
@@ -653,6 +682,7 @@ def validate_artifact_semantics(
         "gcloud_resolution_receipt",
         "cloudsdk_config_receipt",
         "execution_environment",
+        "future_command_block",
     ):
         _require_owner_private(artifacts[role], role.upper())
     _validate_execution_environment(
@@ -671,16 +701,18 @@ def validate_artifact_semantics(
     _validate_preservation_policy(_strict_yaml(artifacts["preservation_policy"]))
 
     capacity_summary = core.load_strict_json(artifacts["post_expansion_capacity_summary"])
-    capacity.validate_aggregate_output(capacity_summary)
+    try:
+        pretransfer.validate_aggregate_output(capacity_summary)
+    except pretransfer.Phase1EFPretransferError as exc:
+        raise AuthorityPacketError("CAPACITY_EVIDENCE_NOT_PASS") from exc
     if (
-        capacity_summary.get("live_quota_evidence_passed") is not True
-        or capacity_summary.get("minimum_effective_quota_gate_passed") is not True
-        or capacity_summary.get("physical_filesystem_capacity_gate_passed") is not True
-        or capacity_summary.get("projected_200gb_reserve_gate_passed") is not True
-        or capacity_summary.get("control_tier_policy_sha256")
-        != core.sha256_file(checkout / "configs/lvef_c3_control_tier_policy.json")
+        capacity_summary.get("governing_commit") != governing_commit
+        or not pretransfer.launch_ready(capacity_summary)
     ):
         raise AuthorityPacketError("CAPACITY_EVIDENCE_NOT_PASS")
+    _validate_pretransfer_command_binding(
+        capacity_summary, artifacts["future_command_block"]
+    )
 
     scheduler_roles = (
         "scheduler_common",
@@ -704,9 +736,33 @@ def validate_artifact_semantics(
         "Echo_Cardio_VLM_lvef_multitask'" not in scheduler_common
     ):
         raise AuthorityPacketError("SCHEDULER_SPOOL_PORTABILITY_NOT_BOUND")
-    future = read_regular_nofollow(artifacts["future_command_block"]).decode("utf-8")
-    if "UNEXECUTED" not in future or "FULL C3" not in future.upper():
-        raise AuthorityPacketError("FUTURE_COMMAND_NOT_MARKED_UNEXECUTED")
+    execution_values = _parse_execution_environment(artifacts["execution_environment"])
+    attempt_root = artifacts["execution_environment"].parent.parent
+    try:
+        expected_future = first_batch_command.render(
+            governing_commit=governing_commit,
+            attempt_id=attempt_id,
+            dispatcher=artifacts["scheduler_dispatcher"],
+            execution_environment=artifacts["execution_environment"],
+            launch_authority=(
+                attempt_root
+                / "authority"
+                / "lvef_c3_production_launch_authority.restricted.json"
+            ),
+            dispatch_authorization=(
+                Path(execution_values["LVEF_C3_DISPATCH_AUTHORIZATION_ROOT"])
+                / "FIRST_BATCH_DOWNLOAD.1.dispatch_authorization.json"
+            ),
+            body_authorization=(
+                Path(execution_values["LVEF_C3_DOWNLOAD_AUTHORIZATION_ROOT"])
+                / "c3_batch_000.authorization.json"
+            ),
+        )
+        first_batch_command.validate_exact(
+            artifacts["future_command_block"], expected=expected_future
+        )
+    except first_batch_command.FirstBatchCommandError as exc:
+        raise AuthorityPacketError("FUTURE_COMMAND_NOT_EXACT_UNEXECUTED") from exc
 
     return {key: True for key in SEMANTIC_VALIDATION_KEYS}
 
@@ -757,17 +813,7 @@ def build_packet(
         "authorization_scopes": {
             scope: False for scope in AUTHORIZATION_SCOPES
         },
-        "execution_attestations": {
-            "cloud_requests": 0,
-            "object_listing_repeated": False,
-            "storage_audit_repeated": False,
-            "scheduler_jobs_submitted": 0,
-            "dicom_bodies_downloaded": 0,
-            "real_dicom_extraction": False,
-            "echoprime_inference": False,
-            "model_fitting": False,
-            "confirmatory_performance_accessed": False,
-        },
+        "execution_attestations": dict(EXECUTION_ATTESTATIONS),
         "full_c3_status": full_c3_status,
     }
 
@@ -817,18 +863,7 @@ def validate_packet(value: Mapping[str, Any]) -> None:
     ):
         raise AuthorityPacketError("PACKET_AUTHORIZATION_SCOPE_INVALID")
     attestations = value.get("execution_attestations")
-    expected_attestations = {
-        "cloud_requests": 0,
-        "object_listing_repeated": False,
-        "storage_audit_repeated": False,
-        "scheduler_jobs_submitted": 0,
-        "dicom_bodies_downloaded": 0,
-        "real_dicom_extraction": False,
-        "echoprime_inference": False,
-        "model_fitting": False,
-        "confirmatory_performance_accessed": False,
-    }
-    if attestations != expected_attestations:
+    if attestations != EXECUTION_ATTESTATIONS:
         raise AuthorityPacketError("PACKET_EXECUTION_ATTESTATION_INVALID")
 
 
@@ -883,21 +918,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capacity_summary = core.load_strict_json(
             dict(pairs)["post_expansion_capacity_summary"]
         )
-        launch_ready = all(
-            capacity_summary.get(key) is True
-            for key in (
-                "live_quota_evidence_passed",
-                "minimum_effective_quota_gate_passed",
-                "physical_filesystem_capacity_gate_passed",
-                "projected_200gb_reserve_gate_passed",
-                "research_capacity_gate_passed",
-                "research_file_quota_gate_passed",
-                "control_tier_quota_evidence_passed",
-                "control_tier_operational_burden_authority_bound",
-                "backed_control_tier_gate_passed",
-                "control_file_quota_gate_passed",
-            )
-        )
+        launch_ready = pretransfer.launch_ready(capacity_summary)
         packet = build_packet(
             governing_commit=args.governing_commit,
             attempt_id=args.attempt_id,

@@ -1,6 +1,13 @@
 # SCC storage migration plan for prospective C3
 
-Status: **research expansion is active and passes; the backed control tier remains undersized, and migration/backup-copy completion remains unproven**.
+Status: **the owner reports the preferred 50/1,950 allocation active; exact
+post-reallocation capacity and the bounded backup/restore witness are governed
+by Phase 1E-F**.
+
+Historical inventory and migration-planning evidence below remains immutable.
+Phase 1E-F does not move either live worktree or scientific data: it creates
+only an owner-private bounded control backup and isolated restore test, while
+all substantial future C3 writes remain bound to research.
 
 This document concerns storage placement only. It does not authorize a DICOM body transfer, extraction, embedding, modeling, prediction generation, or confirmatory-performance access.
 
@@ -90,39 +97,40 @@ Action: make a separately approved restricted backup (prefer retained `/restrict
 
 Action: use node-local `$TMPDIR` only for job-lifetime scratch. Place resumable transfer state on `/restricted/projectnb`; never depend on scratch for the sole copy of a completed object or preservation authority.
 
-## Current-state recommendation after research expansion
+## Historical Phase 1E-E recommendation before reallocation
 
-The live backed quota is 11 GB and is nearly exhausted. **Do not reduce it further, move files, or delete files.** The preferred free-pool adjustment is 50 GB backed and 1,950 GB total research; the minimum option is 25/1,975 GB. Under the owner-attested administrative composition, the purchased 1,000-GB SAAS allocation must remain unchanged on `/restricted/projectnb`. Both options preserve the frozen 1,811,642,076,332-byte research minimum and 200-GB reserve: preferred research slack is 338,357,923,668 bytes, and minimum-option slack is 363,357,923,668 bytes. No quota change is authorized by this plan.
+At the Phase 1E-E capture, the backed quota was 11 GB and nearly exhausted. The preferred free-pool adjustment was 50 GB backed and 1,950 GB total research; the minimum option was 25/1,975 GB. Under the owner-attested administrative composition, the purchased 1,000-GB SAAS allocation had to remain unchanged on `/restricted/projectnb`. Both options preserved the frozen 1,811,642,076,332-byte research minimum and 200-GB reserve. The owner now reports the preferred allocation active. This historical request must not be resubmitted; a new Phase 1E-F native receipt, rather than another quota mutation, is pending.
 
 The resource calculator may not use the observed 10,954,752,000-byte historical inventory as the migrated amount. The SCC-only planning classification passed and records 2,841,265,664 bytes selected for planned migration, with state `PLANNED_NOT_EXECUTED`; it is not an executed-migration or backup authority. A future completion witness must bind the exact bytes actually migrated and retained, reconcile them to its contemporaneous source inventory, and state whether migrated bytes are already included in `/restricted/projectnb` usage so they are not added twice.
 
-No further backed-up-tier reduction or retirement may occur until all of the following are true:
+The following conditions were attached to the historical proposal for any
+further backed-tier reduction or retirement. Phase 1E-F performs neither:
 
 1. every restricted path is classified and the restricted path-level inventory is complete;
 2. all irreplaceable items have a checksum-verified approved backup outside `/restricted/projectnb`;
-3. both Git worktrees are recreated under the destination and a clean checkout/recovery test passes;
+3. the required Git common-directory and linked-worktree authority is reconstructed in an isolated destination and a clean checkout/recovery test passes; moving either live worktree remains a separate action;
 4. the exact checkpoint and environment authorities have a verified backup;
 5. the Phase 1A-1E historical audit packets and Phase 1E-A preservation authority have a verified backup;
-6. RCS activates an approved 50/1,950-GB preferred or 25/1,975-GB minimum free-pool allocation and records the effective decimal-byte quotas;
+6. the owner reports an approved 50/1,950-GB preferred or 25/1,975-GB minimum free-pool allocation active, followed by a native machine receipt recording its exact integer-KiB authority;
 7. no queued/running job or live environment refers to the old paths.
 
-The owner-accepted SCC storage estimate closes only the planning-cost gate. It does not establish the pending control-tier reallocation, complete the migration/backup witness, authorize a move or deletion, or authorize the first DICOM transfer.
+The owner-accepted SCC storage estimate closes only the planning-cost gate. The owner-reported allocation change does not itself establish exact machine capacity, complete the backup/recovery witness, authorize a move or deletion, or authorize the first DICOM transfer.
 
-If RCS permits only all-or-none reallocation, the safer sequence is: obtain an approved backed-up copy first, migrate/recreate and verify everything under `/restricted/projectnb`, retain the original until an independent recovery test passes, and only then request the complete exchange. No move or deletion is authorized by this plan.
+The former all-or-none reallocation contingency is retained only as historical planning context. The owner reports the preferred allocation active, so Phase 1E-F neither resubmits that request nor moves or deletes live files.
 
-## Exact recovery and migration checklist
+## Recovery and migration checklist
 
 - [x] Preserve and validate the pre-expansion standard `pquota -u` plus nonenumerating exact-usage/filesystem state in the owner-private attempt-003 authority.
 - [x] Capture and validate the post-expansion research capacity and successor control-tier evidence in `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` without repeating research quota/filesystem commands.
 - [x] Preserve the historical 126-record restricted inventory and its checksum-bound planning authority.
 - [x] Complete the planning-only direct-child classification and seal the 2,841,265,664-byte proposed migration scope.
 - [x] Create the checksum-bound planning witness; retain `PLANNED_NOT_EXECUTED`, backup false, and owner execution authorization false.
-- [ ] Create and independently verify the backed-up authority copy.
-- [ ] Recreate the shared Git repository and both linked worktrees at exact commits.
-- [ ] Recreate or relink the EchoPrime environment without changing the pinned interpreter/checkpoint authority.
+- [ ] Create and independently verify the bounded backed-tier control-authority copy.
+- [ ] Recreate the required shared-Git and linked-worktree authority in an isolated restore root without moving either live worktree.
+- [ ] Verify deterministic EchoPrime environment/checkpoint recovery authority without changing the pinned interpreter/checkpoint identity.
 - [x] Bind substantial future C3 writes, temporary state, scheduler logs, partial downloads, and production state to `/restricted/projectnb`; retain the backed tier only for the bounded control plane.
 - [ ] Verify scheduler jobs see the new paths from a compute node.
-- [ ] Activate and record the preferred 50/1,950-GB or minimum 25/1,975-GB free-pool allocation without moving the purchased research terabyte.
+- [x] Record the owner's report that the preferred 50/1,950-GB allocation is active without moving the purchased research terabyte; exact machine authority remains pending.
 - [ ] Capture a fresh post-adjustment byte/file/filesystem receipt and complete the restore test.
 
-Research expansion has been captured and passes. A new receipt remains mandatory after the control-tier adjustment; backup, migration, worktree-recovery, and restore-test items remain open.
+Research expansion has been captured and passes. A new native receipt remains mandatory after the control-tier adjustment; the bounded backup and isolated recovery/restore-test items remain open. Migration of either live worktree is outside Phase 1E-F and is not required merely to prove recoverability.

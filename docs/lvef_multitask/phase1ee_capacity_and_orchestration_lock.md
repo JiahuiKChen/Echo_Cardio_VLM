@@ -1,5 +1,11 @@
 # Phase 1E-E capacity and prospective C3 orchestration lock
 
+> Historical evidence notice (2026-08-11): this document preserves the
+> Phase 1E-E observations and their then-current control-tier failure. The
+> active successor is [Phase 1E-F](phase1ef_post_reallocation_lock.md), which
+> uses the native integer-KiB quota authority after the owner's 50/1,950
+> allocation change. Values below are not retroactively rewritten.
+
 Status: **implementation complete offline; all production actions remain unauthorized**.
 
 Phase 1E-E is limited to read-only SCC capacity confirmation, implementation,

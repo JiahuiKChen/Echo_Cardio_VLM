@@ -1,12 +1,20 @@
-# Phase 1E-E handoff: next bounded pre-transfer phase
+# Phase 1E-F handoff: final offline pre-transfer authority phase
 
-Status: **Phase 1E-E remains `NO_GO` because the backed control tier fails its byte-margin gate; research capacity and the prospective production implementation are no longer the blocking capacity items**.
+Status: **implementation ready; final status depends on the no-clobber
+post-commit Phase 1E-F capacity, backup/restore, packet, and zero-scope launch
+receipts**.
+
+Phase 1E-E's 11-GB backed-tier failure remains immutable history. The owner
+reports the preferred 50/1,950 allocation active, and production attempt 005
+has passed 38/38 roles and 17/17 semantic gates. If the Phase 1E-F successor
+receipts pass, the next bounded step is a separately authorized first-batch
+canary—not another quota, pricing, source, or orchestration redesign.
 
 Phase 1E-E implemented the prospective selected-cohort C3 production orchestration and validated it offline without a cloud request, scheduler submission, DICOM-body download, real DICOM decode/extraction, EchoPrime inference, embedding generation, modeling, predictions, or confirmatory-performance access. The immutable selected-source authority remains 4,530 studies, 335,984 verified objects, and 1,216,569,133,322 bytes.
 
 The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.488015 and the owner-provided SCC storage estimate remain accepted and frozen for planning. No further cost verification is required. This acceptance does not authorize a DICOM transfer.
 
-## Current closed and open gates
+## Historical Phase 1E-E evidence preserved
 
 - Immutable parent research attempt: `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001`; aggregate `lvef_c3_live_quota.summary.json`, 2,257 bytes, SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`.
 - Composite control-tier successor: `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002`; it hash-revalidated the parent without repeating research quota/filesystem commands.
@@ -20,8 +28,7 @@ The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.48801
 - Split-runtime repair: the EchoPrime Python remains unchanged; compiled
   CRC32C uses the pinned Cloud SDK bundled Python 3.14 executable (SHA-256
   `52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5`)
-  and a tracked, persistent, isolated digest worker. A fresh no-clobber
-  environment/packet attempt is required.
+  and a tracked, persistent, isolated digest worker.
 - Immutable production-lock attempt `lvef_c3_phase1ee_production_lock_002`
   passed environment capture and failed before a production attempt root when
   runtime validation hashed the unresolved venv launcher symlink.
@@ -36,6 +43,10 @@ The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.48801
   named the wrong historical environment-receipt location. A hash-only SCC
   lookup identified exactly one regular Phase 1E-A receipt matching attempt
   003's bound source-receipt hash. No committed execution path was changed.
+- Immutable production-lock attempt `lvef_c3_phase1ee_production_lock_005`
+  passed with a 7,492-byte packet (SHA-256
+  `2725570d1137640e0c00ae790f1ae3583d63b17c7f957e86e886892dd0e6ba07`),
+  38/38 roles, 17/17 semantic gates, and zero scopes or executions.
 - Prior immutable aggregates: all 12 original/supplemental authorities passed filename, size, SHA-256, and closed-schema revalidation; their generating cloud/storage work was not repeated.
 - Research quota/usage/available: 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes.
 - Research physical filesystem available: 2,092,672,483,328 bytes.
@@ -50,18 +61,39 @@ The requester-pays low/base/high estimates of $136.101850/$142.906680/$171.48801
 - Purchased 1-TB SAAS allocation: owner-attested administrative composition keeps it unchanged and wholly assigned to `/restricted/projectnb`; machine evidence proves the exact total quota, not its funding source.
 - Backup/migration completion and recovery test: not verified.
 - First DICOM body-transfer authorization: absent.
-- Full C3: `NO_GO`.
+- Historical Phase 1E-E full C3 disposition: `NO_GO`.
 
-## Recommended next bounded phase
+## Current Phase 1E-F bounded phase
 
-Request an administrative free-pool reallocation that leaves the purchased 1-TB SAAS increment untouched on `/restricted/projectnb`:
+The owner reports that the preferred 50/1,950 allocation is active and that
+the purchased 1-TB SAAS increment remains wholly on research. The current
+bounded action is therefore one native integer-KiB capacity receipt, a
+current-environment capture followed by an owner-private backup and isolated
+restore test, a current-commit packet plus zero-scope launch envelope, and a
+terminal backed-tier recovery seal for that exact final chain. The exact topology is
+`scc_phase1ef_pretransfer_commands.md`.
 
-1. preferred: 50,000,000,000 bytes backed and 1,950,000,000,000 bytes research;
-2. minimum: 25,000,000,000 bytes backed and 1,975,000,000,000 bytes research.
+The live EchoPrime environment is checksum-bound and validated for the canary,
+but it is not backed up and deterministic reacquisition after loss has not been
+established. Its recovery class is therefore
+`CHECKSUM_ONLY_NO_COPY_REQUIRED`, not external-source reconstructable; a lost
+or changed environment must receive a new rebuild and equivalence authority
+before EchoPrime inference.
 
-Both options preserve the frozen research minimum and 200-GB reserve. At the frozen 1,611,642,076,332-byte peak, the preferred and minimum research allocations leave 338,357,923,668 and 363,357,923,668 bytes, respectively. No quota mutation is authorized by this handoff.
+The new capacity receipt also proves the native `pquota` fileset-to-secure-
+mount mapping through the root-controlled implementation and mount/device
+evidence. It does not enumerate snapshots. Capacity arithmetic counts current
+effective quota and current physical filesystem availability once and does not
+add snapshot bytes or assert snapshot absence.
 
-After an owner-approved adjustment becomes active, capture one new read-only, no-clobber capacity receipt. Revalidate the research byte/file/physical/reserve gates and the backed control byte/file gates, then rebuild the offline authority packet against the exact final commit. Do not repeat object listing, targeted bucket metadata, source reconciliation, or storage inventory.
+Expected native quotas are 52,428,800 KiB backed and 2,044,723,200
+KiB research. These binary-scaled machine values are not a retrospective
+reinterpretation of the historical decimal Phase 1E-E receipts.
+
+If every successor gate, including exact current-chain recoverability, passes,
+the next phase is a separately authorized
+first-batch production canary. No quota mutation, transfer, or scheduler
+submission is authorized by this handoff.
 
 ## Hard stops
 

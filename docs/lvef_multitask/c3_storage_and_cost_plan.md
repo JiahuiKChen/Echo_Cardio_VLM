@@ -2,6 +2,12 @@
 
 Status: **exact source, rolling-cache resource, and rate-explicit cost plans adjudicated; full C3 remains unauthorized**.
 
+Phase 1E-F successor note: the owner reports the preferred 50/1,950 allocation
+as active. Commercial decimal-GB planning, native SCC integer-KiB allocation,
+and rounded binary-GiB display are separate evidence layers. The exact current
+capacity gate is governed by the Phase 1E-F receipt; the frozen requester-pays
+cost values below are not recalculated.
+
 ## Scope and byte conventions
 
 The primary project is the 4,530-study, one-study-per-subject cohort. It does not require a local mirror of the full public release. The relevant scopes are:
@@ -21,11 +27,11 @@ SCC Storage-as-a-Service uses whole terabytes of 1,000 GB. This plan therefore t
 
 At exactly 2 TB, the requirement is 200,000,000,000 bytes and the maximum allowed projected peak is 1,800,000,000,000 bytes.
 
-## Current retained usage and live capacity
+## Historical Phase 1E-E retained usage and live-at-the-time capacity
 
-Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` produced `lvef_c3_live_quota.summary.json` (2,257 bytes; SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`). Composite successor `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` is bound to implementation commit `0800a0b4de93911cc39467acf2460a8d5ed6135a`; its 5,003-byte aggregate has SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`. It hash-revalidated the immutable parent and captured only contemporaneous control-tier evidence; no project-quota or research-filesystem command, storage inventory, source reconciliation, or cloud operation was repeated.
+Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` produced `lvef_c3_live_quota.summary.json` (2,257 bytes; SHA-256 `267bf03d8f059b4a71ebe0754015af4a710edea37c060e3e392642e1ad335d71`). Composite successor `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` is bound to implementation commit `0800a0b4de93911cc39467acf2460a8d5ed6135a`; its 5,003-byte aggregate has SHA-256 `28fad54a68f84165cb8340c3e666de84e1f6efc6bf20b146bc7bc006d9d4171c`. It hash-revalidated the immutable parent and captured only contemporaneous control-tier evidence; no project-quota or research-filesystem command, storage inventory, source reconciliation, or cloud operation was repeated. These values were current when Phase 1E-E closed. They do not describe the owner-reported post-reallocation state and must not be used as its capacity receipt.
 
-| Capacity authority | Exact value |
+| Historical Phase 1E-E capacity authority | Exact value at capture |
 |---|---:|
 | Research quota / usage / quota-available | 1,989,000,000,000 / 150,387,011,072 / 1,838,612,988,928 bytes |
 | Research physical filesystem available | 2,092,672,483,328 bytes |
@@ -34,7 +40,7 @@ Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capaci
 | Backed control physical filesystem available | 2,046,820,352 bytes |
 | Backed control file quota / used / available | 360,448 / 47,189 / 313,259 |
 
-Research byte quota, file quota, minimum effective quota, underlying physical availability, and the frozen 200-GB reserve all pass. The research quota leaves 377,357,923,668 bytes after the 1,611,642,076,332-byte frozen peak; the physical filesystem leaves 431,417,418,068 bytes after required projected writes and reserve. The backed control tier passes file count but fails its byte-margin gate: 40,635,392 quota bytes are not sufficient for the prespecified 10,000,000,000-byte maximum additional control-plane write burden.
+At that capture, research byte quota, file quota, minimum effective quota, underlying physical availability, and the frozen 200-GB reserve passed. The research quota left 377,357,923,668 bytes after the 1,611,642,076,332-byte frozen peak; the physical filesystem left 431,417,418,068 bytes after required projected writes and reserve. The then-current backed control tier passed file count but failed its byte-margin gate: 40,635,392 quota bytes were not sufficient for the prespecified 10,000,000,000-byte maximum additional control-plane write burden.
 
 The migration term remains runtime evidence rather than a policy constant. Its checksum-bound planning witness records 2,841,265,664 planned bytes but remains `PLANNED_NOT_EXECUTED`; it neither proves migration nor permits adding those bytes to current usage. A future completion witness must state whether migrated bytes are already included in contemporaneous research-tier usage and must not blindly add the whole `/restricted/project` tree if an approved backed-up authority subset remains there.
 
@@ -42,9 +48,9 @@ The migration term remains runtime evidence rather than a policy constant. Its c
 
 This strategy retains all selected raw DICOMs and all extracted NPZ clips simultaneously.
 
-| Component | Current authority |
+| Component | Planning authority |
 |---|---|
-| Current projectnb quota/usage | Sealed evidence: 1,989,000,000,000-byte quota and 150,387,011,072 usage bytes; the separate management-page display remains rounded and is not used as exact |
+| Phase 1E-E projectnb quota/usage | Historical sealed evidence: 1,989,000,000,000-byte quota and 150,387,011,072 usage bytes; the separate management-page display was rounded and was not used as exact |
 | Planned disaster-tier migration | Planning classification passed for 2,841,265,664 bytes and remains `PLANNED_NOT_EXECUTED`; 10,954,752,000 bytes is the separate historical inventory total, not an executed-migration amount |
 | Selected raw DICOMs | 1,216,569,133,322 bytes across 335,984 current metadata-verified selected objects |
 | All extracted clips | Historical planning estimate approximately 288 GB; not an authority for the prospective run |
@@ -133,7 +139,7 @@ These values are frozen for the current planning stage. No additional cost inves
 
 The immutable aggregate resource plan uses a 2,000,000,000,000-byte quota, a frozen planning input of 152,275,355,648 current-usage bytes, a one-batch 92,286,910,464-byte active extraction cache, 1,376,190,464 bytes of clip embeddings, 18,554,880 bytes of study embeddings, and a 50,000,000,000-byte safety reserve. It projects a peak of 1,611,642,076,332 bytes and 388,357,923,668 bytes of headroom. Thus, the planned 2-TB allocation passes the 200-GB headroom rule. The minimum effective quota under this exact frozen plan is 1,811,642,076,332 bytes; the preferred nominal quota remains 2 TB. Phase 1E-D did not silently recompute this immutable plan using the later 150,386,971,136-byte live-usage observation.
 
-The post-expansion receipt proves the research allocation is active at 1,989,000,000,000 bytes. It leaves 377,357,923,668 quota bytes after the frozen peak, exceeding the unchanged 200,000,000,000-byte reserve by 177,357,923,668 bytes. Independently, 2,092,672,483,328 physical filesystem bytes are available, leaving 431,417,418,068 bytes after required projected writes and reserve. Another purchased terabyte is not indicated by the current one-batch plan. This research-capacity ruling does not cure the backed control-tier byte failure or authorize transfer.
+The historical post-expansion receipt proved that the Phase 1E-E research allocation was active at 1,989,000,000,000 bytes. It left 377,357,923,668 quota bytes after the frozen peak, exceeding the unchanged 200,000,000,000-byte reserve by 177,357,923,668 bytes. Independently, 2,092,672,483,328 physical filesystem bytes were available, leaving 431,417,418,068 bytes after required projected writes and reserve. That receipt remains immutable evidence of the earlier allocation; it is not the authority for the owner-reported 50/1,950 state. Another purchased terabyte is not indicated by the one-batch plan.
 
 ## SCC quota cost authority
 
@@ -141,9 +147,14 @@ The owner-provided SCC storage estimate is accepted for planning. The previously
 
 The SCC quota charge is an administrative purchasing gate, not a scientific gate. No monthly storage rate is used or implied by this plan.
 
-## Copy-ready free-pool reallocation request
+## Retired Phase 1E-E free-pool request
 
-> The machine receipt proves a current research quota of 1,989,000,000,000 bytes, which passes the frozen C3 minimum, physical-filesystem, file-count, and 200-GB-reserve gates. The owner-attested administrative composition assigns the purchased 1,000-GB Storage-as-a-Service allocation wholly to `/restricted/projectnb`; please leave that purchased allocation unchanged. The current backed tier is only 11,000,000,000 bytes, with 10,959,364,608 bytes used and 40,635,392 bytes available, so it fails the control-plane operating-margin gate. Please reallocate the free baseline pool to the preferred 50-GB backed / 950-GB non-backed split, producing total quotas of 50,000,000,000 bytes backed and 1,950,000,000,000 bytes research. If 50 GB cannot be retained, the minimum acceptable option is 25 GB backed and 1,975 GB research. After activation, the project will capture one fresh read-only quota/filesystem/file-count receipt before any DICOM body request.
+The following text is preserved only as the request that preceded the owner's
+reported reallocation. It is **not a current action request** and must not be
+resubmitted. Phase 1E-F requires only a fresh read-only native quota receipt,
+not another allocation change.
+
+> At the time of this retired request, the machine receipt proved a 1,989,000,000,000-byte research quota and a then-current 11,000,000,000-byte backed tier with 10,959,364,608 bytes used. The requested remedy was a preferred 50-GB backed / 950-GB free-pool research split, producing 50,000,000,000-byte backed and 1,950,000,000,000-byte research planning quotas while leaving the purchased 1,000-GB research allocation unchanged. The owner subsequently reported that preferred adjustment complete; do not resubmit this request.
 
 Both options preserve the frozen research gate. At the 1,611,642,076,332-byte peak, the preferred 1,950-GB research allocation leaves 338,357,923,668 bytes; the minimum 1,975-GB allocation leaves 363,357,923,668 bytes. The preferred 50-GB control tier gives the safer margin for Git/common-repository writes, owner-private receipts, scheduler logs, environment metadata, and preservation control artifacts. No administrative change is authorized by this document.
 
@@ -157,7 +168,8 @@ Full C3 can be recommended only after the generated live resource report proves:
 - one-batch cache concurrency is sufficient;
 - no raw-DICOM deletion is needed;
 - the backed-up authority plan is complete;
+- the exact current environment, packet, launch envelope, command, and final aggregate have a no-clobber backed-tier recovery seal rather than only research-tier hashes;
 - requester-pays and SCC planning costs retain their frozen owner-accepted disposition;
 - an explicit owner authorization for the first DICOM transfer is subsequently granted.
 
-The current research tier already passes the one-batch threshold, so another purchased terabyte is not indicated. The remaining administrative capacity action is a free-pool reallocation that restores the backed control margin while retaining at least the 1,811,642,076,332-byte research minimum. Do not weaken raw retention, preservation, or safety gates.
+The historical research tier passed the one-batch threshold, and the owner now reports the requested preferred reallocation complete. Another purchased terabyte is not indicated. The remaining capacity action is a read-only Phase 1E-F receipt establishing exact native quotas, use, file counts, physical availability, and reserve; it is not another administrative quota change. Do not weaken raw retention, preservation, or safety gates.

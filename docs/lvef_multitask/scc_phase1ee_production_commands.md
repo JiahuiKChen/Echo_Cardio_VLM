@@ -1,5 +1,11 @@
 # Prospective full C3 production scheduler commands
 
+> Phase 1E-F successor notice: this file preserves the Phase 1E-E command
+> topology and is not the current packet command artifact. The current offline
+> build is [scc_phase1ef_pretransfer_commands.md](scc_phase1ef_pretransfer_commands.md);
+> it creates an owner-private exact `first_batch_dispatch.unexecuted.sh` and
+> binds that file as the packet's `future_command_block` role.
+
 Status: **UNEXECUTED — NO PRODUCTION AUTHORITY GRANTED**.
 
 This is the frozen command topology for a future, separately authorized

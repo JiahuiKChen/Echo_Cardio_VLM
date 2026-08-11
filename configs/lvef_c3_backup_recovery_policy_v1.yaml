@@ -1,0 +1,293 @@
+schema_version: 1
+policy_id: lvef_c3_control_authority_backup_recovery_v1
+status: IMPLEMENTED_OFFLINE_OWNER_GATED
+
+git:
+  required_branch: codex/lvef-multitask-revalidation
+  required_origin_remote: origin
+  approved_origin_url_regex: '^(?:https://github[.]com/JiahuiKChen/Echo_Cardio_VLM(?:[.]git)?|git@github[.]com:JiahuiKChen/Echo_Cardio_VLM[.]git)$'
+  bundle_relative_path: git/lvef_multitask_authority.bundle
+  maximum_bundle_bytes: 1000000000
+  recovery_documentation_relative_path: docs/lvef_multitask/c3_control_authority_recovery.md
+
+bundle_scan:
+  maximum_commits: 10000
+  maximum_unique_blobs: 100000
+  maximum_total_blob_bytes: 2000000000
+  allowed_synthetic_match_patterns:
+    - '(?i)(?:synthetic|placeholder|redacted|example[.]invalid|private-project|test-only|not-a-real|not[_-]?set|unknown)'
+    - '(?:[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?|<[A-Z][A-Z0-9_ -]{2,}>)'
+
+roots:
+  approved_source_roots:
+    - /restricted/project/mimicecho
+    - /restricted/projectnb/mimicecho
+  approved_backup_root_prefix: /restricted/project/mimicecho/audits
+  approved_restore_root_prefix: /restricted/projectnb/mimicecho/audits
+  backup_root_must_be_on_backed_tier: true
+  restore_root_must_be_isolated_from_live_checkout: true
+
+bounds:
+  maximum_declared_items: 64
+  maximum_copied_files: 32
+  maximum_single_file_bytes: 1000000000
+  maximum_total_copied_bytes: 2000000000
+  maximum_manifest_bytes: 1048576
+  maximum_restore_receipt_bytes: 1048576
+  maximum_aggregate_bytes: 65536
+
+classifications:
+  allowed:
+    - GIT_ORIGIN_PROTECTED
+    - COMMITTED_RECONSTRUCTABLE
+    - PINNED_EXTERNAL_SOURCE_RECONSTRUCTABLE
+    - OWNER_RECREATABLE
+    - CHECKSUM_ONLY_NO_COPY_REQUIRED
+    - IRREPLACEABLE_BACKUP_REQUIRED
+    - EXCLUDED_CREDENTIAL_MATERIAL
+    - UNRESOLVED
+  copied_classification: IRREPLACEABLE_BACKUP_REQUIRED
+  unresolved_classification: UNRESOLVED
+  prohibited_from_copy:
+    - GIT_ORIGIN_PROTECTED
+    - COMMITTED_RECONSTRUCTABLE
+    - PINNED_EXTERNAL_SOURCE_RECONSTRUCTABLE
+    - OWNER_RECREATABLE
+    - CHECKSUM_ONLY_NO_COPY_REQUIRED
+    - EXCLUDED_CREDENTIAL_MATERIAL
+    - UNRESOLVED
+
+required_declarations:
+  git_repository: GIT_ORIGIN_PROTECTED
+  tracked_code_and_configuration: COMMITTED_RECONSTRUCTABLE
+  echoprime_environment: CHECKSUM_ONLY_NO_COPY_REQUIRED
+  cloudsdk_runtime: PINNED_EXTERNAL_SOURCE_RECONSTRUCTABLE
+  owner_interactive_authentication: OWNER_RECREATABLE
+  cloud_credentials: EXCLUDED_CREDENTIAL_MATERIAL
+  requester_pays_private_environment: EXCLUDED_CREDENTIAL_MATERIAL
+
+artifact_roles:
+  checkpoint:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/checkpoint/echo_prime_encoder.pt
+    permitted_suffixes: [.pt]
+    binary_payload_permitted: true
+    schema_kind: echoprime_checkpoint_v1
+    schema_parameters: {}
+    fixed_expected_sha256: 7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b
+    fixed_expected_size_bytes: 138642379
+  selected_study_manifest:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/manifests/selected_study_manifest.csv
+    permitted_suffixes: [.csv]
+    binary_payload_permitted: false
+    schema_kind: selected_study_manifest_v1
+    schema_parameters: {expected_rows: 4530}
+    fixed_expected_sha256: 920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1
+    fixed_expected_size_bytes: null
+  selected_source_manifest:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/manifests/selected_source_manifest.csv
+    permitted_suffixes: [.csv]
+    binary_payload_permitted: false
+    schema_kind: selected_source_manifest_v1
+    schema_parameters: {expected_rows: 335984}
+    fixed_expected_sha256: 35071385477515e40e6cc1503561b7c7aa434127435ce91aa3ae8b0a009188ff
+    fixed_expected_size_bytes: null
+  selected_source_metadata_receipt:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/manifests/selected_source_metadata_receipt.jsonl
+    permitted_suffixes: [.jsonl]
+    binary_payload_permitted: false
+    schema_kind: selected_source_metadata_receipt_v1
+    schema_parameters:
+      expected_rows: 335984
+      expected_source_bytes: 1216569133322
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  split_map:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/manifests/subject_split_map.csv
+    permitted_suffixes: [.csv]
+    binary_payload_permitted: false
+    schema_kind: subject_split_map_v1
+    schema_parameters: {expected_rows: 4530}
+    fixed_expected_sha256: c5101cea1d76b38c6bb4517edf4b463b338d7505032cfa40bc8f27ca5b97e517
+    fixed_expected_size_bytes: null
+  production_environment_receipt:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/authorities/production_environment.json
+    permitted_suffixes: [.json]
+    binary_payload_permitted: false
+    schema_kind: strict_json_mapping_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  post_reallocation_capacity_receipt:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/authorities/post_reallocation_capacity_receipt.json
+    permitted_suffixes: [.json]
+    binary_payload_permitted: false
+    schema_kind: strict_json_mapping_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  post_reallocation_capacity_aggregate:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/authorities/post_reallocation_capacity_aggregate.json
+    permitted_suffixes: [.json]
+    binary_payload_permitted: false
+    schema_kind: strict_json_mapping_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  historical_migration_witness:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/authorities/historical_migration_witness.json
+    permitted_suffixes: [.json]
+    binary_payload_permitted: false
+    schema_kind: strict_json_mapping_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  historical_migration_classification:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/authorities/historical_migration_classification.json
+    permitted_suffixes: [.json]
+    binary_payload_permitted: false
+    schema_kind: strict_json_mapping_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  prior_production_authority_packet:
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/authorities/prior_production_authority_packet.json
+    permitted_suffixes: [.json]
+    binary_payload_permitted: false
+    schema_kind: strict_json_mapping_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  production_batch_plan:
+    classification: CHECKSUM_ONLY_NO_COPY_REQUIRED
+    backup_relative_path: null
+    permitted_suffixes: [.json]
+    binary_payload_permitted: false
+    schema_kind: strict_json_mapping_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  prior_safe_aggregate_01: &prior_safe_aggregate
+    classification: IRREPLACEABLE_BACKUP_REQUIRED
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_01
+    permitted_suffixes: [.json, .csv]
+    binary_payload_permitted: false
+    schema_kind: strict_json_or_csv_v1
+    schema_parameters: {}
+    fixed_expected_sha256: null
+    fixed_expected_size_bytes: null
+  prior_safe_aggregate_02:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_02
+  prior_safe_aggregate_03:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_03
+  prior_safe_aggregate_04:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_04
+  prior_safe_aggregate_05:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_05
+  prior_safe_aggregate_06:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_06
+  prior_safe_aggregate_07:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_07
+  prior_safe_aggregate_08:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_08
+  prior_safe_aggregate_09:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_09
+  prior_safe_aggregate_10:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_10
+  prior_safe_aggregate_11:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_11
+  prior_safe_aggregate_12:
+    <<: *prior_safe_aggregate
+    backup_relative_path: files/prior_aggregates/prior_safe_aggregate_12
+
+required_artifact_roles:
+  - checkpoint
+  - selected_study_manifest
+  - selected_source_manifest
+  - selected_source_metadata_receipt
+  - split_map
+  - production_environment_receipt
+  - post_reallocation_capacity_receipt
+  - post_reallocation_capacity_aggregate
+  - historical_migration_witness
+  - historical_migration_classification
+  - prior_production_authority_packet
+  - production_batch_plan
+  - prior_safe_aggregate_01
+  - prior_safe_aggregate_02
+  - prior_safe_aggregate_03
+  - prior_safe_aggregate_04
+  - prior_safe_aggregate_05
+  - prior_safe_aggregate_06
+  - prior_safe_aggregate_07
+  - prior_safe_aggregate_08
+  - prior_safe_aggregate_09
+  - prior_safe_aggregate_10
+  - prior_safe_aggregate_11
+  - prior_safe_aggregate_12
+
+forbidden:
+  basename_patterns:
+    - '(?i)^application_default_credentials[.]json$'
+    - '(?i)^(?:access_tokens|credentials)[.]db$'
+    - '(?i)^.*(?:service[_-]?account|gcp[_-]?credential|requester[_-]?pays|session).*$'
+    - '(?i)^.*(?:preflight|authorization|credential).*[.](?:env|db|sqlite|json)$'
+  suffixes:
+    - .dcm
+    - .dicom
+    - .npz
+    - .npy
+    - .parquet
+    - .pq
+    - .feather
+    - .h5
+    - .hdf5
+    - .pkl
+    - .pickle
+    - .log
+    - .out
+    - .err
+  credential_value_patterns:
+    - '(?i)\bya29[.][A-Za-z0-9_-]{20,}'
+    - '\bAIza[A-Za-z0-9_-]{30,}'
+    - '\bGOCSPX-[A-Za-z0-9_-]{20,}'
+    - '-----BEGIN (?:RSA |EC )?PRIVATE KEY-----'
+    - '(?i)["''](?:refresh_token|access_token|id_token|client_secret|private_key|private_key_id)["'']\s*:\s*["''][^"'']+["'']'
+    - '(?i)["''](?:billing_account|billing_account_id|billing_project|quota_project|quota_project_id|project_id|gcp_project|google_cloud_project|client_id|client_email)["'']\s*:\s*["''][^"'']+["'']'
+    - '(?im)^\s*(?:export\s+)?(?:LVEF_C3_GCP_BILLING_PROJECT|GOOGLE_CLOUD_PROJECT|GCLOUD_PROJECT|CLOUDSDK_CORE_PROJECT|GCP_PROJECT|BILLING_PROJECT|BILLING_ACCOUNT(?:_ID)?|QUOTA_PROJECT(?:_ID)?)\s*=\s*[^\r\n#]+'
+  credentials_and_private_cloud_values_must_be_absent: true
+  approved_restricted_control_authorities_only: true
+  unapproved_bulk_scientific_payload_must_be_absent: true
+  unrestricted_logs_must_be_absent: true
+
+execution_boundary:
+  cloud_requests: 0
+  object_listing_repeated: false
+  scheduler_jobs_submitted: 0
+  dicom_bodies_downloaded: 0
+  real_dicom_extraction: false
+  echoprime_inference: false
+  model_fitting: false
+  confirmatory_performance_accessed: false
+  live_worktree_mutation_permitted: false
+  full_c3_authorized: false

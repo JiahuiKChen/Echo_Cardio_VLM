@@ -263,10 +263,11 @@ lvef_c3_bind_job_storage() {
   export TORCH_HOME="$job_root/cache/torch"
   export MPLCONFIGDIR="$job_root/cache/matplotlib"
   export NUMBA_CACHE_DIR="$job_root/cache/numba"
+  export PIP_CACHE_DIR="$job_root/cache/pip"
   export JOBLIB_TEMP_FOLDER="$job_root/tmp/joblib"
   export LVEF_C3_JOB_ROOT="$job_root"
   mkdir -p "$XDG_CACHE_HOME" "$TORCH_HOME" "$MPLCONFIGDIR" "$NUMBA_CACHE_DIR" \
-    "$JOBLIB_TEMP_FOLDER"
+    "$PIP_CACHE_DIR" "$JOBLIB_TEMP_FOLDER"
 }
 
 lvef_c3_acquire_batch_lock() {

@@ -725,6 +725,7 @@ def test_scheduler_scripts_resolve_helpers_from_authority_worktree_and_bind_proj
         "TORCH_HOME",
         "MPLCONFIGDIR",
         "NUMBA_CACHE_DIR",
+        "PIP_CACHE_DIR",
         "JOBLIB_TEMP_FOLDER",
     ):
         assert f"export {name}=" in common
