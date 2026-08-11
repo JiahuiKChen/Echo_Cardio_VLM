@@ -7,9 +7,9 @@ umask 077
   printf '%s\n' 'usage: scc_prepare_lvef_c3_phase1ef_environment.sh COMMIT OUTPUT_ENV' >&2
   exit 64
 }
-EXPECTED_COMMIT="$1"
-OUTPUT_ENV="$2"
-[[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 65
+PHASE1EF_PREP_REQUESTED_COMMIT="$1"
+PHASE1EF_PREP_REQUESTED_OUTPUT_ENV="$2"
+[[ "$PHASE1EF_PREP_REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 65
 
 assert_no_symlink_ancestors() {
   local candidate="$1" cursor=/ component
@@ -31,13 +31,32 @@ assert_private_directory() {
   [[ "$mode" = 700 || "$mode" = 2700 ]]
 }
 
-WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
-SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
-PRIOR_PRODUCTION_ROOT=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2
-PRIOR_PRODUCTION_ATTEMPT_ROOT="$PRIOR_PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_005"
-PRIOR_EXECUTION_ENV="$PRIOR_PRODUCTION_ATTEMPT_ROOT/authority/c3_execution_environment.restricted.env"
-ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_001
-PHASE1EF_ATTEMPT_ROOT="/restricted/projectnb/mimicecho/audits/$ATTEMPT_ID"
+PHASE1EF_PREP_WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
+PHASE1EF_PREP_SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
+PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2
+PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_005"
+PHASE1EF_PREP_PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT/authority/c3_execution_environment.restricted.env"
+PHASE1EF_PREP_ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_001
+PHASE1EF_PREP_ATTEMPT_ROOT="/restricted/projectnb/mimicecho/audits/$PHASE1EF_PREP_ATTEMPT_ID"
+readonly PHASE1EF_PREP_REQUESTED_COMMIT PHASE1EF_PREP_REQUESTED_OUTPUT_ENV
+readonly PHASE1EF_PREP_WORKTREE PHASE1EF_PREP_SESSION_ENV
+readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT
+readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT
+readonly PHASE1EF_PREP_PRIOR_EXECUTION_ENV PHASE1EF_PREP_ATTEMPT_ID
+readonly PHASE1EF_PREP_ATTEMPT_ROOT
+
+# The two sourced owner-private authority files are historical and may contain
+# generic names such as EXPECTED_COMMIT.  Keep the requested current authority
+# in collision-resistant variables, then deliberately rebind the downstream
+# generic names after sourcing.
+OUTPUT_ENV="$PHASE1EF_PREP_REQUESTED_OUTPUT_ENV"
+WORKTREE="$PHASE1EF_PREP_WORKTREE"
+SESSION_ENV="$PHASE1EF_PREP_SESSION_ENV"
+PRIOR_PRODUCTION_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT"
+PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT"
+PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_EXECUTION_ENV"
+ATTEMPT_ID="$PHASE1EF_PREP_ATTEMPT_ID"
+PHASE1EF_ATTEMPT_ROOT="$PHASE1EF_PREP_ATTEMPT_ROOT"
 
 [[ "$OUTPUT_ENV" = /restricted/projectnb/mimicecho/audits/* ]]
 [[ ! -e "$OUTPUT_ENV" && ! -L "$OUTPUT_ENV" ]]
@@ -49,8 +68,9 @@ assert_no_symlink_ancestors "$OUTPUT_ENV"
 [[ "$(stat -c '%a' -- "$SESSION_ENV")" = 600 ]]
 [[ "$(stat -c '%a' -- "$PRIOR_EXECUTION_ENV")" = 600 ]]
 
-SESSION_SHA="$(sha256sum -- "$SESSION_ENV" | awk '{print $1}')"
-EXECUTION_SHA="$(sha256sum -- "$PRIOR_EXECUTION_ENV" | awk '{print $1}')"
+PHASE1EF_PREP_SESSION_SHA="$(sha256sum -- "$SESSION_ENV" | awk '{print $1}')"
+PHASE1EF_PREP_EXECUTION_SHA="$(sha256sum -- "$PRIOR_EXECUTION_ENV" | awk '{print $1}')"
+readonly PHASE1EF_PREP_SESSION_SHA PHASE1EF_PREP_EXECUTION_SHA
 # shellcheck disable=SC1090
 source "$SESSION_ENV"
 # shellcheck disable=SC1090
@@ -58,8 +78,21 @@ source "$PRIOR_EXECUTION_ENV"
 # The owner-private value remains a shell variable for the offline control
 # plane but must never be inherited by authority/hash/git helper processes.
 export -n LVEF_C3_GCP_BILLING_PROJECT
-[[ "$(sha256sum -- "$SESSION_ENV" | awk '{print $1}')" = "$SESSION_SHA" ]]
-[[ "$(sha256sum -- "$PRIOR_EXECUTION_ENV" | awk '{print $1}')" = "$EXECUTION_SHA" ]]
+
+# Historical authority files may legitimately bind their own generic commit,
+# worktree, or output names.  They must not replace this invocation's current
+# commit or no-clobber destination.
+EXPECTED_COMMIT="$PHASE1EF_PREP_REQUESTED_COMMIT"
+OUTPUT_ENV="$PHASE1EF_PREP_REQUESTED_OUTPUT_ENV"
+WORKTREE="$PHASE1EF_PREP_WORKTREE"
+SESSION_ENV="$PHASE1EF_PREP_SESSION_ENV"
+PRIOR_PRODUCTION_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT"
+PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT"
+PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_EXECUTION_ENV"
+ATTEMPT_ID="$PHASE1EF_PREP_ATTEMPT_ID"
+PHASE1EF_ATTEMPT_ROOT="$PHASE1EF_PREP_ATTEMPT_ROOT"
+[[ "$(sha256sum -- "$SESSION_ENV" | awk '{print $1}')" = "$PHASE1EF_PREP_SESSION_SHA" ]]
+[[ "$(sha256sum -- "$PRIOR_EXECUTION_ENV" | awk '{print $1}')" = "$PHASE1EF_PREP_EXECUTION_SHA" ]]
 
 [[ "$(git -C "$WORKTREE" branch --show-current)" = codex/lvef-multitask-revalidation ]]
 [[ "$(git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT" ]]

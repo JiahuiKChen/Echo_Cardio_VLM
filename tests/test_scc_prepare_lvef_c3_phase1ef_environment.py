@@ -57,6 +57,45 @@ def test_environment_preparer_preserves_fixed_scientific_authorities() -> None:
     assert "c5101cea1d76b38c6bb4517edf4b463b338d7505032cfa40bc8f27ca5b97e517" in source
 
 
+def test_environment_preparer_rebinds_current_authority_after_historical_sources() -> None:
+    source = (
+        ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
+    ).read_text(encoding="utf-8")
+    second_source = source.index('source "$PRIOR_EXECUTION_ENV"')
+    git_check = source.index('git -C "$WORKTREE" rev-parse HEAD')
+    publication = source.index('ln -- "$temporary" "$OUTPUT_ENV"')
+    rebindings = {
+        "EXPECTED_COMMIT": "PHASE1EF_PREP_REQUESTED_COMMIT",
+        "OUTPUT_ENV": "PHASE1EF_PREP_REQUESTED_OUTPUT_ENV",
+        "WORKTREE": "PHASE1EF_PREP_WORKTREE",
+        "SESSION_ENV": "PHASE1EF_PREP_SESSION_ENV",
+        "PRIOR_PRODUCTION_ROOT": "PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT",
+        "PRIOR_PRODUCTION_ATTEMPT_ROOT": (
+            "PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT"
+        ),
+        "PRIOR_EXECUTION_ENV": "PHASE1EF_PREP_PRIOR_EXECUTION_ENV",
+        "ATTEMPT_ID": "PHASE1EF_PREP_ATTEMPT_ID",
+        "PHASE1EF_ATTEMPT_ROOT": "PHASE1EF_PREP_ATTEMPT_ROOT",
+    }
+    for generic, sentinel in rebindings.items():
+        rebind = source.index(f'{generic}="${sentinel}"', second_source)
+        assert second_source < rebind < git_check
+    assert source.index(
+        'OUTPUT_ENV="$PHASE1EF_PREP_REQUESTED_OUTPUT_ENV"', second_source
+    ) < publication
+    assert 'PHASE1EF_PREP_SESSION_SHA=' in source
+    assert 'PHASE1EF_PREP_EXECUTION_SHA=' in source
+    readonly_lines = "\n".join(
+        line for line in source.splitlines() if line.startswith("readonly ")
+    )
+    for sentinel in rebindings.values():
+        assert sentinel in readonly_lines
+    assert "PHASE1EF_PREP_SESSION_SHA" in readonly_lines
+    assert "PHASE1EF_PREP_EXECUTION_SHA" in readonly_lines
+    assert '= "$PHASE1EF_PREP_SESSION_SHA"' in source
+    assert '= "$PHASE1EF_PREP_EXECUTION_SHA"' in source
+
+
 def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
     source = (
         ROOT / "docs" / "lvef_multitask" / "scc_phase1ef_pretransfer_commands.md"
