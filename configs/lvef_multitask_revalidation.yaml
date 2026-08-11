@@ -597,7 +597,19 @@ phase1e_bc_resource_metadata_preflight:
         downstream_stages_began: false
         repair_or_rerun_occurred: false
         preserved_immutable: true
-      next_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_003
+      attempt_003:
+        id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_003
+        governing_commit: 35174442d9a23d8c003bd1350746ca06683055e6
+        failure_stage: CAPACITY_CAPTURE
+        sanitized_error: CAPACITY_RECEIPT_COMMAND_INVALID
+        inner_exit_status: 2
+        outer_exit_status: 2
+        execution_count: 1
+        downstream_stages_began: false
+        named_downstream_outputs_created: 0
+        repair_or_rerun_occurred: false
+        preserved_immutable: true
+      next_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_004
       next_attempt_authorized: false
       execution_timing: AFTER_FINAL_IMPLEMENTATION_COMMIT_SYNC
       native_quota_record_unit: KiB

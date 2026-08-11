@@ -88,7 +88,9 @@ test "$(git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test "$(git -C "$WORKTREE" rev-parse origin/codex/lvef-multitask-revalidation)" = "$EXPECTED_COMMIT"
 test -z "$(git -C "$WORKTREE" status --porcelain --untracked-files=no)"
 
-ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_003'
+: "${ATTEMPT_ID:?owner-private environment must bind the no-clobber attempt}"
+test "$ATTEMPT_ID" = \
+  lvef_multitask_phase1ef_post_reallocation_lock_attempt_004
 PRODUCTION_ATTEMPT_ID='lvef_c3_phase1ee_production_lock_006'
 test "$PHASE1EF_ATTEMPT_ROOT" = \
   "/restricted/projectnb/mimicecho/audits/$ATTEMPT_ID"

@@ -7,7 +7,10 @@ from decimal import Decimal, ROUND_HALF_UP
 import io
 import json
 from pathlib import Path
+import stat
+import subprocess
 import sys
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -106,10 +109,14 @@ def _receipt_with_unavailable_display() -> dict[str, object]:
     empty_sha = capacity._sha(b"")
 
     def command(role: str) -> dict[str, object]:
+        specification = capacity.CAPACITY_COMMAND_REGISTRY[role]
+        argv = [f"/usr/bin/{specification.command_kind}", *specification.argv_tail]
         return {
             "role": role,
-            "argv": [f"/{role}"],
-            "argv_sha256": "a" * 64,
+            "argv": argv,
+            "argv_sha256": capacity._sha(
+                json.dumps(argv, separators=(",", ":")).encode()
+            ),
             "executable_sha256": "b" * 64,
             "executable_size_bytes": 1,
             "exit_status": 0,
@@ -128,8 +135,13 @@ def _receipt_with_unavailable_display() -> dict[str, object]:
     }
     commands["pquota"] = {
         "role": "pquota",
-        "argv": ["pquota", "-u", "PROJECT_PLACEHOLDER"],
-        "argv_sha256": "c" * 64,
+        "argv": ["pquota", "-u", capacity.EXPECTED_QUOTA_PRINCIPAL],
+        "argv_sha256": capacity._sha(
+            json.dumps(
+                ["pquota", "-u", capacity.EXPECTED_QUOTA_PRINCIPAL],
+                separators=(",", ":"),
+            ).encode()
+        ),
         "executable_sha256": "UNAVAILABLE",
         "executable_size_bytes": 0,
         "exit_status": -1,
@@ -327,7 +339,10 @@ def test_pquota_display_missing_or_unparseable_is_nonblocking_unavailable() -> N
 
 def test_missing_display_command_remains_receipt_eligible() -> None:
     with mock.patch.object(capacity.shutil, "which", return_value=None):
-        command = capacity._capture_optional_pquota("PROJECT_PLACEHOLDER")
+        command = capacity._capture_optional_pquota(
+            capacity.CAPACITY_COMMAND_REGISTRY["pquota"],
+            capacity.EXPECTED_QUOTA_PRINCIPAL,
+        )
     assert command["availability_status"] == "UNAVAILABLE_NONBLOCKING"
     assert command["availability_reason"] == "EXECUTABLE_NOT_FOUND"
     assert command["stdout_bytes"] == 0
@@ -550,6 +565,412 @@ def test_capacity_aggregate_is_closed_and_arithmetic_fail_closed() -> None:
         raise AssertionError("Safe export accepted an unapproved nested gate object")
 
 
+def test_command_registry_is_canonical_unique_and_complete() -> None:
+    expected = {
+        "pquota", "research_findmnt", "backed_findmnt",
+        "research_df", "backed_df",
+    }
+    assert set(capacity.CAPACITY_COMMAND_REGISTRY) == expected
+    assert capacity.CAPACITY_COMMAND_ROLES == expected
+    assert capacity.AGGREGATE_COMMAND_ROLES == expected
+    assert set(capacity.CAPACITY_COMMAND_CONSUMER_ROLES.values()) == expected
+    assert len(capacity.CAPACITY_COMMAND_SPECS) == len(expected)
+    assert {
+        item.command_kind: item.output_type
+        for item in capacity.CAPACITY_COMMAND_SPECS
+    } == {
+        "pquota": "UTF8_TABLE",
+        "findmnt": "UTF8_JSON",
+        "df": "UTF8_TABLE",
+    }
+    assert {
+        item.logical_role
+        for item in capacity.CAPACITY_COMMAND_SPECS
+        if item.optional_nonblocking
+    } == {"pquota"}
+    assert all(
+        item.logical_role == role
+        for role, item in capacity.CAPACITY_COMMAND_REGISTRY.items()
+    )
+    capacity._validated_command_registry(
+        capacity.CAPACITY_COMMAND_SPECS,
+        require_canonical_roles=True,
+    )
+
+
+def test_attempt_003_generic_command_roles_are_rejected() -> None:
+    receipt = _receipt_with_unavailable_display()
+    broken = copy.deepcopy(receipt)
+    broken["commands"]["research_findmnt"]["role"] = "findmnt"
+    _expect(
+        "CAPACITY_RECEIPT_COMMAND_INVALID",
+        lambda: capacity.validate_receipt_output(broken),
+    )
+    broken = copy.deepcopy(receipt)
+    broken["commands"]["backed_df"]["role"] = "df"
+    _expect(
+        "CAPACITY_RECEIPT_COMMAND_INVALID",
+        lambda: capacity.validate_receipt_output(broken),
+    )
+
+
+def test_command_registry_rejects_missing_duplicate_and_unexpected_roles() -> None:
+    specifications = list(capacity.CAPACITY_COMMAND_SPECS)
+    _expect(
+        "CAPACITY_COMMAND_ROLE_SET_INVALID",
+        lambda: capacity._capture_capacity_commands(
+            capacity.EXPECTED_QUOTA_PRINCIPAL,
+            specifications=specifications[:-1],
+        ),
+    )
+    _expect(
+        "CAPACITY_COMMAND_REGISTRY_INVALID",
+        lambda: capacity._validated_command_registry(
+            [*specifications, specifications[0]],
+            require_canonical_roles=False,
+        ),
+    )
+    unexpected = capacity.CapacityCommandSpec(
+        logical_role="unexpected_df",
+        command_kind="df",
+        argv_tail=("-B1", "/synthetic"),
+        executable_authority="ROOT_CONTROLLED_FIXED_RESOLVER",
+        parser_consumer="unexpected_df",
+        output_type="UTF8_TABLE",
+        optional_nonblocking=False,
+        exit_status_policy="REQUIRED_ZERO",
+        stderr_policy="REQUIRED_EMPTY",
+    )
+    _expect(
+        "CAPACITY_COMMAND_ROLE_SET_INVALID",
+        lambda: capacity._capture_capacity_commands(
+            capacity.EXPECTED_QUOTA_PRINCIPAL,
+            specifications=[*specifications[:-1], unexpected],
+        ),
+    )
+    altered = copy.deepcopy(specifications)
+    altered[1] = capacity.CapacityCommandSpec(
+        **{
+            **altered[1].__dict__,
+            "argv_tail": (*altered[1].argv_tail[:-1], "TARGET,SOURCE"),
+        }
+    )
+    _expect(
+        "CAPACITY_COMMAND_ROLE_SET_INVALID",
+        lambda: capacity._validated_command_registry(
+            altered,
+            require_canonical_roles=True,
+        ),
+    )
+
+
+def test_command_records_bind_exact_argv_hash_and_executable_contract() -> None:
+    receipt = _receipt_with_unavailable_display()
+    capacity.validate_receipt_output(receipt)
+    changed = copy.deepcopy(receipt)
+    changed["commands"]["research_findmnt"]["argv"][-1] = "TARGET,SOURCE"
+    changed["commands"]["research_findmnt"]["argv_sha256"] = capacity._sha(
+        json.dumps(
+            changed["commands"]["research_findmnt"]["argv"],
+            separators=(",", ":"),
+        ).encode()
+    )
+    _expect(
+        "CAPACITY_RECEIPT_COMMAND_ARGV_INVALID",
+        lambda: capacity.validate_receipt_output(changed),
+    )
+    changed = copy.deepcopy(receipt)
+    changed["commands"]["backed_df"]["argv_sha256"] = "0" * 64
+    _expect(
+        "CAPACITY_RECEIPT_COMMAND_ARGV_INVALID",
+        lambda: capacity.validate_receipt_output(changed),
+    )
+    changed = copy.deepcopy(receipt)
+    changed["commands"]["backed_df"]["argv"][0] = "/usr/bin/findmnt"
+    changed["commands"]["backed_df"]["argv_sha256"] = capacity._sha(
+        json.dumps(
+            changed["commands"]["backed_df"]["argv"],
+            separators=(",", ":"),
+        ).encode()
+    )
+    _expect(
+        "CAPACITY_RECEIPT_COMMAND_EXECUTABLE_INVALID",
+        lambda: capacity.validate_receipt_output(changed),
+    )
+
+
+def test_required_command_failures_and_principal_mutation_fail_closed() -> None:
+    _expect(
+        "CAPACITY_COMMAND_PRINCIPAL_INVALID",
+        lambda: capacity._capture_capacity_commands("mimicecho; touch unsafe"),
+    )
+    _expect(
+        "READ_ONLY_TOOL_NOT_FOUND",
+        lambda: capacity._capture_capacity_commands(
+            capacity.EXPECTED_QUOTA_PRINCIPAL,
+            resolver=lambda _kind, **_kwargs: None,
+        ),
+    )
+    receipt = _receipt_with_unavailable_display()
+    changed = copy.deepcopy(receipt)
+    changed["commands"]["research_df"]["exit_status"] = 1
+    _expect(
+        "CAPACITY_RECEIPT_COMMAND_INVALID",
+        lambda: capacity.validate_receipt_output(changed),
+    )
+    changed = copy.deepcopy(receipt)
+    changed["commands"]["backed_findmnt"]["stderr_bytes"] = 1
+    changed["commands"]["backed_findmnt"]["stderr_sha256"] = capacity._sha(b"x")
+    _expect(
+        "CAPACITY_RECEIPT_COMMAND_INVALID",
+        lambda: capacity.validate_receipt_output(changed),
+    )
+
+
+def test_production_required_command_executor_failures_are_closed() -> None:
+    specification = capacity.CAPACITY_COMMAND_REGISTRY["research_df"]
+    argv = ["/usr/bin/df", *specification.argv_tail]
+    executable = b"synthetic-root-controlled-executable"
+    metadata = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o755,
+        st_uid=0,
+        st_dev=1,
+        st_ino=2,
+        st_size=len(executable),
+        st_mtime_ns=3,
+    )
+
+    def invoke(returncode: int, stdout: bytes, stderr: bytes):
+        result = subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+        with mock.patch.object(
+            capacity.Path, "resolve", lambda self, strict=False: self
+        ), mock.patch.object(
+            capacity.Path, "stat", return_value=metadata
+        ), mock.patch.object(
+            capacity, "_read_regular", return_value=executable
+        ), mock.patch.object(
+            capacity.subprocess, "run", return_value=result
+        ):
+            return capacity._run(specification, argv)
+
+    record = invoke(0, b"valid synthetic df output\n", b"")
+    assert record["role"] == "research_df"
+    _expect(
+        "RESEARCH_DF_COMMAND_FAILED",
+        lambda: invoke(1, b"", b""),
+    )
+    _expect(
+        "RESEARCH_DF_COMMAND_FAILED",
+        lambda: invoke(0, b"", b"prohibited stderr"),
+    )
+    _expect(
+        "RESEARCH_DF_COMMAND_FAILED",
+        lambda: invoke(0, b"x" * 2_000_001, b""),
+    )
+    _expect(
+        "RESEARCH_DF_COMMAND_OUTPUT_NOT_UTF8",
+        lambda: invoke(0, b"\xff", b""),
+    )
+
+
+def test_production_command_constructor_receipt_and_projection_round_trip() -> None:
+    findmnt_outputs = {
+        "research_findmnt": json.dumps({"filesystems": [{
+            "source": "host:/rprojectnb", "target": "/restricted/projectnb",
+            "fstype": "gpfs", "options": "rw", "fsroot": "/",
+        }]}).encode(),
+        "backed_findmnt": json.dumps({"filesystems": [{
+            "source": "host:/rproject", "target": "/restricted/project",
+            "fstype": "gpfs", "options": "rw", "fsroot": "/",
+        }]}).encode(),
+    }
+    df_outputs = {
+        "research_df": (
+            "Filesystem 1B-blocks Used Avail Mounted on\n"
+            "host:/rprojectnb 2300000000000 100000000000 2200000000000 "
+            "/restricted/projectnb\n"
+        ).encode(),
+        "backed_df": (
+            "Filesystem 1B-blocks Used Avail Mounted on\n"
+            "host:/rproject 100000000000 10000000000 90000000000 "
+            "/restricted/project\n"
+        ).encode(),
+    }
+
+    def optional_runner(specification, principal):
+        with mock.patch.object(capacity.shutil, "which", return_value=None):
+            return capacity._capture_optional_pquota(specification, principal)
+
+    executable = b"synthetic-root-controlled-executable"
+    metadata = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o755,
+        st_uid=0,
+        st_dev=1,
+        st_ino=2,
+        st_size=len(executable),
+        st_mtime_ns=3,
+    )
+
+    def synthetic_process(argv, **_kwargs):
+        command_kind = Path(argv[0]).name
+        target = argv[-1] if command_kind == "df" else argv[3]
+        scope = "research" if "projectnb" in target else "backed"
+        stdout = (
+            findmnt_outputs[f"{scope}_findmnt"]
+            if command_kind == "findmnt"
+            else df_outputs[f"{scope}_df"]
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+    with mock.patch.object(
+        capacity.Path, "resolve", lambda self, strict=False: self
+    ), mock.patch.object(
+        capacity.Path, "stat", return_value=metadata
+    ), mock.patch.object(
+        capacity, "_read_regular", return_value=executable
+    ), mock.patch.object(
+        capacity.subprocess, "run", side_effect=synthetic_process
+    ):
+        commands = capacity._capture_capacity_commands(
+            capacity.EXPECTED_QUOTA_PRINCIPAL,
+            optional_runner=optional_runner,
+            resolver=lambda kind, **_kwargs: f"/usr/bin/{kind}",
+        )
+    assert set(commands) == capacity.CAPACITY_COMMAND_ROLES
+    assert {item["role"] for item in commands.values()} == set(commands)
+    native_payload = _native()
+    native = capacity._parse_native_quota(native_payload)
+    mounts = {
+        "research": capacity._parse_findmnt(
+            commands["research_findmnt"]["stdout_text"],
+            capacity.EXPECTED_RESTRICTED_PATHS["research"],
+        ),
+        "backed": capacity._parse_findmnt(
+            commands["backed_findmnt"]["stdout_text"],
+            capacity.EXPECTED_RESTRICTED_PATHS["backed"],
+        ),
+    }
+    identities = {
+        role: {
+            "path_sha256": capacity._sha(str(path).encode()),
+            "resolved_path_sha256": capacity._sha(str(path).encode()),
+            "device": index,
+            "inode": index,
+            "is_symlink": False,
+        }
+        for index, (role, path) in enumerate(
+            capacity.EXPECTED_RESTRICTED_PATHS.items(), start=1
+        )
+    }
+    capacity._validate_pquota_restricted_mount_reconciliation(
+        native=native, paths=identities, mounts=mounts
+    )
+    dfs = {
+        "research": capacity._parse_df(
+            commands["research_df"]["stdout_text"], mounts["research"]
+        ),
+        "backed": capacity._parse_df(
+            commands["backed_df"]["stdout_text"], mounts["backed"]
+        ),
+    }
+    rq = int(native["research"]["quota_kib"]) * 1024
+    ru = int(native["research"]["usage_kib"]) * 1024
+    bq = int(native["backed"]["quota_kib"]) * 1024
+    bu = int(native["backed"]["usage_kib"]) * 1024
+    remaining_write = max(capacity.PROJECTED_PEAK_BYTES - ru, 0)
+    physical_required = (
+        remaining_write + capacity.REQUIRED_FREE_HEADROOM_BYTES
+        + capacity.PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES
+    )
+    gate_values = {
+        "research_quota_gate": rq >= capacity.MINIMUM_EFFECTIVE_QUOTA_BYTES,
+        "physical_filesystem_capacity_gate": (
+            dfs["research"]["available"] >= physical_required
+        ),
+        "projected_200gb_reserve_gate": (
+            rq - capacity.PROJECTED_PEAK_BYTES
+            >= capacity.REQUIRED_FREE_HEADROOM_BYTES
+        ),
+        "research_file_quota_gate": (
+            int(native["research"]["file_quota"])
+            - int(native["research"]["files_used"])
+            >= capacity.RESEARCH_ADDITIONAL_FILE_DEMAND
+        ),
+        "backed_control_tier_byte_gate": (
+            bq - bu >= capacity.PRESPECIFIED_CONTROL_BURDEN_BYTES
+        ),
+        "backed_control_tier_file_gate": (
+            int(native["backed"]["file_quota"])
+            - int(native["backed"]["files_used"])
+            >= capacity.CONTROL_ADDITIONAL_FILE_DEMAND
+        ),
+    }
+    gate_values["backed_control_tier_gate"] = (
+        gate_values["backed_control_tier_byte_gate"]
+        and gate_values["backed_control_tier_file_gate"]
+    )
+    assert all(gate_values.values())
+    gate_status = capacity._gate_evaluation_status(gate_values)
+    display = capacity._parse_pquota(
+        commands["pquota"]["stdout_text"], native, command_available=False
+    )
+    prior = {
+        "original": 6, "supplemental": 6, "capacity": 2,
+        "packet_roles": 38, "packet_gates": 17,
+    }
+    receipt = capacity._build_capacity_receipt(
+        attempt_id="lvef_multitask_phase1ef_post_reallocation_lock_attempt_004",
+        governing_commit="a" * 40,
+        native_quota_file=capacity.EXPECTED_NATIVE_QUOTA_FILE,
+        native_payload=native_payload,
+        native=native,
+        commands=commands,
+        identities=identities,
+        mounts=mounts,
+        dfs=dfs,
+        prior=prior,
+        display=display,
+        gate_status=gate_status,
+    )
+    serialized_receipt = capacity._canonical(receipt)
+    strict_receipt = json.loads(
+        serialized_receipt,
+        object_pairs_hook=capacity._strict_pairs,
+    )
+    capacity.validate_receipt_output(strict_receipt)
+    aggregate = capacity._project_capacity_aggregate(
+        attempt_id=receipt["attempt_id"],
+        governing_commit=receipt["governing_commit"],
+        receipt=receipt,
+        receipt_payload=serialized_receipt,
+        commands=commands,
+        native=native,
+        mounts=mounts,
+        dfs=dfs,
+        prior=prior,
+        display=display,
+        gate_status=gate_status,
+        gate_values=gate_values,
+        research_quota_bytes=rq,
+        research_usage_bytes=ru,
+        backed_quota_bytes=bq,
+        backed_usage_bytes=bu,
+        remaining_write_bytes=remaining_write,
+        physical_required_bytes=physical_required,
+    )
+    capacity.validate_aggregate_output(aggregate)
+    policy, _ = analysis_modes.load_policy(
+        ROOT / "configs/lvef_multitask_safe_export_policy.yaml"
+    )
+    result = analysis_modes.validate_candidate_bytes(
+        capacity._canonical(aggregate),
+        filename="lvef_c3_post_reallocation_capacity.summary.json",
+        profile_name="phase1ef_post_reallocation_capacity_json",
+        policy=policy,
+    )
+    assert result["status"] == "PASS"
+
+
 def test_capture_contract_has_no_storage_inventory_cloud_or_scheduler_path() -> None:
     source = (ROOT / "scripts" / "capture_lvef_c3_post_reallocation_capacity.py").read_text()
     wrapper = (ROOT / "scripts" / "scc_capture_lvef_c3_post_reallocation_capacity.sh").read_text()
@@ -559,9 +980,13 @@ def test_capture_contract_has_no_storage_inventory_cloud_or_scheduler_path() -> 
     assert " du " not in wrapper
     assert "find " not in wrapper
     assert "pquota" in source and "findmnt" in source and "df" in source
+    assert '--attempt-id "$ATTEMPT_ID"' in wrapper
     assert (
-        "--attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_003"
+        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004"
         in wrapper
     )
-    assert "--attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_001" not in wrapper
-    assert "--attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_002" not in wrapper
+    for prior in ("001", "002", "003"):
+        assert (
+            "--attempt-id "
+            f"lvef_multitask_phase1ef_post_reallocation_lock_attempt_{prior}"
+        ) not in wrapper

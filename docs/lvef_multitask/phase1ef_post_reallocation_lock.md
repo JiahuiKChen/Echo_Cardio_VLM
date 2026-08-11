@@ -1,8 +1,8 @@
 # Phase 1E-F post-reallocation pretransfer lock
 
-Status: **attempts 001 and 002 are preserved after separate fail-closed
-capacity-parser defects; attempt 003 is prepared offline but remains unexecuted
-and unauthorized**.
+Status: **attempts 001–003 are preserved after separate fail-closed capacity
+defects; attempt 004 is prepared offline but remains unexecuted and
+unauthorized**.
 
 Phase 1E-F is limited to read-only capacity capture, a bounded owner-private
 control-authority backup and isolated restore test, and offline reconstruction
@@ -103,8 +103,19 @@ and one exact research `RPROJECT`-prefix project row. No downstream stage
 began, no capacity receipt was sealed, and neither its research-tier nor
 backed-tier root may be reused or repaired in place.
 
+Attempt 003,
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_003`, ran exactly once
+under governing commit `35174442d9a23d8c003bd1350746ca06683055e6` and
+stopped at `CAPACITY_CAPTURE` with `CAPACITY_RECEIPT_COMMAND_INVALID` and inner
+and outer exit status 2. Its production command map used unique logical keys
+but serialized the generic roles `findmnt` and `df`; the closed validator
+correctly rejected those records because each embedded role must equal its
+enclosing logical key. No capacity receipt or named downstream output was
+created, no downstream stage began, and neither attempt root may be reused or
+repaired in place.
+
 The repaired but unauthorized next attempt is
-`lvef_multitask_phase1ef_post_reallocation_lock_attempt_003`. Its future
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_004`. Its future
 restricted receipt set will bind the exact governing commit, both project
 quotas and file quotas, filesystem identities and physical availability, mount
 reconciliation, the approved backup manifest, isolated restore receipt, prior

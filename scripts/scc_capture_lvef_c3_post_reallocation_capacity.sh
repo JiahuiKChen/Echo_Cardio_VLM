@@ -11,12 +11,15 @@ LVEF_ENV_SHA="$(sha256sum -- "$LVEF_ENV" | awk '{print $1}')"
 source "$LVEF_ENV"
 [[ "$(sha256sum -- "$LVEF_ENV" | awk '{print $1}')" = "$LVEF_ENV_SHA" ]] || exit 65
 
-: "${WORKTREE:?}" "${EXPECTED_COMMIT:?}" "${PYTHON:?}" "${PHASE1EF_ATTEMPT_ROOT:?}"
+: "${WORKTREE:?}" "${EXPECTED_COMMIT:?}" "${PYTHON:?}" "${ATTEMPT_ID:?}"
+: "${PHASE1EF_ATTEMPT_ROOT:?}"
 : "${ORIGINAL_AGGREGATE_ROOT:?}" "${SUPPLEMENTAL_AGGREGATE_ROOT:?}"
 : "${PRIOR_CAPACITY_PARENT:?}" "${PRIOR_CAPACITY_COMPOSITE:?}" "${PRIOR_PRODUCTION_PACKET:?}"
+[[ "$ATTEMPT_ID" = lvef_multitask_phase1ef_post_reallocation_lock_attempt_004 ]]
+[[ "$PHASE1EF_ATTEMPT_ROOT" = "/restricted/projectnb/mimicecho/audits/$ATTEMPT_ID" ]]
 
 exec "$PYTHON" "$WORKTREE/scripts/capture_lvef_c3_post_reallocation_capacity.py" \
-  --attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_003 \
+  --attempt-id "$ATTEMPT_ID" \
   --governing-commit "$EXPECTED_COMMIT" --checkout "$WORKTREE" \
   --attempt-root "$PHASE1EF_ATTEMPT_ROOT" \
   --research-path /restricted/projectnb/mimicecho \
