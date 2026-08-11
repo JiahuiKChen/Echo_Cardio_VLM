@@ -49,7 +49,7 @@ def test_environment_preparer_preserves_fixed_scientific_authorities() -> None:
     ).read_text(encoding="utf-8")
     assert "lvef_c3_phase1ee_production_lock_005" in source
     assert "lvef_c3_phase1ee_production_lock_006" in source
-    assert "lvef_multitask_phase1ef_post_reallocation_lock_attempt_001" in source
+    assert "lvef_multitask_phase1ef_post_reallocation_lock_attempt_002" in source
     assert "23c74ccfd145ab9a423b6942a431a1894a34ab67" in source
     assert "7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b" in source
     assert "920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1" in source
@@ -101,6 +101,14 @@ def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
         ROOT / "docs" / "lvef_multitask" / "scc_phase1ef_pretransfer_commands.md"
     ).read_text(encoding="utf-8")
     assert "bash <<'PHASE1EF_STRICT_CHILD'" in source
+    assert (
+        "ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_002'"
+        in source
+    )
+    assert (
+        "ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_001'"
+        not in source
+    )
     assert source.count("PHASE1EF_STRICT_CHILD") == 2
     assert "PHASE1EF_PRETRANSFER_WRAPPER_STARTED=YES" in source
     assert ': "${PHASE1EF_ENV:?set the owner-private mode-600 Phase 1E-F environment path}"' in source

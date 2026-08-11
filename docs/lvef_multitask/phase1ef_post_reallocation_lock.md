@@ -1,7 +1,7 @@
 # Phase 1E-F post-reallocation pretransfer lock
 
-Status: **implementation authority; live SCC evidence is generated only after
-this document's governing commit is pushed and synchronized**.
+Status: **attempt 001 preserved after a fail-closed native-quota parser defect;
+attempt 002 is repaired offline but remains unexecuted and unauthorized**.
 
 Phase 1E-F is limited to read-only capacity capture, a bounded owner-private
 control-authority backup and isolated restore test, and offline reconstruction
@@ -62,10 +62,23 @@ adds snapshot bytes nor claims that snapshots are absent. Thus the receipt can
 support capacity arithmetic without serving as a snapshot-inventory or
 retention-policy authority.
 
-## One no-clobber attempt
+## No-clobber attempt history
 
-The sole authorized live attempt is
-`lvef_multitask_phase1ef_post_reallocation_lock_attempt_001`. Its restricted
+The sole authorized live attempt,
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_001`, stopped at
+`CAPACITY_CAPTURE` before producing a capacity receipt. It is preserved under
+governing commit `555bc5a4586ca2fe17b5d95deac91a377f9d362d`; neither its
+research-tier root nor backed-tier root may be reused or repaired in place.
+The failure was a parser-column defect: the synthetic native-quota fixture
+treated the second native field as the project principal. The root-controlled
+SCC `pquota` implementation documents that field as the fileset, while the
+project authority is the first-field name. Read-only diagnosis found exactly
+one expected row for each project authority, both using the native `root`
+fileset scope. No capacity conclusion is drawn from that diagnosis because the
+closed receipt did not complete.
+
+The repaired but unauthorized next attempt is
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_002`. Its restricted
 receipt set binds the exact governing commit, both project quotas and file
 quotas, filesystem identities and physical availability, mount reconciliation,
 the approved backup manifest, isolated restore receipt, prior immutable
@@ -76,7 +89,7 @@ tier; a terminal no-clobber backed-tier recovery seal must preserve the exact
 current environment, packet, launch envelope, command, and final aggregate, or
 the current-commit packet gate remains failed.
 
-The attempt must preserve all earlier capacity and production attempts. It may
+Any next attempt must preserve all earlier capacity and production attempts. It may
 not overwrite or repair them. Raw paths, filesystem sources, principal names,
 Git descriptors, selected-manifest contents, and restore details remain under
 owner-private SCC paths. Only closed, identifier-free aggregate summaries are

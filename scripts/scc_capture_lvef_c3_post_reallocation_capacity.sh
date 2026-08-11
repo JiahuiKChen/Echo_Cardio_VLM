@@ -16,7 +16,7 @@ source "$LVEF_ENV"
 : "${PRIOR_CAPACITY_PARENT:?}" "${PRIOR_CAPACITY_COMPOSITE:?}" "${PRIOR_PRODUCTION_PACKET:?}"
 
 exec "$PYTHON" "$WORKTREE/scripts/capture_lvef_c3_post_reallocation_capacity.py" \
-  --attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_001 \
+  --attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_002 \
   --governing-commit "$EXPECTED_COMMIT" --checkout "$WORKTREE" \
   --attempt-root "$PHASE1EF_ATTEMPT_ROOT" \
   --research-path /restricted/projectnb/mimicecho \

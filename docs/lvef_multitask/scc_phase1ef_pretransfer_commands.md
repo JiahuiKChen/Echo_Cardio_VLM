@@ -88,7 +88,7 @@ test "$(git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test "$(git -C "$WORKTREE" rev-parse origin/codex/lvef-multitask-revalidation)" = "$EXPECTED_COMMIT"
 test -z "$(git -C "$WORKTREE" status --porcelain --untracked-files=no)"
 
-ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_001'
+ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_002'
 PRODUCTION_ATTEMPT_ID='lvef_c3_phase1ee_production_lock_006'
 test "$PHASE1EF_ATTEMPT_ROOT" = \
   "/restricted/projectnb/mimicecho/audits/$ATTEMPT_ID"

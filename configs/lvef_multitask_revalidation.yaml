@@ -581,7 +581,13 @@ phase1e_bc_resource_metadata_preflight:
     purchased_saas_allocation_projectnb_bytes: 1000000000000
     purchased_saas_allocation_composition_authority: OWNER_ATTESTED_ADMINISTRATIVE_COMPOSITION
     phase1ef_post_reallocation:
-      attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_001
+      failed_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_001
+      failed_attempt_governing_commit: 555bc5a4586ca2fe17b5d95deac91a377f9d362d
+      failed_attempt_stage: CAPACITY_CAPTURE
+      failed_attempt_error: NATIVE_QUOTA_ROW_NOT_UNIQUE
+      failed_attempt_preserved: true
+      next_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_002
+      next_attempt_authorized: false
       execution_timing: AFTER_FINAL_IMPLEMENTATION_COMMIT_SYNC
       native_quota_record_unit: KiB
       native_quota_bytes_per_unit: 1024

@@ -56,6 +56,8 @@ EXPECTED_NATIVE_ROWS = {
     "backed": "rproject_mimicecho",
     "research": "rprojectnb_mimicecho",
 }
+EXPECTED_NATIVE_FILESET_FIELD = "root"
+EXPECTED_NATIVE_PRINCIPAL_SUFFIX = "_mimicecho"
 EXPECTED_DISPLAY_ROWS = {
     "backed": "/project/mimicecho",
     "research": "/projectnb/mimicecho",
@@ -331,22 +333,34 @@ def _run(role: str, argv: Sequence[str]) -> Mapping[str, Any]:
 
 def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]:
     observed: dict[str, Mapping[str, int | str]] = {}
-    principal_rows = 0
+    principal_fileset_rows = 0
     try:
         lines = payload.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
         raise PostReallocationCapacityError("NATIVE_QUOTA_NOT_UTF8") from exc
     for line in lines:
         fields = line.split()
-        if len(fields) >= 2 and fields[1] == "mimicecho":
-            principal_rows += 1
+        if (
+            len(fields) == 14
+            and fields[2] == "FILESET"
+            and fields[0].endswith(EXPECTED_NATIVE_PRINCIPAL_SUFFIX)
+        ):
+            principal_fileset_rows += 1
         if not fields or fields[0] not in EXPECTED_NATIVE_ROWS.values():
             continue
         if len(fields) != 14 or fields[2] != "FILESET" or fields[8] != "|":
             raise PostReallocationCapacityError("NATIVE_QUOTA_ROW_LAYOUT_INVALID")
         role = next(key for key, name in EXPECTED_NATIVE_ROWS.items() if name == fields[0])
-        if role in observed or fields[1] != "mimicecho":
+        if role in observed:
             raise PostReallocationCapacityError("NATIVE_QUOTA_ROW_NOT_UNIQUE")
+        # The root-controlled SCC pquota implementation documents column 1 as
+        # Name and column 2 as fileset.  Project FILESET rows therefore bind
+        # the project authority in fields[0] and the native scope (currently
+        # ``root``) in fields[1]; the latter is not the project principal.
+        if fields[1] != EXPECTED_NATIVE_FILESET_FIELD:
+            raise PostReallocationCapacityError(
+                "NATIVE_QUOTA_FILESET_SCOPE_INVALID"
+            )
         try:
             usage_kib, quota_kib = int(fields[3]), int(fields[4])
             files_used, file_quota = int(fields[9]), int(fields[10])
@@ -363,7 +377,7 @@ def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]
         }
     if set(observed) != {"backed", "research"}:
         raise PostReallocationCapacityError("NATIVE_QUOTA_ROWS_MISSING")
-    if principal_rows != 2:
+    if principal_fileset_rows != 2:
         raise PostReallocationCapacityError("NATIVE_QUOTA_ADDITIONAL_PRINCIPAL_ROW")
     if (
         observed["research"]["quota_kib"] != EXPECTED_RESEARCH_QUOTA_KIB

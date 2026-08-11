@@ -16,9 +16,9 @@ import lvef_multitask_analysis_modes as analysis_modes
 
 def _native() -> bytes:
     return (
-        "rproject_mimicecho mimicecho FILESET 10690224 52428800 0 0 none | "
+        "rproject_mimicecho root FILESET 10690224 52428800 0 0 none | "
         "47379 1638400 0 0 none\n"
-        "rprojectnb_mimicecho mimicecho FILESET 147117696 2044723200 0 0 none | "
+        "rprojectnb_mimicecho root FILESET 147117696 2044723200 0 0 none | "
         "106407 33554432 0 0 none\n"
     ).encode()
 
@@ -107,7 +107,13 @@ def test_native_quota_rejects_duplicate_missing_or_changed_allocation() -> None:
     _expect("NATIVE_QUOTA_ROW_NOT_UNIQUE", lambda: capacity._parse_native_quota(_native() + _native().splitlines()[0] + b"\n"))
     _expect("NATIVE_QUOTA_ROWS_MISSING", lambda: capacity._parse_native_quota(_native().splitlines()[0] + b"\n"))
     _expect("NATIVE_QUOTA_ALLOCATION_UNEXPECTED", lambda: capacity._parse_native_quota(_native().replace(b"2044723200", b"2044723199")))
-    extra = b"snapshot_mimicecho mimicecho FILESET 0 1 0 0 none | 0 1 0 0 none\n"
+    _expect(
+        "NATIVE_QUOTA_FILESET_SCOPE_INVALID",
+        lambda: capacity._parse_native_quota(
+            _native().replace(b"rproject_mimicecho root", b"rproject_mimicecho mimicecho")
+        ),
+    )
+    extra = b"snapshot_mimicecho root FILESET 0 1 0 0 none | 0 1 0 0 none\n"
     _expect("NATIVE_QUOTA_ADDITIONAL_PRINCIPAL_ROW", lambda: capacity._parse_native_quota(_native() + extra))
 
 
@@ -194,3 +200,8 @@ def test_capture_contract_has_no_storage_inventory_cloud_or_scheduler_path() -> 
     assert " du " not in wrapper
     assert "find " not in wrapper
     assert "pquota" in source and "findmnt" in source and "df" in source
+    assert (
+        "--attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_002"
+        in wrapper
+    )
+    assert "--attempt-id lvef_multitask_phase1ef_post_reallocation_lock_attempt_001" not in wrapper
