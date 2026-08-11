@@ -27,10 +27,10 @@ import sys
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 
-SCHEMA_VERSION = 1
-RECEIPT_TYPE = "lvef_c3_post_reallocation_capacity_receipt_v1"
+SCHEMA_VERSION = 2
+RECEIPT_TYPE = "lvef_c3_post_reallocation_capacity_receipt_v2"
 RECEIPT_STATUS = "PASS_READ_ONLY_POST_REALLOCATION_CAPACITY_CAPTURE"
-AGGREGATE_TYPE = "lvef_c3_post_reallocation_capacity_summary_v1"
+AGGREGATE_TYPE = "lvef_c3_post_reallocation_capacity_summary_v2"
 AGGREGATE_STATUS = "PASS_POST_REALLOCATION_CAPACITY"
 ATTEMPT_RE = re.compile(
     r"^lvef_multitask_phase1ef_post_reallocation_lock_attempt_[0-9]{3}$"
@@ -52,15 +52,16 @@ EXPECTED_BACKED_QUOTA_KIB = 52_428_800
 EXPECTED_RESEARCH_FILE_QUOTA = 33_554_432
 EXPECTED_BACKED_FILE_QUOTA = 1_638_400
 EXPECTED_BRANCH = "codex/lvef-multitask-revalidation"
+EXPECTED_QUOTA_PRINCIPAL = "mimicecho"
 EXPECTED_NATIVE_ROWS = {
     "backed": "rproject_mimicecho",
     "research": "rprojectnb_mimicecho",
 }
 EXPECTED_NATIVE_FILESET_FIELD = "root"
 EXPECTED_NATIVE_PRINCIPAL_SUFFIX = "_mimicecho"
-EXPECTED_DISPLAY_ROWS = {
-    "backed": "/project/mimicecho",
-    "research": "/projectnb/mimicecho",
+EXPECTED_DISPLAY_ROW_ALIASES = {
+    "backed": frozenset({"/rproject/mimicecho", "/project/mimicecho"}),
+    "research": frozenset({"/rprojectnb/mimicecho", "/projectnb/mimicecho"}),
 }
 EXPECTED_RESTRICTED_PATHS = {
     "backed": Path("/restricted/project/mimicecho"),
@@ -87,12 +88,73 @@ PRIOR_CAPACITY_AUTHORITIES = {
     ),
 }
 
+DISPLAY_CROSSCHECK_PASS = "PASS"
+DISPLAY_CROSSCHECK_UNAVAILABLE = "UNAVAILABLE_NONBLOCKING"
+DISPLAY_CROSSCHECK_FAIL = "FAIL_BLOCKING"
+DISPLAY_CROSSCHECK_STATES = frozenset(
+    {
+        DISPLAY_CROSSCHECK_PASS,
+        DISPLAY_CROSSCHECK_UNAVAILABLE,
+        DISPLAY_CROSSCHECK_FAIL,
+    }
+)
+DISPLAY_CROSSCHECK_REASONS = frozenset(
+    {
+        "MATCHED_NATIVE_AUTHORITY",
+        "COMMAND_UNAVAILABLE",
+        "EXPECTED_ROWS_MISSING_OR_UNPARSEABLE",
+        "DUPLICATE_EXPECTED_PROJECT_ROW",
+        "NOMINAL_QUOTA_CONTRADICTION",
+        "FILE_QUOTA_CONTRADICTION",
+        "ROUNDED_USAGE_CONTRADICTION",
+        "FILE_USAGE_CONTRADICTION",
+    }
+)
+DISPLAY_CROSSCHECK_REASONS_BY_STATE = {
+    DISPLAY_CROSSCHECK_PASS: frozenset({"MATCHED_NATIVE_AUTHORITY"}),
+    DISPLAY_CROSSCHECK_UNAVAILABLE: frozenset(
+        {"COMMAND_UNAVAILABLE", "EXPECTED_ROWS_MISSING_OR_UNPARSEABLE"}
+    ),
+    DISPLAY_CROSSCHECK_FAIL: frozenset(
+        {
+            "DUPLICATE_EXPECTED_PROJECT_ROW",
+            "NOMINAL_QUOTA_CONTRADICTION",
+            "FILE_QUOTA_CONTRADICTION",
+            "ROUNDED_USAGE_CONTRADICTION",
+            "FILE_USAGE_CONTRADICTION",
+        }
+    ),
+}
+GATE_EVALUATION_PASS = "PASS"
+GATE_EVALUATION_FAIL = "FAIL"
+GATE_EVALUATION_NOT_EVALUATED = "NOT_EVALUATED"
+GATE_EVALUATION_STATES = frozenset(
+    {
+        GATE_EVALUATION_PASS,
+        GATE_EVALUATION_FAIL,
+        GATE_EVALUATION_NOT_EVALUATED,
+    }
+)
+CAPACITY_GATE_KEYS = (
+    "research_quota_gate",
+    "physical_filesystem_capacity_gate",
+    "projected_200gb_reserve_gate",
+    "research_file_quota_gate",
+    "backed_control_tier_byte_gate",
+    "backed_control_tier_file_gate",
+    "backed_control_tier_gate",
+)
+AGGREGATE_GATE_STATUS_FIELDS = {
+    gate: f"{gate}_status" for gate in CAPACITY_GATE_KEYS
+}
+
 RECEIPT_KEYS = frozenset(
     {
         "schema_version", "artifact_type", "status", "attempt_id",
         "governing_commit", "captured_at_utc", "capture_identity",
         "native_quota_authority", "commands", "paths", "prior_authorities",
-        "frozen_plan", "no_mutation_attestations",
+        "frozen_plan", "pquota_display_crosscheck", "gate_evaluation_status",
+        "no_mutation_attestations",
     }
 )
 AGGREGATE_KEYS = frozenset(
@@ -120,7 +182,12 @@ AGGREGATE_KEYS = frozenset(
         "pquota_to_restricted_mount_reconciliation_verified",
         "pquota_display_fileset_mapping_verified",
         "pquota_current_not_snapshot_mode_verified",
-        "pquota_executable_sha256",
+        "pquota_executable_sha256", "pquota_executable_authority_status",
+        "pquota_display_crosscheck", "pquota_display_crosscheck_reason",
+        "pquota_display_backed_project_row_matches",
+        "pquota_display_research_project_row_matches",
+        "pquota_display_rounding_rule",
+        *AGGREGATE_GATE_STATUS_FIELDS.values(),
         "research_mount_fsroot_is_root", "backed_mount_fsroot_is_root",
         "mounted_filesystems_distinct", "mount_targets_distinct",
         "filesystem_devices_distinct", "research_path_is_symlink",
@@ -163,9 +230,17 @@ AGGREGATE_KEYS = frozenset(
 
 
 class PostReallocationCapacityError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(
+        self,
+        code: str,
+        *,
+        gate_evaluation_status: Mapping[str, str] | None = None,
+        pquota_display_crosscheck: str | None = None,
+    ):
         super().__init__(code)
         self.code = code
+        self.gate_evaluation_status = gate_evaluation_status
+        self.pquota_display_crosscheck = pquota_display_crosscheck
 
 
 def _strict_pairs(pairs: Iterable[tuple[str, Any]]) -> MutableMapping[str, Any]:
@@ -331,6 +406,80 @@ def _run(role: str, argv: Sequence[str]) -> Mapping[str, Any]:
     }
 
 
+def _capture_optional_pquota(principal: str) -> Mapping[str, Any]:
+    """Capture the corroborating display without making it byte authority."""
+    located = shutil.which("pquota", path="/usr/local/bin:/usr/bin:/bin")
+    argv = [located or "pquota", "-u", principal]
+    empty = _sha(b"")
+
+    def unavailable(reason: str) -> Mapping[str, Any]:
+        executable_sha256 = "UNAVAILABLE"
+        executable_size_bytes = 0
+        return {
+            "role": "pquota", "argv": argv,
+            "argv_sha256": _sha(json.dumps(argv, separators=(",", ":")).encode()),
+            "executable_sha256": executable_sha256,
+            "executable_size_bytes": executable_size_bytes,
+            "exit_status": -1, "stdout_bytes": 0, "stdout_sha256": empty,
+            "stdout_text": "", "stderr_bytes": 0, "stderr_sha256": empty,
+            "availability_status": "UNAVAILABLE_NONBLOCKING",
+            "availability_reason": reason,
+        }
+
+    if not located:
+        return unavailable("EXECUTABLE_NOT_FOUND")
+    executable = Path(located).resolve(strict=True)
+    before = executable.stat()
+    if (
+        executable != EXPECTED_PQUOTA_EXECUTABLE
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_uid != 0
+        or stat.S_IMODE(before.st_mode) & 0o022
+        or before.st_size != EXPECTED_PQUOTA_SIZE_BYTES
+        or _sha(_read_regular(executable, maximum=256_000_000))
+        != EXPECTED_PQUOTA_SHA256
+    ):
+        return unavailable("EXECUTABLE_AUTHORITY_MISMATCH")
+    result = subprocess.run(
+        argv,
+        capture_output=True,
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
+        check=False,
+    )
+    after = executable.stat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+    ):
+        raise PostReallocationCapacityError("TOOL_CHANGED_DURING_CAPTURE")
+    reason = "AVAILABLE"
+    availability = "AVAILABLE"
+    if result.returncode:
+        availability, reason = "UNAVAILABLE_NONBLOCKING", "COMMAND_NONZERO_EXIT"
+    elif result.stderr:
+        availability, reason = "UNAVAILABLE_NONBLOCKING", "COMMAND_STDERR_PRESENT"
+    elif len(result.stdout) > 2_000_000:
+        availability, reason = "UNAVAILABLE_NONBLOCKING", "COMMAND_OUTPUT_OVERSIZED"
+    try:
+        stdout_text = result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        availability, reason, stdout_text = (
+            "UNAVAILABLE_NONBLOCKING", "COMMAND_OUTPUT_NOT_UTF8", ""
+        )
+    if len(result.stdout) > 2_000_000:
+        stdout_text = ""
+    return {
+        "role": "pquota", "argv": argv,
+        "argv_sha256": _sha(json.dumps(argv, separators=(",", ":")).encode()),
+        "executable_sha256": EXPECTED_PQUOTA_SHA256,
+        "executable_size_bytes": before.st_size,
+        "exit_status": result.returncode,
+        "stdout_bytes": len(result.stdout), "stdout_sha256": _sha(result.stdout),
+        "stdout_text": stdout_text,
+        "stderr_bytes": len(result.stderr), "stderr_sha256": _sha(result.stderr),
+        "availability_status": availability, "availability_reason": reason,
+    }
+
+
 def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]:
     observed: dict[str, Mapping[str, int | str]] = {}
     principal_fileset_rows = 0
@@ -389,35 +538,164 @@ def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]
     return observed
 
 
-def _display_number(value: int) -> str:
-    decimal = (Decimal(value * 1024) / Decimal(1024 ** 3)).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
-    return format(decimal, "f")
+def _display_result(
+    status: str,
+    reason: str,
+    row_counts: Mapping[str, int],
+    precision: Mapping[str, int] | None = None,
+) -> Mapping[str, Any]:
+    result = {
+        "status": status,
+        "reason": reason,
+        "project_row_match_counts": {
+            role: int(row_counts.get(role, 0))
+            for role in ("backed", "research")
+        },
+        "usage_decimal_places": dict(precision or {}),
+        "rounding_rule": "DECIMAL_HALF_UP_AT_OBSERVED_PRECISION_0_TO_6",
+    }
+    if (
+        status not in DISPLAY_CROSSCHECK_STATES
+        or reason not in DISPLAY_CROSSCHECK_REASONS
+        or reason not in DISPLAY_CROSSCHECK_REASONS_BY_STATE.get(status, ())
+        or set(result) != {
+            "status", "reason", "project_row_match_counts",
+            "usage_decimal_places", "rounding_rule",
+        }
+        or set(result["project_row_match_counts"]) != {"backed", "research"}
+        or any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            for value in result["project_row_match_counts"].values()
+        )
+        or not set(result["usage_decimal_places"]).issubset({"backed", "research"})
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 6
+            for value in result["usage_decimal_places"].values()
+        )
+    ):
+        raise PostReallocationCapacityError("PQUOTA_DISPLAY_RESULT_INTERNAL_INVALID")
+    return result
 
 
-def _parse_pquota(text: str, native: Mapping[str, Mapping[str, int | str]]) -> None:
-    rows: dict[str, list[str]] = {}
+def _parse_pquota(
+    text: str,
+    native: Mapping[str, Mapping[str, int | str]],
+    *,
+    command_available: bool = True,
+) -> Mapping[str, Any]:
+    if not command_available:
+        return _display_result(
+            DISPLAY_CROSSCHECK_UNAVAILABLE, "COMMAND_UNAVAILABLE", {}
+        )
+    rows_by_role: dict[str, list[list[str]]] = {
+        "backed": [], "research": [],
+    }
     for line in text.splitlines():
-        fields = line.split()
-        for role, name in EXPECTED_DISPLAY_ROWS.items():
-            if fields and fields[0] == name:
-                if role in rows:
-                    raise PostReallocationCapacityError("PQUOTA_DISPLAY_ROW_DUPLICATE")
-                rows[role] = fields
+        fields = re.split(r"[ \t]+", line.strip()) if line.strip() else []
+        for role, aliases in EXPECTED_DISPLAY_ROW_ALIASES.items():
+            if fields and fields[0] in aliases:
+                rows_by_role[role].append(fields)
+    row_counts = {
+        role: len(matches) for role, matches in rows_by_role.items()
+    }
+    if any(count > 1 for count in row_counts.values()):
+        return _display_result(
+            DISPLAY_CROSSCHECK_FAIL,
+            "DUPLICATE_EXPECTED_PROJECT_ROW",
+            row_counts,
+        )
+    rows = {
+        role: matches[0]
+        for role, matches in rows_by_role.items()
+        if matches
+    }
     if set(rows) != {"backed", "research"}:
-        raise PostReallocationCapacityError("PQUOTA_DISPLAY_ROWS_MISSING")
-    for role, fields in rows.items():
+        return _display_result(
+            DISPLAY_CROSSCHECK_UNAVAILABLE,
+            "EXPECTED_ROWS_MISSING_OR_UNPARSEABLE",
+            row_counts,
+        )
+    precision: dict[str, int] = {}
+    contradictions: list[str] = []
+    unparseable = False
+    for role in ("backed", "research"):
+        fields = rows[role]
         if len(fields) != 5:
-            raise PostReallocationCapacityError("PQUOTA_DISPLAY_LAYOUT_INVALID")
-        quota_gib = int(native[role]["quota_kib"]) // (1024 ** 2)
-        if (
-            fields[1] != str(quota_gib)
-            or fields[2] != str(native[role]["file_quota"])
-            or fields[3] != _display_number(int(native[role]["usage_kib"]))
-            or fields[4] != str(native[role]["files_used"])
-        ):
-            raise PostReallocationCapacityError("PQUOTA_DISPLAY_NATIVE_MISMATCH")
+            unparseable = True
+            continue
+
+        displayed_quota: Decimal | None = None
+        displayed_file_quota: int | None = None
+        displayed_usage: Decimal | None = None
+        displayed_files_used: int | None = None
+        try:
+            displayed_quota = Decimal(fields[1])
+        except (ValueError, ArithmeticError):
+            unparseable = True
+        try:
+            displayed_file_quota = int(fields[2])
+        except (ValueError, ArithmeticError):
+            unparseable = True
+        try:
+            displayed_usage = Decimal(fields[3])
+        except (ValueError, ArithmeticError):
+            unparseable = True
+        try:
+            displayed_files_used = int(fields[4])
+        except (ValueError, ArithmeticError):
+            unparseable = True
+
+        native_quota_gib = Decimal(int(native[role]["quota_kib"])) / Decimal(1024 ** 2)
+        native_usage_gib = Decimal(int(native[role]["usage_kib"])) / Decimal(1024 ** 2)
+        if displayed_quota is not None:
+            if not displayed_quota.is_finite() or displayed_quota < 0:
+                unparseable = True
+            elif displayed_quota != native_quota_gib:
+                contradictions.append("NOMINAL_QUOTA_CONTRADICTION")
+        if displayed_file_quota is not None:
+            if displayed_file_quota < 0:
+                unparseable = True
+            elif displayed_file_quota != int(native[role]["file_quota"]):
+                contradictions.append("FILE_QUOTA_CONTRADICTION")
+        if displayed_usage is not None:
+            if not displayed_usage.is_finite() or displayed_usage < 0:
+                unparseable = True
+            else:
+                places = max(-displayed_usage.as_tuple().exponent, 0)
+                if places > 6:
+                    unparseable = True
+                else:
+                    precision[role] = places
+                    quantum = Decimal(1).scaleb(-places)
+                    if displayed_usage != native_usage_gib.quantize(
+                        quantum, rounding=ROUND_HALF_UP
+                    ):
+                        contradictions.append("ROUNDED_USAGE_CONTRADICTION")
+        if displayed_files_used is not None:
+            if displayed_files_used < 0:
+                unparseable = True
+            elif displayed_files_used != int(native[role]["files_used"]):
+                contradictions.append("FILE_USAGE_CONTRADICTION")
+
+    if contradictions:
+        return _display_result(
+            DISPLAY_CROSSCHECK_FAIL, contradictions[0], row_counts, precision
+        )
+    if unparseable:
+        return _display_result(
+            DISPLAY_CROSSCHECK_UNAVAILABLE,
+            "EXPECTED_ROWS_MISSING_OR_UNPARSEABLE",
+            row_counts,
+            precision,
+        )
+    return _display_result(
+        DISPLAY_CROSSCHECK_PASS,
+        "MATCHED_NATIVE_AUTHORITY",
+        row_counts,
+        precision,
+    )
 
 
 def _parse_findmnt(text: str, requested: Path) -> Mapping[str, Any]:
@@ -532,13 +810,11 @@ def _validate_pquota_restricted_mount_reconciliation(
     paths: Mapping[str, Mapping[str, Any]],
     mounts: Mapping[str, Mapping[str, Any]],
 ) -> None:
-    """Bind pquota display rows and native filesets to secure mount roots.
+    """Bind native project filesets to the secure no-symlink mount roots.
 
-    SCC's ``pquota`` display omits the secure ``/restricted`` namespace while
-    the native fileset names encode the same role.  This check proves that the
-    exact validated display/native authorities map one-to-one to the exact
-    no-symlink paths and root-mounted filesystems used for C3.  It does not
-    infer this relationship from an arbitrary caller-provided name.
+    Human-facing display aliases are deliberately absent from this primary
+    authority check.  The native fileset names and explicit restricted roots
+    are independently bound to the mounted filesystems used for C3.
     """
     expected_targets = {
         "backed": Path("/restricted/project"),
@@ -548,15 +824,10 @@ def _validate_pquota_restricted_mount_reconciliation(
         "backed": "rproject", "research": "rprojectnb",
     }
     for role in ("backed", "research"):
-        display = Path(EXPECTED_DISPLAY_ROWS[role])
-        mapped = Path("/restricted") / display.relative_to("/")
         expected_path = EXPECTED_RESTRICTED_PATHS[role]
-        expected_native_name = (
-            "r" + EXPECTED_DISPLAY_ROWS[role].strip("/").replace("/", "_")
-        )
+        expected_native_name = EXPECTED_NATIVE_ROWS[role]
         if (
-            mapped != expected_path
-            or paths[role]["resolved_path_sha256"] != _sha(str(expected_path).encode())
+            paths[role]["resolved_path_sha256"] != _sha(str(expected_path).encode())
             or paths[role]["is_symlink"] is not False
             or mounts[role]["target"] != str(expected_targets[role])
             or PurePosixPath(mounts[role]["source"].split(":")[-1]).name
@@ -571,6 +842,30 @@ def _validate_pquota_restricted_mount_reconciliation(
             )
 
 
+def _gate_evaluation_status(values: Mapping[str, bool]) -> Mapping[str, str]:
+    if set(values) != set(CAPACITY_GATE_KEYS) or any(
+        not isinstance(value, bool) for value in values.values()
+    ):
+        raise PostReallocationCapacityError("CAPACITY_GATE_INPUT_INTERNAL_INVALID")
+    return {
+        key: GATE_EVALUATION_PASS if values[key] else GATE_EVALUATION_FAIL
+        for key in CAPACITY_GATE_KEYS
+    }
+
+
+def _not_evaluated_gate_status() -> Mapping[str, str]:
+    return {key: GATE_EVALUATION_NOT_EVALUATED for key in CAPACITY_GATE_KEYS}
+
+
+def _validate_gate_evaluation_status(value: Any) -> None:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != set(CAPACITY_GATE_KEYS)
+        or any(item not in GATE_EVALUATION_STATES for item in value.values())
+    ):
+        raise PostReallocationCapacityError("CAPACITY_GATE_EVALUATION_SCHEMA_INVALID")
+
+
 def validate_aggregate_output(value: Mapping[str, Any]) -> None:
     if not isinstance(value, Mapping) or set(value) != AGGREGATE_KEYS:
         raise PostReallocationCapacityError("CAPACITY_AGGREGATE_SCHEMA_NOT_CLOSED")
@@ -581,15 +876,61 @@ def validate_aggregate_output(value: Mapping[str, Any]) -> None:
         or not ATTEMPT_RE.fullmatch(str(value.get("attempt_id", "")))
         or not COMMIT_RE.fullmatch(str(value.get("governing_commit", "")))
         or not SHA256_RE.fullmatch(str(value.get("restricted_receipt_sha256", "")))
-        or value.get("pquota_executable_sha256") != EXPECTED_PQUOTA_SHA256
         or value.get("units") != "BYTES_FROM_NATIVE_KIB_EXACT_INTEGER"
-        or value.get("quota_display_unit_ruling") != "BINARY_GIB_ROUNDED"
+        or value.get("quota_display_unit_ruling")
+        != "BINARY_GIB_ROUNDED_SECONDARY_ONLY"
     ):
         raise PostReallocationCapacityError("CAPACITY_AGGREGATE_AUTHORITY_INVALID")
+    aggregate_gate_status = {
+        gate: value.get(field)
+        for gate, field in AGGREGATE_GATE_STATUS_FIELDS.items()
+    }
+    _validate_gate_evaluation_status(aggregate_gate_status)
+    display_state = value.get("pquota_display_crosscheck")
+    display_reason = value.get("pquota_display_crosscheck_reason")
+    executable_authority = value.get("pquota_executable_authority_status")
+    if (
+        display_state not in {
+            DISPLAY_CROSSCHECK_PASS, DISPLAY_CROSSCHECK_UNAVAILABLE,
+        }
+        or display_reason not in DISPLAY_CROSSCHECK_REASONS_BY_STATE.get(
+            str(display_state), ()
+        )
+        or value.get("pquota_display_rounding_rule")
+        != "DECIMAL_HALF_UP_AT_OBSERVED_PRECISION_0_TO_6"
+        or value.get("pquota_display_backed_project_row_matches") not in {0, 1}
+        or value.get("pquota_display_research_project_row_matches") not in {0, 1}
+        or executable_authority not in {
+            "PASS_TRUSTED_ROOT_CONTROLLED", "UNAVAILABLE_NONBLOCKING",
+        }
+        or (
+            executable_authority == "PASS_TRUSTED_ROOT_CONTROLLED"
+            and value.get("pquota_executable_sha256") != EXPECTED_PQUOTA_SHA256
+        )
+        or (
+            executable_authority == "UNAVAILABLE_NONBLOCKING"
+            and value.get("pquota_executable_sha256") not in {
+                EXPECTED_PQUOTA_SHA256, "UNAVAILABLE",
+            }
+        )
+        or (
+            executable_authority == "UNAVAILABLE_NONBLOCKING"
+            and display_reason != "COMMAND_UNAVAILABLE"
+        )
+        or value.get("pquota_display_fileset_mapping_verified")
+        is not (display_state == DISPLAY_CROSSCHECK_PASS)
+        or (
+            display_state == DISPLAY_CROSSCHECK_PASS
+            and (
+                value.get("pquota_display_backed_project_row_matches") != 1
+                or value.get("pquota_display_research_project_row_matches") != 1
+            )
+        )
+    ):
+        raise PostReallocationCapacityError("CAPACITY_AGGREGATE_DISPLAY_AUTHORITY_INVALID")
     required_true = {
         "prior_authorities_hash_verified", "prior_authorities_closed_schema_verified",
         "pquota_to_restricted_mount_reconciliation_verified",
-        "pquota_display_fileset_mapping_verified",
         "pquota_current_not_snapshot_mode_verified",
         "research_mount_fsroot_is_root", "backed_mount_fsroot_is_root",
         "mounted_filesystems_distinct", "mount_targets_distinct",
@@ -602,6 +943,21 @@ def validate_aggregate_output(value: Mapping[str, Any]) -> None:
     }
     if any(value.get(key) is not True for key in required_true):
         raise PostReallocationCapacityError("CAPACITY_AGGREGATE_GATE_NOT_PASS")
+    gate_boolean_pairs = {
+        "research_quota_gate": "research_quota_gate_passed",
+        "physical_filesystem_capacity_gate": "physical_filesystem_capacity_gate_passed",
+        "projected_200gb_reserve_gate": "projected_200gb_reserve_gate_passed",
+        "research_file_quota_gate": "research_file_quota_gate_passed",
+        "backed_control_tier_byte_gate": "backed_control_tier_byte_gate_passed",
+        "backed_control_tier_file_gate": "backed_control_tier_file_gate_passed",
+        "backed_control_tier_gate": "backed_control_tier_gate_passed",
+    }
+    if any(
+        aggregate_gate_status[gate] != GATE_EVALUATION_PASS
+        or value.get(boolean_key) is not True
+        for gate, boolean_key in gate_boolean_pairs.items()
+    ):
+        raise PostReallocationCapacityError("CAPACITY_AGGREGATE_GATE_STATUS_MISMATCH")
     expected_false = {
         "research_path_is_symlink", "backed_path_is_symlink",
         "research_mount_is_bind", "backed_mount_is_bind",
@@ -663,6 +1019,8 @@ def validate_receipt_output(value: Mapping[str, Any]) -> None:
     native = value.get("native_quota_authority")
     frozen = value.get("frozen_plan")
     attestations = value.get("no_mutation_attestations")
+    display = value.get("pquota_display_crosscheck")
+    gate_status = value.get("gate_evaluation_status")
     if (
         not isinstance(commands, Mapping)
         or set(commands) != {
@@ -697,18 +1055,90 @@ def validate_receipt_output(value: Mapping[str, Any]) -> None:
         }
     ):
         raise PostReallocationCapacityError("CAPACITY_RECEIPT_CONTENT_INVALID")
+    _validate_gate_evaluation_status(gate_status)
+    if any(item != GATE_EVALUATION_PASS for item in gate_status.values()):
+        raise PostReallocationCapacityError("CAPACITY_RECEIPT_GATE_STATUS_INVALID")
+    if (
+        not isinstance(display, Mapping)
+        or set(display) != {
+            "status", "reason", "project_row_match_counts",
+            "usage_decimal_places", "rounding_rule",
+        }
+        or display.get("status") not in {
+            DISPLAY_CROSSCHECK_PASS, DISPLAY_CROSSCHECK_UNAVAILABLE,
+        }
+        or display.get("reason") not in DISPLAY_CROSSCHECK_REASONS_BY_STATE.get(
+            str(display.get("status")), ()
+        )
+        or display.get("rounding_rule")
+        != "DECIMAL_HALF_UP_AT_OBSERVED_PRECISION_0_TO_6"
+        or not isinstance(display.get("project_row_match_counts"), Mapping)
+        or set(display["project_row_match_counts"]) != {"backed", "research"}
+        or any(value not in {0, 1} for value in display["project_row_match_counts"].values())
+        or not isinstance(display.get("usage_decimal_places"), Mapping)
+        or not set(display["usage_decimal_places"]).issubset({"backed", "research"})
+        or any(
+            not isinstance(item, int) or isinstance(item, bool) or not 0 <= item <= 6
+            for item in display["usage_decimal_places"].values()
+        )
+        or (
+            display.get("status") == DISPLAY_CROSSCHECK_PASS
+            and display["project_row_match_counts"] != {"backed": 1, "research": 1}
+        )
+    ):
+        raise PostReallocationCapacityError("CAPACITY_RECEIPT_DISPLAY_SCHEMA_INVALID")
     for role, item in commands.items():
         stdout_text = item.get("stdout_text")
-        if (
-            not isinstance(item, Mapping)
-            or set(item) != {
-                "role", "argv", "argv_sha256", "executable_sha256",
-                "executable_size_bytes", "exit_status", "stdout_bytes",
-                "stdout_sha256", "stdout_text", "stderr_bytes",
-                "stderr_sha256",
-            }
-            or item.get("role") != role
-            or item.get("exit_status") != 0
+        base_keys = {
+            "role", "argv", "argv_sha256", "executable_sha256",
+            "executable_size_bytes", "exit_status", "stdout_bytes",
+            "stdout_sha256", "stdout_text", "stderr_bytes", "stderr_sha256",
+        }
+        expected_keys = base_keys | (
+            {"availability_status", "availability_reason"}
+            if role == "pquota" else set()
+        )
+        if not isinstance(item, Mapping) or set(item) != expected_keys or item.get("role") != role:
+            raise PostReallocationCapacityError("CAPACITY_RECEIPT_COMMAND_INVALID")
+        if role == "pquota":
+            availability = item.get("availability_status")
+            reason = item.get("availability_reason")
+            if (
+                availability not in {"AVAILABLE", "UNAVAILABLE_NONBLOCKING"}
+                or not isinstance(reason, str)
+                or reason not in {
+                    "AVAILABLE", "EXECUTABLE_NOT_FOUND",
+                    "EXECUTABLE_AUTHORITY_MISMATCH", "COMMAND_NONZERO_EXIT",
+                    "COMMAND_STDERR_PRESENT", "COMMAND_OUTPUT_OVERSIZED",
+                    "COMMAND_OUTPUT_NOT_UTF8",
+                }
+                or not isinstance(stdout_text, str)
+                or not isinstance(item.get("stdout_bytes"), int)
+                or not isinstance(item.get("stderr_bytes"), int)
+                or not SHA256_RE.fullmatch(str(item.get("stdout_sha256", "")))
+                or not SHA256_RE.fullmatch(str(item.get("stderr_sha256", "")))
+                or item.get("executable_sha256") not in {
+                    EXPECTED_PQUOTA_SHA256, "UNAVAILABLE",
+                }
+                or (availability == "AVAILABLE" and reason != "AVAILABLE")
+                or (
+                    availability == "UNAVAILABLE_NONBLOCKING"
+                    and reason == "AVAILABLE"
+                )
+                or (availability == "AVAILABLE" and item.get("exit_status") != 0)
+                or (availability == "AVAILABLE" and item.get("stderr_bytes") != 0)
+                or (
+                    availability == "AVAILABLE"
+                    and item.get("stdout_bytes") != len(stdout_text.encode("utf-8"))
+                )
+                or (
+                    availability == "AVAILABLE"
+                    and item.get("stdout_sha256") != _sha(stdout_text.encode("utf-8"))
+                )
+            ):
+                raise PostReallocationCapacityError("CAPACITY_RECEIPT_PQUOTA_COMMAND_INVALID")
+        elif (
+            item.get("exit_status") != 0
             or item.get("stderr_bytes") != 0
             or item.get("stderr_sha256") != _sha(b"")
             or not isinstance(stdout_text, str)
@@ -718,6 +1148,12 @@ def validate_receipt_output(value: Mapping[str, Any]) -> None:
             or not SHA256_RE.fullmatch(str(item.get("executable_sha256", "")))
         ):
             raise PostReallocationCapacityError("CAPACITY_RECEIPT_COMMAND_INVALID")
+    pquota_available = commands["pquota"]["availability_status"] == "AVAILABLE"
+    if (
+        (not pquota_available and display.get("reason") != "COMMAND_UNAVAILABLE")
+        or (pquota_available and display.get("reason") == "COMMAND_UNAVAILABLE")
+    ):
+        raise PostReallocationCapacityError("CAPACITY_RECEIPT_DISPLAY_COMMAND_MISMATCH")
     identities = paths["identities"]
     mounts = paths["mounts"]
     df_values = paths["df"]
@@ -775,6 +1211,7 @@ def capture(args: argparse.Namespace) -> Mapping[str, Any]:
         args.research_path != EXPECTED_RESTRICTED_PATHS["research"]
         or args.backed_path != EXPECTED_RESTRICTED_PATHS["backed"]
         or args.native_quota_file != EXPECTED_NATIVE_QUOTA_FILE
+        or args.quota_principal != EXPECTED_QUOTA_PRINCIPAL
     ):
         raise PostReallocationCapacityError("CAPACITY_RESTRICTED_PATH_MISMATCH")
     native_metadata = os.lstat(args.native_quota_file)
@@ -803,28 +1240,19 @@ def capture(args: argparse.Namespace) -> Mapping[str, Any]:
         composite=args.prior_capacity_composite,
         packet_path=args.prior_production_packet,
     )
-    pquota = shutil.which("pquota", path="/usr/local/bin:/usr/bin:/bin")
     findmnt = shutil.which("findmnt", path="/usr/bin:/bin:/usr/local/bin")
     df = shutil.which("df", path="/usr/bin:/bin:/usr/local/bin")
-    if not pquota or not findmnt or not df:
+    if not findmnt or not df:
         raise PostReallocationCapacityError("READ_ONLY_TOOL_NOT_FOUND")
     commands = {
-        "pquota": _run("pquota", [pquota, "-u", args.quota_principal]),
+        "pquota": _capture_optional_pquota(args.quota_principal),
         "research_findmnt": _run("findmnt", [findmnt, "--json", "--target", str(args.research_path), "--output", "SOURCE,TARGET,FSTYPE,OPTIONS,FSROOT"]),
         "backed_findmnt": _run("findmnt", [findmnt, "--json", "--target", str(args.backed_path), "--output", "SOURCE,TARGET,FSTYPE,OPTIONS,FSROOT"]),
         "research_df": _run("df", [df, "-B1", "--output=source,size,used,avail,target", str(args.research_path)]),
         "backed_df": _run("df", [df, "-B1", "--output=source,size,used,avail,target", str(args.backed_path)]),
     }
-    if (
-        Path(pquota).resolve(strict=True) != EXPECTED_PQUOTA_EXECUTABLE
-        or commands["pquota"]["executable_size_bytes"] != EXPECTED_PQUOTA_SIZE_BYTES
-        or commands["pquota"]["executable_sha256"] != EXPECTED_PQUOTA_SHA256
-        or commands["pquota"]["argv"] != [pquota, "-u", args.quota_principal]
-    ):
-        raise PostReallocationCapacityError("PQUOTA_IMPLEMENTATION_AUTHORITY_MISMATCH")
     native_payload = _read_regular(args.native_quota_file, maximum=64_000_000)
     native = _parse_native_quota(native_payload)
-    _parse_pquota(commands["pquota"]["stdout_text"], native)
     paths = {"research": _path_identity(args.research_path), "backed": _path_identity(args.backed_path)}
     mounts = {
         "research": _parse_findmnt(commands["research_findmnt"]["stdout_text"], args.research_path),
@@ -844,6 +1272,55 @@ def capture(args: argparse.Namespace) -> Mapping[str, Any]:
         or mounts["research"]["bind"] or mounts["backed"]["bind"]
     ):
         raise PostReallocationCapacityError("FILESYSTEM_DISTINCTNESS_GATE_FAILED")
+
+    rq = int(native["research"]["quota_kib"]) * 1024
+    ru = int(native["research"]["usage_kib"]) * 1024
+    bq = int(native["backed"]["quota_kib"]) * 1024
+    bu = int(native["backed"]["usage_kib"]) * 1024
+    remaining_write = max(PROJECTED_PEAK_BYTES - ru, 0)
+    physical_required = (
+        remaining_write + REQUIRED_FREE_HEADROOM_BYTES
+        + PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES
+    )
+    gate_values = {
+        "research_quota_gate": rq >= MINIMUM_EFFECTIVE_QUOTA_BYTES,
+        "physical_filesystem_capacity_gate":
+            dfs["research"]["available"] >= physical_required,
+        "projected_200gb_reserve_gate":
+            rq - PROJECTED_PEAK_BYTES >= REQUIRED_FREE_HEADROOM_BYTES,
+        "research_file_quota_gate":
+            int(native["research"]["file_quota"])
+            - int(native["research"]["files_used"])
+            >= RESEARCH_ADDITIONAL_FILE_DEMAND,
+        "backed_control_tier_byte_gate":
+            bq - bu >= PRESPECIFIED_CONTROL_BURDEN_BYTES,
+        "backed_control_tier_file_gate":
+            int(native["backed"]["file_quota"])
+            - int(native["backed"]["files_used"])
+            >= CONTROL_ADDITIONAL_FILE_DEMAND,
+    }
+    gate_values["backed_control_tier_gate"] = (
+        gate_values["backed_control_tier_byte_gate"]
+        and gate_values["backed_control_tier_file_gate"]
+    )
+    gate_status = _gate_evaluation_status(gate_values)
+    display = _parse_pquota(
+        commands["pquota"]["stdout_text"],
+        native,
+        command_available=commands["pquota"]["availability_status"] == "AVAILABLE",
+    )
+    if display["status"] == DISPLAY_CROSSCHECK_FAIL:
+        raise PostReallocationCapacityError(
+            "PQUOTA_DISPLAY_CROSSCHECK_BLOCKING",
+            gate_evaluation_status=gate_status,
+            pquota_display_crosscheck=DISPLAY_CROSSCHECK_FAIL,
+        )
+    if any(status == GATE_EVALUATION_FAIL for status in gate_status.values()):
+        raise PostReallocationCapacityError(
+            "CAPACITY_GATE_FAILED",
+            gate_evaluation_status=gate_status,
+            pquota_display_crosscheck=str(display["status"]),
+        )
 
     receipt = {
         "schema_version": SCHEMA_VERSION,
@@ -874,6 +1351,8 @@ def capture(args: argparse.Namespace) -> Mapping[str, Any]:
             "prespecified_control_burden_bytes": PRESPECIFIED_CONTROL_BURDEN_BYTES,
             "pretransfer_research_write_bound_bytes": PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES,
         },
+        "pquota_display_crosscheck": display,
+        "gate_evaluation_status": gate_status,
         "no_mutation_attestations": {
             "cloud_requests": 0, "object_listing_repeated": False,
             "storage_inventory_repeated": False, "scheduler_jobs_submitted": 0,
@@ -890,28 +1369,13 @@ def capture(args: argparse.Namespace) -> Mapping[str, Any]:
     receipt_payload = _canonical(receipt)
     _write_new(receipt_path, receipt_payload, private=True)
 
-    rq = int(native["research"]["quota_kib"]) * 1024
-    ru = int(native["research"]["usage_kib"]) * 1024
-    bq = int(native["backed"]["quota_kib"]) * 1024
-    bu = int(native["backed"]["usage_kib"]) * 1024
-    remaining_write = max(PROJECTED_PEAK_BYTES - ru, 0)
-    physical_required = (
-        remaining_write + REQUIRED_FREE_HEADROOM_BYTES
-        + PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES
-    )
-    quota_gate = rq >= MINIMUM_EFFECTIVE_QUOTA_BYTES
-    reserve_gate = rq - PROJECTED_PEAK_BYTES >= REQUIRED_FREE_HEADROOM_BYTES
-    physical_gate = dfs["research"]["available"] >= physical_required
-    research_file_gate = int(native["research"]["file_quota"]) - int(native["research"]["files_used"]) >= RESEARCH_ADDITIONAL_FILE_DEMAND
-    backed_byte_gate = bq - bu >= PRESPECIFIED_CONTROL_BURDEN_BYTES
-    backed_file_gate = int(native["backed"]["file_quota"]) - int(native["backed"]["files_used"]) >= CONTROL_ADDITIONAL_FILE_DEMAND
     aggregate = {
         "schema_version": SCHEMA_VERSION, "artifact_type": AGGREGATE_TYPE,
         "status": AGGREGATE_STATUS, "attempt_id": args.attempt_id,
         "governing_commit": args.governing_commit,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "units": "BYTES_FROM_NATIVE_KIB_EXACT_INTEGER",
-        "quota_display_unit_ruling": "BINARY_GIB_ROUNDED",
+        "quota_display_unit_ruling": "BINARY_GIB_ROUNDED_SECONDARY_ONLY",
         "restricted_receipt_size_bytes": len(receipt_payload),
         "restricted_receipt_sha256": _sha(receipt_payload),
         "prior_authorities_hash_verified": True,
@@ -942,9 +1406,25 @@ def capture(args: argparse.Namespace) -> Mapping[str, Any]:
         "backed_filesystem_type": mounts["backed"]["fstype"],
         "backed_filesystem_identity_sha256": mounts["backed"]["identity_sha256"],
         "pquota_to_restricted_mount_reconciliation_verified": True,
-        "pquota_display_fileset_mapping_verified": True,
+        "pquota_display_fileset_mapping_verified":
+            display["status"] == DISPLAY_CROSSCHECK_PASS,
         "pquota_current_not_snapshot_mode_verified": True,
-        "pquota_executable_sha256": EXPECTED_PQUOTA_SHA256,
+        "pquota_executable_sha256": commands["pquota"]["executable_sha256"],
+        "pquota_executable_authority_status":
+            "PASS_TRUSTED_ROOT_CONTROLLED"
+            if commands["pquota"]["executable_sha256"] == EXPECTED_PQUOTA_SHA256
+            else "UNAVAILABLE_NONBLOCKING",
+        "pquota_display_crosscheck": display["status"],
+        "pquota_display_crosscheck_reason": display["reason"],
+        "pquota_display_backed_project_row_matches":
+            display["project_row_match_counts"]["backed"],
+        "pquota_display_research_project_row_matches":
+            display["project_row_match_counts"]["research"],
+        "pquota_display_rounding_rule": display["rounding_rule"],
+        **{
+            AGGREGATE_GATE_STATUS_FIELDS[gate]: status
+            for gate, status in gate_status.items()
+        },
         "research_mount_fsroot_is_root": mounts["research"]["fsroot"] == "/",
         "backed_mount_fsroot_is_root": mounts["backed"]["fsroot"] == "/",
         "mounted_filesystems_distinct": True, "mount_targets_distinct": True,
@@ -975,13 +1455,17 @@ def capture(args: argparse.Namespace) -> Mapping[str, Any]:
         "backed_remaining_after_control_burden_bytes": bq - bu - PRESPECIFIED_CONTROL_BURDEN_BYTES,
         "research_additional_file_demand": RESEARCH_ADDITIONAL_FILE_DEMAND,
         "backed_additional_file_demand": CONTROL_ADDITIONAL_FILE_DEMAND,
-        "research_quota_gate_passed": quota_gate,
-        "physical_filesystem_capacity_gate_passed": physical_gate,
-        "projected_200gb_reserve_gate_passed": reserve_gate,
-        "research_file_quota_gate_passed": research_file_gate,
-        "backed_control_tier_byte_gate_passed": backed_byte_gate,
-        "backed_control_tier_file_gate_passed": backed_file_gate,
-        "backed_control_tier_gate_passed": backed_byte_gate and backed_file_gate,
+        "research_quota_gate_passed": gate_values["research_quota_gate"],
+        "physical_filesystem_capacity_gate_passed":
+            gate_values["physical_filesystem_capacity_gate"],
+        "projected_200gb_reserve_gate_passed":
+            gate_values["projected_200gb_reserve_gate"],
+        "research_file_quota_gate_passed": gate_values["research_file_quota_gate"],
+        "backed_control_tier_byte_gate_passed":
+            gate_values["backed_control_tier_byte_gate"],
+        "backed_control_tier_file_gate_passed":
+            gate_values["backed_control_tier_file_gate"],
+        "backed_control_tier_gate_passed": gate_values["backed_control_tier_gate"],
         "owner_reported_backed_free_pool_gb": 50,
         "owner_reported_research_free_pool_gb": 950,
         "owner_reported_research_saas_purchased_gb": 1000,
@@ -1002,7 +1486,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--governing-commit", required=True)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--attempt-root", type=Path, required=True)
-    parser.add_argument("--quota-principal", default="mimicecho")
+    parser.add_argument("--quota-principal", default=EXPECTED_QUOTA_PRINCIPAL)
     parser.add_argument("--native-quota-file", type=Path, default=Path("/usr/local/etc/quota/project.quota"))
     parser.add_argument("--research-path", type=Path, required=True)
     parser.add_argument("--backed-path", type=Path, required=True)
@@ -1019,7 +1503,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         value = capture(build_parser().parse_args(argv))
     except (PostReallocationCapacityError, OSError) as exc:
         code = exc.code if isinstance(exc, PostReallocationCapacityError) else "CAPACITY_IO_ERROR"
-        print(json.dumps({"status": "FAIL", "error_code": code}, sort_keys=True))
+        gate_status = (
+            exc.gate_evaluation_status
+            if isinstance(exc, PostReallocationCapacityError)
+            and exc.gate_evaluation_status is not None
+            else _not_evaluated_gate_status()
+        )
+        display_status = (
+            exc.pquota_display_crosscheck
+            if isinstance(exc, PostReallocationCapacityError)
+            and exc.pquota_display_crosscheck is not None
+            else GATE_EVALUATION_NOT_EVALUATED
+        )
+        print(json.dumps({
+            "status": "FAIL", "error_code": code,
+            "gate_evaluation_status": gate_status,
+            "pquota_display_crosscheck": display_status,
+        }, sort_keys=True))
         return 2
     print(json.dumps({
         "status": value["status"],
@@ -1028,6 +1528,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "projected_200gb_reserve_gate_passed": value["projected_200gb_reserve_gate_passed"],
         "research_file_quota_gate_passed": value["research_file_quota_gate_passed"],
         "backed_control_tier_gate_passed": value["backed_control_tier_gate_passed"],
+        "gate_evaluation_status": {
+            gate: value[field]
+            for gate, field in AGGREGATE_GATE_STATUS_FIELDS.items()
+        },
+        "pquota_display_crosscheck": value["pquota_display_crosscheck"],
         "cloud_requests": 0, "scheduler_jobs_submitted": 0,
     }, sort_keys=True))
     return 0

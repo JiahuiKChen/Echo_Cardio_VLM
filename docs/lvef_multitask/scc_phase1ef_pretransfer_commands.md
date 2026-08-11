@@ -88,7 +88,7 @@ test "$(git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test "$(git -C "$WORKTREE" rev-parse origin/codex/lvef-multitask-revalidation)" = "$EXPECTED_COMMIT"
 test -z "$(git -C "$WORKTREE" status --porcelain --untracked-files=no)"
 
-ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_002'
+ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_003'
 PRODUCTION_ATTEMPT_ID='lvef_c3_phase1ee_production_lock_006'
 test "$PHASE1EF_ATTEMPT_ROOT" = \
   "/restricted/projectnb/mimicecho/audits/$ATTEMPT_ID"
@@ -138,8 +138,9 @@ mkdir -m 700 -- "$PHASE1EF_ATTEMPT_ROOT"
 mkdir -m 700 -- "$BACKUP_CONTAINER"
 
 # One read-only pquota/native-quota/findmnt/df capture. It validates the twelve
-# immutable aggregates and attempts 001/002/005 by hash/schema only. It runs no
-# du, find, storage inventory, object listing, or cloud operation.
+# immutable aggregates, Phase 1E-E capacity attempts 001/002, and production
+# attempt 005 by hash/schema only. It runs no du, find, storage inventory,
+# object listing, or cloud operation.
 PHASE1EF_STAGE=CAPACITY_CAPTURE
 "$WORKTREE/scripts/scc_capture_lvef_c3_post_reallocation_capacity.sh" \
   "$PHASE1EF_ENV"

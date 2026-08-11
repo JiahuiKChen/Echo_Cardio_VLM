@@ -49,7 +49,7 @@ def test_environment_preparer_preserves_fixed_scientific_authorities() -> None:
     ).read_text(encoding="utf-8")
     assert "lvef_c3_phase1ee_production_lock_005" in source
     assert "lvef_c3_phase1ee_production_lock_006" in source
-    assert "lvef_multitask_phase1ef_post_reallocation_lock_attempt_002" in source
+    assert "lvef_multitask_phase1ef_post_reallocation_lock_attempt_003" in source
     assert "23c74ccfd145ab9a423b6942a431a1894a34ab67" in source
     assert "7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b" in source
     assert "920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1" in source
@@ -102,11 +102,15 @@ def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
     ).read_text(encoding="utf-8")
     assert "bash <<'PHASE1EF_STRICT_CHILD'" in source
     assert (
-        "ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_002'"
+        "ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_003'"
         in source
     )
     assert (
         "ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_001'"
+        not in source
+    )
+    assert (
+        "ATTEMPT_ID='lvef_multitask_phase1ef_post_reallocation_lock_attempt_002'"
         not in source
     )
     assert source.count("PHASE1EF_STRICT_CHILD") == 2
@@ -154,3 +158,29 @@ def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
         in source
     )
     assert "echoprime_environment=PINNED_EXTERNAL_SOURCE_RECONSTRUCTABLE" not in source
+
+
+def test_attempt_003_preparation_and_capture_are_no_clobber() -> None:
+    preparer = (
+        ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
+    ).read_text(encoding="utf-8")
+    capture = (
+        ROOT / "scripts" / "scc_capture_lvef_c3_post_reallocation_capacity.sh"
+    ).read_text(encoding="utf-8")
+    assert (
+        "PHASE1EF_PREP_ATTEMPT_ID="
+        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_003"
+    ) in preparer
+    assert (
+        "--attempt-id "
+        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_003"
+    ) in capture
+    assert '[[ ! -e "$PHASE1EF_ATTEMPT_ROOT" && ! -L "$PHASE1EF_ATTEMPT_ROOT" ]]' in preparer
+    assert (
+        '[[ ! -e "/restricted/project/mimicecho/audits/$ATTEMPT_ID" '
+        '&& ! -L "/restricted/project/mimicecho/audits/$ATTEMPT_ID" ]]'
+    ) in preparer
+    assert (
+        '[[ ! -e "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" '
+        '&& ! -L "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" ]]'
+    ) in preparer

@@ -1,7 +1,8 @@
 # Phase 1E-F post-reallocation pretransfer lock
 
-Status: **attempt 001 preserved after a fail-closed native-quota parser defect;
-attempt 002 is repaired offline but remains unexecuted and unauthorized**.
+Status: **attempts 001 and 002 are preserved after separate fail-closed
+capacity-parser defects; attempt 003 is prepared offline but remains unexecuted
+and unauthorized**.
 
 Phase 1E-F is limited to read-only capacity capture, a bounded owner-private
 control-authority backup and isolated restore test, and offline reconstruction
@@ -45,15 +46,30 @@ above the minimum, 482,154,480,468 bytes after the projected peak, and
 planning label remains owner-provided context; it is not substituted for the
 native allocation record.
 
-The live capacity receipt reconciles SCC's display aliases to the secure
-project roots rather than treating `/project/...` and `/projectnb/...` as
-literal alternate directories. The root-controlled `pquota` implementation
-reads the current native quota record when no dated snapshot argument is
-supplied, reports the `rproject` and `rprojectnb` filesets through those display
-aliases, and is bound by its own size and SHA-256. Reconciliation requires the
-corresponding secure mount target, mount-source fileset basename, root
-filesystem subroot, and distinct device identity to agree; both secure roots
-must also be regular, nonsymlink, non-bind mount authorities.
+The exact native quota rows, `df -B1`, and mount evidence are the primary
+capacity authorities. The root-controlled `pquota` implementation reads the
+current native quota record when no dated snapshot argument is supplied and is
+bound by its own size and SHA-256. Reconciliation requires the corresponding
+secure mount target, mount-source fileset basename, root filesystem subroot,
+and distinct device identity to agree; both secure roots must also be regular,
+nonsymlink, non-bind mount authorities.
+
+The human-facing `pquota` table is a secondary cross-check only. The live
+diagnostic found exactly one backed and one research project row, both using
+`RPROJECT`-prefix first-field classes; the owner-context `PROJECT`-prefix
+matches were zero. The repaired parser accepts either exact alias while
+rejecting duplicates, near matches, and contradictions. Its two-line wrapped
+header, variable ASCII spacing, and two
+indented subordinate user rows were identical after normalization between
+redirected nonterminal and PTY captures. A parsed display that agrees with the
+native authority passes; an unavailable or unparseable display is recorded as
+nonblocking when native, filesystem, and mount authorities are complete; a
+material parsed contradiction remains blocking.
+
+Gate reporting uses the closed states `PASS`, `FAIL`, and `NOT_EVALUATED`.
+`FAIL` means the required inputs were evaluated and did not pass;
+`NOT_EVALUATED` records an upstream tooling or evidence failure without
+misstating it as a negative capacity result.
 
 Snapshots are **not independently enumerated** by Phase 1E-F. The capacity
 calculation avoids snapshot double counting by using the current effective
@@ -77,17 +93,27 @@ one expected row for each project authority, both using the native `root`
 fileset scope. No capacity conclusion is drawn from that diagnosis because the
 closed receipt did not complete.
 
+Attempt 002,
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_002`, ran exactly once
+under governing commit `498e0b676ca08e91321743bf856676eb285dae38` and
+stopped at `CAPACITY_CAPTURE` with the sanitized error
+`PQUOTA_DISPLAY_ROWS_MISSING` and exit status 2. The parser required only the
+owner-context `PROJECT`-prefix display rows, while the live table contained one exact backed
+and one exact research `RPROJECT`-prefix project row. No downstream stage
+began, no capacity receipt was sealed, and neither its research-tier nor
+backed-tier root may be reused or repaired in place.
+
 The repaired but unauthorized next attempt is
-`lvef_multitask_phase1ef_post_reallocation_lock_attempt_002`. Its restricted
-receipt set binds the exact governing commit, both project quotas and file
-quotas, filesystem identities and physical availability, mount reconciliation,
-the approved backup manifest, isolated restore receipt, prior immutable
-aggregate hashes, the current production packet, zero-scope launch envelope,
-and an exact unexecuted first-batch command. The final authority chain is not
-disaster-recoverable merely because its hashes are recorded under the research
-tier; a terminal no-clobber backed-tier recovery seal must preserve the exact
-current environment, packet, launch envelope, command, and final aggregate, or
-the current-commit packet gate remains failed.
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_003`. Its future
+restricted receipt set will bind the exact governing commit, both project
+quotas and file quotas, filesystem identities and physical availability, mount
+reconciliation, the approved backup manifest, isolated restore receipt, prior
+immutable aggregate hashes, the current production packet, zero-scope launch
+envelope, and an exact unexecuted first-batch command. The final authority chain
+is not disaster-recoverable merely because its hashes are recorded under the
+research tier; a terminal no-clobber backed-tier recovery seal must preserve
+the exact current environment, packet, launch envelope, command, and final
+aggregate, or the current-commit packet gate remains failed.
 
 Any next attempt must preserve all earlier capacity and production attempts. It may
 not overwrite or repair them. Raw paths, filesystem sources, principal names,

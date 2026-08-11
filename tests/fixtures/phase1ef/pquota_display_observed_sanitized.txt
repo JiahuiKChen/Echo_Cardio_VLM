@@ -1,0 +1,8 @@
+quota             quota       usage     usage
+project space     (GB)        (files)   (GB)      (files)
+
+/rproject/PROJECT_PLACEHOLDER       50          1638400       10.19       47379
+    SYNTHETIC_USER_PLACEHOLDER                                10.19       47378
+
+/rprojectnb/PROJECT_PLACEHOLDER     1950        33554432      140.30      106407
+    SYNTHETIC_USER_PLACEHOLDER                                140.30      106406

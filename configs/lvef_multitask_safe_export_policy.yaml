@@ -1292,6 +1292,19 @@ export_profiles:
       - pquota_display_fileset_mapping_verified
       - pquota_current_not_snapshot_mode_verified
       - pquota_executable_sha256
+      - pquota_executable_authority_status
+      - pquota_display_crosscheck
+      - pquota_display_crosscheck_reason
+      - pquota_display_backed_project_row_matches
+      - pquota_display_research_project_row_matches
+      - pquota_display_rounding_rule
+      - research_quota_gate_status
+      - physical_filesystem_capacity_gate_status
+      - projected_200gb_reserve_gate_status
+      - research_file_quota_gate_status
+      - backed_control_tier_byte_gate_status
+      - backed_control_tier_file_gate_status
+      - backed_control_tier_gate_status
       - research_mount_fsroot_is_root
       - backed_mount_fsroot_is_root
       - mounted_filesystems_distinct
@@ -1348,6 +1361,20 @@ export_profiles:
       - files_deleted
       - full_c3_authorized
     allowed_top_level_keys: *phase1ef_post_reallocation_capacity_keys
+    field_types:
+      pquota_executable_authority_status: string
+      pquota_display_crosscheck: string
+      pquota_display_crosscheck_reason: string
+      pquota_display_backed_project_row_matches: integer
+      pquota_display_research_project_row_matches: integer
+      pquota_display_rounding_rule: string
+      research_quota_gate_status: string
+      physical_filesystem_capacity_gate_status: string
+      projected_200gb_reserve_gate_status: string
+      research_file_quota_gate_status: string
+      backed_control_tier_byte_gate_status: string
+      backed_control_tier_file_gate_status: string
+      backed_control_tier_gate_status: string
 
   phase1ef_backup_recovery_json:
     kind: json

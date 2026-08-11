@@ -36,7 +36,7 @@ PHASE1EF_PREP_SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_
 PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2
 PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_005"
 PHASE1EF_PREP_PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT/authority/c3_execution_environment.restricted.env"
-PHASE1EF_PREP_ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_002
+PHASE1EF_PREP_ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_003
 PHASE1EF_PREP_ATTEMPT_ROOT="/restricted/projectnb/mimicecho/audits/$PHASE1EF_PREP_ATTEMPT_ID"
 readonly PHASE1EF_PREP_REQUESTED_COMMIT PHASE1EF_PREP_REQUESTED_OUTPUT_ENV
 readonly PHASE1EF_PREP_WORKTREE PHASE1EF_PREP_SESSION_ENV
@@ -245,8 +245,8 @@ for index in "${!prior_sizes[@]}"; do
 done
 
 [[ ! -e "$PHASE1EF_ATTEMPT_ROOT" && ! -L "$PHASE1EF_ATTEMPT_ROOT" ]]
-[[ ! -e "/restricted/project/mimicecho/audits/$ATTEMPT_ID" ]]
-[[ ! -e "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" ]]
+[[ ! -e "/restricted/project/mimicecho/audits/$ATTEMPT_ID" && ! -L "/restricted/project/mimicecho/audits/$ATTEMPT_ID" ]]
+[[ ! -e "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" && ! -L "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" ]]
 
 temporary="$(mktemp "${OUTPUT_ENV}.tmp.XXXXXX")"
 chmod 600 "$temporary"
