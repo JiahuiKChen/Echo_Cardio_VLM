@@ -128,6 +128,13 @@ def test_environment_preparer_trusted_python_owner_policy_matches_dispatcher() -
     assert '[[ "$owner_uid" = "$EUID" || "$owner_uid" = 0 ]]' in dispatcher_match.group(0)
     assert 'phase1ef_prep_assert_trusted_executable_authority "$PYTHON_AUTHORITY"' in preparer
     assert 'phase1ef_assert_trusted_executable_authority "$PYTHON_AUTHORITY"' in dispatcher
+    assert (
+        "PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON="
+        "/share/pkg.8/python3/3.10.12/install/bin/python3.10"
+    ) in preparer
+    assert "phase1ef_prep_pinned_external_python_metadata" in preparer
+    assert '[[ "$owner_uid" = "$parent_owner_uid" ]] || return 1' in preparer
+    assert '[[ "$candidate_writable" = 0 && "$parent_writable" = 0 ]] || return 1' in preparer
     assert preparer.index(
         'phase1ef_prep_assert_trusted_executable_authority "$PYTHON_AUTHORITY"'
     ) < preparer.index("packet_binding()")

@@ -238,13 +238,14 @@ def test_phase1ef_dispatcher_production_path_preflight_only_passes_without_side_
 
 def test_phase1ef_dispatcher_trusted_python_owner_and_mode_policy() -> None:
     source = DISPATCHER.read_text(encoding="utf-8")
-    match = re.search(
-        r"phase1ef_trusted_executable_metadata\(\) \{.*?\n\}",
-        source,
-        flags=re.DOTALL,
+    mode_match = re.search(
+        r"phase1ef_safe_executable_mode\(\) \{.*?\n\}", source, flags=re.DOTALL
     )
-    assert match is not None
-    function_name = match.group(0).split("(", 1)[0]
+    owner_match = re.search(
+        r"phase1ef_trusted_executable_metadata\(\) \{.*?\n\}", source, flags=re.DOTALL
+    )
+    assert mode_match is not None and owner_match is not None
+    function_name = owner_match.group(0).split("(", 1)[0]
     current_uid = os.geteuid()
     other_uid = 1 if current_uid not in (1,) else 2
     cases = (
@@ -267,7 +268,8 @@ def test_phase1ef_dispatcher_trusted_python_owner_and_mode_policy() -> None:
             [
                 "/bin/bash",
                 "-c",
-                f"set -e\n{match.group(0)}\n{function_name} {uid} {mode}",
+                f"set -e\n{mode_match.group(0)}\n{owner_match.group(0)}\n"
+                f"{function_name} {uid} {mode}",
             ]
         )
         assert (result.returncode == 0) is (expected == 0), (uid, mode)
@@ -278,6 +280,12 @@ def test_phase1ef_dispatcher_pinned_python_uses_narrow_trusted_owner_policy() ->
     assert 'test -O "$PYTHON_AUTHORITY"' not in source
     assert 'phase1ef_assert_trusted_executable_authority "$PYTHON_AUTHORITY"' in source
     assert '[[ "$owner_uid" = "$EUID" || "$owner_uid" = 0 ]]' in source
+    assert (
+        "PHASE1EF_PINNED_EXTERNAL_PYTHON="
+        "/share/pkg.8/python3/3.10.12/install/bin/python3.10"
+    ) in source
+    assert '[[ "$owner_uid" = "$parent_owner_uid" ]] || return 1' in source
+    assert '[[ "$candidate_writable" = 0 && "$parent_writable" = 0 ]] || return 1' in source
     assert 'phase1ef_no_symlink_ancestors "$candidate" || return 1' in source
     assert '[[ -r "$candidate" && -x "$candidate" ]] || return 1' in source
 
@@ -288,7 +296,9 @@ def test_phase1ef_dispatcher_trusted_python_rejects_leaf_and_ancestor_symlinks()
         "phase1ef_no_symlink_ancestors",
         "phase1ef_stat_mode",
         "phase1ef_stat_uid",
+        "phase1ef_safe_executable_mode",
         "phase1ef_trusted_executable_metadata",
+        "phase1ef_pinned_external_python_metadata",
         "phase1ef_assert_trusted_executable_authority",
     )
     functions: list[str] = []
@@ -311,6 +321,7 @@ def test_phase1ef_dispatcher_trusted_python_rejects_leaf_and_ancestor_symlinks()
             [
                 "set -e",
                 f"PHASE1EF_KERNEL={os.uname().sysname}",
+                "PHASE1EF_PINNED_EXTERNAL_PYTHON=/synthetic/external/python",
                 *functions,
                 'phase1ef_assert_trusted_executable_authority "$1"',
             ]
@@ -336,6 +347,44 @@ def test_phase1ef_dispatcher_accepts_launcher_symlink_only_for_bound_target() ->
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert "PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS" in result.stdout
         assert "Darwin) /usr/bin/stat -Lf '%d:%i'" in DISPATCHER.read_text(encoding="utf-8")
+
+
+def test_phase1ef_dispatcher_external_python_exception_is_exact_and_nonwritable() -> None:
+    source = DISPATCHER.read_text(encoding="utf-8")
+    match = re.search(
+        r"phase1ef_pinned_external_python_metadata\(\) \{.*?\n\}",
+        source,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    function_name = match.group(0).split("(", 1)[0]
+    expected_path = "/share/pkg.8/python3/3.10.12/install/bin/python3.10"
+    current_uid = str(os.geteuid())
+    foreign_uid = "9001" if current_uid != "9001" else "9002"
+    prefix = (
+        "set -e\n"
+        f"PHASE1EF_PINNED_EXTERNAL_PYTHON={expected_path}\n{match.group(0)}\n"
+    )
+    cases = (
+        (expected_path, foreign_uid, foreign_uid, "0", "0", 0),
+        ("/different/python", foreign_uid, foreign_uid, "0", "0", 1),
+        (expected_path, foreign_uid, "9003", "0", "0", 1),
+        (expected_path, foreign_uid, foreign_uid, "1", "0", 1),
+        (expected_path, foreign_uid, foreign_uid, "0", "1", 1),
+        (expected_path, current_uid, current_uid, "0", "0", 1),
+        (expected_path, "0", "0", "0", "0", 1),
+    )
+    for candidate, owner, parent_owner, writable, parent_writable, expected in cases:
+        result = _run(
+            [
+                "/bin/bash",
+                "-c",
+                prefix
+                + f"{function_name} {candidate} {owner} {parent_owner} "
+                + f"{writable} {parent_writable}",
+            ]
+        )
+        assert (result.returncode == 0) is (expected == 0), candidate
 
 
 def test_phase1ef_dispatcher_rejects_untracked_import_shadow_before_python() -> None:

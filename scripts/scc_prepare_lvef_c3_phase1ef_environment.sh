@@ -23,7 +23,8 @@ PYTHONDONTWRITEBYTECODE=1
 export PYTHONDONTWRITEBYTECODE
 
 PHASE1EF_PREP_KERNEL="$(/usr/bin/uname -s)"
-readonly PHASE1EF_PREP_KERNEL
+PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON=/share/pkg.8/python3/3.10.12/install/bin/python3.10
+readonly PHASE1EF_PREP_KERNEL PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON
 
 [[ $- = *p* ]] || {
   printf '%s\n' 'PHASE1EF_PRIVILEGED_BASH_STARTUP=REQUIRED' >&2
@@ -89,14 +90,36 @@ phase1ef_prep_trusted_executable_metadata() {
   phase1ef_prep_assert_executable_authority_mode "$mode"
 }
 
+phase1ef_prep_pinned_external_python_metadata() {
+  local candidate="$1" owner_uid="$2" parent_owner_uid="$3"
+  local candidate_writable="$4" parent_writable="$5"
+  [[ "$candidate" = "$PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON" ]] || return 1
+  [[ "$owner_uid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$owner_uid" != "$EUID" && "$owner_uid" != 0 ]] || return 1
+  [[ "$owner_uid" = "$parent_owner_uid" ]] || return 1
+  [[ "$candidate_writable" = 0 && "$parent_writable" = 0 ]] || return 1
+}
+
 phase1ef_prep_assert_trusted_executable_authority() {
-  local candidate="$1" owner_uid mode
+  local candidate="$1" owner_uid mode parent parent_owner_uid
+  local candidate_writable=0 parent_writable=0
   [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
   [[ -r "$candidate" && -x "$candidate" ]] || return 1
   assert_no_symlink_ancestors "$candidate" || return 1
   owner_uid="$(phase1ef_prep_stat_uid "$candidate")" || return 1
   mode="$(phase1ef_prep_stat_mode "$candidate")" || return 1
-  phase1ef_prep_trusted_executable_metadata "$owner_uid" "$mode"
+  phase1ef_prep_assert_executable_authority_mode "$mode" || return 1
+  if phase1ef_prep_trusted_executable_metadata "$owner_uid" "$mode"; then
+    return 0
+  fi
+  parent="${candidate%/*}"
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  parent_owner_uid="$(phase1ef_prep_stat_uid "$parent")" || return 1
+  if [[ -w "$candidate" ]]; then candidate_writable=1; fi
+  if [[ -w "$parent" ]]; then parent_writable=1; fi
+  phase1ef_prep_pinned_external_python_metadata \
+    "$candidate" "$owner_uid" "$parent_owner_uid" \
+    "$candidate_writable" "$parent_writable"
 }
 
 phase1ef_prep_sha256() {
@@ -156,6 +179,7 @@ readonly -f phase1ef_prep_stat_size phase1ef_prep_sha256
 readonly -f phase1ef_prep_resolve_path phase1ef_prep_assert_checkout_clean
 readonly -f phase1ef_prep_assert_executable_authority_mode
 readonly -f phase1ef_prep_trusted_executable_metadata
+readonly -f phase1ef_prep_pinned_external_python_metadata
 readonly -f phase1ef_prep_assert_trusted_executable_authority
 
 assert_private_directory() {
