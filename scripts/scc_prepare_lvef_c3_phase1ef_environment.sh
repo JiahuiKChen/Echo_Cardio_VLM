@@ -66,6 +66,14 @@ phase1ef_prep_stat_size() {
   esac
 }
 
+phase1ef_prep_assert_executable_authority_mode() {
+  local mode="$1"
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 07000) == 0 )) || return 1
+  (( (8#$mode & 0500) == 0500 )) || return 1
+  (( (8#$mode & 0022) == 0 )) || return 1
+}
+
 phase1ef_prep_sha256() {
   local digest_output digest
   case "$PHASE1EF_PREP_KERNEL" in
@@ -120,6 +128,7 @@ phase1ef_prep_assert_checkout_clean() {
 readonly -f assert_no_symlink_ancestors phase1ef_prep_stat_mode
 readonly -f phase1ef_prep_stat_size phase1ef_prep_sha256
 readonly -f phase1ef_prep_resolve_path phase1ef_prep_assert_checkout_clean
+readonly -f phase1ef_prep_assert_executable_authority_mode
 
 assert_private_directory() {
   local candidate="$1" mode
@@ -162,7 +171,8 @@ PHASE1EF_PREP_RUNNING_SCRIPT="$(
 )"
 [[ "$PHASE1EF_PREP_RUNNING_SCRIPT" = \
   "$PHASE1EF_PREP_WORKTREE/scripts/scc_prepare_lvef_c3_phase1ef_environment.sh" ]]
-[[ "$(phase1ef_prep_stat_mode "$PHASE1EF_PREP_RUNNING_SCRIPT")" = 755 ]]
+phase1ef_prep_assert_executable_authority_mode \
+  "$(phase1ef_prep_stat_mode "$PHASE1EF_PREP_RUNNING_SCRIPT")"
 readonly PHASE1EF_PREP_RUNNING_SCRIPT
 
 # The two sourced owner-private authority files are historical and may contain

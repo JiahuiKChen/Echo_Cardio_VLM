@@ -234,11 +234,61 @@ def test_phase1ef_authority_manifest_rejects_live_content_and_mode_changes() -> 
     with tempfile.TemporaryDirectory() as raw:
         worktree, manifest, digest = _create(Path(raw))
         target = worktree / authority.ROLE_SPECS["capacity_parser"][0]
-        target.chmod(0o700)
+        target.chmod(0o644)
         _assert_error(
             "AUTHORITY_MODE_POLICY_FAILED",
             lambda: _validate(worktree, manifest, digest),
         )
+    with tempfile.TemporaryDirectory() as raw:
+        worktree, manifest, digest = _create(Path(raw))
+        target = worktree / authority.ROLE_SPECS["capacity_parser"][0]
+        target.chmod(0o775)
+        _assert_error(
+            "AUTHORITY_MODE_POLICY_FAILED",
+            lambda: _validate(worktree, manifest, digest),
+        )
+
+
+def test_phase1ef_authority_manifest_accepts_restrictive_umask_checkout_modes() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        worktree = _make_worktree(root)
+        for role, (relative, expected_mode) in authority.ROLE_SPECS.items():
+            (worktree / relative).chmod(0o700 if expected_mode & 0o111 else 0o600)
+        manifest = _private_root(root) / "authority.restricted.json"
+        digest = authority.write_manifest_atomic(
+            output_path=manifest,
+            worktree=worktree,
+            attempt_id=authority.AUTHORIZED_ATTEMPT_ID,
+            git_branch=authority.AUTHORIZED_BRANCH,
+            git_commit=COMMIT,
+            historical_base_commit=authority.HISTORICAL_BASE_COMMIT,
+            created_utc=CREATED_UTC,
+        )
+        _validate(worktree, manifest, digest)
+
+
+def test_phase1ef_authority_mode_policies_reject_unsafe_boundaries() -> None:
+    for mode in (0o500, 0o700, 0o750, 0o755, 0o705):
+        assert authority._mode_satisfies_policy(
+            mode, authority.MODE_POLICY_EXECUTABLE
+        )
+    for mode in (0o300, 0o600, 0o775, 0o757, 0o4755, 0o2755, 0o1755):
+        assert not authority._mode_satisfies_policy(
+            mode, authority.MODE_POLICY_EXECUTABLE
+        )
+    for mode in (0o400, 0o600, 0o640, 0o644, 0o604):
+        assert authority._mode_satisfies_policy(
+            mode, authority.MODE_POLICY_NONEXECUTABLE
+        )
+    for mode in (0o200, 0o755, 0o664, 0o646, 0o4644, 0o2644, 0o1644):
+        assert not authority._mode_satisfies_policy(
+            mode, authority.MODE_POLICY_NONEXECUTABLE
+        )
+    assert authority._mode_satisfies_policy(0o600, authority.MODE_POLICY_PRIVATE)
+    assert not authority._mode_satisfies_policy(
+        0o400, authority.MODE_POLICY_PRIVATE
+    )
 
 
 def test_phase1ef_authority_manifest_rejects_owner_policy_violation() -> None:

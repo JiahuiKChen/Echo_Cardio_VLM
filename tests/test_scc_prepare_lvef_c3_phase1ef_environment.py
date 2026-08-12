@@ -1,4 +1,6 @@
 from pathlib import Path
+import re
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,12 +58,52 @@ def test_environment_preparer_is_offline_private_and_hash_bound() -> None:
     assert "lvef_c3_phase1ef_authority_manifest.py" in source
     assert "PHASE1EF_AUTHORITY_MANIFEST_SHA256" in source
     assert "PHASE1EF_EXECUTION_SCOPES_GRANTED=0" in source
+    assert "phase1ef_prep_assert_executable_authority_mode" in source
+    assert "(8#$mode & 07000) == 0 )) || return 1" in source
+    assert "(8#$mode & 0500) == 0500 )) || return 1" in source
+    assert "(8#$mode & 0022) == 0 )) || return 1" in source
     assert '[[ "${!variable}" =~ ^[A-Za-z0-9_@%+,./:=-]+$ ]]' in source
     for forbidden in (
         "gcloud ", "gsutil", "objects.list", "alt=media", "qsub",
         "pquota", "findmnt", "df -B1", "du -", "rm -", "rm -rf",
     ):
         assert forbidden not in source
+
+
+def test_environment_preparer_executable_mode_helper_accepts_umask_and_rejects_unsafe_modes() -> None:
+    source = (
+        ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"phase1ef_prep_assert_executable_authority_mode\(\) \{.*?\n\}",
+        source,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    for mode, expected in (
+        ("700", 0),
+        ("755", 0),
+        ("600", 1),
+        ("300", 1),
+        ("775", 1),
+        ("757", 1),
+        ("4755", 1),
+        ("2755", 1),
+        ("1755", 1),
+    ):
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                f"set -e\n{match.group(0)}\n"
+                f"{match.group(0).split('(')[0]} {mode}",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        assert (result.returncode == 0) is (expected == 0), mode
 
 
 def test_environment_preparer_preserves_fixed_scientific_authorities() -> None:

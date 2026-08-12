@@ -37,8 +37,10 @@ UTC_RE: Final = re.compile(
     r"^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
 )
 
-# These paths and modes are the trusted repository contract.  They are not
-# accepted from an environment file or from the manifest being validated.
+# These paths and Git-intended executable classifications are the trusted
+# repository contract. They are not accepted from an environment file or
+# from the manifest being validated. A restrictive checkout umask may remove
+# group/other read and execute bits without changing that classification.
 ROLE_SPECS: Final[dict[str, tuple[str, int]]] = {
     "capacity_parser": (
         "scripts/capture_lvef_c3_post_reallocation_capacity.py",
@@ -70,6 +72,12 @@ ROLE_SPECS: Final[dict[str, tuple[str, int]]] = {
     ),
 }
 AUTHORITY_ROLES: Final = frozenset(ROLE_SPECS)
+
+MODE_POLICY_EXECUTABLE: Final = "OWNER_RX_NO_GROUP_OR_OTHER_WRITE"
+MODE_POLICY_NONEXECUTABLE: Final = (
+    "OWNER_READABLE_NONEXECUTABLE_NO_GROUP_OR_OTHER_WRITE"
+)
+MODE_POLICY_PRIVATE: Final = "EXACT_0600"
 
 EXECUTION_SCOPE_FLAGS: Final[dict[str, bool]] = {
     "cloud_access": False,
@@ -180,7 +188,27 @@ def _canonical_new_path(path: Path) -> Path:
     return candidate
 
 
-def _read_regular_current_owner(path: Path, required_mode: int) -> bytes:
+def _role_mode_policy(expected_mode: int) -> str:
+    return (
+        MODE_POLICY_EXECUTABLE
+        if expected_mode & 0o111
+        else MODE_POLICY_NONEXECUTABLE
+    )
+
+
+def _mode_satisfies_policy(mode: int, policy: str) -> bool:
+    if policy == MODE_POLICY_PRIVATE:
+        return mode == 0o600
+    if mode & 0o7022:
+        return False
+    if policy == MODE_POLICY_EXECUTABLE:
+        return mode & 0o500 == 0o500
+    if policy == MODE_POLICY_NONEXECUTABLE:
+        return mode & 0o400 == 0o400 and mode & 0o111 == 0
+    return False
+
+
+def _read_regular_current_owner(path: Path, required_mode_policy: str) -> bytes:
     _canonical_existing_path(path, expected_directory=False)
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -195,7 +223,9 @@ def _read_regular_current_owner(path: Path, required_mode: int) -> bytes:
             _fail("AUTHORITY_NOT_REGULAR_FILE")
         if metadata.st_uid != os.geteuid():
             _fail("AUTHORITY_OWNER_POLICY_FAILED")
-        if stat.S_IMODE(metadata.st_mode) != required_mode:
+        if not _mode_satisfies_policy(
+            stat.S_IMODE(metadata.st_mode), required_mode_policy
+        ):
             _fail("AUTHORITY_MODE_POLICY_FAILED")
         chunks: list[bytes] = []
         while True:
@@ -226,7 +256,7 @@ def _read_regular_current_owner(path: Path, required_mode: int) -> bytes:
 
 
 def _read_private_manifest(path: Path) -> bytes:
-    return _read_regular_current_owner(path, 0o600)
+    return _read_regular_current_owner(path, MODE_POLICY_PRIVATE)
 
 
 def _parse_created_utc(value: Any) -> str:
@@ -269,7 +299,8 @@ def _authority_path(worktree: Path, role: str) -> Path:
 def _authority_entry(worktree: Path, role: str) -> dict[str, Any]:
     expected_path = _authority_path(worktree, role)
     _, expected_mode = ROLE_SPECS[role]
-    payload = _read_regular_current_owner(expected_path, expected_mode)
+    mode_policy = _role_mode_policy(expected_mode)
+    payload = _read_regular_current_owner(expected_path, mode_policy)
     if not payload:
         _fail("AUTHORITY_EMPTY_FILE")
     return {
@@ -279,7 +310,7 @@ def _authority_entry(worktree: Path, role: str) -> dict[str, Any]:
         "size_bytes": len(payload),
         "required_file_type": "REGULAR_FILE",
         "required_owner_policy": "CURRENT_EFFECTIVE_USER",
-        "required_mode_policy": f"EXACT_{expected_mode:04o}",
+        "required_mode_policy": mode_policy,
         "symlink_permitted": False,
     }
 
@@ -347,13 +378,14 @@ def _validate_authority_entry(
 
     expected_path = _authority_path(worktree, role)
     _, expected_mode = ROLE_SPECS[role]
+    mode_policy = _role_mode_policy(expected_mode)
     if entry["canonical_absolute_path"] != str(expected_path):
         _fail("AUTHORITY_PATH_MISMATCH")
     if entry["required_file_type"] != "REGULAR_FILE":
         _fail("AUTHORITY_FILE_TYPE_POLICY_INVALID")
     if entry["required_owner_policy"] != "CURRENT_EFFECTIVE_USER":
         _fail("AUTHORITY_OWNER_POLICY_INVALID")
-    if entry["required_mode_policy"] != f"EXACT_{expected_mode:04o}":
+    if entry["required_mode_policy"] != mode_policy:
         _fail("AUTHORITY_MODE_POLICY_INVALID")
     if entry["symlink_permitted"] is not False:
         _fail("AUTHORITY_SYMLINK_POLICY_INVALID")
@@ -368,7 +400,7 @@ def _validate_authority_entry(
     ):
         _fail("AUTHORITY_SIZE_INVALID")
 
-    payload = _read_regular_current_owner(expected_path, expected_mode)
+    payload = _read_regular_current_owner(expected_path, mode_policy)
     if len(payload) != entry["size_bytes"]:
         _fail("AUTHORITY_SIZE_MISMATCH")
     if _sha256(payload) != entry["sha256"]:
