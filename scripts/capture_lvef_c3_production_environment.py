@@ -562,8 +562,16 @@ def probe_crc32c_runtime(
     return value
 
 
-def _validate_output_destination(path: Path) -> None:
-    if not path.is_absolute() or not str(path).startswith("/restricted/projectnb/"):
+def _validate_output_destination(
+    path: Path, *, allowed_root: Path = Path("/restricted/projectnb")
+) -> None:
+    if any(part in {"", ".", ".."} for part in path.parts[1:]):
+        raise EnvironmentAuthorityError("OUTPUT_OUTSIDE_PROJECTNB")
+    try:
+        path.relative_to(allowed_root)
+    except ValueError:
+        raise EnvironmentAuthorityError("OUTPUT_OUTSIDE_PROJECTNB")
+    if not path.is_absolute() or not allowed_root.is_absolute() or path == allowed_root:
         raise EnvironmentAuthorityError("OUTPUT_OUTSIDE_PROJECTNB")
     require_no_symlink_ancestors(path.parent, code="OUTPUT_PARENT")
     if not path.parent.is_dir() or path.parent.stat().st_uid != os.getuid():
@@ -578,9 +586,17 @@ def _validate_output_destination(path: Path) -> None:
     require_no_symlink_ancestors(path, code="OUTPUT", require_leaf=False)
 
 
-def write_receipt_temp(path: Path, value: Mapping[str, Any]) -> Path:
+def write_receipt_temp(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    allowed_root: Path | None = None,
+) -> Path:
     """Write and fsync an owner-private sibling temporary receipt."""
-    _validate_output_destination(path)
+    if allowed_root is None:
+        _validate_output_destination(path)
+    else:
+        _validate_output_destination(path, allowed_root=allowed_root)
     payload = json.dumps(value, indent=2, sort_keys=True).encode("utf-8") + b"\n"
     temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
     require_no_symlink_ancestors(temporary, code="OUTPUT_TEMP", require_leaf=False)
@@ -612,9 +628,17 @@ def write_receipt_temp(path: Path, value: Mapping[str, Any]) -> Path:
             os.close(descriptor)
 
 
-def promote_receipt_atomic(temporary: Path, path: Path) -> None:
+def promote_receipt_atomic(
+    temporary: Path,
+    path: Path,
+    *,
+    allowed_root: Path | None = None,
+) -> None:
     """Atomically promote without replacing a raced or pre-existing receipt."""
-    _validate_output_destination(path)
+    if allowed_root is None:
+        _validate_output_destination(path)
+    else:
+        _validate_output_destination(path, allowed_root=allowed_root)
     if temporary.parent != path.parent:
         raise EnvironmentAuthorityError("OUTPUT_TEMP_NOT_SIBLING")
     require_no_symlink_ancestors(temporary, code="OUTPUT_TEMP")

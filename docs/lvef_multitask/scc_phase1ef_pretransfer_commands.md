@@ -1,94 +1,69 @@
-# Phase 1E-F SCC pretransfer lock commands
+# Phase 1E-G SCC pre-canary commands
 
-Status: **offline only; no cloud, scheduler, DICOM, or model execution**.
+Status: **tracked interface ready; SCC preflight and capture not yet reported**.
 
-The only supported Phase 1E-F attempt entrypoint is the tracked executable:
+## Execution authority
 
-`scripts/scc_execute_lvef_c3_phase1ef_attempt.sh`
+`configs/lvef_c3_execution_state_v1.yaml` is the single execution-state
+authority. It keeps these identities separate:
 
-The dispatcher contains the complete offline workflow. Critical execution no
-longer extracts or evaluates a Bash fence from this Markdown document.
+- logical execution attempt 004, executed exactly once and immutable;
+- the preserved preparation sequence
+  `lvef_multitask_phase1ef_r2_attempt004_preparation_6a814b3_attempt_005`;
+- next unused logical execution attempt 005, which does not exist; and
+- next unused production attempt 006, which does not exist.
 
-## Canonical preexecution authority
+The suffix `_attempt_005` in the preparation sequence identifier is not a
+logical execution-attempt claim. The preparation, validator, and D3 entrypoint
+must load the canonical state rather than infer identity from that suffix.
 
-The owner-private mode-600 environment is created only by
-`scripts/scc_prepare_lvef_c3_phase1ef_environment.sh`. Its path is supplied to
-the dispatcher through `PHASE1EF_ENV`; neither that path nor any environment
-value is printed. The dispatcher treats the file as literal `NAME=value` data,
-never as shell code.
+## Separate Git fast-forward
 
-Every fresh environment is bound to one owner-private mode-600 JSON manifest
-with schema name `lvef_c3_phase1ef_preexecution_authority_manifest`, schema
-version 1, and zero execution scopes. The manifest contains exactly these
-current-commit authority roles:
-
-- `capacity_parser`;
-- `capacity_wrapper`;
-- `environment_preparer`;
-- `phase1ef_runbook`;
-- `safe_export_policy`;
-- `backup_recovery_policy`;
-- `tracked_attempt_dispatcher`.
-
-Before any output path is created, the dispatcher verifies its own canonical
-executed bytes, Git branch/commit/origin/ancestry/cleanliness, the private
-environment grammar and exact field set, the manifest path/hash/schema, all
-seven authority paths/sizes/hashes/modes/owners, exact attempt 005, zero
-scopes, and the complete output-collision set. A manifest, environment,
-dispatcher, or collision failure is a **preexecution failure**, not an attempt
-execution.
-
-Attempts 001 through 004 are immutable and cannot be selected. Attempt 005 may
-execute only after a separate owner authorization names the synchronized commit
-and a fresh environment/manifest authority. Attempt 004 ran once, passed the
-capacity gates, and stopped during current-environment capture; it must never be
-reused or repaired in place.
-
-## R2 validation command
-
-This nonmutating mode is the only dispatcher mode authorized during Phase
-1E-F-R2. The operator sets `PHASE1EF_ENV` to the fresh owner-private file
-without echoing it, then runs:
+Fast-forward the clean SCC worktree before invoking D3. Git synchronization is
+not an entrypoint mode and does not create an execution attempt.
 
 ```bash
-: "${PHASE1EF_ENV:?set the owner-private Phase 1E-F environment path}"
-PHASE1EF_ENV="$PHASE1EF_ENV" \
-  /restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask/scripts/scc_execute_lvef_c3_phase1ef_attempt.sh --preflight-only
+cd /restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
+git fetch --no-tags origin refs/heads/codex/lvef-multitask-revalidation:refs/remotes/origin/codex/lvef-multitask-revalidation
+git merge --ff-only origin/codex/lvef-multitask-revalidation
 ```
 
-`--preflight-only` stops after every authority and collision check and before
-the first `mkdir`. It cannot invoke capacity capture, backup/restore, packet or
-launch-envelope creation, cloud access, or scheduler submission.
+## One tracked D3 entrypoint
 
-## Future single-attempt command
-
-The execution form is preserved here only as an **UNEXECUTED** interface. It
-must not be run without a new, explicit owner authorization:
+The preflight is one short invocation with no positional commit and no private
+path argument:
 
 ```bash
-: "${PHASE1EF_ENV:?set the owner-private Phase 1E-F environment path}"
-PHASE1EF_ENV="$PHASE1EF_ENV" \
-  /restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask/scripts/scc_execute_lvef_c3_phase1ef_attempt.sh --execute
+scripts/scc_finalize_lvef_phase1ef_d3.sh --preflight-only
 ```
 
-The offline workflow remains zero-scope: it does not request Google Cloud,
-list or download objects, submit `qsub`, decode a real DICOM, run EchoPrime,
-create embeddings, fit models, generate predictions, or access confirmatory
-performance. Its generated first-batch command remains separately gated and
-unexecuted.
-
-## Bounded D3 post-commit recovery
-
-The historical attempt dispatcher above must not be used to repair attempt
-004. The only supported D3 repair interface is now the tracked short wrapper:
+Only after that invocation passes, run the single no-clobber offline capture:
 
 ```bash
-: "${ENDING_COMMIT:?set the exact reviewed ending commit}"
-/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask/scripts/scc_finalize_lvef_phase1ef_d3.sh "$ENDING_COMMIT"
+scripts/scc_finalize_lvef_phase1ef_d3.sh --capture-current-environment
 ```
 
-It validates or captures only the post-commit software-environment receipt. It
-cannot create attempt 005 or production attempt 006, rerun capacity, contact a
-cloud service, submit a scheduler job, or perform scientific computation. This
-command remains **UNEXECUTED** and requires separate owner authorization naming
-the exact commit and wrapper checksum.
+`--preflight-only` validates Git/state binding, preparation discovery, private
+authorities, immutable capacity artifacts, attempt absence, and any existing
+receipt. It writes no scientific artifact and does not constitute an execution
+attempt. `--capture-current-environment` may create only the unique restricted
+current-environment receipt, or validate an already valid receipt without
+overwriting it.
+
+Do not use a response-generated script, an OnDemand editor, SCP/SFTP/rsync,
+terminal heredocs, base64, or browser text materialization. The separate
+full-workflow preparer/dispatcher commands are not the Phase 1E-G D3 interface
+and must not be invoked in this bounded phase.
+
+## Bounded failure rule
+
+If live SCC exposes a reversible implementation or contract defect, preserve
+the failed no-clobber capture, make at most one code repair, revalidate and
+synchronize, then use at most one final unique capture retry. Stop after a
+failed final retry; do not add another authority layer.
+
+Neither mode can rerun attempt 004, create attempt 005 or production attempt
+006, contact a cloud service, submit `qsub`, read or extract a DICOM, use a GPU,
+run EchoPrime inference, create embeddings, fit a model, generate predictions,
+or access confirmatory performance. A 3–5-study DICOM canary remains separately
+owner-authorized and must not be run through this interface.

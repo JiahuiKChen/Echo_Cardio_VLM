@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Create and validate the private Phase 1E-F preexecution authority manifest.
 
-The manifest binds attempt 005 to exactly seven tracked control-plane files and
-to zero execution scopes.  It intentionally contains no cloud identity,
+The legacy manifest ``attempt_id`` field binds the canonical next-unused
+execution attempt to exactly seven tracked control-plane files and to zero
+execution scopes.  It intentionally contains no cloud identity,
 credential, billing, clinical, imaging, or patient-level authority.  Both the
 writer and validator fail closed, reject duplicate JSON keys, and expose only
 fixed aggregate-safe status codes on the command line.
@@ -23,13 +24,21 @@ import sys
 from typing import Any, Final
 
 
+# The SCC callers deliberately use Python isolated mode.  Add only this
+# manifest's resolved tracked sibling directory so the execution-state loader
+# remains importable without inheriting PYTHONPATH or the current directory.
+_SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+if str(_SCRIPT_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIRECTORY))
+
+from lvef_c3_execution_state import (  # noqa: E402
+    ExecutionStateError,
+    load_execution_state,
+)
+
+
 SCHEMA_NAME: Final = "lvef_c3_phase1ef_preexecution_authority_manifest"
 SCHEMA_VERSION: Final = 1
-AUTHORIZED_ATTEMPT_ID: Final = (
-    "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
-)
-AUTHORIZED_BRANCH: Final = "codex/lvef-multitask-revalidation"
-HISTORICAL_BASE_COMMIT: Final = "23c74ccfd145ab9a423b6942a431a1894a34ab67"
 
 COMMIT_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -126,6 +135,22 @@ class AuthorityManifestError(ValueError):
 
 def _fail(code: str) -> None:
     raise AuthorityManifestError(code)
+
+
+try:
+    _EXECUTION_STATE = load_execution_state()
+except ExecutionStateError as exc:
+    raise AuthorityManifestError("EXECUTION_STATE_INVALID") from exc
+
+# Compatibility aliases retain the historical Python API while their values
+# are derived from the single state authority.  Operative code below uses the
+# explicit next-unused name so it cannot be mistaken for logical attempt 004.
+AUTHORIZED_NEXT_EXECUTION_ATTEMPT_ID: Final = (
+    _EXECUTION_STATE.next_unused_execution_attempt_id
+)
+AUTHORIZED_BRANCH: Final = _EXECUTION_STATE.branch
+HISTORICAL_BASE_COMMIT: Final = _EXECUTION_STATE.historical_base_commit
+AUTHORIZED_ATTEMPT_ID: Final = AUTHORIZED_NEXT_EXECUTION_ATTEMPT_ID
 
 
 def _strict_pairs(pairs: Iterable[tuple[str, Any]]) -> MutableMapping[str, Any]:
@@ -280,7 +305,7 @@ def _validate_static_identity(
     git_commit: Any,
     historical_base_commit: Any,
 ) -> None:
-    if attempt_id != AUTHORIZED_ATTEMPT_ID:
+    if attempt_id != AUTHORIZED_NEXT_EXECUTION_ATTEMPT_ID:
         _fail("ATTEMPT_ID_NOT_AUTHORIZED")
     if git_branch != AUTHORIZED_BRANCH:
         _fail("GIT_BRANCH_NOT_AUTHORIZED")
@@ -432,7 +457,10 @@ def validate_manifest_payload(
         git_commit=value["git_commit"],
         historical_base_commit=value["historical_base_commit"],
     )
-    if expected_attempt_id != AUTHORIZED_ATTEMPT_ID or value["attempt_id"] != expected_attempt_id:
+    if (
+        expected_attempt_id != AUTHORIZED_NEXT_EXECUTION_ATTEMPT_ID
+        or value["attempt_id"] != expected_attempt_id
+    ):
         _fail("EXPECTED_ATTEMPT_ID_MISMATCH")
     if expected_git_branch != AUTHORIZED_BRANCH or value["git_branch"] != expected_git_branch:
         _fail("EXPECTED_GIT_BRANCH_MISMATCH")

@@ -626,7 +626,9 @@ phase1e_bc_resource_metadata_preflight:
         environment_receipt_created: false
         repair_or_rerun_occurred: false
         preserved_immutable: true
-      next_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
+      execution_state_authority:
+        path: configs/lvef_c3_execution_state_v1.yaml
+        next_unused_execution_attempt_field: next_unused_execution_attempt
       next_attempt_authorized: false
       d3_recovery:
         ephemeral_transfer_leaf_disposition: EPHEMERAL_TRANSFER_LEAF_UNRESOLVED

@@ -8,9 +8,11 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 from typing import Mapping, Sequence
 from unittest import mock
 
@@ -21,6 +23,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import capture_lvef_c3_production_environment as environment_capture
 import finalize_lvef_phase1ef_d3 as recovery
+import lvef_c3_execution_state as execution_state
 import lvef_c3_phase1ef_authority_manifest as authority_manifest
 
 
@@ -177,13 +180,16 @@ class D3Fixture:
         self.production_root.mkdir(mode=0o700)
         (self.production_root / "attempts").mkdir(mode=0o700)
         self.attempt_roots = tuple(
-            self.audit_root / f"lvef_multitask_phase1ef_post_reallocation_lock_attempt_{i:03d}"
+            self.audit_root
+            / f"{recovery._TRACKED_STATE.execution_attempt_namespace}_{i:03d}"
             for i in range(1, 6)
         )
         for attempt in self.attempt_roots[:4]:
             attempt.mkdir(mode=0o700)
         self.production_attempt_006 = (
-            self.production_root / "attempts" / "lvef_c3_phase1ee_production_lock_006"
+            self.production_root
+            / "attempts"
+            / recovery._TRACKED_STATE.next_unused_production_attempt_id
         )
 
         self.diagnostic_root = (
@@ -209,22 +215,30 @@ class D3Fixture:
                 mode,
             )
         self.manifest = self.preparation_root / "phase1ef_authority.json"
-        manifest_value = authority_manifest.build_manifest_payload(
-            worktree=self.worktree,
-            attempt_id=authority_manifest.AUTHORIZED_ATTEMPT_ID,
-            git_branch=recovery.BRANCH,
-            git_commit=recovery.LEGACY_D3_COMMIT,
-            historical_base_commit=recovery.HISTORICAL_BASE,
-            created_utc="2026-08-12T12:00:00Z",
+        logical_execution_attempt_id = (
+            recovery._TRACKED_STATE.logical_execution_attempt_id
         )
+        with mock.patch.object(
+            authority_manifest,
+            "AUTHORIZED_NEXT_EXECUTION_ATTEMPT_ID",
+            logical_execution_attempt_id,
+        ):
+            manifest_value = authority_manifest.build_manifest_payload(
+                worktree=self.worktree,
+                attempt_id=logical_execution_attempt_id,
+                git_branch=recovery.BRANCH,
+                git_commit=recovery.LEGACY_D3_COMMIT,
+                historical_base_commit=recovery.HISTORICAL_BASE,
+                created_utc="2026-08-12T12:00:00Z",
+            )
         manifest_payload = (json.dumps(manifest_value, sort_keys=True) + "\n").encode()
         _write(self.manifest, manifest_payload)
         manifest_sha = _sha(manifest_payload)
         environment_text = (
             f"WORKTREE={self.worktree}\n"
             f"EXPECTED_COMMIT={recovery.LEGACY_D3_COMMIT}\n"
-            "ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_005\n"
-            "PHASE1EF_ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_005\n"
+            f"ATTEMPT_ID={logical_execution_attempt_id}\n"
+            f"PHASE1EF_ATTEMPT_ID={logical_execution_attempt_id}\n"
             "PHASE1EF_EXECUTION_SCOPES_GRANTED=0\n"
             f"PYTHON={self.lexical_python}\n"
             f"PRIOR_ENVIRONMENT_RECEIPT={self.prior}\n"
@@ -237,6 +251,20 @@ class D3Fixture:
         self.preparation_environment = _write(
             self.preparation_root / recovery.PREPARATION_ENVIRONMENT,
             environment_text.encode("utf-8"),
+        )
+
+        state_value = json.loads(
+            (ROOT / "configs/lvef_c3_execution_state_v1.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        state_value["preparation_environment_bytes"] = (
+            self.preparation_environment.stat().st_size
+        )
+        self.state_path = _write(
+            self.worktree / "configs/lvef_c3_execution_state_v1.yaml",
+            (json.dumps(state_value, indent=2) + "\n").encode("utf-8"),
+            0o644,
         )
 
         self.restricted_payload = b"synthetic frozen restricted capacity\n"
@@ -284,11 +312,9 @@ class D3Fixture:
         self.config = recovery.RecoveryConfig(
             worktree=self.worktree,
             audit_root=self.audit_root,
-            production_attempt_006=self.production_attempt_006,
-            attempt_roots=self.attempt_roots,
+            production_root=self.production_root,
             lexical_python=self.lexical_python,
-            frozen_restricted_capacity=self.frozen_restricted,
-            frozen_aggregate_capacity=self.frozen_aggregate,
+            state_path=self.state_path,
         )
 
     def patches(self) -> ExitStack:
@@ -299,7 +325,6 @@ class D3Fixture:
             "CRC32C_PYTHON_SHA256": self.crc_sha,
             "CRC32C_WORKER_SHA256": self.worker_sha,
             "CAPTURE_SCRIPT_SHA256": _sha(self.capture_payload),
-            "PREPARATION_ENVIRONMENT_BYTES": self.preparation_environment.stat().st_size,
             "FROZEN_RESTRICTED_CAPACITY_BYTES": len(self.restricted_payload),
             "FROZEN_RESTRICTED_CAPACITY_SHA256": _sha(self.restricted_payload),
             "FROZEN_AGGREGATE_CAPACITY_BYTES": len(self.aggregate_payload),
@@ -332,12 +357,133 @@ class D3Fixture:
         return payload
 
 
+class EndToEndRunner(SyntheticRunner):
+    """Run the real receipt producer; allow only exact control-plane roles."""
+
+    def __call__(
+        self,
+        command: Sequence[str],
+        cwd: Path | None,
+        environment: Mapping[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        argv = tuple(str(item) for item in command)
+        if argv[0] != str(self.fixture.lexical_python):
+            return super().__call__(command, cwd, environment)
+
+        self.commands.append(argv)
+        self.environments.append(dict(environment))
+        self.capture_calls += 1
+        expected_prefix = (
+            str(self.fixture.lexical_python),
+            "-E",
+            "-s",
+            "-B",
+            str(
+                self.fixture.worktree
+                / "scripts/capture_lvef_c3_production_environment.py"
+            ),
+        )
+        assert argv[:5] == expected_prefix
+        assert cwd == self.fixture.worktree
+        assert environment.get("CUDA_VISIBLE_DEVICES") == ""
+        capture_args = environment_capture.parse_args(argv[5:])
+
+        runtime = {
+            "python_version": platform.python_version(),
+            "torch_version": "2.11.0+cu130",
+            "torchvision_version": "0.26.0+cu130",
+            "cuda_version": "13.0",
+            "cudnn_version": "91002",
+        }
+        torch = SimpleNamespace(
+            __version__=runtime["torch_version"],
+            version=SimpleNamespace(cuda=runtime["cuda_version"]),
+            backends=SimpleNamespace(
+                cudnn=SimpleNamespace(version=lambda: int(runtime["cudnn_version"]))
+            ),
+        )
+        torchvision = SimpleNamespace(__version__=runtime["torchvision_version"])
+
+        def import_module(name: str):
+            assert name in {"torch", "torchvision"}
+            return torch if name == "torch" else torchvision
+
+        def hash_file(path: Path) -> str:
+            if path == self.fixture.prior:
+                return _sha(self.fixture.prior_payload)
+            if path == self.fixture.worker:
+                return self.fixture.worker_sha
+            raise AssertionError("unexpected hash role")
+
+        def crc_probe(python: Path, worker: Path, *, expected_python_sha256: str):
+            assert python == self.fixture.crc32c_python
+            assert worker == self.fixture.worker
+            assert expected_python_sha256 == self.fixture.crc_sha
+            return {
+                "protocol_version": 1,
+                "status": "PASS_CRC32C_AUXILIARY_RUNTIME",
+                "python_version": "3.14.0",
+                "google_crc32c_version": "1.8.0",
+                "google_crc32c_implementation": "c",
+                "google_crc32c_distribution_sha256": "b" * 64,
+                "google_crc32c_distribution_file_count": 1,
+                "known_vector_crc32c_base64": "4waSgw==",
+                "cloud_requests": 0,
+            }
+
+        def write_temp(path: Path, value: Mapping[str, object]) -> Path:
+            return environment_capture.write_receipt_temp(
+                path, value, allowed_root=self.fixture.diagnostic_root
+            )
+
+        def promote(temporary: Path, destination: Path) -> None:
+            environment_capture.promote_receipt_atomic(
+                temporary,
+                destination,
+                allowed_root=self.fixture.diagnostic_root,
+            )
+
+        hooks = environment_capture.CaptureHooks(
+            import_module=import_module,
+            find_optional_package=lambda name: None,
+            interpreter_authority=lambda: (
+                self.fixture.python_target,
+                self.fixture.python_sha,
+            ),
+            validate_checkout=lambda checkout, commit: (
+                None
+                if checkout == self.fixture.worktree and commit == TARGET_COMMIT
+                else (_ for _ in ()).throw(AssertionError("checkout mismatch"))
+            ),
+            load_prior=lambda path: runtime,
+            hash_file=hash_file,
+            inventory=lambda: [
+                {"name": "torch", "version": runtime["torch_version"]},
+                {"name": "torchvision", "version": runtime["torchvision_version"]},
+            ],
+            crc_probe=crc_probe,
+            write_temp=write_temp,
+            promote=promote,
+        )
+        environment_capture.capture_environment(capture_args, hooks=hooks)
+        return _completed(argv, stdout='{"status":"PASS"}\n')
+
+
 def _error_code(operation) -> str:
     try:
         operation()
     except recovery.D3RecoveryError as exc:
         return exc.code
     raise AssertionError("D3 operation unexpectedly passed")
+
+
+def _assert_no_mutating_command(runner: SyntheticRunner) -> None:
+    assert runner.capture_calls == 0
+    assert not any(
+        command[0] == "/usr/bin/git"
+        and command[1:2] in {("fetch",), ("merge",)}
+        for command in runner.commands
+    )
 
 
 def test_d3_default_capacity_paths_match_frozen_attempt004_authority() -> None:
@@ -370,6 +516,11 @@ def test_d3_canonical_reference_bytes_remain_exact_and_uninvoked() -> None:
     assert _sha(path.read_bytes()) == CANONICAL_SHA256
     wrapper = (SCRIPTS / "scc_finalize_lvef_phase1ef_d3.sh").read_text()
     assert path.name not in wrapper
+
+
+def test_d3_live_capture_entrypoint_hash_matches_tracked_bytes() -> None:
+    path = SCRIPTS / "capture_lvef_c3_production_environment.py"
+    assert _sha(path.read_bytes()) == recovery.CAPTURE_SCRIPT_SHA256
 
 
 def test_d3_canonical_operation_mapping_is_closed_and_scope_never_broadens() -> None:
@@ -406,27 +557,122 @@ def test_d3_private_manifest_uses_exact_ten_key_seven_role_contract() -> None:
         )
 
 
-def test_d3_old_commit_fast_forwards_once_then_captures_receipt() -> None:
+def test_d3_starting_authority_requires_separate_fast_forward() -> None:
     with tempfile.TemporaryDirectory() as raw:
         fixture = D3Fixture(Path(raw))
-        runner = SyntheticRunner(fixture, current=recovery.LEGACY_D3_COMMIT)
+        runner = SyntheticRunner(
+            fixture, current=recovery._TRACKED_STATE.starting_authority_commit
+        )
         with fixture.patches():
-            result = recovery.run_recovery(TARGET_COMMIT, config=fixture.config, runner=runner)
-        assert result["SCC_D3_FAST_FORWARD"] == "PASS"
-        assert runner.capture_calls == 1
-        assert sum(command[1:3] == ("merge", "--ff-only") for command in runner.commands) == 1
-        assert fixture.receipt.is_file()
+            assert _error_code(
+                lambda: recovery.run_recovery(
+                    "--capture-current-environment",
+                    config=fixture.config,
+                    runner=runner,
+                )
+            ) == "STARTING_AUTHORITY_REQUIRES_FAST_FORWARD"
+        assert runner.capture_calls == 0
+        assert not fixture.receipt.exists()
 
 
-def test_d3_current_commit_captures_without_repeated_migration() -> None:
+def test_d3_current_commit_captures_without_git_mutation() -> None:
     with tempfile.TemporaryDirectory() as raw:
         fixture = D3Fixture(Path(raw))
         runner = SyntheticRunner(fixture, current=TARGET_COMMIT)
         with fixture.patches():
-            result = recovery.run_recovery(TARGET_COMMIT, config=fixture.config, runner=runner)
-        assert result["SCC_D3_FAST_FORWARD"] == "ALREADY_COMPLETE"
+            result = recovery.run_recovery("--capture-current-environment", config=fixture.config, runner=runner)
+        assert result["SCC_COMMIT_EQUALITY"] == "PASS"
         assert runner.capture_calls == 1
-        assert not any(command[1:3] == ("merge", "--ff-only") for command in runner.commands)
+        assert not any(
+            command[1:2] in {("fetch",), ("merge",)}
+            for command in runner.commands
+        )
+
+
+def test_phase1eg_true_end_to_end_preserved_attempt004_environment_capture() -> None:
+    """One tracked invocation traverses the complete sanitized live topology."""
+    with tempfile.TemporaryDirectory() as raw:
+        fixture = D3Fixture(Path(raw))
+        runner = EndToEndRunner(fixture, current=TARGET_COMMIT)
+        state = execution_state.load_execution_state(fixture.state_path)
+        preparation_values = recovery.parse_literal_environment(
+            fixture.preparation_environment,
+            expected_size=state.preparation_environment_bytes,
+        )
+        manifest_value = json.loads(fixture.manifest.read_text(encoding="utf-8"))
+        assert state.logical_execution_attempt == 4
+        assert state.next_unused_execution_attempt == 5
+        assert state.preparation_sequence_id.endswith("_attempt_005")
+        assert preparation_values["ATTEMPT_ID"] == state.logical_execution_attempt_id
+        assert manifest_value["attempt_id"] == state.logical_execution_attempt_id
+
+        before_files = {
+            path.relative_to(fixture.root)
+            for path in fixture.root.rglob("*")
+            if path.is_file() or path.is_symlink()
+        }
+        restricted_before = (
+            fixture.frozen_restricted.read_bytes(), fixture.frozen_restricted.stat().st_ino
+        )
+        aggregate_before = (
+            fixture.frozen_aggregate.read_bytes(), fixture.frozen_aggregate.stat().st_ino
+        )
+        assert not os.path.lexists(fixture.attempt_roots[4])
+        assert not os.path.lexists(fixture.production_attempt_006)
+
+        stream = io.StringIO()
+        with fixture.patches(), redirect_stdout(stream):
+            status = recovery.main(
+                ["--capture-current-environment"],
+                config=fixture.config,
+                runner=runner,
+            )
+
+        assert status == 0, stream.getvalue()
+        assert "PREPARATION_BINDING_VALIDATION=PASS_LOGICAL_EXECUTION_ATTEMPT" in (
+            stream.getvalue()
+        )
+        assert runner.capture_calls == 1
+        receipt = json.loads(fixture.receipt.read_text(encoding="utf-8"))
+        assert receipt["governing_commit"] == TARGET_COMMIT
+        assert receipt["status"] == "PASS_OFFLINE_RUNTIME_AUTHORITY_NO_GPU_EXECUTION"
+        assert all(
+            receipt[key] is False
+            for key in (
+                "gpu_execution_performed",
+                "cloud_request_performed",
+                "dicom_body_read",
+                "model_fitted",
+                "prediction_generated",
+                "confirmatory_performance_accessed",
+            )
+        )
+        assert (
+            fixture.frozen_restricted.read_bytes(), fixture.frozen_restricted.stat().st_ino
+        ) == restricted_before
+        assert (
+            fixture.frozen_aggregate.read_bytes(), fixture.frozen_aggregate.stat().st_ino
+        ) == aggregate_before
+        assert not os.path.lexists(fixture.attempt_roots[4])
+        assert not os.path.lexists(fixture.production_attempt_006)
+
+        after_files = {
+            path.relative_to(fixture.root)
+            for path in fixture.root.rglob("*")
+            if path.is_file() or path.is_symlink()
+        }
+        assert after_files - before_files == {fixture.receipt.relative_to(fixture.root)}
+        assert all(
+            command[0] in {"/usr/bin/git", str(fixture.lexical_python)}
+            for command in runner.commands
+        )
+        joined = "\n".join(" ".join(command) for command in runner.commands).casefold()
+        for forbidden in (
+            "gcloud", "gsutil", "qsub", "objects.list", "alt=media",
+            "dicom", "inference", "embedding", "model_fitting", "prediction",
+            "confirmatory",
+        ):
+            assert forbidden not in joined
 
 
 def test_d3_existing_valid_receipt_is_validated_without_overwrite() -> None:
@@ -436,7 +682,7 @@ def test_d3_existing_valid_receipt_is_validated_without_overwrite() -> None:
         with fixture.patches():
             before = fixture.write_receipt()
             inode = fixture.receipt.stat().st_ino
-            result = recovery.run_recovery(TARGET_COMMIT, config=fixture.config, runner=runner)
+            result = recovery.run_recovery("--capture-current-environment", config=fixture.config, runner=runner)
         assert result["CURRENT_ENVIRONMENT_POSTCOMMIT_VALIDATION"] == "PASS"
         assert runner.capture_calls == 0
         assert fixture.receipt.read_bytes() == before
@@ -464,7 +710,7 @@ def test_d3_existing_invalid_receipt_is_preserved_and_capture_stops() -> None:
         with fixture.patches():
             code = _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             )
         assert code == "RECEIPT_SCHEMA_INVALID"
@@ -481,11 +727,11 @@ def test_d3_missing_private_authority_stops_before_git_mutation() -> None:
         with fixture.patches():
             code = _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             )
         assert code == "AUTHORITY_MISSING"
-        assert runner.commands == []
+        _assert_no_mutating_command(runner)
 
 
 def test_d3_ambiguous_diagnostic_authority_stops_before_git_mutation() -> None:
@@ -498,11 +744,11 @@ def test_d3_ambiguous_diagnostic_authority_stops_before_git_mutation() -> None:
         with fixture.patches():
             code = _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             )
         assert code == "DIAGNOSTIC_AUTHORITY_AMBIGUOUS"
-        assert runner.commands == []
+        _assert_no_mutating_command(runner)
 
 
 def test_d3_wrong_capacity_size_or_hash_stops_before_git_mutation() -> None:
@@ -515,11 +761,11 @@ def test_d3_wrong_capacity_size_or_hash_stops_before_git_mutation() -> None:
             with fixture.patches():
                 code = _error_code(
                     lambda: recovery.run_recovery(
-                        TARGET_COMMIT, config=fixture.config, runner=runner
+                        "--capture-current-environment", config=fixture.config, runner=runner
                     )
                 )
             assert code in {"AUTHORITY_SIZE_MISMATCH", "AUTHORITY_HASH_MISMATCH"}
-            assert runner.commands == []
+            _assert_no_mutating_command(runner)
 
 
 def test_d3_dirty_checkout_stops_before_fetch_or_capture() -> None:
@@ -529,7 +775,7 @@ def test_d3_dirty_checkout_stops_before_fetch_or_capture() -> None:
         with fixture.patches():
             code = _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             )
         assert code == "TRACKED_WORKTREE_DIRTY"
@@ -544,14 +790,14 @@ def test_d3_cleanliness_allows_only_two_preserved_ds_store_files() -> None:
     )
 
 
-def test_d3_wrong_branch_or_starting_commit_is_rejected() -> None:
+def test_d3_wrong_branch_or_origin_commit_is_rejected() -> None:
     with tempfile.TemporaryDirectory() as raw:
         fixture = D3Fixture(Path(raw))
         runner = SyntheticRunner(fixture, current=TARGET_COMMIT, branch="other")
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             ) == "BRANCH_AUTHORITY_MISMATCH"
     with tempfile.TemporaryDirectory() as raw:
@@ -560,38 +806,63 @@ def test_d3_wrong_branch_or_starting_commit_is_rejected() -> None:
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
-            ) == "STARTING_COMMIT_UNAUTHORIZED"
+            ) == "ORIGIN_COMMIT_MISMATCH"
 
 
-def test_d3_wrong_ancestry_or_merge_commit_range_is_rejected() -> None:
+def test_d3_wrong_ancestry_is_rejected_and_preflight_never_mutates_git() -> None:
     with tempfile.TemporaryDirectory() as raw:
         fixture = D3Fixture(Path(raw))
         runner = SyntheticRunner(
-            fixture, current=recovery.LEGACY_D3_COMMIT, ancestry_ok=False
+            fixture, current=TARGET_COMMIT, ancestry_ok=False
         )
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             ) == "GIT_AUTHORITY_FAILURE"
         assert runner.capture_calls == 0
     with tempfile.TemporaryDirectory() as raw:
         fixture = D3Fixture(Path(raw))
-        runner = SyntheticRunner(
-            fixture,
-            current=recovery.LEGACY_D3_COMMIT,
-            merge_range="a" * 40 + "\n",
+        runner = SyntheticRunner(fixture, current=TARGET_COMMIT)
+        with fixture.patches():
+            result = recovery.run_recovery(
+                "--preflight-only", config=fixture.config, runner=runner
+            )
+        assert result["CURRENT_ENVIRONMENT_CAPTURE"] == (
+            "NOT_PERFORMED_PREFLIGHT_ONLY"
         )
+        _assert_no_mutating_command(runner)
+
+
+def test_d3_requires_starting_authority_as_current_head_ancestor() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        fixture = D3Fixture(Path(raw))
+
+        class StartingAuthorityRejectingRunner(SyntheticRunner):
+            def __call__(self, command, cwd, environment):
+                argv = tuple(str(item) for item in command)
+                if argv[0] == "/usr/bin/git" and argv[1:] == (
+                    "merge-base",
+                    "--is-ancestor",
+                    recovery._TRACKED_STATE.starting_authority_commit,
+                    TARGET_COMMIT,
+                ):
+                    self.commands.append(argv)
+                    self.environments.append(dict(environment))
+                    return _completed(argv, returncode=1)
+                return super().__call__(command, cwd, environment)
+
+        runner = StartingAuthorityRejectingRunner(fixture, current=TARGET_COMMIT)
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--preflight-only", config=fixture.config, runner=runner
                 )
-            ) == "MERGE_COMMIT_IN_MIGRATION_RANGE"
-        assert not any(command[1:3] == ("merge", "--ff-only") for command in runner.commands)
+            ) == "GIT_AUTHORITY_FAILURE"
+        _assert_no_mutating_command(runner)
 
 
 def test_d3_attempt005_presence_blocks_before_git() -> None:
@@ -602,11 +873,11 @@ def test_d3_attempt005_presence_blocks_before_git() -> None:
         with fixture.patches():
             code = _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             )
         assert code == "PROHIBITED_ATTEMPT_ROOT_PRESENT"
-        assert runner.commands == []
+        _assert_no_mutating_command(runner)
 
 
 def test_d3_production_attempt006_presence_blocks_before_git() -> None:
@@ -617,18 +888,18 @@ def test_d3_production_attempt006_presence_blocks_before_git() -> None:
         with fixture.patches():
             code = _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             )
         assert code == "PROHIBITED_ATTEMPT_ROOT_PRESENT"
-        assert runner.commands == []
+        _assert_no_mutating_command(runner)
 
 
 def test_d3_attempt004_is_read_only_and_has_no_rerun_command_role() -> None:
     source = (SCRIPTS / "finalize_lvef_phase1ef_d3.py").read_text(encoding="utf-8")
     assert "scc_execute_lvef_c3_phase1ef_attempt.sh" not in source
     assert "scc_capture_lvef_c3_post_reallocation_capacity.sh" not in source
-    assert '"ATTEMPT_004_RERUN": "NO"' in source
+    assert '"LOGICAL_EXECUTION_ATTEMPT_RERUN": "NO"' in source
 
 
 def test_d3_alternate_or_resolved_launcher_substitution_is_rejected() -> None:
@@ -655,10 +926,10 @@ def test_d3_symlinked_private_authority_file_is_rejected() -> None:
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             ) == "AUTHORITY_SYMLINK_COMPONENT"
-        assert runner.commands == []
+        _assert_no_mutating_command(runner)
 
 
 def test_d3_literal_private_environment_rejects_duplicate_and_shell_syntax() -> None:
@@ -671,12 +942,10 @@ def test_d3_literal_private_environment_rejects_duplicate_and_shell_syntax() -> 
         ).encode()
         fixture.preparation_environment.write_bytes(duplicate)
         fixture.preparation_environment.chmod(0o600)
-        with fixture.patches(), mock.patch.object(
-            recovery, "PREPARATION_ENVIRONMENT_BYTES", len(duplicate)
-        ):
+        with fixture.patches():
             assert _error_code(
                 lambda: recovery.parse_literal_environment(
-                    fixture.preparation_environment
+                    fixture.preparation_environment, expected_size=len(duplicate)
                 )
             ) == "PRIVATE_ENVIRONMENT_SCHEMA_INVALID"
     with tempfile.TemporaryDirectory() as raw:
@@ -684,12 +953,10 @@ def test_d3_literal_private_environment_rejects_duplicate_and_shell_syntax() -> 
         injected = b"PRIOR_ENVIRONMENT_RECEIPT=$(touch${IFS}marker)\nCRC32C_PYTHON=/bin/sh\n"
         fixture.preparation_environment.write_bytes(injected)
         fixture.preparation_environment.chmod(0o600)
-        with fixture.patches(), mock.patch.object(
-            recovery, "PREPARATION_ENVIRONMENT_BYTES", len(injected)
-        ):
+        with fixture.patches():
             assert _error_code(
                 lambda: recovery.parse_literal_environment(
-                    fixture.preparation_environment
+                    fixture.preparation_environment, expected_size=len(injected)
                 )
             ) == "PRIVATE_ENVIRONMENT_VALUE_INVALID"
 
@@ -707,7 +974,7 @@ def test_d3_capture_uses_lexical_launcher_and_no_prohibited_command_roles() -> N
         fixture = D3Fixture(Path(raw))
         runner = SyntheticRunner(fixture, current=TARGET_COMMIT)
         with fixture.patches():
-            recovery.run_recovery(TARGET_COMMIT, config=fixture.config, runner=runner)
+            recovery.run_recovery("--capture-current-environment", config=fixture.config, runner=runner)
         non_git = [command for command in runner.commands if command[0] != "/usr/bin/git"]
         assert len(non_git) == 1 and non_git[0][0] == str(fixture.lexical_python)
         assert non_git[0][1:4] == ("-E", "-s", "-B")
@@ -730,7 +997,7 @@ def test_d3_capture_failure_is_closed_and_does_not_create_attempt_roots() -> Non
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             ) == "CURRENT_ENVIRONMENT_CAPTURE_FAILED"
         assert not os.path.lexists(fixture.attempt_roots[4])
@@ -742,8 +1009,8 @@ def test_d3_success_output_schema_is_closed_ordered_and_path_free() -> None:
         fixture = D3Fixture(Path(raw))
         runner = SyntheticRunner(fixture, current=TARGET_COMMIT)
         with fixture.patches():
-            result = recovery.run_recovery(TARGET_COMMIT, config=fixture.config, runner=runner)
-        assert tuple(result) == recovery.SAFE_SUCCESS_KEYS
+            result = recovery.run_recovery("--capture-current-environment", config=fixture.config, runner=runner)
+        assert tuple(result) == recovery.SAFE_CAPTURE_KEYS
         serialized = json.dumps(result, sort_keys=True)
         assert str(fixture.root) not in serialized
         assert set(result.values()).isdisjoint(
@@ -759,7 +1026,7 @@ def test_d3_failure_output_is_fixed_and_does_not_disclose_private_values() -> No
         "run_recovery",
         side_effect=recovery.D3RecoveryError("PRIVATE_AUTHORITY_ROLE_MISSING"),
     ), redirect_stdout(stream):
-        status = recovery.main([TARGET_COMMIT])
+        status = recovery.main(["--preflight-only"])
     output = stream.getvalue()
     assert status == 65
     assert output.splitlines() == [
@@ -786,8 +1053,8 @@ def test_d3_clean_subprocess_environment_excludes_cloud_and_credential_overrides
 
 
 def test_d3_expected_commit_and_single_short_wrapper_interface_are_closed() -> None:
-    assert _error_code(lambda: recovery.run_recovery("not-a-commit")) == (
-        "EXPECTED_COMMIT_INVALID"
+    assert _error_code(lambda: recovery.run_recovery("not-a-mode")) == (
+        "DISPATCH_MODE_INVALID"
     )
     wrapper = (SCRIPTS / "scc_finalize_lvef_phase1ef_d3.sh").read_text(
         encoding="utf-8"
@@ -822,7 +1089,7 @@ def test_d3_unexpected_exception_is_sanitized_without_traceback() -> None:
     with mock.patch.object(
         recovery, "run_recovery", side_effect=RuntimeError("/private/do-not-emit")
     ), redirect_stdout(stream):
-        status = recovery.main([TARGET_COMMIT])
+        status = recovery.main(["--preflight-only"])
     assert status == 70
     assert stream.getvalue().splitlines() == [
         "D3_TRACKED_RECOVERY=FAILED",
@@ -886,7 +1153,7 @@ def test_d3_final_revalidation_detects_concurrent_attempt005_creation() -> None:
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             ) == "PROHIBITED_ATTEMPT_ROOT_PRESENT"
 
@@ -899,7 +1166,7 @@ def test_d3_unsafe_authority_mode_is_rejected() -> None:
         with fixture.patches():
             assert _error_code(
                 lambda: recovery.run_recovery(
-                    TARGET_COMMIT, config=fixture.config, runner=runner
+                    "--capture-current-environment", config=fixture.config, runner=runner
                 )
             ) == "AUTHORITY_MODE_INVALID"
-        assert runner.commands == []
+        _assert_no_mutating_command(runner)

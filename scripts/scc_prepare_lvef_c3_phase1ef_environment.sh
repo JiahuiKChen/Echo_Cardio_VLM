@@ -194,22 +194,15 @@ PHASE1EF_PREP_WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_m
 PHASE1EF_PREP_SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
 PHASE1EF_PREP_ECHOPRIME_PYTHON=/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python
 PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2
-PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_005"
-PHASE1EF_PREP_PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT/authority/c3_execution_environment.restricted.env"
-PHASE1EF_PREP_ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
-PHASE1EF_PREP_ATTEMPT_ROOT="/restricted/projectnb/mimicecho/audits/$PHASE1EF_PREP_ATTEMPT_ID"
-PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME=phase1ef_attempt005_authority_manifest.json
+PHASE1EF_PREP_EXECUTION_STATE_TOOL="$PHASE1EF_PREP_WORKTREE/scripts/lvef_c3_execution_state.py"
+PHASE1EF_PREP_EXECUTION_STATE_FILE="$PHASE1EF_PREP_WORKTREE/configs/lvef_c3_execution_state_v1.yaml"
 PHASE1EF_PREP_MANIFEST_TOOL="$PHASE1EF_PREP_WORKTREE/scripts/lvef_c3_phase1ef_authority_manifest.py"
-PHASE1EF_PREP_REQUESTED_AUTHORITY_MANIFEST="${PHASE1EF_PREP_REQUESTED_OUTPUT_ENV%/*}/$PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME"
 readonly PHASE1EF_PREP_REQUESTED_COMMIT PHASE1EF_PREP_REQUESTED_OUTPUT_ENV
 readonly PHASE1EF_PREP_WORKTREE PHASE1EF_PREP_SESSION_ENV
 readonly PHASE1EF_PREP_ECHOPRIME_PYTHON
 readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT
-readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT
-readonly PHASE1EF_PREP_PRIOR_EXECUTION_ENV PHASE1EF_PREP_ATTEMPT_ID
-readonly PHASE1EF_PREP_ATTEMPT_ROOT
-readonly PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME PHASE1EF_PREP_MANIFEST_TOOL
-readonly PHASE1EF_PREP_REQUESTED_AUTHORITY_MANIFEST
+readonly PHASE1EF_PREP_EXECUTION_STATE_TOOL PHASE1EF_PREP_EXECUTION_STATE_FILE
+readonly PHASE1EF_PREP_MANIFEST_TOOL
 
 # Bind the bytes that are actually executing to the canonical tracked
 # preparer authority before either historical private environment is sourced.
@@ -229,6 +222,62 @@ phase1ef_prep_assert_executable_authority_mode \
   "$(phase1ef_prep_stat_mode "$PHASE1EF_PREP_RUNNING_SCRIPT")"
 readonly PHASE1EF_PREP_RUNNING_SCRIPT
 
+# Derive prospective and prior identities from the closed tracked state.  The
+# opaque preparation-sequence identifier is intentionally not consulted here:
+# this preparer governs only the next-unused execution attempt.
+phase1ef_prep_assert_trusted_executable_authority \
+  "$PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON"
+[[ "$(phase1ef_prep_sha256 "$PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON")" = \
+  1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb ]]
+[[ -f "$PHASE1EF_PREP_EXECUTION_STATE_TOOL" && ! -L "$PHASE1EF_PREP_EXECUTION_STATE_TOOL" ]]
+[[ -O "$PHASE1EF_PREP_EXECUTION_STATE_TOOL" ]]
+assert_no_symlink_ancestors "$PHASE1EF_PREP_EXECUTION_STATE_TOOL"
+phase1ef_prep_assert_executable_authority_mode \
+  "$(phase1ef_prep_stat_mode "$PHASE1EF_PREP_EXECUTION_STATE_TOOL")"
+[[ -f "$PHASE1EF_PREP_EXECUTION_STATE_FILE" && ! -L "$PHASE1EF_PREP_EXECUTION_STATE_FILE" ]]
+[[ -O "$PHASE1EF_PREP_EXECUTION_STATE_FILE" ]]
+assert_no_symlink_ancestors "$PHASE1EF_PREP_EXECUTION_STATE_FILE"
+(( (8#$(phase1ef_prep_stat_mode "$PHASE1EF_PREP_EXECUTION_STATE_FILE") & 0022) == 0 ))
+[[ "$(
+  "$PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON" -I -B "$PHASE1EF_PREP_EXECUTION_STATE_TOOL" \
+    --state "$PHASE1EF_PREP_EXECUTION_STATE_FILE" --check
+)" = LVEF_C3_EXECUTION_STATE=PASS ]]
+phase1ef_prep_state_field() {
+  "$PHASE1EF_PREP_PINNED_EXTERNAL_PYTHON" -I -B "$PHASE1EF_PREP_EXECUTION_STATE_TOOL" \
+    --state "$PHASE1EF_PREP_EXECUTION_STATE_FILE" --field "$1"
+}
+readonly -f phase1ef_prep_state_field
+PHASE1EF_PREP_STATE_BRANCH="$(phase1ef_prep_state_field branch)"
+PHASE1EF_PREP_STATE_HISTORICAL_BASE_COMMIT="$(phase1ef_prep_state_field historical_base_commit)"
+PHASE1EF_PREP_STATE_STARTING_AUTHORITY_COMMIT="$(phase1ef_prep_state_field starting_authority_commit)"
+PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ID="$(phase1ef_prep_state_field prior_production_attempt_id)"
+PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID="$(phase1ef_prep_state_field next_unused_execution_attempt_id)"
+PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_TAG="$(phase1ef_prep_state_field next_unused_execution_attempt_tag)"
+PHASE1EF_PREP_NEXT_PRODUCTION_ATTEMPT_ID="$(phase1ef_prep_state_field next_unused_production_attempt_id)"
+[[ "$PHASE1EF_PREP_STATE_BRANCH" =~ ^[A-Za-z0-9_./-]+$ ]]
+[[ "$PHASE1EF_PREP_STATE_HISTORICAL_BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+[[ "$PHASE1EF_PREP_STATE_STARTING_AUTHORITY_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+[[ "$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ID" =~ ^[a-z0-9_]+$ ]]
+[[ "$PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID" =~ ^[a-z0-9_]+$ ]]
+[[ "$PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_TAG" =~ ^[0-9]{3}$ ]]
+[[ "$PHASE1EF_PREP_NEXT_PRODUCTION_ATTEMPT_ID" =~ ^[a-z0-9_]+$ ]]
+PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT/attempts/$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ID"
+PHASE1EF_PREP_PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT/authority/c3_execution_environment.restricted.env"
+PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ROOT="/restricted/projectnb/mimicecho/audits/$PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID"
+PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME="phase1ef_attempt${PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_TAG}_authority_manifest.json"
+PHASE1EF_PREP_REQUESTED_AUTHORITY_MANIFEST="${PHASE1EF_PREP_REQUESTED_OUTPUT_ENV%/*}/$PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME"
+readonly PHASE1EF_PREP_STATE_BRANCH PHASE1EF_PREP_STATE_HISTORICAL_BASE_COMMIT
+readonly PHASE1EF_PREP_STATE_STARTING_AUTHORITY_COMMIT
+readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ID
+readonly PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID
+readonly PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_TAG
+readonly PHASE1EF_PREP_NEXT_PRODUCTION_ATTEMPT_ID
+readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT
+readonly PHASE1EF_PREP_PRIOR_EXECUTION_ENV
+readonly PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ROOT
+readonly PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME
+readonly PHASE1EF_PREP_REQUESTED_AUTHORITY_MANIFEST
+
 # The two sourced owner-private authority files are historical and may contain
 # generic names such as EXPECTED_COMMIT.  Keep the requested current authority
 # in collision-resistant variables, then deliberately rebind the downstream
@@ -239,8 +288,8 @@ SESSION_ENV="$PHASE1EF_PREP_SESSION_ENV"
 PRIOR_PRODUCTION_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT"
 PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT"
 PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_EXECUTION_ENV"
-ATTEMPT_ID="$PHASE1EF_PREP_ATTEMPT_ID"
-PHASE1EF_ATTEMPT_ROOT="$PHASE1EF_PREP_ATTEMPT_ROOT"
+ATTEMPT_ID="$PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID"
+PHASE1EF_ATTEMPT_ROOT="$PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ROOT"
 
 [[ "$OUTPUT_ENV" = /restricted/projectnb/mimicecho/audits/* ]]
 [[ ! -e "$OUTPUT_ENV" && ! -L "$OUTPUT_ENV" ]]
@@ -294,18 +343,20 @@ SESSION_ENV="$PHASE1EF_PREP_SESSION_ENV"
 PRIOR_PRODUCTION_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT"
 PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT"
 PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_EXECUTION_ENV"
-ATTEMPT_ID="$PHASE1EF_PREP_ATTEMPT_ID"
-PHASE1EF_ATTEMPT_ROOT="$PHASE1EF_PREP_ATTEMPT_ROOT"
+ATTEMPT_ID="$PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID"
+PHASE1EF_ATTEMPT_ROOT="$PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ROOT"
 PHASE1EF_AUTHORITY_MANIFEST="$PHASE1EF_PREP_REQUESTED_AUTHORITY_MANIFEST"
 [[ "$(phase1ef_prep_sha256 "$SESSION_ENV")" = "$PHASE1EF_PREP_SESSION_SHA" ]]
 [[ "$(phase1ef_prep_sha256 "$PRIOR_EXECUTION_ENV")" = "$PHASE1EF_PREP_EXECUTION_SHA" ]]
 
-[[ "$(/usr/bin/git -C "$WORKTREE" branch --show-current)" = codex/lvef-multitask-revalidation ]]
+[[ "$(/usr/bin/git -C "$WORKTREE" branch --show-current)" = "$PHASE1EF_PREP_STATE_BRANCH" ]]
 [[ "$(/usr/bin/git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT" ]]
-[[ "$(/usr/bin/git -C "$WORKTREE" rev-parse origin/codex/lvef-multitask-revalidation)" = "$EXPECTED_COMMIT" ]]
+[[ "$(/usr/bin/git -C "$WORKTREE" rev-parse "origin/$PHASE1EF_PREP_STATE_BRANCH")" = "$EXPECTED_COMMIT" ]]
 phase1ef_prep_assert_checkout_clean "$WORKTREE"
 /usr/bin/git -C "$WORKTREE" merge-base --is-ancestor \
-  23c74ccfd145ab9a423b6942a431a1894a34ab67 "$EXPECTED_COMMIT"
+  "$PHASE1EF_PREP_STATE_HISTORICAL_BASE_COMMIT" "$EXPECTED_COMMIT"
+/usr/bin/git -C "$WORKTREE" merge-base --is-ancestor \
+  "$PHASE1EF_PREP_STATE_STARTING_AUTHORITY_COMMIT" "$EXPECTED_COMMIT"
 
 [[ "$LVEF_C3_PYTHON" = "$PHASE1EF_PREP_ECHOPRIME_PYTHON" ]]
 PYTHON="$PHASE1EF_PREP_ECHOPRIME_PYTHON"
@@ -364,7 +415,7 @@ for variable in "${required_vars[@]}"; do
   [[ -n "${!variable:-}" ]]
 done
 
-# Read expected file identities from the immutable passing attempt-005 packet.
+# Read expected file identities from the immutable prior production packet.
 packet_binding() {
   "$PYTHON_AUTHORITY" -I - "$PRIOR_PRODUCTION_PACKET" "$1" <<'PY'
 import json, sys
@@ -455,7 +506,8 @@ done
 
 [[ ! -e "$PHASE1EF_ATTEMPT_ROOT" && ! -L "$PHASE1EF_ATTEMPT_ROOT" ]]
 [[ ! -e "/restricted/project/mimicecho/audits/$ATTEMPT_ID" && ! -L "/restricted/project/mimicecho/audits/$ATTEMPT_ID" ]]
-[[ ! -e "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" && ! -L "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" ]]
+[[ ! -e "$PRODUCTION_ROOT/attempts/$PHASE1EF_PREP_NEXT_PRODUCTION_ATTEMPT_ID" ]]
+[[ ! -L "$PRODUCTION_ROOT/attempts/$PHASE1EF_PREP_NEXT_PRODUCTION_ATTEMPT_ID" ]]
 
 # Bind every preexecution control authority once, after all immutable inputs and
 # no-clobber roots have passed.  The writer computes this preparer's live hash;
@@ -464,11 +516,11 @@ done
 [[ -O "$PHASE1EF_PREP_MANIFEST_TOOL" ]]
 PHASE1EF_ATTEMPT_ID="$ATTEMPT_ID"
 PHASE1EF_EXECUTION_SCOPES_GRANTED=0
-"$PYTHON_AUTHORITY" -I "$PHASE1EF_PREP_MANIFEST_TOOL" write \
+"$PYTHON_AUTHORITY" -I -B "$PHASE1EF_PREP_MANIFEST_TOOL" write \
   --worktree "$WORKTREE" --attempt-id "$PHASE1EF_ATTEMPT_ID" \
-  --git-branch codex/lvef-multitask-revalidation \
+  --git-branch "$PHASE1EF_PREP_STATE_BRANCH" \
   --git-commit "$EXPECTED_COMMIT" \
-  --historical-base-commit 23c74ccfd145ab9a423b6942a431a1894a34ab67 \
+  --historical-base-commit "$PHASE1EF_PREP_STATE_HISTORICAL_BASE_COMMIT" \
   --output "$PHASE1EF_AUTHORITY_MANIFEST" >/dev/null
 [[ -f "$PHASE1EF_AUTHORITY_MANIFEST" && ! -L "$PHASE1EF_AUTHORITY_MANIFEST" ]]
 [[ -O "$PHASE1EF_AUTHORITY_MANIFEST" ]]
@@ -476,11 +528,11 @@ PHASE1EF_EXECUTION_SCOPES_GRANTED=0
 PHASE1EF_AUTHORITY_MANIFEST_SHA256="$(
   phase1ef_prep_sha256 "$PHASE1EF_AUTHORITY_MANIFEST"
 )"
-"$PYTHON_AUTHORITY" -I "$PHASE1EF_PREP_MANIFEST_TOOL" validate \
+"$PYTHON_AUTHORITY" -I -B "$PHASE1EF_PREP_MANIFEST_TOOL" validate \
   --worktree "$WORKTREE" --attempt-id "$PHASE1EF_ATTEMPT_ID" \
-  --git-branch codex/lvef-multitask-revalidation \
+  --git-branch "$PHASE1EF_PREP_STATE_BRANCH" \
   --git-commit "$EXPECTED_COMMIT" \
-  --historical-base-commit 23c74ccfd145ab9a423b6942a431a1894a34ab67 \
+  --historical-base-commit "$PHASE1EF_PREP_STATE_HISTORICAL_BASE_COMMIT" \
   --manifest "$PHASE1EF_AUTHORITY_MANIFEST" \
   --manifest-sha256 "$PHASE1EF_AUTHORITY_MANIFEST_SHA256" >/dev/null
 

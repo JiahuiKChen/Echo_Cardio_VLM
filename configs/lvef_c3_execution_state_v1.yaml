@@ -1,0 +1,25 @@
+{
+  "schema_name": "lvef_c3_execution_state_v1",
+  "schema_version": 1,
+  "branch": "codex/lvef-multitask-revalidation",
+  "historical_base_commit": "23c74ccfd145ab9a423b6942a431a1894a34ab67",
+  "starting_authority_commit": "6c9a00f8f25d785f85f506aea62b8d3f3e8e617c",
+  "current_governing_commit": "GIT_HEAD",
+  "execution_attempt_namespace": "lvef_multitask_phase1ef_post_reallocation_lock_attempt",
+  "logical_execution_attempt": 4,
+  "logical_execution_governing_commit": "6a814b3080f1159facf86ee60895117d187a41b7",
+  "preparation_sequence_id": "lvef_multitask_phase1ef_r2_attempt004_preparation_6a814b3_attempt_005",
+  "preparation_environment_filename": "phase1ef_attempt004_authority.env",
+  "preparation_environment_bytes": 9206,
+  "next_unused_execution_attempt": 5,
+  "attempt_004_execution_count": 1,
+  "attempt_005_exists": false,
+  "production_attempt_namespace": "lvef_c3_phase1ee_production_lock",
+  "prior_production_attempt": 5,
+  "next_unused_production_attempt": 6,
+  "production_attempt_006_exists": false,
+  "permitted_execution_scopes": [
+    "preflight_only",
+    "capture_current_environment"
+  ]
+}

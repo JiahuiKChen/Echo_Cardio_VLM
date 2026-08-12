@@ -18,7 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import capture_lvef_c3_post_reallocation_capacity as capacity
+from lvef_c3_execution_state import load_execution_state
 import lvef_multitask_analysis_modes as analysis_modes
+
+
+EXECUTION_STATE = load_execution_state()
 
 
 def _native() -> bytes:
@@ -919,7 +923,7 @@ def test_production_command_constructor_receipt_and_projection_round_trip() -> N
         "packet_roles": 38, "packet_gates": 17,
     }
     receipt = capacity._build_capacity_receipt(
-        attempt_id="lvef_multitask_phase1ef_post_reallocation_lock_attempt_005",
+        attempt_id=EXECUTION_STATE.next_unused_execution_attempt_id,
         governing_commit="a" * 40,
         native_quota_file=capacity.EXPECTED_NATIVE_QUOTA_FILE,
         native_payload=native_payload,
@@ -981,10 +985,8 @@ def test_capture_contract_has_no_storage_inventory_cloud_or_scheduler_path() -> 
     assert "find " not in wrapper
     assert "pquota" in source and "findmnt" in source and "df" in source
     assert '--attempt-id "$ATTEMPT_ID"' in wrapper
-    assert (
-        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
-        in wrapper
-    )
+    assert "--field next_unused_execution_attempt_id" in wrapper
+    assert EXECUTION_STATE.next_unused_execution_attempt_id not in wrapper
     for prior in ("001", "002", "003"):
         assert (
             "--attempt-id "

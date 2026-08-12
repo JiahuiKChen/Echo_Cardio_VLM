@@ -15,9 +15,13 @@ WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 ECHOPRIME_PYTHON=/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python
 EXPECTED_PYTHON_SHA256=1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
 
-if [[ $# -ne 1 || ! $1 =~ ^[0-9a-f]{40}$ ]]; then
+if [[ $# -ne 1 ]]; then
   exit 64
 fi
+case "$1" in
+  --preflight-only|--capture-current-environment) ;;
+  *) exit 64 ;;
+esac
 
 cursor=/
 IFS=/ read -r -a launcher_parts <<< "${ECHOPRIME_PYTHON#/}"

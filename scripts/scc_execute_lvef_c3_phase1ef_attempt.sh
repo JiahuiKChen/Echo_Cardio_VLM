@@ -222,19 +222,61 @@ test -n "$PHASE1EF_RUNNING_WORKTREE"
 test "$PHASE1EF_RUNNING_SCRIPT" = \
   "$PHASE1EF_RUNNING_WORKTREE/scripts/scc_execute_lvef_c3_phase1ef_attempt.sh"
 
-# Establish the checkout authority from the running dispatcher before any
-# owner-private value can influence a path or executable selection.
+# Establish the checkout and closed execution-state authority from the running
+# dispatcher before any owner-private value can influence an identity, path,
+# or executable selection.
 PHASE1EF_STAGE=RUNNING_GIT_AUTHORITY
-test "$(/usr/bin/git -C "$PHASE1EF_RUNNING_WORKTREE" branch --show-current)" = \
-  codex/lvef-multitask-revalidation
 PHASE1EF_RUNNING_GIT_COMMIT="$(
   /usr/bin/git -C "$PHASE1EF_RUNNING_WORKTREE" rev-parse HEAD
 )"
-test "$(/usr/bin/git -C "$PHASE1EF_RUNNING_WORKTREE" rev-parse origin/codex/lvef-multitask-revalidation)" = \
-  "$PHASE1EF_RUNNING_GIT_COMMIT"
 phase1ef_assert_checkout_clean "$PHASE1EF_RUNNING_WORKTREE"
+PHASE1EF_EXECUTION_STATE_TOOL="$PHASE1EF_RUNNING_WORKTREE/scripts/lvef_c3_execution_state.py"
+PHASE1EF_EXECUTION_STATE_FILE="$PHASE1EF_RUNNING_WORKTREE/configs/lvef_c3_execution_state_v1.yaml"
+phase1ef_assert_trusted_executable_authority "$PHASE1EF_PINNED_EXTERNAL_PYTHON"
+test "$(phase1ef_sha256 "$PHASE1EF_PINNED_EXTERNAL_PYTHON")" = \
+  1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
+test -f "$PHASE1EF_EXECUTION_STATE_TOOL" && test ! -L "$PHASE1EF_EXECUTION_STATE_TOOL"
+test -O "$PHASE1EF_EXECUTION_STATE_TOOL"
+phase1ef_no_symlink_ancestors "$PHASE1EF_EXECUTION_STATE_TOOL"
+phase1ef_safe_executable_mode "$(phase1ef_stat_mode "$PHASE1EF_EXECUTION_STATE_TOOL")"
+test -f "$PHASE1EF_EXECUTION_STATE_FILE" && test ! -L "$PHASE1EF_EXECUTION_STATE_FILE"
+test -O "$PHASE1EF_EXECUTION_STATE_FILE"
+phase1ef_no_symlink_ancestors "$PHASE1EF_EXECUTION_STATE_FILE"
+phase1ef_state_mode="$(phase1ef_stat_mode "$PHASE1EF_EXECUTION_STATE_FILE")"
+[[ "$phase1ef_state_mode" =~ ^[0-7]{3,4}$ ]]
+(( (8#$phase1ef_state_mode & 0022) == 0 ))
+test "$(
+  "$PHASE1EF_PINNED_EXTERNAL_PYTHON" -I -B "$PHASE1EF_EXECUTION_STATE_TOOL" \
+    --state "$PHASE1EF_EXECUTION_STATE_FILE" --check
+)" = LVEF_C3_EXECUTION_STATE=PASS
+phase1ef_state_field() {
+  "$PHASE1EF_PINNED_EXTERNAL_PYTHON" -I -B "$PHASE1EF_EXECUTION_STATE_TOOL" \
+    --state "$PHASE1EF_EXECUTION_STATE_FILE" --field "$1"
+}
+readonly -f phase1ef_state_field
+PHASE1EF_STATE_BRANCH="$(phase1ef_state_field branch)"
+PHASE1EF_STATE_HISTORICAL_BASE_COMMIT="$(phase1ef_state_field historical_base_commit)"
+PHASE1EF_STATE_STARTING_AUTHORITY_COMMIT="$(phase1ef_state_field starting_authority_commit)"
+PHASE1EF_STATE_NEXT_EXECUTION_ATTEMPT_ID="$(phase1ef_state_field next_unused_execution_attempt_id)"
+PHASE1EF_STATE_NEXT_PRODUCTION_ATTEMPT_ID="$(phase1ef_state_field next_unused_production_attempt_id)"
+[[ "$PHASE1EF_STATE_BRANCH" =~ ^[A-Za-z0-9_./-]+$ ]]
+[[ "$PHASE1EF_STATE_HISTORICAL_BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+[[ "$PHASE1EF_STATE_STARTING_AUTHORITY_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+[[ "$PHASE1EF_STATE_NEXT_EXECUTION_ATTEMPT_ID" =~ ^[a-z0-9_]+$ ]]
+[[ "$PHASE1EF_STATE_NEXT_PRODUCTION_ATTEMPT_ID" =~ ^[a-z0-9_]+$ ]]
+readonly PHASE1EF_EXECUTION_STATE_TOOL PHASE1EF_EXECUTION_STATE_FILE
+readonly PHASE1EF_STATE_BRANCH PHASE1EF_STATE_HISTORICAL_BASE_COMMIT
+readonly PHASE1EF_STATE_STARTING_AUTHORITY_COMMIT
+readonly PHASE1EF_STATE_NEXT_EXECUTION_ATTEMPT_ID
+readonly PHASE1EF_STATE_NEXT_PRODUCTION_ATTEMPT_ID
+test "$(/usr/bin/git -C "$PHASE1EF_RUNNING_WORKTREE" branch --show-current)" = \
+  "$PHASE1EF_STATE_BRANCH"
+test "$(/usr/bin/git -C "$PHASE1EF_RUNNING_WORKTREE" rev-parse "origin/$PHASE1EF_STATE_BRANCH")" = \
+  "$PHASE1EF_RUNNING_GIT_COMMIT"
 /usr/bin/git -C "$PHASE1EF_RUNNING_WORKTREE" merge-base --is-ancestor \
-  23c74ccfd145ab9a423b6942a431a1894a34ab67 "$PHASE1EF_RUNNING_GIT_COMMIT"
+  "$PHASE1EF_STATE_HISTORICAL_BASE_COMMIT" "$PHASE1EF_RUNNING_GIT_COMMIT"
+/usr/bin/git -C "$PHASE1EF_RUNNING_WORKTREE" merge-base --is-ancestor \
+  "$PHASE1EF_STATE_STARTING_AUTHORITY_COMMIT" "$PHASE1EF_RUNNING_GIT_COMMIT"
 
 PHASE1EF_STAGE=PRIVATE_ENVIRONMENT_AUTHORITY
 : "${PHASE1EF_ENV:?set the owner-private mode-600 Phase 1E-F environment path}"
@@ -330,14 +372,13 @@ export -n LVEF_C3_GCP_BILLING_PROJECT
 : "${PHASE1EF_AUTHORITY_MANIFEST:?canonical manifest path required}"
 : "${PHASE1EF_AUTHORITY_MANIFEST_SHA256:?canonical manifest hash required}"
 test "$PHASE1EF_EXECUTION_SCOPES_GRANTED" = 0
-test "$PHASE1EF_ATTEMPT_ID" = \
-  lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
+test "$PHASE1EF_ATTEMPT_ID" = "$PHASE1EF_STATE_NEXT_EXECUTION_ATTEMPT_ID"
 test "$ATTEMPT_ID" = "$PHASE1EF_ATTEMPT_ID"
 test "$WORKTREE" = "$PHASE1EF_RUNNING_WORKTREE"
 test "$PHASE1EF_RUNNING_SCRIPT" = \
   "$WORKTREE/scripts/scc_execute_lvef_c3_phase1ef_attempt.sh"
 test "$EXPECTED_COMMIT" = "$PHASE1EF_RUNNING_GIT_COMMIT"
-test "$EXPECTED_COMMIT" != 23c74ccfd145ab9a423b6942a431a1894a34ab67
+test "$EXPECTED_COMMIT" != "$PHASE1EF_STATE_HISTORICAL_BASE_COMMIT"
 [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 [[ "$PHASE1EF_AUTHORITY_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
 test -f "$PHASE1EF_AUTHORITY_MANIFEST"
@@ -366,20 +407,19 @@ PHASE1EF_STAGE=GIT_AUTHORITY
 test "$(/usr/bin/git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT"
 
 PHASE1EF_STAGE=CANONICAL_AUTHORITY_MANIFEST
-"$PYTHON" -I "$WORKTREE/scripts/lvef_c3_phase1ef_authority_manifest.py" validate \
+"$PYTHON" -I -B "$WORKTREE/scripts/lvef_c3_phase1ef_authority_manifest.py" validate \
   --worktree "$WORKTREE" --attempt-id "$PHASE1EF_ATTEMPT_ID" \
-  --git-branch codex/lvef-multitask-revalidation \
+  --git-branch "$PHASE1EF_STATE_BRANCH" \
   --git-commit "$EXPECTED_COMMIT" \
-  --historical-base-commit 23c74ccfd145ab9a423b6942a431a1894a34ab67 \
+  --historical-base-commit "$PHASE1EF_STATE_HISTORICAL_BASE_COMMIT" \
   --manifest "$PHASE1EF_AUTHORITY_MANIFEST" \
   --manifest-sha256 "$PHASE1EF_AUTHORITY_MANIFEST_SHA256"
 test "$(phase1ef_sha256 "$PHASE1EF_AUTHORITY_MANIFEST")" = \
   "$PHASE1EF_AUTHORITY_MANIFEST_SHA256"
 
 : "${ATTEMPT_ID:?owner-private environment must bind the no-clobber attempt}"
-test "$ATTEMPT_ID" = \
-  lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
-PRODUCTION_ATTEMPT_ID='lvef_c3_phase1ee_production_lock_006'
+test "$ATTEMPT_ID" = "$PHASE1EF_STATE_NEXT_EXECUTION_ATTEMPT_ID"
+PRODUCTION_ATTEMPT_ID="$PHASE1EF_STATE_NEXT_PRODUCTION_ATTEMPT_ID"
 test "$PRODUCTION_ROOT" = /restricted/projectnb/mimicecho/lvef_multitask_c3_v2
 test "$PHASE1EF_ATTEMPT_ROOT" = \
   "/restricted/projectnb/mimicecho/audits/$ATTEMPT_ID"
@@ -428,7 +468,7 @@ done
 if [[ "$PHASE1EF_DISPATCH_MODE" = --preflight-only ]]; then
   PHASE1EF_STAGE=PREFLIGHT_ONLY_COMPLETED
   printf '%s\n' 'PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS'
-  printf '%s\n' 'ATTEMPT_005_WORKFLOW_INVOKED=NO'
+  printf '%s\n' 'NEXT_UNUSED_EXECUTION_ATTEMPT_WORKFLOW_INVOKED=NO'
   printf '%s\n' 'CLOUD_REQUESTS=0'
   printf '%s\n' 'QSUB_SUBMISSIONS=0'
   exit 0
@@ -439,8 +479,8 @@ mkdir -m 700 -- "$PHASE1EF_ATTEMPT_ROOT"
 mkdir -m 700 -- "$BACKUP_CONTAINER"
 
 # One read-only pquota/native-quota/findmnt/df capture. It validates the twelve
-# immutable aggregates, Phase 1E-E capacity attempts 001/002, and production
-# attempt 005 by hash/schema only. It runs no du, find, storage inventory,
+# immutable aggregates, Phase 1E-E capacity attempts 001/002, and the prior
+# production attempt by hash/schema only. It runs no du, find, storage inventory,
 # object listing, or cloud operation.
 PHASE1EF_STAGE=CAPACITY_CAPTURE
 PHASE1EF_PREEXECUTION_MANIFEST_VALIDATED=YES \
@@ -456,7 +496,7 @@ PRIOR_PRODUCTION_PACKET="$PRIOR_PRODUCTION_PACKET" \
 
 # Capture the exact current-commit runtime authority before the primary backup.
 # This makes the backed witness bind the runtime that governs the rebuilt
-# packet, instead of only the historical attempt-005 runtime receipt.
+# packet, instead of only the historical prior-production runtime receipt.
 PHASE1EF_STAGE=CURRENT_ENVIRONMENT_CAPTURE
 mkdir -m 700 -- "$AUTHORITY_INPUT_ROOT"
 "$PYTHON" "$WORKTREE/scripts/capture_lvef_c3_production_environment.py" \

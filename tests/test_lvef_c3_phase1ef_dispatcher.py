@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # SYNTHETIC_CONTROL_PLANE_ONLY: no SCC, cloud, scheduler, or scientific data.
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -19,8 +20,6 @@ DISPATCHER = SCRIPTS / "scc_execute_lvef_c3_phase1ef_attempt.sh"
 PREPARER = SCRIPTS / "scc_prepare_lvef_c3_phase1ef_environment.sh"
 WRAPPER = SCRIPTS / "scc_capture_lvef_c3_post_reallocation_capacity.sh"
 MANIFEST_TOOL = SCRIPTS / "lvef_c3_phase1ef_authority_manifest.py"
-ATTEMPT = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
-BASE = "23c74ccfd145ab9a423b6942a431a1894a34ab67"
 PINNED_PYTHON_SHA = (
     "1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
 )
@@ -32,6 +31,12 @@ PINNED_ECHOPRIME_LAUNCHER = (
 sys.path.insert(0, str(SCRIPTS))
 import lvef_c3_phase1ef_authority_manifest as authority
 import archive_lvef_c3_phase1ef_environment as archive_tool
+from lvef_c3_execution_state import load_execution_state
+
+
+EXECUTION_STATE = load_execution_state()
+ATTEMPT = EXECUTION_STATE.next_unused_execution_attempt_id
+BASE = EXECUTION_STATE.historical_base_commit
 
 
 def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -67,7 +72,13 @@ def _copy_authority_worktree(
     relative_files = {
         relative for relative, _ in authority.ROLE_SPECS.values()
     }
-    relative_files.add("scripts/lvef_c3_phase1ef_authority_manifest.py")
+    relative_files.update(
+        {
+            "scripts/lvef_c3_phase1ef_authority_manifest.py",
+            "scripts/lvef_c3_execution_state.py",
+            "configs/lvef_c3_execution_state_v1.yaml",
+        }
+    )
     for relative in sorted(relative_files):
         source = ROOT / relative
         destination = worktree / relative
@@ -82,6 +93,9 @@ def _copy_authority_worktree(
             PINNED_PYTHON_SHA, synthetic_python_sha256
         ).replace(
             PINNED_ECHOPRIME_LAUNCHER, str(synthetic_python_launcher)
+        ).replace(
+            "/share/pkg.8/python3/3.10.12/install/bin/python3.10",
+            str(synthetic_python_launcher.resolve(strict=True)),
         ),
         encoding="utf-8",
     )
@@ -241,7 +255,7 @@ def test_phase1ef_dispatcher_production_path_preflight_only_passes_without_side_
         result = _dispatch(worktree, environment_path, process_environment)
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert "PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS" in result.stdout
-        assert "ATTEMPT_005_WORKFLOW_INVOKED=NO" in result.stdout
+        assert "NEXT_UNUSED_EXECUTION_ATTEMPT_WORKFLOW_INVOKED=NO" in result.stdout
         assert "PHASE1EF_PRETRANSFER_LAST_STAGE=PREFLIGHT_ONLY_COMPLETED" in result.stdout
         for name in (
             "git", "openssl", "sha256sum", "stat", "readlink", "gcloud", "qsub"
@@ -249,6 +263,43 @@ def test_phase1ef_dispatcher_production_path_preflight_only_passes_without_side_
             assert not (root / f"{name}.called").exists()
         assert not shadow_marker.exists()
         assert not list(root.rglob("__pycache__"))
+
+
+def test_phase1ef_dispatcher_rejects_state_starting_commit_outside_history() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw).resolve()
+        worktree, private, values, process_environment = _synthetic_authority(root)
+        state_path = worktree / "configs/lvef_c3_execution_state_v1.yaml"
+        state_value = json.loads(state_path.read_text(encoding="utf-8"))
+        state_value["starting_authority_commit"] = "f" * 40
+        state_path.write_text(
+            json.dumps(state_value, indent=2) + "\n", encoding="utf-8"
+        )
+        for argv in (
+            ["/usr/bin/git", "add", str(state_path)],
+            ["/usr/bin/git", "commit", "-q", "-m", "synthetic invalid ancestry"],
+        ):
+            result = _run(argv, cwd=worktree)
+            assert result.returncode == 0, result.stderr
+        commit = _run(
+            ["/usr/bin/git", "rev-parse", "HEAD"], cwd=worktree
+        ).stdout.strip()
+        result = _run(
+            [
+                "/usr/bin/git",
+                "update-ref",
+                f"refs/remotes/origin/{authority.AUTHORIZED_BRANCH}",
+                commit,
+            ],
+            cwd=worktree,
+        )
+        assert result.returncode == 0, result.stderr
+        environment_path = _write_environment(private, values)
+        result = _dispatch(worktree, environment_path, process_environment)
+        assert result.returncode != 0
+        assert "PREFLIGHT_ONLY_COMPLETED" not in result.stdout
+        assert not (root / "gcloud.called").exists()
+        assert not (root / "qsub.called").exists()
 
 
 def test_phase1ef_dispatcher_trusted_python_owner_and_mode_policy() -> None:
@@ -605,7 +656,7 @@ def test_phase1ef_preexecution_path_has_no_shell_environment_evaluation_or_markd
     assert "GIT_CONFIG_NOSYSTEM=1" in dispatcher
     assert "GIT_CONFIG_KEY_0=core.fsmonitor" in dispatcher
     assert "GIT_CONFIG_VALUE_0=false" in dispatcher
-    assert '"$PYTHON" -I "$WORKTREE/scripts/lvef_c3_phase1ef_authority_manifest.py"' in dispatcher
+    assert '"$PYTHON" -I -B "$WORKTREE/scripts/lvef_c3_phase1ef_authority_manifest.py"' in dispatcher
     assert "bash <<'PHASE1EF_STRICT_CHILD'" not in runbook
     assert "awk" not in runbook
     assert dispatcher.index("CANONICAL_AUTHORITY_MANIFEST") < dispatcher.index(
@@ -630,12 +681,10 @@ def test_phase1ef_manifest_role_set_matches_all_adjacent_authority_names() -> No
     }
     dispatcher = DISPATCHER.read_text(encoding="utf-8")
     preparer = PREPARER.read_text(encoding="utf-8")
-    runbook = (
-        ROOT / "docs/lvef_multitask/scc_phase1ef_pretransfer_commands.md"
-    ).read_text(encoding="utf-8")
     for role in authority.ROLE_SPECS:
         assert role in MANIFEST_TOOL.read_text(encoding="utf-8")
-        assert role in runbook
+    for relative_path, _ in authority.ROLE_SPECS.values():
+        assert relative_path in MANIFEST_TOOL.read_text(encoding="utf-8")
     for name in (
         "PHASE1EF_ATTEMPT_ID",
         "EXPECTED_COMMIT",
@@ -654,17 +703,19 @@ def test_phase1ef_dispatcher_bytes_are_the_tested_production_entrypoint() -> Non
     assert "--preflight-only|--execute" in payload.decode("utf-8")
 
 
-def test_phase1ef_attempt_004_is_historical_and_cannot_be_selected() -> None:
+def test_phase1ef_prospective_identity_is_derived_from_execution_state() -> None:
     dispatcher = DISPATCHER.read_text(encoding="utf-8")
     preparer = PREPARER.read_text(encoding="utf-8")
     wrapper = WRAPPER.read_text(encoding="utf-8")
-    active_attempt = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
-    historical_attempt = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004"
-    assert authority.AUTHORIZED_ATTEMPT_ID == active_attempt
-    assert active_attempt in dispatcher and active_attempt in preparer
-    assert active_attempt in wrapper
-    assert historical_attempt not in dispatcher
-    assert historical_attempt not in wrapper
+    active_attempt = EXECUTION_STATE.next_unused_execution_attempt_id
+    logical_attempt = EXECUTION_STATE.logical_execution_attempt_id
+    assert authority.AUTHORIZED_NEXT_EXECUTION_ATTEMPT_ID == active_attempt
+    assert "next_unused_execution_attempt_id" in dispatcher
+    assert "next_unused_execution_attempt_id" in preparer
+    assert "next_unused_execution_attempt_id" in wrapper
+    assert active_attempt not in dispatcher and active_attempt not in preparer
+    assert active_attempt not in wrapper
+    assert logical_attempt not in dispatcher and logical_attempt not in wrapper
     assert "ATTEMPT_004_PRESERVED_IMMUTABLE=YES" not in dispatcher
 
 

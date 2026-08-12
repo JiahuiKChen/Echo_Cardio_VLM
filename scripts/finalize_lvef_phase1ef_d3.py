@@ -15,16 +15,36 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+# The SCC wrapper deliberately runs Python with ``-E -s`` and may use ``-I``
+# in direct validation.  Import only from this resolved tracked scripts tree.
+_TRACKED_SCRIPTS_DIRECTORY = Path(__file__).resolve(strict=True).parent
+sys.path.insert(0, str(_TRACKED_SCRIPTS_DIRECTORY))
 
-BRANCH = "codex/lvef-multitask-revalidation"
-HISTORICAL_BASE = "23c74ccfd145ab9a423b6942a431a1894a34ab67"
-LEGACY_D3_COMMIT = "6a814b3080f1159facf86ee60895117d187a41b7"
-ATTEMPT_004_EXECUTION_COUNT = 1
+from lvef_c3_execution_state import (
+    DEFAULT_STATE_PATH,
+    ExecutionState,
+    ExecutionStateError,
+    load_execution_state,
+)
+
+
+# Compatibility names for historical component tests; every value is derived
+# from the canonical execution-state authority rather than independently set.
+_TRACKED_STATE = load_execution_state(DEFAULT_STATE_PATH)
+BRANCH = _TRACKED_STATE.branch
+HISTORICAL_BASE = _TRACKED_STATE.historical_base_commit
+LEGACY_D3_COMMIT = _TRACKED_STATE.logical_execution_governing_commit
+PREPARATION_DIRECTORY = _TRACKED_STATE.preparation_sequence_id
+PREPARATION_ENVIRONMENT = _TRACKED_STATE.preparation_environment_filename
+PREPARATION_ENVIRONMENT_BYTES = _TRACKED_STATE.preparation_environment_bytes
+
+
 WORKTREE = Path("/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask")
 AUDIT_ROOT = Path("/restricted/projectnb/mimicecho/audits")
 PRODUCTION_ROOT = Path("/restricted/projectnb/mimicecho/lvef_multitask_c3_v2")
@@ -34,10 +54,7 @@ LEXICAL_ECHOPRIME_PYTHON = Path(
 ECHOPRIME_PYTHON_SHA256 = "1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
 CRC32C_PYTHON_SHA256 = "52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5"
 CRC32C_WORKER_SHA256 = "4a7d49d36920aeede6cb80e734a2f3971e4dcd283130bb63385de77d1ba13a55"
-CAPTURE_SCRIPT_SHA256 = "b52edf8230e43b386810327dae658c4bac4014896acc52956235d556ce50e179"
-PREPARATION_DIRECTORY = "lvef_multitask_phase1ef_r2_attempt004_preparation_6a814b3_attempt_005"
-PREPARATION_ENVIRONMENT = "phase1ef_attempt004_authority.env"
-PREPARATION_ENVIRONMENT_BYTES = 9206
+CAPTURE_SCRIPT_SHA256 = "b9495060cf281ef0e25d04964eff94df2417de0f8eda236e6031106dd51b2bfc"
 DIAGNOSTIC_RE = re.compile(r"^lvef_multitask_phase1ef_d3_environment_diagnostic_[A-Za-z0-9]{8}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -81,30 +98,48 @@ ENVIRONMENT_RECEIPT_KEYS = frozenset(
     }
 )
 
+ATTEMPT_004_EXECUTION_COUNT = _TRACKED_STATE.attempt_004_execution_count
 ATTEMPT_ROOTS = tuple(
-    AUDIT_ROOT / f"lvef_multitask_phase1ef_post_reallocation_lock_attempt_{index:03d}"
-    for index in range(1, 6)
+    AUDIT_ROOT / f"{_TRACKED_STATE.execution_attempt_namespace}_{number:03d}"
+    for number in range(1, _TRACKED_STATE.next_unused_execution_attempt + 1)
 )
-PRODUCTION_ATTEMPT_006 = PRODUCTION_ROOT / "attempts" / "lvef_c3_phase1ee_production_lock_006"
+PRODUCTION_ATTEMPT_006 = (
+    PRODUCTION_ROOT / "attempts" / _TRACKED_STATE.next_unused_production_attempt_id
+)
 FROZEN_RESTRICTED_CAPACITY = (
-    ATTEMPT_ROOTS[3]
+    AUDIT_ROOT
+    / _TRACKED_STATE.logical_execution_attempt_id
     / "restricted"
     / "capacity"
     / "post_reallocation_capacity.restricted.json"
 )
 FROZEN_AGGREGATE_CAPACITY = (
-    ATTEMPT_ROOTS[3] / "aggregate" / "lvef_c3_post_reallocation_capacity.summary.json"
+    AUDIT_ROOT
+    / _TRACKED_STATE.logical_execution_attempt_id
+    / "aggregate"
+    / "lvef_c3_post_reallocation_capacity.summary.json"
 )
+
 FROZEN_RESTRICTED_CAPACITY_BYTES = 10907
 FROZEN_RESTRICTED_CAPACITY_SHA256 = "b3bae07dcd6958b7cdfdd827a0de565ae0972753e04955fd03cd137b2e30ab62"
 FROZEN_AGGREGATE_CAPACITY_BYTES = 5399
 FROZEN_AGGREGATE_CAPACITY_SHA256 = "4d15b0a1a80188ce95d31659eca50cf18c8b6a1ebdef4022a56975f6e3e4bd20"
 
-SAFE_SUCCESS_KEYS = (
-    "D3_TRACKED_RECOVERY", "SCC_D3_FAST_FORWARD",
+SAFE_RESULT_COMMON_KEYS = (
+    "D3_TRACKED_RECOVERY", "EXECUTION_STATE_VALIDATION", "SCC_COMMIT_EQUALITY",
+    "PREPARATION_BINDING_VALIDATION", "ATTEMPT_STATE_INVARIANTS",
+)
+SAFE_CAPTURE_KEYS = SAFE_RESULT_COMMON_KEYS + (
     "CURRENT_ENVIRONMENT_POSTCOMMIT_VALIDATION", "CURRENT_ENVIRONMENT_RECEIPT_BYTES",
-    "CURRENT_ENVIRONMENT_RECEIPT_SHA256", "ATTEMPT_004_RERUN",
-    "ATTEMPT_005_EXECUTION_ROOT_CREATED", "PRODUCTION_ATTEMPT_006_CREATED",
+    "CURRENT_ENVIRONMENT_RECEIPT_SHA256", "LOGICAL_EXECUTION_ATTEMPT_RERUN",
+    "NEXT_UNUSED_EXECUTION_ATTEMPT_CREATED", "NEXT_UNUSED_PRODUCTION_ATTEMPT_CREATED",
+    "CLOUD_REQUESTS", "QSUB_SUBMISSIONS", "DICOM_BODIES_DOWNLOADED",
+    "ECHOPRIME_INFERENCE", "GPU_EXECUTION", "MODEL_FITTING",
+    "CONFIRMATORY_PERFORMANCE_ACCESSED",
+)
+SAFE_PREFLIGHT_KEYS = SAFE_RESULT_COMMON_KEYS + (
+    "CURRENT_ENVIRONMENT_CAPTURE", "LOGICAL_EXECUTION_ATTEMPT_RERUN",
+    "NEXT_UNUSED_EXECUTION_ATTEMPT_CREATED", "NEXT_UNUSED_PRODUCTION_ATTEMPT_CREATED",
     "CLOUD_REQUESTS", "QSUB_SUBMISSIONS", "DICOM_BODIES_DOWNLOADED",
     "ECHOPRIME_INFERENCE", "GPU_EXECUTION", "MODEL_FITTING",
     "CONFIRMATORY_PERFORMANCE_ACCESSED",
@@ -125,11 +160,19 @@ class D3RecoveryError(RuntimeError):
 class RecoveryConfig:
     worktree: Path = WORKTREE
     audit_root: Path = AUDIT_ROOT
-    production_attempt_006: Path = PRODUCTION_ATTEMPT_006
-    attempt_roots: tuple[Path, ...] = ATTEMPT_ROOTS
+    production_root: Path = PRODUCTION_ROOT
     lexical_python: Path = LEXICAL_ECHOPRIME_PYTHON
-    frozen_restricted_capacity: Path = FROZEN_RESTRICTED_CAPACITY
-    frozen_aggregate_capacity: Path = FROZEN_AGGREGATE_CAPACITY
+    state_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionPaths:
+    immutable_execution_attempt_roots: tuple[Path, ...]
+    logical_execution_attempt_root: Path
+    next_unused_execution_attempt_root: Path
+    next_unused_production_attempt_root: Path
+    frozen_restricted_capacity: Path
+    frozen_aggregate_capacity: Path
 
 
 @dataclass(frozen=True)
@@ -143,6 +186,47 @@ class PrivateAuthorities:
 
 
 RunCommand = Callable[[Sequence[str], Path | None, Mapping[str, str]], subprocess.CompletedProcess[str]]
+
+
+def load_canonical_state(config: RecoveryConfig) -> ExecutionState:
+    path = config.state_path or (
+        config.worktree / "configs/lvef_c3_execution_state_v1.yaml"
+    )
+    try:
+        return load_execution_state(path)
+    except ExecutionStateError as exc:
+        raise D3RecoveryError(exc.code) from exc
+
+
+def derive_execution_paths(config: RecoveryConfig, state: ExecutionState) -> ExecutionPaths:
+    immutable_roots = tuple(
+        config.audit_root / f"{state.execution_attempt_namespace}_{number:03d}"
+        for number in range(1, state.logical_execution_attempt + 1)
+    )
+    logical_root = config.audit_root / state.logical_execution_attempt_id
+    if not immutable_roots or immutable_roots[-1] != logical_root:
+        raise D3RecoveryError("EXECUTION_STATE_PATH_DERIVATION_INVALID")
+    next_execution_root = config.audit_root / state.next_unused_execution_attempt_id
+    next_production_root = (
+        config.production_root / "attempts" / state.next_unused_production_attempt_id
+    )
+    return ExecutionPaths(
+        immutable_execution_attempt_roots=immutable_roots,
+        logical_execution_attempt_root=logical_root,
+        next_unused_execution_attempt_root=next_execution_root,
+        next_unused_production_attempt_root=next_production_root,
+        frozen_restricted_capacity=(
+            logical_root
+            / "restricted"
+            / "capacity"
+            / "post_reallocation_capacity.restricted.json"
+        ),
+        frozen_aggregate_capacity=(
+            logical_root
+            / "aggregate"
+            / "lvef_c3_post_reallocation_capacity.summary.json"
+        ),
+    )
 
 
 def _open_nofollow(path: Path) -> int:
@@ -328,8 +412,8 @@ def require_lexical_launcher(path: Path) -> None:
     require_trusted_executable(resolved, ECHOPRIME_PYTHON_SHA256)
 
 
-def parse_literal_environment(path: Path) -> dict[str, str]:
-    require_regular_file(path, owner_only=True, size=PREPARATION_ENVIRONMENT_BYTES)
+def parse_literal_environment(path: Path, *, expected_size: int) -> dict[str, str]:
+    require_regular_file(path, owner_only=True, size=expected_size)
     try:
         text = read_regular_bytes(path).decode("utf-8")
     except (OSError, UnicodeError) as exc:
@@ -349,47 +433,34 @@ def parse_literal_environment(path: Path) -> dict[str, str]:
     return values
 
 
-def resolve_private_authorities(config: RecoveryConfig, expected_commit: str) -> PrivateAuthorities:
-    require_search_root(config.audit_root)
-    try:
-        candidates = [candidate for candidate in config.audit_root.iterdir()
-                      if DIAGNOSTIC_RE.fullmatch(candidate.name)]
-    except OSError as exc:
-        raise D3RecoveryError("DIAGNOSTIC_AUTHORITY_UNREADABLE") from exc
-    if len(candidates) != 1:
-        raise D3RecoveryError("DIAGNOSTIC_AUTHORITY_AMBIGUOUS")
-    diagnostic_root = candidates[0]
-    require_private_directory(diagnostic_root)
-    for attempt_root in (*config.attempt_roots, config.production_attempt_006):
-        if _is_within(diagnostic_root, attempt_root):
-            raise D3RecoveryError("DIAGNOSTIC_AUTHORITY_IN_ATTEMPT_ROOT")
-
-    preparation_root = config.audit_root / PREPARATION_DIRECTORY
+def discover_preparation(
+    config: RecoveryConfig, state: ExecutionState
+) -> tuple[Path, dict[str, str]]:
+    """Discover one opaque preparation sequence without parsing its identifier."""
+    preparation_root = config.audit_root / state.preparation_sequence_id
     require_private_directory(preparation_root)
-    values = parse_literal_environment(preparation_root / PREPARATION_ENVIRONMENT)
-    try:
-        prior_environment = Path(values["PRIOR_ENVIRONMENT_RECEIPT"])
-        crc32c_python = Path(values["CRC32C_PYTHON"])
-    except KeyError as exc:
-        raise D3RecoveryError("PRIVATE_AUTHORITY_ROLE_MISSING") from exc
-    try:
-        prior_size = int(values["PRIOR_ENVIRONMENT_EXPECTED_SIZE"])
-        prior_digest = values["PRIOR_ENVIRONMENT_EXPECTED_SHA"]
-    except (KeyError, ValueError) as exc:
-        raise D3RecoveryError("PRIOR_ENVIRONMENT_BINDING_INVALID") from exc
-    if prior_size < 1 or not re.fullmatch(r"[0-9a-f]{64}", prior_digest):
-        raise D3RecoveryError("PRIOR_ENVIRONMENT_BINDING_INVALID")
-    require_regular_file(prior_environment, owner_only=True, size=prior_size,
-                         digest=prior_digest)
-    require_regular_file(crc32c_python, owner_only=False, executable=True,
-                         digest=CRC32C_PYTHON_SHA256)
-    expected_attempt = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
+    values = parse_literal_environment(
+        preparation_root / state.preparation_environment_filename,
+        expected_size=state.preparation_environment_bytes,
+    )
+    return preparation_root, values
+
+
+def validate_preparation_binding(
+    config: RecoveryConfig,
+    state: ExecutionState,
+    preparation_root: Path,
+    values: Mapping[str, str],
+) -> None:
+    """Bind legacy manifest fields to logical attempt 004, not sequence 005."""
+    expected_logical_execution_attempt_id = state.logical_execution_attempt_id
     required_bindings = {
         "WORKTREE": str(config.worktree),
-        "ATTEMPT_ID": expected_attempt,
-        "PHASE1EF_ATTEMPT_ID": expected_attempt,
+        "EXPECTED_COMMIT": state.logical_execution_governing_commit,
+        "ATTEMPT_ID": expected_logical_execution_attempt_id,
+        "PHASE1EF_ATTEMPT_ID": expected_logical_execution_attempt_id,
         "PHASE1EF_EXECUTION_SCOPES_GRANTED": "0",
-        "PYTHON": str(LEXICAL_ECHOPRIME_PYTHON),
+        "PYTHON": str(config.lexical_python),
     }
     if any(values.get(key) != value for key, value in required_bindings.items()):
         raise D3RecoveryError("PREPARATION_BINDING_INVALID")
@@ -413,10 +484,10 @@ def resolve_private_authorities(config: RecoveryConfig, expected_commit: str) ->
         set(manifest_value) != expected_manifest_keys
         or manifest_value.get("schema_name") != "lvef_c3_phase1ef_preexecution_authority_manifest"
         or manifest_value.get("schema_version") != 1
-        or manifest_value.get("attempt_id") != expected_attempt
-        or manifest_value.get("git_branch") != BRANCH
-        or not COMMIT_RE.fullmatch(str(manifest_value.get("git_commit")))
-        or manifest_value.get("historical_base_commit") != HISTORICAL_BASE
+        or manifest_value.get("attempt_id") != expected_logical_execution_attempt_id
+        or manifest_value.get("git_branch") != state.branch
+        or manifest_value.get("git_commit") != state.logical_execution_governing_commit
+        or manifest_value.get("historical_base_commit") != state.historical_base_commit
         or manifest_value.get("execution_scopes_granted") != 0
         or not isinstance(manifest_scopes, dict)
         or set(manifest_scopes) != MANIFEST_SCOPE_KEYS
@@ -444,8 +515,53 @@ def resolve_private_authorities(config: RecoveryConfig, expected_commit: str) ->
         roles.add(entry["logical_role"])
     if roles != MANIFEST_AUTHORITY_ROLES:
         raise D3RecoveryError("PREPARATION_MANIFEST_AUTHORITY_INVALID")
+
+
+def resolve_private_authorities(
+    config: RecoveryConfig,
+    state: ExecutionState,
+    paths: ExecutionPaths,
+    expected_commit: str,
+) -> PrivateAuthorities:
+    require_search_root(config.audit_root)
+    try:
+        candidates = [candidate for candidate in config.audit_root.iterdir()
+                      if DIAGNOSTIC_RE.fullmatch(candidate.name)]
+    except OSError as exc:
+        raise D3RecoveryError("DIAGNOSTIC_AUTHORITY_UNREADABLE") from exc
+    if len(candidates) != 1:
+        raise D3RecoveryError("DIAGNOSTIC_AUTHORITY_AMBIGUOUS")
+    diagnostic_root = candidates[0]
+    require_private_directory(diagnostic_root)
+    protected_roots = (
+        *paths.immutable_execution_attempt_roots,
+        paths.next_unused_execution_attempt_root,
+        paths.next_unused_production_attempt_root,
+    )
+    for attempt_root in protected_roots:
+        if _is_within(diagnostic_root, attempt_root):
+            raise D3RecoveryError("DIAGNOSTIC_AUTHORITY_IN_ATTEMPT_ROOT")
+
+    preparation_root, values = discover_preparation(config, state)
+    validate_preparation_binding(config, state, preparation_root, values)
+    try:
+        prior_environment = Path(values["PRIOR_ENVIRONMENT_RECEIPT"])
+        crc32c_python = Path(values["CRC32C_PYTHON"])
+    except KeyError as exc:
+        raise D3RecoveryError("PRIVATE_AUTHORITY_ROLE_MISSING") from exc
+    try:
+        prior_size = int(values["PRIOR_ENVIRONMENT_EXPECTED_SIZE"])
+        prior_digest = values["PRIOR_ENVIRONMENT_EXPECTED_SHA"]
+    except (KeyError, ValueError) as exc:
+        raise D3RecoveryError("PRIOR_ENVIRONMENT_BINDING_INVALID") from exc
+    if prior_size < 1 or not re.fullmatch(r"[0-9a-f]{64}", prior_digest):
+        raise D3RecoveryError("PRIOR_ENVIRONMENT_BINDING_INVALID")
+    require_regular_file(prior_environment, owner_only=True, size=prior_size,
+                         digest=prior_digest)
+    require_regular_file(crc32c_python, owner_only=False, executable=True,
+                         digest=CRC32C_PYTHON_SHA256)
     for value in (prior_environment, crc32c_python):
-        if any(_is_within(value, attempt_root) for attempt_root in config.attempt_roots):
+        if any(_is_within(value, attempt_root) for attempt_root in protected_roots):
             raise D3RecoveryError("PRIVATE_AUTHORITY_IN_ATTEMPT_ROOT")
     output = diagnostic_root / f"current_environment_{expected_commit}.restricted.json"
     return PrivateAuthorities(
@@ -498,12 +614,14 @@ def validate_clean_status(status_text: str) -> None:
         raise D3RecoveryError("TRACKED_WORKTREE_DIRTY")
 
 
-def validate_attempts_and_capacity(config: RecoveryConfig) -> None:
-    if ATTEMPT_004_EXECUTION_COUNT != 1:
-        raise D3RecoveryError("ATTEMPT_004_EXECUTION_AUTHORITY_INVALID")
-    if len(config.attempt_roots) != 5:
+def validate_attempts_and_capacity(
+    state: ExecutionState, paths: ExecutionPaths
+) -> None:
+    if state.attempt_004_execution_count != 1:
+        raise D3RecoveryError("LOGICAL_ATTEMPT_EXECUTION_AUTHORITY_INVALID")
+    if len(paths.immutable_execution_attempt_roots) != state.logical_execution_attempt:
         raise D3RecoveryError("ATTEMPT_ROOT_CONFIGURATION_INVALID")
-    for path in config.attempt_roots[:4]:
+    for path in paths.immutable_execution_attempt_roots:
         require_nonsymlink_components(path)
         info = _lstat(path)
         if (
@@ -513,14 +631,17 @@ def validate_attempts_and_capacity(config: RecoveryConfig) -> None:
             or stat.S_IMODE(info.st_mode) not in {0o700, 0o2700}
         ):
             raise D3RecoveryError("IMMUTABLE_ATTEMPT_AUTHORITY_INVALID")
-    for path in (config.attempt_roots[4], config.production_attempt_006):
+    for path in (
+        paths.next_unused_execution_attempt_root,
+        paths.next_unused_production_attempt_root,
+    ):
         require_nonsymlink_components(path.parent)
         if os.path.lexists(path):
             raise D3RecoveryError("PROHIBITED_ATTEMPT_ROOT_PRESENT")
-    require_regular_file(config.frozen_restricted_capacity, owner_only=True,
+    require_regular_file(paths.frozen_restricted_capacity, owner_only=True,
                          size=FROZEN_RESTRICTED_CAPACITY_BYTES,
                          digest=FROZEN_RESTRICTED_CAPACITY_SHA256)
-    require_regular_file(config.frozen_aggregate_capacity, owner_only=False,
+    require_regular_file(paths.frozen_aggregate_capacity, owner_only=False,
                          size=FROZEN_AGGREGATE_CAPACITY_BYTES,
                          digest=FROZEN_AGGREGATE_CAPACITY_SHA256)
 
@@ -641,13 +762,39 @@ def validate_current_receipt(
     return path.stat().st_size, sha256_file(path)
 
 
-def run_recovery(expected_commit: str, *, config: RecoveryConfig = RecoveryConfig(),
-                 runner: RunCommand = default_run_command) -> dict[str, str]:
+def _safe_common_result() -> dict[str, str]:
+    return {
+        "D3_TRACKED_RECOVERY": "PASS",
+        "EXECUTION_STATE_VALIDATION": "PASS",
+        "SCC_COMMIT_EQUALITY": "PASS",
+        "PREPARATION_BINDING_VALIDATION": "PASS_LOGICAL_EXECUTION_ATTEMPT",
+        "ATTEMPT_STATE_INVARIANTS": "PASS",
+    }
+
+
+def run_recovery(
+    mode: str,
+    *,
+    config: RecoveryConfig = RecoveryConfig(),
+    runner: RunCommand = default_run_command,
+) -> dict[str, str]:
+    if mode not in {"--preflight-only", "--capture-current-environment"}:
+        raise D3RecoveryError("DISPATCH_MODE_INVALID")
+    state = load_canonical_state(config)
+    scope = mode.removeprefix("--").replace("-", "_")
+    if not state.permits(scope):
+        raise D3RecoveryError("EXECUTION_SCOPE_NOT_PERMITTED")
+    paths = derive_execution_paths(config, state)
+    environment = clean_environment()
+    if git(config, runner, environment, "branch", "--show-current") != state.branch:
+        raise D3RecoveryError("BRANCH_AUTHORITY_MISMATCH")
+    expected_commit = git(config, runner, environment, "rev-parse", "HEAD")
     if not COMMIT_RE.fullmatch(expected_commit):
         raise D3RecoveryError("EXPECTED_COMMIT_INVALID")
-    environment = clean_environment()
-    authorities = resolve_private_authorities(config, expected_commit)
-    validate_attempts_and_capacity(config)
+    if expected_commit == state.starting_authority_commit:
+        raise D3RecoveryError("STARTING_AUTHORITY_REQUIRES_FAST_FORWARD")
+    authorities = resolve_private_authorities(config, state, paths, expected_commit)
+    validate_attempts_and_capacity(state, paths)
     capture_script = config.worktree / "scripts" / "capture_lvef_c3_production_environment.py"
     require_regular_file(capture_script, owner_only=False, digest=CAPTURE_SCRIPT_SHA256)
     require_lexical_launcher(config.lexical_python)
@@ -660,37 +807,40 @@ def run_recovery(expected_commit: str, *, config: RecoveryConfig = RecoveryConfi
             prior_environment_sha256=authorities.prior_environment_sha256,
         )
 
-    if git(config, runner, environment, "branch", "--show-current") != BRANCH:
-        raise D3RecoveryError("BRANCH_AUTHORITY_MISMATCH")
-    current = git(config, runner, environment, "rev-parse", "HEAD")
-    if current not in {LEGACY_D3_COMMIT, expected_commit}:
-        raise D3RecoveryError("STARTING_COMMIT_UNAUTHORIZED")
     validate_clean_status(git(config, runner, environment, "status", "--porcelain=v1",
                               "--untracked-files=all"))
-    git(config, runner, environment, "merge-base", "--is-ancestor", HISTORICAL_BASE, current)
-
-    migrated = current != expected_commit
     git(
-        config,
-        runner,
-        environment,
-        "fetch",
-        "--no-tags",
-        "origin",
-        f"refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}",
+        config, runner, environment, "merge-base", "--is-ancestor",
+        state.starting_authority_commit, expected_commit,
     )
-    remote = git(config, runner, environment, "rev-parse", f"refs/remotes/origin/{BRANCH}")
+    git(
+        config, runner, environment, "merge-base", "--is-ancestor",
+        state.historical_base_commit, expected_commit,
+    )
+    remote = git(
+        config, runner, environment, "rev-parse", f"refs/remotes/origin/{state.branch}"
+    )
     if remote != expected_commit:
         raise D3RecoveryError("ORIGIN_COMMIT_MISMATCH")
-    git(config, runner, environment, "merge-base", "--is-ancestor", current, expected_commit)
-    if git(config, runner, environment, "rev-list", "--merges", f"{current}..{expected_commit}"):
-        raise D3RecoveryError("MERGE_COMMIT_IN_MIGRATION_RANGE")
-    if migrated:
-        git(config, runner, environment, "merge", "--ff-only", f"refs/remotes/origin/{BRANCH}")
-    if git(config, runner, environment, "rev-parse", "HEAD") != expected_commit:
-        raise D3RecoveryError("POST_MIGRATION_COMMIT_MISMATCH")
-    validate_clean_status(git(config, runner, environment, "status", "--porcelain=v1",
-                              "--untracked-files=all"))
+
+    if mode == "--preflight-only":
+        result = {
+            **_safe_common_result(),
+            "CURRENT_ENVIRONMENT_CAPTURE": "NOT_PERFORMED_PREFLIGHT_ONLY",
+            "LOGICAL_EXECUTION_ATTEMPT_RERUN": "NO",
+            "NEXT_UNUSED_EXECUTION_ATTEMPT_CREATED": "NO",
+            "NEXT_UNUSED_PRODUCTION_ATTEMPT_CREATED": "NO",
+            "CLOUD_REQUESTS": "0",
+            "QSUB_SUBMISSIONS": "0",
+            "DICOM_BODIES_DOWNLOADED": "NO",
+            "ECHOPRIME_INFERENCE": "NO",
+            "GPU_EXECUTION": "NO",
+            "MODEL_FITTING": "NO",
+            "CONFIRMATORY_PERFORMANCE_ACCESSED": "NO",
+        }
+        if tuple(result) != SAFE_PREFLIGHT_KEYS:
+            raise D3RecoveryError("SAFE_OUTPUT_SCHEMA_INVALID")
+        return result
 
     receipt = authorities.output_receipt
     if not os.path.lexists(receipt):
@@ -706,7 +856,7 @@ def run_recovery(expected_commit: str, *, config: RecoveryConfig = RecoveryConfi
         if runner(command, config.worktree, capture_environment()).returncode != 0:
             raise D3RecoveryError("CURRENT_ENVIRONMENT_CAPTURE_FAILED")
 
-    validate_attempts_and_capacity(config)
+    validate_attempts_and_capacity(state, paths)
     require_lexical_launcher(config.lexical_python)
     if git(config, runner, environment, "rev-parse", "HEAD") != expected_commit:
         raise D3RecoveryError("FINAL_COMMIT_AUTHORITY_MISMATCH")
@@ -718,32 +868,49 @@ def run_recovery(expected_commit: str, *, config: RecoveryConfig = RecoveryConfi
         prior_environment_sha256=authorities.prior_environment_sha256,
     )
     result = {
-        "D3_TRACKED_RECOVERY": "PASS",
-        "SCC_D3_FAST_FORWARD": "PASS" if migrated else "ALREADY_COMPLETE",
+        **_safe_common_result(),
         "CURRENT_ENVIRONMENT_POSTCOMMIT_VALIDATION": "PASS",
         "CURRENT_ENVIRONMENT_RECEIPT_BYTES": str(receipt_bytes),
         "CURRENT_ENVIRONMENT_RECEIPT_SHA256": receipt_digest,
-        "ATTEMPT_004_RERUN": "NO", "ATTEMPT_005_EXECUTION_ROOT_CREATED": "NO",
-        "PRODUCTION_ATTEMPT_006_CREATED": "NO", "CLOUD_REQUESTS": "0",
+        "LOGICAL_EXECUTION_ATTEMPT_RERUN": "NO",
+        "NEXT_UNUSED_EXECUTION_ATTEMPT_CREATED": "NO",
+        "NEXT_UNUSED_PRODUCTION_ATTEMPT_CREATED": "NO", "CLOUD_REQUESTS": "0",
         "QSUB_SUBMISSIONS": "0", "DICOM_BODIES_DOWNLOADED": "NO",
         "ECHOPRIME_INFERENCE": "NO", "GPU_EXECUTION": "NO", "MODEL_FITTING": "NO",
         "CONFIRMATORY_PERFORMANCE_ACCESSED": "NO",
     }
-    if tuple(result) != SAFE_SUCCESS_KEYS:
+    if tuple(result) != SAFE_CAPTURE_KEYS:
         raise D3RecoveryError("SAFE_OUTPUT_SCHEMA_INVALID")
     return result
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Finalize bounded Phase 1E-F D3 authority")
-    parser.add_argument("expected_commit")
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument(
+        "--preflight-only",
+        dest="mode",
+        action="store_const",
+        const="--preflight-only",
+    )
+    modes.add_argument(
+        "--capture-current-environment",
+        dest="mode",
+        action="store_const",
+        const="--capture-current-environment",
+    )
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    config: RecoveryConfig = RecoveryConfig(),
+    runner: RunCommand = default_run_command,
+) -> int:
     args = parse_args(argv)
     try:
-        result = run_recovery(args.expected_commit)
+        result = run_recovery(args.mode, config=config, runner=runner)
     except D3RecoveryError as exc:
         print("D3_TRACKED_RECOVERY=FAILED")
         print(f"D3_TRACKED_RECOVERY_ERROR={exc.code}")

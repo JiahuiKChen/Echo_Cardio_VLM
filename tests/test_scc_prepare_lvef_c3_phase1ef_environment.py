@@ -1,9 +1,16 @@
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from lvef_c3_execution_state import load_execution_state
+
+
+EXECUTION_STATE = load_execution_state()
 
 
 def test_environment_preparer_is_offline_private_and_hash_bound() -> None:
@@ -49,8 +56,8 @@ def test_environment_preparer_is_offline_private_and_hash_bound() -> None:
     assert 'GIT_CONFIG_NOSYSTEM=1' in source
     assert 'GIT_CONFIG_KEY_0=core.fsmonitor' in source
     assert 'GIT_CONFIG_VALUE_0=false' in source
-    assert '"$PYTHON_AUTHORITY" -I "$PHASE1EF_PREP_MANIFEST_TOOL" write' in source
-    assert '"$PYTHON_AUTHORITY" -I "$PHASE1EF_PREP_MANIFEST_TOOL" validate' in source
+    assert '"$PYTHON_AUTHORITY" -I -B "$PHASE1EF_PREP_MANIFEST_TOOL" write' in source
+    assert '"$PYTHON_AUTHORITY" -I -B "$PHASE1EF_PREP_MANIFEST_TOOL" validate' in source
     assert '"$PYTHON_AUTHORITY" -I - "$PRIOR_PRODUCTION_PACKET"' in source
     assert "LVEF_C3_GCP_BILLING_PROJECT=%q" not in source
     assert "printf '%s=%s\\n'" in source
@@ -144,24 +151,54 @@ def test_environment_preparer_preserves_fixed_scientific_authorities() -> None:
     source = (
         ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
     ).read_text(encoding="utf-8")
-    assert "lvef_c3_phase1ee_production_lock_005" in source
-    assert "lvef_c3_phase1ee_production_lock_006" in source
+    assert "prior_production_attempt_id" in source
+    assert "next_unused_production_attempt_id" in source
     assert (
         "PHASE1EF_PREP_ECHOPRIME_PYTHON=/restricted/project/mimicecho/"
         "code/Echo_Cardio_VLM/.venv-echoprime/bin/python"
     ) in source
     assert '[[ "$LVEF_C3_PYTHON" = "$PHASE1EF_PREP_ECHOPRIME_PYTHON" ]]' in source
-    assert "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005" in source
+    assert "next_unused_execution_attempt_id" in source
+    assert EXECUTION_STATE.prior_production_attempt_id not in source
+    assert EXECUTION_STATE.next_unused_production_attempt_id not in source
+    assert EXECUTION_STATE.next_unused_execution_attempt_id not in source
     for prior in ("001", "002", "003"):
         assert (
-            "PHASE1EF_PREP_ATTEMPT_ID="
+            "PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID="
             f"lvef_multitask_phase1ef_post_reallocation_lock_attempt_{prior}"
         ) not in source
-    assert "23c74ccfd145ab9a423b6942a431a1894a34ab67" in source
+    assert "historical_base_commit" in source
     assert "7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b" in source
     assert "920aa8742297dd90c5f125723a425a85201fa7966e926b3191f2c4a57b3d31c1" in source
     assert "35071385477515e40e6cc1503561b7c7aa434127435ce91aa3ae8b0a009188ff" in source
     assert "c5101cea1d76b38c6bb4517edf4b463b338d7505032cfa40bc8f27ca5b97e517" in source
+
+
+def test_prospective_consumers_enforce_starting_authority_ancestry() -> None:
+    preparer = (
+        ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
+    ).read_text(encoding="utf-8")
+    dispatcher = (
+        ROOT / "scripts" / "scc_execute_lvef_c3_phase1ef_attempt.sh"
+    ).read_text(encoding="utf-8")
+    assert (
+        "PHASE1EF_PREP_STATE_STARTING_AUTHORITY_COMMIT=\""
+        "$(phase1ef_prep_state_field starting_authority_commit)\""
+    ) in preparer
+    assert (
+        '"$PHASE1EF_PREP_STATE_STARTING_AUTHORITY_COMMIT" "$EXPECTED_COMMIT"'
+        in preparer
+    )
+    assert (
+        "PHASE1EF_STATE_STARTING_AUTHORITY_COMMIT=\""
+        "$(phase1ef_state_field starting_authority_commit)\""
+    ) in dispatcher
+    assert (
+        '"$PHASE1EF_STATE_STARTING_AUTHORITY_COMMIT" '
+        '"$PHASE1EF_RUNNING_GIT_COMMIT"'
+    ) in dispatcher
+    assert preparer.count("merge-base --is-ancestor") == 2
+    assert dispatcher.count("merge-base --is-ancestor") == 2
 
 
 def test_environment_preparer_rebinds_current_authority_after_historical_sources() -> None:
@@ -181,8 +218,8 @@ def test_environment_preparer_rebinds_current_authority_after_historical_sources
             "PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT"
         ),
         "PRIOR_EXECUTION_ENV": "PHASE1EF_PREP_PRIOR_EXECUTION_ENV",
-        "ATTEMPT_ID": "PHASE1EF_PREP_ATTEMPT_ID",
-        "PHASE1EF_ATTEMPT_ROOT": "PHASE1EF_PREP_ATTEMPT_ROOT",
+        "ATTEMPT_ID": "PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID",
+        "PHASE1EF_ATTEMPT_ROOT": "PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ROOT",
     }
     for generic, sentinel in rebindings.items():
         rebind = source.index(f'{generic}="${sentinel}"', second_source)
@@ -203,7 +240,7 @@ def test_environment_preparer_rebinds_current_authority_after_historical_sources
     assert '= "$PHASE1EF_PREP_EXECUTION_SHA"' in source
 
 
-def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
+def test_phase1eg_runbook_uses_one_short_tracked_entrypoint() -> None:
     runbook = (
         ROOT / "docs" / "lvef_multitask" / "scc_phase1ef_pretransfer_commands.md"
     ).read_text(encoding="utf-8")
@@ -212,11 +249,11 @@ def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
     ).read_text(encoding="utf-8")
     assert "bash <<'PHASE1EF_STRICT_CHILD'" not in runbook
     assert "awk" not in runbook
-    assert runbook.count("scc_execute_lvef_c3_phase1ef_attempt.sh") >= 3
+    assert runbook.count("scripts/scc_finalize_lvef_phase1ef_d3.sh") == 2
     assert "--preflight-only" in runbook
-    assert "--execute" in runbook
-    assert "new, explicit owner authorization" in runbook
-    assert "Markdown" in runbook and "Bash fence" in runbook
+    assert "--capture-current-environment" in runbook
+    assert "--execute" not in runbook
+    assert "terminal heredocs" in runbook and "browser text materialization" in runbook
     assert "set -euo pipefail" in dispatcher
     assert "trap phase1ef_exit_marker EXIT" in dispatcher
     assert "PHASE1EF_PRETRANSFER_EXIT_STATUS=%s" in dispatcher
@@ -262,26 +299,24 @@ def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
     assert "echoprime_environment=PINNED_EXTERNAL_SOURCE_RECONSTRUCTABLE" not in dispatcher
 
 
-def test_attempt_005_preparation_and_capture_are_no_clobber() -> None:
+def test_next_unused_preparation_and_capture_are_state_derived_no_clobber() -> None:
     preparer = (
         ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
     ).read_text(encoding="utf-8")
     capture = (
         ROOT / "scripts" / "scc_capture_lvef_c3_post_reallocation_capacity.sh"
     ).read_text(encoding="utf-8")
-    assert (
-        "PHASE1EF_PREP_ATTEMPT_ID="
-        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
-    ) in preparer
-    assert (
-        "[[ \"$ATTEMPT_ID\" = "
-        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005 ]]"
-    ) in capture
+    assert "phase1ef_prep_state_field next_unused_execution_attempt_id" in preparer
+    assert "next_unused_execution_attempt_id" in capture
+    assert "lvef_c3_execution_state.py" in preparer
+    assert "lvef_c3_execution_state.py" in capture
+    assert EXECUTION_STATE.next_unused_execution_attempt_id not in preparer
+    assert EXECUTION_STATE.next_unused_execution_attempt_id not in capture
     assert '--attempt-id "$ATTEMPT_ID"' in capture
     assert "ATTEMPT_ID PHASE1EF_ATTEMPT_ROOT" in preparer
     for prior in ("001", "002", "003"):
         assert (
-            "PHASE1EF_PREP_ATTEMPT_ID="
+            "PHASE1EF_PREP_NEXT_EXECUTION_ATTEMPT_ID="
             f"lvef_multitask_phase1ef_post_reallocation_lock_attempt_{prior}"
         ) not in preparer
     assert '[[ ! -e "$PHASE1EF_ATTEMPT_ROOT" && ! -L "$PHASE1EF_ATTEMPT_ROOT" ]]' in preparer
@@ -289,7 +324,8 @@ def test_attempt_005_preparation_and_capture_are_no_clobber() -> None:
         '[[ ! -e "/restricted/project/mimicecho/audits/$ATTEMPT_ID" '
         '&& ! -L "/restricted/project/mimicecho/audits/$ATTEMPT_ID" ]]'
     ) in preparer
-    assert (
-        '[[ ! -e "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" '
-        '&& ! -L "$PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_006" ]]'
-    ) in preparer
+    production_collision = (
+        '"$PRODUCTION_ROOT/attempts/$PHASE1EF_PREP_NEXT_PRODUCTION_ATTEMPT_ID"'
+    )
+    assert preparer.count(production_collision) == 2
+    assert EXECUTION_STATE.next_unused_production_attempt_id not in preparer
