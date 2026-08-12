@@ -84,6 +84,13 @@ def _canonical_existing(path: Path, *, directory: bool) -> Path:
     return resolved
 
 
+def _history_parent_policy(metadata: os.stat_result) -> bool:
+    """Accept owner-controlled parents that are not group/other writable."""
+    return metadata.st_uid == os.geteuid() and not (
+        stat.S_IMODE(metadata.st_mode) & 0o022
+    )
+
+
 def _read_private_file(path: Path) -> tuple[bytes, os.stat_result]:
     _canonical_existing(path, directory=False)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -219,9 +226,12 @@ def archive_environment(
         _fail("HISTORY_ROOT_INVALID")
     parent = _canonical_existing(history_root.parent, directory=True)
     parent_metadata = os.lstat(parent)
-    if parent_metadata.st_uid != os.geteuid() or stat.S_IMODE(
-        parent_metadata.st_mode
-    ) not in {0o700, 0o2700}:
+    # SCC project audit roots are owner-controlled but intentionally
+    # traversable (and commonly setgid) for the project group.  The archive
+    # itself is created as a private 0700 child, so the parent must be owned by
+    # the invoking user and must not be writable by group or other; requiring
+    # an exact 0700/2700 parent would reject the canonical 2755 audit root.
+    if not _history_parent_policy(parent_metadata):
         _fail("HISTORY_PARENT_POLICY_FAILED")
     if os.path.lexists(history_root):
         _fail("HISTORY_ROOT_COLLISION")

@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -526,6 +528,60 @@ def test_phase1ef_old_environment_archive_is_byte_identical_closed_and_no_clobbe
             raise AssertionError("history root was overwritten")
 
 
+def test_phase1ef_old_environment_archive_accepts_traversable_nonwritable_parent() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw).resolve()
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        source = private / "phase1ef_attempt004_authority.env"
+        source.write_text("SYNTHETIC_PRIVATE_VALUE=not-exported\n", encoding="utf-8")
+        source.chmod(0o600)
+        private.chmod(0o755)
+        history = private / "history_attempt_001"
+        archive, receipt = archive_tool.archive_environment(
+            source=source,
+            history_root=history,
+            governing_commit="8" * 40,
+        )
+        assert archive.read_bytes() == source.read_bytes()
+        assert history.is_dir() and not history.is_symlink()
+        assert history.stat().st_uid == os.geteuid()
+        assert (history.stat().st_mode & 0o7777) == 0o700
+        assert (archive.stat().st_mode & 0o7777) == 0o600
+        assert (receipt.stat().st_mode & 0o7777) == 0o600
+
+
+def test_phase1ef_history_parent_policy_accepts_scc_setgid_traversal_mode() -> None:
+    metadata = mock.Mock(st_uid=os.geteuid(), st_mode=stat.S_IFDIR | 0o2755)
+    assert archive_tool._history_parent_policy(metadata)
+    for unsafe_mode in (0o2775, 0o2757):
+        metadata = mock.Mock(st_uid=os.geteuid(), st_mode=stat.S_IFDIR | unsafe_mode)
+        assert not archive_tool._history_parent_policy(metadata)
+
+
+def test_phase1ef_old_environment_archive_rejects_writable_parent() -> None:
+    for unsafe_mode in (0o770, 0o702, 0o775, 0o757):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            private = root / "private"
+            private.mkdir(mode=0o700)
+            source = private / "phase1ef_attempt004_authority.env"
+            source.write_text("SYNTHETIC_PRIVATE_VALUE=not-exported\n", encoding="utf-8")
+            source.chmod(0o600)
+            private.chmod(unsafe_mode)
+            try:
+                archive_tool.archive_environment(
+                    source=source,
+                    history_root=private / "history_attempt_001",
+                    governing_commit="8" * 40,
+                )
+            except archive_tool.ArchiveError as exc:
+                assert str(exc) == "HISTORY_PARENT_POLICY_FAILED"
+            else:
+                raise AssertionError("writable archive parent was accepted")
+            assert not (private / "history_attempt_001").exists()
+
+
 def test_phase1ef_old_environment_archive_rejects_symlink_and_sanitizes_cli() -> None:
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw).resolve()
@@ -534,7 +590,7 @@ def test_phase1ef_old_environment_archive_rejects_symlink_and_sanitizes_cli() ->
         real = private / "real.env"
         real.write_text("SYNTHETIC=1\n", encoding="utf-8")
         real.chmod(0o600)
-        link = private / "link.env"
+        link = private / "phase1ef_attempt004_authority.env"
         link.symlink_to(real)
         result = _run(
             [
