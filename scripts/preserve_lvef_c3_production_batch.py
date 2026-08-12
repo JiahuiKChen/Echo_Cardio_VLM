@@ -191,11 +191,15 @@ def safe_relative(path: Path, root: Path) -> str:
     return relative
 
 
-def read_csv_exact(path: Path, header: Sequence[str]) -> list[dict[str, str]]:
+def read_csv_exact(
+    path: Path, header: Sequence[str], *, delimiter: str = ","
+) -> list[dict[str, str]]:
     if path.is_symlink() or not path.is_file():
         raise BatchPreservationError("CSV_NOT_REGULAR")
+    if delimiter not in {",", "\t"}:
+        raise BatchPreservationError("CSV_DELIMITER_INVALID")
     with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.reader(handle)
+        reader = csv.reader(handle, delimiter=delimiter)
         try:
             observed = next(reader)
         except StopIteration:
@@ -578,11 +582,157 @@ def validate_study_pooling_records(
     }
 
 
+def mean_pool_study_embeddings(
+    *, clip_embeddings: Any, clip_rows: Sequence[Mapping[str, Any]],
+    study_rows: Sequence[Mapping[str, Any]],
+) -> Any:
+    """Pool canonical clip rows by study using float64 means and float32 output."""
+    import numpy as np
+
+    if (
+        not isinstance(clip_rows, Sequence)
+        or isinstance(clip_rows, (str, bytes))
+        or not isinstance(study_rows, Sequence)
+        or isinstance(study_rows, (str, bytes))
+    ):
+        raise BatchPreservationError("STUDY_POOLING_ROWS_INVALID")
+    if (
+        not isinstance(clip_embeddings, np.ndarray)
+        or clip_embeddings.dtype != np.float32
+        or clip_embeddings.ndim != 2
+        or clip_embeddings.shape[0] != len(clip_rows)
+        or clip_embeddings.shape[1] != 512
+        or clip_embeddings.shape[0] < 1
+    ):
+        raise BatchPreservationError("STUDY_POOLING_CLIP_ARRAY_INVALID")
+    if not np.isfinite(clip_embeddings).all():
+        raise BatchPreservationError("STUDY_POOLING_NONFINITE")
+
+    clip_indices: set[int] = set()
+    clips_by_study: dict[str, list[int]] = {}
+    for row in clip_rows:
+        if not isinstance(row, Mapping):
+            raise BatchPreservationError("STUDY_POOLING_CLIP_ROW_INVALID")
+        raw_study_id = row.get("study_id")
+        raw_index = row.get("embedding_idx")
+        if raw_study_id is None or not str(raw_study_id):
+            raise BatchPreservationError("STUDY_POOLING_CLIP_ROW_INVALID")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError) as exc:
+            raise BatchPreservationError("STUDY_POOLING_CLIP_ROW_INVALID") from exc
+        if (
+            str(index) != str(raw_index)
+            or index < 0
+            or index >= len(clip_embeddings)
+            or index in clip_indices
+        ):
+            raise BatchPreservationError("STUDY_POOLING_CLIP_ROW_INVALID")
+        clip_indices.add(index)
+        clips_by_study.setdefault(str(raw_study_id), []).append(index)
+    if clip_indices != set(range(len(clip_embeddings))):
+        raise BatchPreservationError("STUDY_POOLING_CLIP_ROW_INVALID")
+
+    pooled = np.empty((len(study_rows), clip_embeddings.shape[1]), dtype=np.float32)
+    study_indices: set[int] = set()
+    study_ids: set[str] = set()
+    for row in study_rows:
+        if not isinstance(row, Mapping):
+            raise BatchPreservationError("STUDY_POOLING_STUDY_ROW_INVALID")
+        raw_study_id = row.get("study_id")
+        raw_index = row.get("study_idx")
+        raw_n_clips = row.get("n_clips")
+        if raw_study_id is None or not str(raw_study_id):
+            raise BatchPreservationError("STUDY_POOLING_STUDY_ROW_INVALID")
+        try:
+            index = int(raw_index)
+            n_clips = int(raw_n_clips)
+        except (TypeError, ValueError) as exc:
+            raise BatchPreservationError("STUDY_POOLING_STUDY_ROW_INVALID") from exc
+        study_id = str(raw_study_id)
+        indices = clips_by_study.get(study_id, [])
+        if (
+            str(index) != str(raw_index)
+            or str(n_clips) != str(raw_n_clips)
+            or index < 0
+            or index >= len(study_rows)
+            or index in study_indices
+            or study_id in study_ids
+            or n_clips < 1
+            or len(indices) != n_clips
+        ):
+            raise BatchPreservationError("STUDY_POOLING_STUDY_ROW_INVALID")
+        study_indices.add(index)
+        study_ids.add(study_id)
+        pooled[index] = clip_embeddings[
+            np.asarray(indices, dtype=np.int64)
+        ].mean(axis=0, dtype=np.float64).astype(np.float32)
+    if (
+        study_indices != set(range(len(study_rows)))
+        or study_ids != set(clips_by_study)
+    ):
+        raise BatchPreservationError("STUDY_POOLING_MEMBERSHIP_MISMATCH")
+    if not np.isfinite(pooled).all():
+        raise BatchPreservationError("STUDY_POOLING_NONFINITE")
+    return pooled
+
+
+def resolve_preservation_runtime_authority(
+    *, plan: Mapping[str, Any], contract: Mapping[str, Any], contract_path: Path,
+    governing_commit: str, environment_receipt_sha256: str,
+    checkpoint_sha256: str, requirements: core.PlanRequirements | None = None,
+    expected_runtime_authority: Mapping[str, Any] | None = None,
+) -> tuple[core.PlanRequirements, str, dict[str, str], bool]:
+    """Resolve default production or explicitly scoped preservation authority."""
+    scoped = requirements is not None or expected_runtime_authority is not None
+    if requirements is None and expected_runtime_authority is None:
+        effective_requirements = core.production_requirements(contract)
+        plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+        runtime_authority = core.derive_expected_runtime_authority(
+            plan,
+            requirements=effective_requirements,
+            contract=contract,
+            contract_path=contract_path,
+            governing_commit=governing_commit,
+            environment_receipt_sha256=environment_receipt_sha256,
+        )
+    elif requirements is None or expected_runtime_authority is None:
+        raise BatchPreservationError("SCOPED_RUNTIME_AUTHORITY_ARGUMENTS_INCOMPLETE")
+    else:
+        effective_requirements = requirements
+        plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+        runtime_authority = core.validate_runtime_authority(expected_runtime_authority)
+        if runtime_authority["batch_plan_sha256"] != plan_sha:
+            raise BatchPreservationError("SCOPED_RUNTIME_BATCH_PLAN_MISMATCH")
+        if any(
+            runtime_authority[key] != str(plan["authority"][key])
+            for key in core.PLAN_AUTHORITY_KEYS
+        ):
+            raise BatchPreservationError("SCOPED_RUNTIME_PLAN_AUTHORITY_MISMATCH")
+        if (
+            runtime_authority["git_commit"] != governing_commit
+            or plan["authority"]["orchestration_contract_sha256"]
+            != sha256_file(contract_path)
+            or plan["authority"]["state_machine_schema_sha256"]
+            != str(contract["authority"]["state_machine_schema_sha256"])
+            or plan["authority"]["resume_ledger_schema_sha256"]
+            != str(contract["authority"]["resume_ledger_schema_sha256"])
+        ):
+            raise BatchPreservationError("SCOPED_RUNTIME_GOVERNING_COMMIT_MISMATCH")
+    if runtime_authority["checkpoint_sha256"] != checkpoint_sha256:
+        raise BatchPreservationError("RUNTIME_CHECKPOINT_AUTHORITY_MISMATCH")
+    if runtime_authority["environment_receipt_sha256"] != environment_receipt_sha256:
+        raise BatchPreservationError("RUNTIME_ENVIRONMENT_AUTHORITY_MISMATCH")
+    return effective_requirements, plan_sha, runtime_authority, scoped
+
+
 def preserve_batch(
     *, contract_path: Path, plan_path: Path, batch_id: str, attempt_id: str,
     governing_commit: str, production_root: Path, output_root: Path,
     environment_receipt: Path, checkpoint: Path, scheduler_job_identity: str,
-    input_ledger: Path,
+    input_ledger: Path, requirements: core.PlanRequirements | None = None,
+    expected_runtime_authority: Mapping[str, Any] | None = None,
+    scheduler_runner_path: Path | None = None,
 ) -> dict[str, Any]:
     if not BATCH_RE.fullmatch(batch_id) or not ATTEMPT_RE.fullmatch(attempt_id):
         raise BatchPreservationError("BATCH_OR_ATTEMPT_INVALID")
@@ -605,20 +755,21 @@ def preserve_batch(
     plan = core.load_strict_json(plan_path)
     if not isinstance(plan, Mapping):
         raise BatchPreservationError("BATCH_PLAN_NOT_MAPPING")
-    requirements = core.production_requirements(contract)
-    plan_sha = core.validate_batch_plan(plan, requirements=requirements)
-    runtime_authority = core.derive_expected_runtime_authority(
-        plan,
-        requirements=requirements,
+    (
+        effective_requirements,
+        plan_sha,
+        runtime_authority,
+        scoped_runtime_authority,
+    ) = resolve_preservation_runtime_authority(
+        plan=plan,
         contract=contract,
         contract_path=contract_path,
         governing_commit=governing_commit,
         environment_receipt_sha256=sha256_file(environment_receipt),
+        checkpoint_sha256=sha256_file(checkpoint),
+        requirements=requirements,
+        expected_runtime_authority=expected_runtime_authority,
     )
-    if runtime_authority["checkpoint_sha256"] != sha256_file(checkpoint):
-        raise BatchPreservationError("RUNTIME_CHECKPOINT_AUTHORITY_MISMATCH")
-    if runtime_authority["environment_receipt_sha256"] != sha256_file(environment_receipt):
-        raise BatchPreservationError("RUNTIME_ENVIRONMENT_AUTHORITY_MISMATCH")
     batch = next((item for item in plan["batches"] if item["batch_id"] == batch_id), None)
     if batch is None:
         raise BatchPreservationError("BATCH_NOT_PLANNED")
@@ -641,6 +792,12 @@ def preserve_batch(
         "study_disposition": batch_root / "echoprime" / "study_disposition.restricted.csv",
         "embedding_summary": batch_root / "echoprime" / "echoprime_pooling.summary.json",
     }
+    effective_scheduler_runner = (
+        scheduler_runner_path
+        if scheduler_runner_path is not None
+        else Path(__file__).resolve().parent
+        / "scc_run_lvef_c3_production_batch_v2.sh"
+    )
     external = {
         "environment_receipt": environment_receipt,
         "checkpoint": checkpoint,
@@ -648,7 +805,7 @@ def preserve_batch(
         "batch_plan": plan_path,
         "stage_wrapper": Path(__file__).resolve().parent / "lvef_c3_production_stages.py",
         "batch_preservation_script": Path(__file__).resolve(),
-        "scheduler_runner": Path(__file__).resolve().parent / "scc_run_lvef_c3_production_batch_v2.sh",
+        "scheduler_runner": effective_scheduler_runner,
     }
     for path in external.values():
         if path.is_symlink() or not path.is_file():
@@ -697,16 +854,17 @@ def preserve_batch(
     ledger = load_json(paths["state_input_ledger"], "STATE_INPUT_LEDGER")
     expected_keys = {batch_id: set(expected_objects)}
     try:
-        core.validate_ledger_against_current_runtime(
-            ledger,
-            plan=plan,
-            requirements=requirements,
-            contract=contract,
-            contract_path=contract_path,
-            governing_commit=governing_commit,
-            environment_receipt_sha256=sha256_file(environment_receipt),
-            batch_id=batch_id,
-        )
+        if not scoped_runtime_authority:
+            core.validate_ledger_against_current_runtime(
+                ledger,
+                plan=plan,
+                requirements=effective_requirements,
+                contract=contract,
+                contract_path=contract_path,
+                governing_commit=governing_commit,
+                environment_receipt_sha256=sha256_file(environment_receipt),
+                batch_id=batch_id,
+            )
         core.validate_resume_authority(
             ledger,
             expected_authority=runtime_authority,
@@ -799,16 +957,13 @@ def preserve_batch(
         clip_vector_hashes=clip_vector_hashes,
         study_vector_hashes=study_vector_hashes,
     )
-    for row in study_manifest.to_dict(orient="records"):
-        indices = clip_manifest.loc[
-            clip_manifest["study_id"].astype(str) == str(row["study_id"]),
-            "embedding_idx",
-        ].astype(int).to_numpy()
-        expected_vector = clip_array[indices].mean(axis=0, dtype=np.float64).astype(
-            np.float32
-        )
-        if not np.array_equal(expected_vector, study_array[int(row["study_idx"])]):
-            raise BatchPreservationError("STUDY_POOLING_RECOMPUTATION_MISMATCH")
+    expected_study_array = mean_pool_study_embeddings(
+        clip_embeddings=clip_array,
+        clip_rows=clip_manifest.to_dict(orient="records"),
+        study_rows=study_manifest.to_dict(orient="records"),
+    )
+    if not np.array_equal(expected_study_array, study_array):
+        raise BatchPreservationError("STUDY_POOLING_RECOMPUTATION_MISMATCH")
     if (
         pooling_semantics["eligible_studies"] != embedding["n_pooled_studies"]
         or pooling_semantics["no_cine_studies"] != embedding["n_no_cine_studies"]
@@ -828,7 +983,7 @@ def preserve_batch(
     else:
         write_bytes_no_clobber(manifest_path, manifest_payload)
     # Independent second pass: reload manifest and rehash every listed artifact.
-    verified = read_csv_exact(manifest_path, MANIFEST_HEADER)
+    verified = read_csv_exact(manifest_path, MANIFEST_HEADER, delimiter="\t")
     for item in verified:
         artifact = production_root / item["relative_path"]
         if artifact.is_symlink() or not artifact.is_file():

@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "artifact_type": "lvef_c3_canary_scheduler_plan_v1",
+  "status": "FROZEN_UNBOUND_UNAUTHORIZED",
+  "plan_id": "lvef_c3_exact_five_production_faithful_v1",
+  "scheduler_system": "SGE",
+  "canary_manifest_sha256": "OWNER_PRIVATE_CANARY_MANIFEST_SHA256_REQUIRED",
+  "ordered_stage_ids": [
+    "DOWNLOAD",
+    "DICOM_EXTRACTION",
+    "ECHOPRIME_EMBEDDING",
+    "BATCH_PRESERVATION",
+    "CANARY_FINALIZATION"
+  ],
+  "scheduler_submission_count": 5,
+  "maximum_scheduler_submission_count": 5,
+  "gpu_stage_count": 1,
+  "stage_retry_count": 0,
+  "array_expansion_permitted": false,
+  "automatic_resubmission_permitted": false,
+  "production_continuation": false,
+  "stages": [
+    {
+      "stage_id": "DOWNLOAD",
+      "ordinal": 1,
+      "predecessors": [],
+      "resource_class": "CPU",
+      "resources": {
+        "h_rt": "24:00:00",
+        "mem_total_gb": 16,
+        "gpu_count": 0,
+        "gpu_compute_capability_minimum": null,
+        "gpu_memory_gb": 0
+      },
+      "entrypoint": {
+        "path": "scripts/lvef_c3_orchestration_core.py",
+        "sha256": "c92629ff395e395010287adbcdb9a7c1d42f9fe75814e094b2f07551d656f4c8",
+        "callable": "execute_exact_batch_download"
+      },
+      "required_predecessor_receipts": [],
+      "outputs": [
+        "download_resume_ledger",
+        "verified_download_manifest",
+        "download_verified_transition_receipt"
+      ],
+      "failure_boundary": "BLOCK_ALL_SUCCESSORS_NO_RESUBMISSION",
+      "scheduler_submission_required": true,
+      "array_task_count": 1,
+      "retry_count": 0
+    },
+    {
+      "stage_id": "DICOM_EXTRACTION",
+      "ordinal": 2,
+      "predecessors": [
+        "DOWNLOAD"
+      ],
+      "resource_class": "CPU",
+      "resources": {
+        "h_rt": "48:00:00",
+        "mem_total_gb": 64,
+        "gpu_count": 0,
+        "gpu_compute_capability_minimum": null,
+        "gpu_memory_gb": 0
+      },
+      "entrypoint": {
+        "path": "scripts/lvef_c3_production_stages.py",
+        "sha256": "045dfc94f01cd2159e9100fbb0e4fe6dc2fc318c200fd8ac91d02030124b6005",
+        "callable": "run_production_dicom_extraction"
+      },
+      "required_predecessor_receipts": [
+        "download_verified_transition_receipt"
+      ],
+      "outputs": [
+        "dicom_audit",
+        "extraction_manifest",
+        "extraction_complete_transition_receipt"
+      ],
+      "failure_boundary": "BLOCK_ALL_SUCCESSORS_NO_RESUBMISSION",
+      "scheduler_submission_required": true,
+      "array_task_count": 1,
+      "retry_count": 0
+    },
+    {
+      "stage_id": "ECHOPRIME_EMBEDDING",
+      "ordinal": 3,
+      "predecessors": [
+        "DICOM_EXTRACTION"
+      ],
+      "resource_class": "GPU",
+      "resources": {
+        "h_rt": "24:00:00",
+        "mem_total_gb": 64,
+        "gpu_count": 1,
+        "gpu_compute_capability_minimum": "8.0",
+        "gpu_memory_gb": 48
+      },
+      "entrypoint": {
+        "path": "scripts/lvef_c3_production_stages.py",
+        "sha256": "045dfc94f01cd2159e9100fbb0e4fe6dc2fc318c200fd8ac91d02030124b6005",
+        "callable": "run_production_echoprime"
+      },
+      "required_predecessor_receipts": [
+        "extraction_complete_transition_receipt"
+      ],
+      "outputs": [
+        "clip_embeddings",
+        "clip_manifest",
+        "study_embeddings",
+        "study_manifest",
+        "study_pooling_complete_transition_receipt"
+      ],
+      "failure_boundary": "BLOCK_ALL_SUCCESSORS_NO_RESUBMISSION",
+      "scheduler_submission_required": true,
+      "array_task_count": 1,
+      "retry_count": 0
+    },
+    {
+      "stage_id": "BATCH_PRESERVATION",
+      "ordinal": 4,
+      "predecessors": [
+        "ECHOPRIME_EMBEDDING"
+      ],
+      "resource_class": "CPU",
+      "resources": {
+        "h_rt": "12:00:00",
+        "mem_total_gb": 32,
+        "gpu_count": 0,
+        "gpu_compute_capability_minimum": null,
+        "gpu_memory_gb": 0
+      },
+      "entrypoint": {
+        "path": "scripts/preserve_lvef_c3_production_batch.py",
+        "sha256": "c6aa982fefb97a3197cd944ecc9ade6fec9af661bbba3432d79f4f948b205140",
+        "callable": "preserve_batch"
+      },
+      "required_predecessor_receipts": [
+        "study_pooling_complete_transition_receipt"
+      ],
+      "outputs": [
+        "batch_preservation_manifest",
+        "batch_preservation_receipt",
+        "cache_retirement_eligible_transition_receipt"
+      ],
+      "failure_boundary": "BLOCK_ALL_SUCCESSORS_NO_RESUBMISSION",
+      "scheduler_submission_required": true,
+      "array_task_count": 1,
+      "retry_count": 0
+    },
+    {
+      "stage_id": "CANARY_FINALIZATION",
+      "ordinal": 5,
+      "predecessors": [
+        "BATCH_PRESERVATION"
+      ],
+      "resource_class": "CPU",
+      "resources": {
+        "h_rt": "12:00:00",
+        "mem_total_gb": 32,
+        "gpu_count": 0,
+        "gpu_compute_capability_minimum": null,
+        "gpu_memory_gb": 0
+      },
+      "entrypoint": {
+        "path": "scripts/finalize_lvef_c3_production.py",
+        "sha256": "99e6fcffae9230a317e033f9339aba15f9879122695fe1baad2ff6e1bc452221",
+        "callable": "finalize_canary_preservation_receipt"
+      },
+      "required_predecessor_receipts": [
+        "batch_preservation_receipt"
+      ],
+      "outputs": [
+        "canary_finalization_receipt",
+        "aggregate_safe_canary_summary"
+      ],
+      "failure_boundary": "TERMINAL_CANARY_FAILURE_NO_RESUBMISSION",
+      "scheduler_submission_required": true,
+      "array_task_count": 1,
+      "retry_count": 0
+    }
+  ]
+}

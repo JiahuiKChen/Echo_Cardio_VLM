@@ -315,6 +315,8 @@ def validate_wrapper_authority(
     batch_plan: Path,
     environment_receipt: Path,
     output_root: Path,
+    requirements: Any | None = None,
+    expected_runtime_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if stage not in WRAPPER_STAGES:
         raise ProductionStageError("UNKNOWN_PRODUCTION_STAGE")
@@ -328,9 +330,13 @@ def validate_wrapper_authority(
     contract_hash = sha256_file(orchestration_contract)
     contract = core.load_orchestration_contract(orchestration_contract)
     plan = core.load_strict_json(batch_plan)
-    plan_hash = core.validate_batch_plan(
-        plan, requirements=core.production_requirements(contract)
+    scoped = requirements is not None or expected_runtime_authority is not None
+    if scoped and (requirements is None or expected_runtime_authority is None):
+        raise ProductionStageError("SCOPED_RUNTIME_AUTHORITY_ARGUMENTS_INCOMPLETE")
+    effective_requirements = (
+        requirements if requirements is not None else core.production_requirements(contract)
     )
+    plan_hash = core.validate_batch_plan(plan, requirements=effective_requirements)
     if contract_hash != plan["authority"]["orchestration_contract_sha256"]:
         raise ProductionStageError("PLAN_CONTRACT_AUTHORITY_MISMATCH")
     if governing_commit != plan["authority"]["git_commit"]:
@@ -342,14 +348,33 @@ def validate_wrapper_authority(
         raise ProductionStageError("BATCH_NOT_PRESENT_IN_PLAN")
     environment_receipt_sha256 = sha256_file(environment_receipt)
     validate_environment_receipt_against_current_runtime(environment_receipt)
-    runtime_authority = core.derive_expected_runtime_authority(
-        plan,
-        requirements=core.production_requirements(contract),
-        contract=contract,
-        contract_path=orchestration_contract,
-        governing_commit=governing_commit,
-        environment_receipt_sha256=environment_receipt_sha256,
-    )
+    if scoped:
+        runtime_authority = core.validate_runtime_authority(expected_runtime_authority)
+        if (
+            runtime_authority["batch_plan_sha256"] != plan_hash
+            or any(
+                runtime_authority[key] != str(plan["authority"][key])
+                for key in core.PLAN_AUTHORITY_KEYS
+            )
+            or runtime_authority["git_commit"] != governing_commit
+            or runtime_authority["environment_receipt_sha256"]
+            != environment_receipt_sha256
+            or runtime_authority["checkpoint_sha256"] != CHECKPOINT_SHA256
+            or plan["authority"]["state_machine_schema_sha256"]
+            != str(contract["authority"]["state_machine_schema_sha256"])
+            or plan["authority"]["resume_ledger_schema_sha256"]
+            != str(contract["authority"]["resume_ledger_schema_sha256"])
+        ):
+            raise ProductionStageError("SCOPED_RUNTIME_AUTHORITY_MISMATCH")
+    else:
+        runtime_authority = core.derive_expected_runtime_authority(
+            plan,
+            requirements=effective_requirements,
+            contract=contract,
+            contract_path=orchestration_contract,
+            governing_commit=governing_commit,
+            environment_receipt_sha256=environment_receipt_sha256,
+        )
     require_projectnb_path(output_root, must_exist=False)
     return {
         "stage": stage,
@@ -960,6 +985,7 @@ def run_production_echoprime(
     seed: int,
     attempt_id: str,
     runtime_authority: Mapping[str, Any],
+    requirements: Any | None = None,
 ) -> dict[str, Any]:
     """Run encoder-only EchoPrime and deterministic study mean pooling.
 
@@ -978,6 +1004,7 @@ def run_production_echoprime(
     import torchvision
     import lvef_reconstruction_smoke as smoke
     import lvef_c3_orchestration_core as core
+    import preserve_lvef_c3_production_batch as preservation
 
     environment = load_json_object(environment_receipt, "ENVIRONMENT_RECEIPT")
     if (
@@ -996,7 +1023,27 @@ def run_production_echoprime(
         raise ProductionStageError("SELECTED_BATCH_OWNERSHIP_NOT_ONE_TO_ONE")
     contract = core.load_orchestration_contract(orchestration_contract)
     plan = core.load_strict_json(batch_plan)
-    core.validate_batch_plan(plan, requirements=core.production_requirements(contract))
+    plan_sha256 = core.validate_batch_plan(
+        plan,
+        requirements=(
+            requirements
+            if requirements is not None
+            else core.production_requirements(contract)
+        ),
+    )
+    if requirements is not None:
+        normalized_runtime = core.validate_runtime_authority(runtime_authority)
+        if (
+            normalized_runtime["batch_plan_sha256"] != plan_sha256
+            or any(
+                normalized_runtime[key] != str(plan["authority"][key])
+                for key in core.PLAN_AUTHORITY_KEYS
+            )
+            or normalized_runtime["checkpoint_sha256"] != sha256_file(checkpoint)
+            or normalized_runtime["environment_receipt_sha256"]
+            != sha256_file(environment_receipt)
+        ):
+            raise ProductionStageError("SCOPED_ECHOPRIME_RUNTIME_AUTHORITY_MISMATCH")
     planned_batch = next((item for item in plan["batches"] if item["batch_id"] == batch_id), None)
     if planned_batch is None:
         raise ProductionStageError("SELECTED_BATCH_NOT_PLANNED")
@@ -1072,24 +1119,26 @@ def run_production_echoprime(
     clip_manifest = pd.DataFrame(clip_rows)
     if clip_manifest["clip_key"].duplicated().any() or clip_manifest["physical_source_key"].duplicated().any():
         raise ProductionStageError("DUPLICATE_EMBEDDED_CLIP_OR_SOURCE")
-    study_vectors: list[np.ndarray] = []
     study_rows: list[dict[str, Any]] = []
     for study_id, group in clip_manifest.groupby("study_id", sort=True, dropna=False):
-        indices = group["embedding_idx"].astype(int).to_numpy()
-        vector = clip_array[indices].mean(axis=0, dtype=np.float64).astype(np.float32)
-        if not np.isfinite(vector).all():
-            raise ProductionStageError("POOLED_EMBEDDING_NONFINITE")
-        study_vectors.append(vector)
         study_rows.append(
             {
-                "study_idx": len(study_vectors) - 1,
+                "study_idx": len(study_rows),
                 "subject_id": group["subject_id"].iloc[0],
                 "study_id": study_id,
                 "n_clips": len(group),
-                "embedding_sha256": smoke.array_content_sha256(vector),
             }
         )
-    study_array = np.stack(study_vectors).astype(np.float32, copy=False)
+    try:
+        study_array = preservation.mean_pool_study_embeddings(
+            clip_embeddings=clip_array,
+            clip_rows=clip_rows,
+            study_rows=study_rows,
+        )
+    except preservation.BatchPreservationError as exc:
+        raise ProductionStageError("POOLED_EMBEDDING_SEMANTICS_INVALID") from exc
+    for row, vector in zip(study_rows, study_array, strict=True):
+        row["embedding_sha256"] = smoke.array_content_sha256(vector)
     study_manifest = pd.DataFrame(study_rows)
     pooled = set(study_manifest["study_id"])
     disposition = selected.copy()

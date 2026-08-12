@@ -124,6 +124,13 @@ BATCH_RECEIPT_KEYS = {
     "raw_dicoms_retained",
     "extracted_cache_retired",
 }
+RETIREMENT_RECEIPT_KEYS = {
+    "cache_retirement_authorization_sha256",
+    "cache_tree_sha256",
+    "cache_atomically_staged_receipt_sha256",
+    "cache_retirement_script_sha256",
+}
+PRESERVATION_ELIGIBILITY_RECEIPT_KEYS = BATCH_RECEIPT_KEYS - RETIREMENT_RECEIPT_KEYS
 TRUE_GATE_KEYS = {
     "source_gate_passed",
     "download_gate_passed",
@@ -226,6 +233,40 @@ FINAL_KEYS = {
     "extracted_cache_retired",
     "outside_selected_studies_permitted",
     "scientific_inconsistency_repair_performed",
+    "identifiers_emitted",
+    "restricted_paths_emitted",
+}
+CANARY_FINAL_KEYS = {
+    "schema_version",
+    "artifact_type",
+    "status",
+    "successful_train_studies",
+    "selected_subjects",
+    "verified_source_objects",
+    "selected_source_bytes",
+    "dicom_readable_objects",
+    "dicom_unreadable_objects",
+    "multiframe_cines",
+    "single_frame_objects",
+    "extracted_clips",
+    "unique_clip_keys",
+    "clip_embeddings",
+    "pooled_studies",
+    "no_cine_studies",
+    "failed_studies",
+    "preservation_receipt_sha256",
+    "canary_manifest_sha256",
+    "batch_plan_sha256",
+    "scheduler_plan_sha256",
+    "authority_binding_sha256",
+    "all_studies_successful",
+    "all_studies_train",
+    "manifest_plan_scheduler_binding_passed",
+    "all_preservation_gates_passed",
+    "raw_dicoms_retained",
+    "extracted_cache_retained",
+    "aggregate_safe",
+    "production_continuation_authorized",
     "identifiers_emitted",
     "restricted_paths_emitted",
 }
@@ -523,6 +564,191 @@ def _validate_receipt(value: Mapping[str, Any]) -> None:
         "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
     ):
         raise ProductionFinalizationError("NO_CINE_DISPOSITION_MISMATCH")
+
+
+def _validate_canary_eligibility_receipt(value: Mapping[str, Any]) -> None:
+    """Validate the retained-cache receipt subset used by a bounded canary."""
+    if set(value) != PRESERVATION_ELIGIBILITY_RECEIPT_KEYS:
+        raise ProductionFinalizationError("CANARY_RECEIPT_SCHEMA_MISMATCH")
+    if value.get("schema_version") != 1:
+        raise ProductionFinalizationError("CANARY_RECEIPT_VERSION_MISMATCH")
+    if value.get("artifact_type") != "lvef_c3_batch_preservation_eligibility_receipt_v2":
+        raise ProductionFinalizationError("CANARY_RECEIPT_TYPE_MISMATCH")
+    if value.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE":
+        raise ProductionFinalizationError("CANARY_PRESERVATION_NOT_ELIGIBLE")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", str(value.get("batch_id"))):
+        raise ProductionFinalizationError("CANARY_BATCH_ID_INVALID")
+    if not isinstance(value.get("attempt_id"), str) or not value["attempt_id"]:
+        raise ProductionFinalizationError("CANARY_ATTEMPT_ID_INVALID")
+    if not COMMIT_RE.fullmatch(str(value.get("governing_commit"))):
+        raise ProductionFinalizationError("CANARY_GOVERNING_COMMIT_INVALID")
+    if value.get("source_commit") != value.get("governing_commit"):
+        raise ProductionFinalizationError("CANARY_SOURCE_COMMIT_MISMATCH")
+    if not TIMESTAMP_RE.fullmatch(str(value.get("run_timestamp_utc"))):
+        raise ProductionFinalizationError("CANARY_RUN_TIMESTAMP_INVALID")
+    if (
+        value.get("cohort_version") != "mimic-iv-echo/1.0"
+        or not re.fullmatch(
+            r"split_map_sha256:[0-9a-f]{64}", str(value.get("split_version"))
+        )
+        or value.get("execution_contract_version") != 2
+        or value.get("aggregate_safety_gate_result") != "PASS"
+        or value.get("checkpoint_checksum") != value.get("checkpoint_sha256")
+    ):
+        raise ProductionFinalizationError("CANARY_PROVENANCE_VALUE_INVALID")
+    for key in (
+        "python_version", "pytorch_version", "torchvision_version",
+        "cuda_version", "cudnn_version",
+    ):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise ProductionFinalizationError("CANARY_RUNTIME_VERSION_INVALID")
+    for key in HASH_KEYS - RETIREMENT_RECEIPT_KEYS:
+        if not SHA256_RE.fullmatch(str(value.get(key))):
+            raise ProductionFinalizationError("CANARY_HASH_INVALID")
+    if not re.fullmatch(
+        r"[A-Za-z0-9_.:-]{1,80}", str(value.get("scheduler_job_identity"))
+    ):
+        raise ProductionFinalizationError("CANARY_SCHEDULER_IDENTITY_INVALID")
+    for key in COUNT_KEYS:
+        if isinstance(value.get(key), bool) or not isinstance(value.get(key), int):
+            raise ProductionFinalizationError("CANARY_COUNT_NOT_INTEGER")
+        if value[key] < 0:
+            raise ProductionFinalizationError("CANARY_COUNT_NEGATIVE")
+    for key in TRUE_GATE_KEYS:
+        if value.get(key) is not True:
+            raise ProductionFinalizationError("CANARY_GATE_FAILED")
+    for key in ZERO_KEYS:
+        if value[key] != 0:
+            raise ProductionFinalizationError("CANARY_SCIENTIFIC_INCONSISTENCY")
+    if value.get("extracted_cache_retired") is not False:
+        raise ProductionFinalizationError("CANARY_CACHE_NOT_RETAINED")
+    if (
+        value["n_selected_studies"] != 5
+        or value["n_selected_subjects"] != 5
+        or value["n_pooled_studies"] != 5
+        or value["n_no_cine_studies"] != 0
+        or value.get("no_cine_disposition") != "NONE"
+    ):
+        raise ProductionFinalizationError("CANARY_EXACT_FIVE_SUCCESSFUL_STUDIES_REQUIRED")
+    if value["n_expected_objects"] < 5 or value["expected_source_bytes"] < 1:
+        raise ProductionFinalizationError("CANARY_SOURCE_AGGREGATE_INVALID")
+    if value["n_download_verified"] != value["n_expected_objects"]:
+        raise ProductionFinalizationError("CANARY_DOWNLOAD_COUNT_MISMATCH")
+    if (
+        value["n_dicom_unreadable"] != 0
+        or value["n_dicom_readable"] != value["n_expected_objects"]
+    ):
+        raise ProductionFinalizationError("CANARY_DICOM_FAILURE")
+    if value["n_multiframe_cines"] + value["n_single_frame_objects"] != value["n_dicom_readable"]:
+        raise ProductionFinalizationError("CANARY_CINE_CLASSIFICATION_MISMATCH")
+    if not (
+        value["n_multiframe_cines"]
+        == value["n_extracted_clips"]
+        == value["n_unique_clip_keys"]
+        == value["n_clip_embeddings"]
+    ) or value["n_multiframe_cines"] < 5:
+        raise ProductionFinalizationError("CANARY_CLIP_ACCOUNTING_MISMATCH")
+
+
+def validate_closed_canary_summary(value: Mapping[str, Any]) -> None:
+    if set(value) != CANARY_FINAL_KEYS:
+        raise ProductionFinalizationError("CANARY_SUMMARY_SCHEMA_MISMATCH")
+
+
+def finalize_canary_preservation_receipt(
+    receipt: Mapping[str, Any], *, expected_governing_commit: str,
+    expected_attempt_id: str, expected_canary_manifest_sha256: str,
+    expected_batch_plan_sha256: str, expected_scheduler_plan_sha256: str,
+    expected_object_count: int, expected_source_bytes: int,
+) -> dict[str, Any]:
+    """Finalize one exact-five canary receipt without retiring its cache."""
+    if not isinstance(receipt, Mapping):
+        raise ProductionFinalizationError("CANARY_RECEIPT_NOT_MAPPING")
+    if (
+        not isinstance(expected_governing_commit, str)
+        or not COMMIT_RE.fullmatch(expected_governing_commit)
+    ):
+        raise ProductionFinalizationError("EXPECTED_CANARY_COMMIT_INVALID")
+    if (
+        not isinstance(expected_attempt_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", expected_attempt_id)
+    ):
+        raise ProductionFinalizationError("EXPECTED_CANARY_ATTEMPT_ID_INVALID")
+    if (
+        isinstance(expected_object_count, bool)
+        or not isinstance(expected_object_count, int)
+        or expected_object_count < 5
+        or expected_object_count > 750
+        or isinstance(expected_source_bytes, bool)
+        or not isinstance(expected_source_bytes, int)
+        or expected_source_bytes < 1
+        or expected_source_bytes > 5_000_000_000
+    ):
+        raise ProductionFinalizationError("EXPECTED_CANARY_SOURCE_SCOPE_INVALID")
+    expected_hashes = {
+        "canary_manifest_sha256": expected_canary_manifest_sha256,
+        "batch_plan_sha256": expected_batch_plan_sha256,
+        "scheduler_plan_sha256": expected_scheduler_plan_sha256,
+    }
+    if any(
+        not isinstance(value, str) or not SHA256_RE.fullmatch(value)
+        for value in expected_hashes.values()
+    ):
+        raise ProductionFinalizationError("EXPECTED_CANARY_AUTHORITY_HASH_INVALID")
+    _validate_canary_eligibility_receipt(receipt)
+    if receipt.get("governing_commit") != expected_governing_commit:
+        raise ProductionFinalizationError("CANARY_GOVERNING_COMMIT_MISMATCH")
+    if receipt.get("attempt_id") != expected_attempt_id:
+        raise ProductionFinalizationError("CANARY_ATTEMPT_MISMATCH")
+    if receipt.get("batch_plan_sha256") != expected_batch_plan_sha256:
+        raise ProductionFinalizationError("CANARY_BATCH_PLAN_BINDING_MISMATCH")
+    if (
+        receipt.get("n_expected_objects") != expected_object_count
+        or receipt.get("expected_source_bytes") != expected_source_bytes
+    ):
+        raise ProductionFinalizationError("CANARY_MANIFEST_SOURCE_SCOPE_MISMATCH")
+
+    receipt_sha256 = core.canonical_json_sha256(receipt)
+    authority_binding_sha256 = core.canonical_json_sha256(
+        {
+            "preservation_receipt_sha256": receipt_sha256,
+            **expected_hashes,
+        }
+    )
+    result = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_canary_preservation_finalization_summary_v1",
+        "status": "PASS_CANARY_PRESERVATION_FINALIZED_RETAINED_CACHE",
+        "successful_train_studies": 5,
+        "selected_subjects": 5,
+        "verified_source_objects": receipt["n_download_verified"],
+        "selected_source_bytes": receipt["expected_source_bytes"],
+        "dicom_readable_objects": receipt["n_dicom_readable"],
+        "dicom_unreadable_objects": 0,
+        "multiframe_cines": receipt["n_multiframe_cines"],
+        "single_frame_objects": receipt["n_single_frame_objects"],
+        "extracted_clips": receipt["n_extracted_clips"],
+        "unique_clip_keys": receipt["n_unique_clip_keys"],
+        "clip_embeddings": receipt["n_clip_embeddings"],
+        "pooled_studies": 5,
+        "no_cine_studies": 0,
+        "failed_studies": 0,
+        "preservation_receipt_sha256": receipt_sha256,
+        **expected_hashes,
+        "authority_binding_sha256": authority_binding_sha256,
+        "all_studies_successful": True,
+        "all_studies_train": True,
+        "manifest_plan_scheduler_binding_passed": True,
+        "all_preservation_gates_passed": True,
+        "raw_dicoms_retained": True,
+        "extracted_cache_retained": True,
+        "aggregate_safe": True,
+        "production_continuation_authorized": False,
+        "identifiers_emitted": False,
+        "restricted_paths_emitted": False,
+    }
+    validate_closed_canary_summary(result)
+    return result
 
 
 def validate_closed_final_summary(value: Mapping[str, Any]) -> None:

@@ -116,6 +116,7 @@ def test_attempt_ids_and_scope_permissions_are_derived_exactly() -> None:
         "cloud_object_body_request",
         "dicom_transfer",
         "scheduler_submission",
+        "execute_exact_five_canary",
         "gpu_inference",
         "model_fitting",
         "prediction",

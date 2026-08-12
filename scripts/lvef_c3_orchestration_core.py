@@ -3308,6 +3308,7 @@ def execute_exact_batch_download(
     now: datetime | None = None, monotonic_clock: Any = time.monotonic,
     sleeper: Any = time.sleep,
     digest_provider: Callable[[Path, str], Mapping[str, Any]] = _inprocess_digest_provider,
+    scoped_production_root: Path | None = None,
 ) -> dict[str, Any]:
     """Execute one authorization-scoped exact batch; callers persist returned ledger."""
     plan_sha = validate_batch_plan(plan, requirements=requirements)
@@ -3331,11 +3332,35 @@ def execute_exact_batch_download(
     billing_env = str(contract["downloader"]["billing_project_environment_variable"])
     validate_private_billing_environment(billing_env, argv=argv)
     billing_project = os.environ[billing_env]
-    expected_output_root = Path(
-        str(contract["storage"]["raw_root"]).format(
-            attempt_id=str(ledger["attempt_id"])
+    if scoped_production_root is None:
+        expected_output_root = Path(
+            str(contract["storage"]["raw_root"]).format(
+                attempt_id=str(ledger["attempt_id"])
+            )
         )
-    )
+    else:
+        if (
+            requirements.contract_id
+            != "lvef_multitask_c3_exact_five_canary_v1"
+            or requirements.selected_studies != 5
+            or requirements.selected_subjects != 5
+            or requirements.batch_count != 1
+            or requirements.studies_per_full_batch != 5
+            or requirements.final_batch_studies != 5
+            or requirements.normalized_source_objects < 5
+            or requirements.normalized_source_objects > 750
+            or requirements.selected_source_bytes < 1
+            or requirements.selected_source_bytes > 5_000_000_000
+            or not scoped_production_root.is_absolute()
+            or scoped_production_root.is_symlink()
+        ):
+            raise OrchestrationError("SCOPED_DOWNLOAD_ROOT_AUTHORITY_INVALID")
+        expected_output_root = (
+            scoped_production_root
+            / "attempts"
+            / str(ledger["attempt_id"])
+            / "raw"
+        )
     if output_root != expected_output_root:
         raise OrchestrationError("DOWNLOAD_OUTPUT_ROOT_NOT_CONTRACT_BOUND")
     if output_root.is_symlink() or not output_root.is_dir():

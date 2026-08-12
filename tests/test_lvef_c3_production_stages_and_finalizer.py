@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
 import os
 import stat
+import sys
 from argparse import Namespace
+from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 
@@ -224,6 +229,441 @@ def test_embedding_validator_rejects_wrong_dimension_nonfinite_and_boolean() -> 
     )
 
 
+def test_wrapper_authority_accepts_exact_five_scope_and_rejects_drift() -> None:
+    import lvef_c3_orchestration_core as core
+
+    governing_commit = "a" * 40
+    attempt_id = "lvef_c3_canary_regression_001"
+    batch_id = "c3_batch_000"
+    release = "mimic-iv-echo/1.0"
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        authority_worktree = root / "authority"
+        authority_worktree.mkdir()
+        contract_path = root / "contract.yaml"
+        contract_path.write_text("synthetic exact-five contract\n", encoding="utf-8")
+        plan_path = root / "plan.json"
+        plan_path.write_text("{}\n", encoding="utf-8")
+        environment_path = root / "environment.json"
+        environment_path.write_text("{}\n", encoding="utf-8")
+        output_root = root / "output"
+        output_root.mkdir()
+
+        plan_authority = {
+            key: hashlib.sha256(f"canary-{key}".encode()).hexdigest()
+            for key in core.PLAN_AUTHORITY_KEYS
+        }
+        plan_authority.update(
+            {
+                "git_commit": governing_commit,
+                "orchestration_contract_sha256": stages.sha256_file(contract_path),
+                "checkpoint_sha256": stages.CHECKPOINT_SHA256,
+                "environment_receipt_sha256": stages.sha256_file(environment_path),
+            }
+        )
+        studies = [
+            {
+                "subject_id": str(800_000 + index),
+                "study_id": str(900_000 + index),
+                "split": "train",
+            }
+            for index in range(1, 6)
+        ]
+        objects = []
+        for index, study in enumerate(studies, start=1):
+            relative = (
+                f"files/p00/p{study['subject_id']}/s{study['study_id']}/"
+                f"synthetic_{index:03d}.dcm"
+            )
+            objects.append(
+                {
+                    **study,
+                    "source_object_key": hashlib.sha256(
+                        f"{release}\0{relative}".encode()
+                    ).hexdigest(),
+                    "source_relative_path": relative,
+                    "size_bytes": 100,
+                    "generation": str(index),
+                    "md5_base64": "AAAAAAAAAAAAAAAAAAAAAA==",
+                    "crc32c_base64": "AAAAAA==",
+                }
+            )
+        batch = {
+            "batch_id": batch_id,
+            "ordinal": 0,
+            "n_studies": 5,
+            "n_subjects": 5,
+            "n_objects": 5,
+            "source_bytes": 500,
+            "study_membership_sha256": core.canonical_json_sha256(studies),
+            "source_membership_sha256": core.canonical_json_sha256(objects),
+            "studies": studies,
+            "objects": objects,
+        }
+        plan = {
+            "schema_version": 2,
+            "artifact_type": "lvef_c3_restricted_immutable_batch_plan_v2",
+            "contract_id": "lvef_multitask_c3_exact_five_canary_v1",
+            "algorithm": "numeric_subject_then_numeric_study_contiguous_v1",
+            "authority": plan_authority,
+            "cohort": {
+                "release": release,
+                "selected_studies": 5,
+                "selected_subjects": 5,
+                "normalized_source_objects": 5,
+                "selected_source_bytes": 500,
+            },
+            "largest_batch": {
+                "batch_id": batch_id,
+                "n_objects": 5,
+                "source_bytes": 500,
+            },
+            "batches": [batch],
+        }
+        requirements = core.PlanRequirements(
+            release=release,
+            selected_studies=5,
+            selected_subjects=5,
+            normalized_source_objects=5,
+            selected_source_bytes=500,
+            batch_count=1,
+            studies_per_full_batch=5,
+            final_batch_studies=5,
+            contract_id="lvef_multitask_c3_exact_five_canary_v1",
+        )
+        plan_sha256 = core.validate_batch_plan(plan, requirements=requirements)
+        runtime_authority = {
+            **plan_authority,
+            "batch_plan_sha256": plan_sha256,
+        }
+        contract = {
+            "authority": {
+                "state_machine_schema_sha256": plan_authority[
+                    "state_machine_schema_sha256"
+                ],
+                "resume_ledger_schema_sha256": plan_authority[
+                    "resume_ledger_schema_sha256"
+                ],
+            }
+        }
+        current = {"plan": plan, "contract": contract}
+
+        def invoke(
+            *,
+            supplied_requirements=requirements,
+            supplied_runtime_authority=runtime_authority,
+        ):
+            return stages.validate_wrapper_authority(
+                stage="ECHOPRIME_EMBEDDING",
+                batch_id=batch_id,
+                attempt_id=attempt_id,
+                governing_commit=governing_commit,
+                authority_worktree=authority_worktree,
+                orchestration_contract=contract_path,
+                batch_plan=plan_path,
+                environment_receipt=environment_path,
+                output_root=output_root,
+                requirements=supplied_requirements,
+                expected_runtime_authority=supplied_runtime_authority,
+            )
+
+        with mock.patch.object(
+            stages, "require_authority_worktree"
+        ), mock.patch.object(
+            stages, "validate_environment_receipt_against_current_runtime"
+        ), mock.patch.object(
+            stages, "require_projectnb_path", return_value=output_root
+        ), mock.patch.object(
+            core,
+            "load_orchestration_contract",
+            side_effect=lambda _path: current["contract"],
+        ), mock.patch.object(
+            core, "load_strict_json", side_effect=lambda _path: current["plan"]
+        ), mock.patch.object(
+            core, "production_requirements"
+        ) as production_requirements, mock.patch.object(
+            core, "derive_expected_runtime_authority"
+        ) as derive_runtime:
+            accepted = invoke()
+            assert accepted["batch_plan_sha256"] == plan_sha256
+            assert accepted["runtime_authority"] == dict(
+                sorted(runtime_authority.items())
+            )
+            assert accepted["expected_object_keys"] == {
+                row["source_object_key"] for row in objects
+            }
+            assert accepted["real_execution_performed"] is False
+            production_requirements.assert_not_called()
+            derive_runtime.assert_not_called()
+
+            expect_code(
+                "SCOPED_RUNTIME_AUTHORITY_ARGUMENTS_INCOMPLETE",
+                lambda: invoke(supplied_runtime_authority=None),
+            )
+
+            runtime_drift = dict(runtime_authority)
+            runtime_drift["batch_plan_sha256"] = "0" * 64
+            expect_code(
+                "SCOPED_RUNTIME_AUTHORITY_MISMATCH",
+                lambda: invoke(supplied_runtime_authority=runtime_drift),
+            )
+
+            current["plan"] = copy.deepcopy(plan)
+            current["plan"]["authority"]["source_metadata_sha256"] = "1" * 64
+            expect_code(
+                "SCOPED_RUNTIME_AUTHORITY_MISMATCH",
+                invoke,
+            )
+            current["plan"] = plan
+
+            current["contract"] = copy.deepcopy(contract)
+            current["contract"]["authority"][
+                "state_machine_schema_sha256"
+            ] = "2" * 64
+            expect_code(
+                "SCOPED_RUNTIME_AUTHORITY_MISMATCH",
+                invoke,
+            )
+            current["contract"] = contract
+
+            requirements_drift = replace(requirements, selected_studies=6)
+            try:
+                invoke(supplied_requirements=requirements_drift)
+            except core.OrchestrationError as exc:
+                assert str(exc) == "BATCH_PLAN_COHORT_CONSTANT_MISMATCH"
+            else:
+                raise AssertionError("six-study requirements drift was accepted")
+            production_requirements.assert_not_called()
+            derive_runtime.assert_not_called()
+
+
+def test_echoprime_execution_calls_shared_mean_pooling_helper() -> None:
+    import numpy as np
+    import pandas as pd
+    import lvef_c3_orchestration_core as core
+    import lvef_reconstruction_smoke as smoke
+    import preserve_lvef_c3_production_batch as preservation
+
+    class FakeBatch:
+        def __init__(self, size: int):
+            self.size = size
+
+        def to(self, _device):
+            return self
+
+    class FakeModelOutput:
+        def __init__(self, size: int):
+            self.value = np.arange(size * 512, dtype=np.float32).reshape(size, 512)
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.value
+
+    class FakeModel:
+        def __init__(self):
+            self.head = [SimpleNamespace(in_features=4)]
+
+        def load_state_dict(self, _state, *, strict: bool):
+            assert strict is True
+
+        def eval(self):
+            return self
+
+        def to(self, device):
+            assert device == "cuda"
+            return self
+
+        def parameters(self):
+            return []
+
+        def __call__(self, batch: FakeBatch):
+            return FakeModelOutput(batch.size)
+
+    fake_torch = ModuleType("torch")
+    fake_torch.__version__ = "synthetic-torch"
+    fake_torch.version = SimpleNamespace(cuda="synthetic-cuda")
+    fake_torch.backends = SimpleNamespace(
+        cudnn=SimpleNamespace(version=lambda: 9000)
+    )
+    fake_torch.cuda = SimpleNamespace(is_available=lambda: True)
+    fake_torch.device = lambda value: value
+    fake_torch.nn = SimpleNamespace(
+        Linear=lambda in_features, out_features: SimpleNamespace(
+            in_features=in_features, out_features=out_features
+        )
+    )
+    fake_torch.load = lambda *_args, **_kwargs: {}
+    fake_torch.stack = lambda tensors, dim=0: FakeBatch(len(tensors))
+    fake_torch.inference_mode = nullcontext
+
+    fake_torchvision = ModuleType("torchvision")
+    fake_torchvision.__version__ = "synthetic-torchvision"
+    fake_torchvision.models = SimpleNamespace(
+        video=SimpleNamespace(mvit_v2_s=lambda *, weights: FakeModel())
+    )
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        extraction_root = root / "extracted"
+        extraction_root.mkdir()
+        batch_output_root = root / "batch"
+        batch_output_root.mkdir()
+        extraction_manifest = root / "extraction.csv"
+        selected_manifest = root / "selected.csv"
+        extraction_rows = []
+        selected_rows = []
+        plan_studies = []
+        for index in range(1, 6):
+            subject_id = 800_000 + index
+            study_id = 900_000 + index
+            selected_rows.append(
+                {"subject_id": subject_id, "study_id": study_id}
+            )
+            plan_studies.append(
+                {"subject_id": subject_id, "study_id": study_id, "split": "train"}
+            )
+            extraction_rows.append(
+                {
+                    "subject_id": subject_id,
+                    "study_id": study_id,
+                    "clip_key": hashlib.sha256(f"clip-{index}".encode()).hexdigest(),
+                    "physical_source_key": hashlib.sha256(
+                        f"source-{index}".encode()
+                    ).hexdigest(),
+                    "write_ok": True,
+                    "frames_shape": "32x224x224x3",
+                    "frames_dtype": "uint8",
+                    "mask_status": "APPLIED",
+                    "temporal_sampling_policy": (
+                        "historical_compatible_linspace_or_tail_repeat_v1"
+                    ),
+                    "pixel_decode_ok": True,
+                    "npz_sha256": hashlib.sha256(f"npz-{index}".encode()).hexdigest(),
+                }
+            )
+        pd.DataFrame(extraction_rows).to_csv(extraction_manifest, index=False)
+        pd.DataFrame(selected_rows).to_csv(selected_manifest, index=False)
+        environment = {
+            "torch_version": fake_torch.__version__,
+            "torchvision_version": fake_torchvision.__version__,
+            "cuda_version": fake_torch.version.cuda,
+            "cudnn_version": "9000",
+        }
+        plan = {
+            "authority": {key: "a" * 64 for key in core.PLAN_AUTHORITY_KEYS},
+            "batches": [
+                {
+                    "batch_id": "c3_batch_000",
+                    "studies": plan_studies,
+                }
+            ]
+        }
+        requirements = core.PlanRequirements(
+            release="mimic-iv-echo/1.0",
+            selected_studies=5,
+            selected_subjects=5,
+            normalized_source_objects=5,
+            selected_source_bytes=500,
+            batch_count=1,
+            studies_per_full_batch=5,
+            final_batch_studies=5,
+            contract_id="lvef_multitask_c3_exact_five_canary_v1",
+        )
+        runtime_authority = {
+            **plan["authority"],
+            "git_commit": "b" * 40,
+            "batch_plan_sha256": "f" * 64,
+            "checkpoint_sha256": "c" * 64,
+            "environment_receipt_sha256": "e" * 64,
+        }
+        plan["authority"]["git_commit"] = "b" * 40
+        plan["authority"]["checkpoint_sha256"] = "c" * 64
+        plan["authority"]["environment_receipt_sha256"] = "e" * 64
+        with mock.patch.dict(
+            sys.modules,
+            {"torch": fake_torch, "torchvision": fake_torchvision},
+        ), mock.patch.object(
+            stages, "validate_checkpoint_and_environment"
+        ), mock.patch.object(
+            stages,
+            "require_projectnb_path",
+            side_effect=lambda path, must_exist: Path(path),
+        ), mock.patch.object(
+            stages, "load_json_object", return_value=environment
+        ), mock.patch.object(
+            core, "load_orchestration_contract", return_value={}
+        ), mock.patch.object(
+            core, "load_strict_json", return_value=plan
+        ), mock.patch.object(
+            core, "validate_batch_plan", return_value="f" * 64
+        ) as validate_plan, mock.patch.object(
+            core, "validate_runtime_authority", return_value=runtime_authority
+        ), mock.patch.object(
+            stages,
+            "sha256_file",
+            side_effect=lambda path: (
+                "c" * 64
+                if Path(path).name == "synthetic-checkpoint"
+                else "e" * 64
+                if Path(path).name == "synthetic-environment"
+                else hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            ),
+        ), mock.patch.object(
+            smoke, "configure_torch_determinism"
+        ), mock.patch.object(
+            smoke, "_load_extracted_frames", return_value=np.zeros((32, 1, 1, 3))
+        ), mock.patch.object(
+            smoke, "_prepare_encoder_input", return_value=object()
+        ), mock.patch.object(
+            preservation,
+            "mean_pool_study_embeddings",
+            wraps=preservation.mean_pool_study_embeddings,
+        ) as shared_pool:
+            summary = stages.run_production_echoprime(
+                extraction_manifest=extraction_manifest,
+                extraction_root=extraction_root,
+                selected_batch_manifest=selected_manifest,
+                checkpoint=root / "synthetic-checkpoint",
+                environment_receipt=root / "synthetic-environment",
+                orchestration_contract=root / "synthetic-contract",
+                batch_plan=root / "synthetic-plan",
+                batch_id="c3_batch_000",
+                batch_output_root=batch_output_root,
+                batch_size=2,
+                seed=17,
+                attempt_id="lvef_c3_canary_regression_001",
+                runtime_authority=runtime_authority,
+                requirements=requirements,
+            )
+
+        assert summary["status"] == "PASS_ECHOPRIME_AND_POOLING"
+        assert summary["n_clip_embeddings"] == 5
+        assert summary["n_pooled_studies"] == 5
+        validate_plan.assert_called_once_with(plan, requirements=requirements)
+        shared_pool.assert_called_once()
+        assert set(shared_pool.call_args.kwargs) == {
+            "clip_embeddings",
+            "clip_rows",
+            "study_rows",
+        }
+        assert shared_pool.call_args.kwargs["clip_embeddings"].shape == (5, 512)
+        assert len(shared_pool.call_args.kwargs["clip_rows"]) == 5
+        assert len(shared_pool.call_args.kwargs["study_rows"]) == 5
+        with np.load(
+            batch_output_root
+            / "echoprime"
+            / "study_embeddings.restricted.npz",
+            allow_pickle=False,
+        ) as archive:
+            assert archive["embeddings"].shape == (5, 512)
+            assert archive["embeddings"].dtype == np.float32
+
+
 def test_stage_authorization_is_closed_and_stage_specific() -> None:
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "authorization.json"
@@ -358,6 +798,38 @@ def _batch_receipt(index: int) -> dict[str, object]:
     }
 
 
+def _canary_eligibility_receipt() -> dict[str, object]:
+    receipt = _batch_receipt(1)
+    for key in finalizer.RETIREMENT_RECEIPT_KEYS:
+        receipt.pop(key)
+    receipt.update(
+        {
+            "artifact_type": "lvef_c3_batch_preservation_eligibility_receipt_v2",
+            "status": "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE",
+            "batch_id": "canary_batch_000",
+            "attempt_id": "lvef_c3_canary_synthetic",
+            "batch_plan_sha256": "c" * 64,
+            "n_selected_studies": 5,
+            "n_selected_subjects": 5,
+            "n_expected_objects": 6,
+            "expected_source_bytes": 60_000,
+            "n_download_verified": 6,
+            "n_dicom_readable": 6,
+            "n_dicom_unreadable": 0,
+            "n_multiframe_cines": 5,
+            "n_single_frame_objects": 1,
+            "n_extracted_clips": 5,
+            "n_unique_clip_keys": 5,
+            "n_clip_embeddings": 5,
+            "n_pooled_studies": 5,
+            "n_no_cine_studies": 0,
+            "no_cine_disposition": "NONE",
+            "extracted_cache_retired": False,
+        }
+    )
+    return receipt
+
+
 def _write_receipts(root: Path) -> list[Path]:
     paths = []
     for index in range(19):
@@ -410,6 +882,112 @@ def test_production_finalizer_fails_on_missing_batch_or_scientific_inconsistency
                 paths, expected_governing_commit="a" * 40
             ),
         )
+
+
+def test_canary_finalizer_binds_exact_five_retained_cache_receipt() -> None:
+    receipt = _canary_eligibility_receipt()
+    summary = finalizer.finalize_canary_preservation_receipt(
+        receipt,
+        expected_governing_commit="a" * 40,
+        expected_attempt_id="lvef_c3_canary_synthetic",
+        expected_canary_manifest_sha256="a" * 64,
+        expected_batch_plan_sha256="c" * 64,
+        expected_scheduler_plan_sha256="b" * 64,
+        expected_object_count=6,
+        expected_source_bytes=60_000,
+    )
+    assert set(summary) == finalizer.CANARY_FINAL_KEYS
+    assert summary["successful_train_studies"] == 5
+    assert summary["failed_studies"] == 0
+    assert summary["no_cine_studies"] == 0
+    assert summary["extracted_cache_retained"] is True
+    assert summary["production_continuation_authorized"] is False
+    assert summary["preservation_receipt_sha256"] == (
+        finalizer.core.canonical_json_sha256(receipt)
+    )
+    assert summary["authority_binding_sha256"] == finalizer.core.canonical_json_sha256(
+        {
+            "preservation_receipt_sha256": summary["preservation_receipt_sha256"],
+            "canary_manifest_sha256": "a" * 64,
+            "batch_plan_sha256": "c" * 64,
+            "scheduler_plan_sha256": "b" * 64,
+        }
+    )
+    serialized = json.dumps(summary, sort_keys=True)
+    for prohibited in (
+        "study_id", "subject_id", "source_relative_path", "object_locator",
+        "label", "performance",
+    ):
+        assert prohibited not in serialized
+
+
+def test_canary_finalizer_fails_closed_on_scope_failure_or_binding_drift() -> None:
+    def finalize(receipt: dict[str, object], **overrides) -> dict[str, object]:
+        arguments = {
+            "expected_governing_commit": "a" * 40,
+            "expected_attempt_id": "lvef_c3_canary_synthetic",
+            "expected_canary_manifest_sha256": "a" * 64,
+            "expected_batch_plan_sha256": "c" * 64,
+            "expected_scheduler_plan_sha256": "b" * 64,
+            "expected_object_count": 6,
+            "expected_source_bytes": 60_000,
+        }
+        arguments.update(overrides)
+        return finalizer.finalize_canary_preservation_receipt(receipt, **arguments)
+
+    retired = _canary_eligibility_receipt()
+    retired["extracted_cache_retired"] = True
+    expect_code("CANARY_CACHE_NOT_RETAINED", lambda: finalize(retired))
+
+    incomplete = _canary_eligibility_receipt()
+    incomplete["n_pooled_studies"] = 4
+    incomplete["n_no_cine_studies"] = 1
+    incomplete["no_cine_disposition"] = "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
+    expect_code(
+        "CANARY_EXACT_FIVE_SUCCESSFUL_STUDIES_REQUIRED",
+        lambda: finalize(incomplete),
+    )
+
+    failed = _canary_eligibility_receipt()
+    failed["n_dicom_readable"] = 5
+    failed["n_dicom_unreadable"] = 1
+    expect_code("CANARY_DICOM_FAILURE", lambda: finalize(failed))
+
+    expect_code(
+        "CANARY_ATTEMPT_MISMATCH",
+        lambda: finalize(
+            _canary_eligibility_receipt(), expected_attempt_id="synthetic-canary-two"
+        ),
+    )
+    expect_code(
+        "CANARY_BATCH_PLAN_BINDING_MISMATCH",
+        lambda: finalize(
+            _canary_eligibility_receipt(), expected_batch_plan_sha256="d" * 64
+        ),
+    )
+
+    over_object_ceiling = _canary_eligibility_receipt()
+    over_object_ceiling["n_expected_objects"] = 751
+    over_object_ceiling["n_download_verified"] = 751
+    over_object_ceiling["n_dicom_readable"] = 751
+    over_object_ceiling["n_multiframe_cines"] = 751
+    over_object_ceiling["n_extracted_clips"] = 751
+    over_object_ceiling["n_unique_clip_keys"] = 751
+    over_object_ceiling["n_clip_embeddings"] = 751
+    expect_code(
+        "EXPECTED_CANARY_SOURCE_SCOPE_INVALID",
+        lambda: finalize(over_object_ceiling, expected_object_count=751),
+    )
+    over_byte_ceiling = _canary_eligibility_receipt()
+    over_byte_ceiling["expected_source_bytes"] = 5_000_000_001
+    expect_code(
+        "EXPECTED_CANARY_SOURCE_SCOPE_INVALID",
+        lambda: finalize(over_byte_ceiling, expected_source_bytes=5_000_000_001),
+    )
+
+    expanded = _canary_eligibility_receipt()
+    expanded["unexpected"] = True
+    expect_code("CANARY_RECEIPT_SCHEMA_MISMATCH", lambda: finalize(expanded))
 
 
 def test_finalizer_rejects_cross_batch_clip_key_collision() -> None:

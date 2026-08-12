@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://echo-ai.invalid/schemas/lvef_c3_canary_execution_authority_schema_v1.json",
+  "title": "Owner-private exact-five C3 canary execution authorization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "artifact_type", "status", "governing_commit", "branch",
+    "run_id", "attempt_id", "output_root", "manifest", "batch_plan",
+    "scheduler_plan", "production_contract", "environment_receipt", "checkpoint",
+    "runtime_authority", "hard_scope", "scheduler", "stage_authorizations",
+    "body_transfer_authorization", "launch_authority_sha256", "gcloud", "crc32c",
+    "owner_authorized", "authorization_scopes", "qsub", "stage_worker",
+    "stage_launcher", "requester_pays", "authorization_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "artifact_type": {"const": "lvef_c3_exact_five_canary_execution_authorization_v1"},
+    "status": {"const": "OWNER_AUTHORIZED_EXACT_FIVE_CANARY"},
+    "governing_commit": {"$ref": "#/$defs/commit"},
+    "branch": {"const": "codex/lvef-multitask-revalidation"},
+    "run_id": {"$ref": "#/$defs/runId"},
+    "attempt_id": {"$ref": "#/$defs/runId"},
+    "output_root": {"$ref": "#/$defs/absolutePath"},
+    "manifest": {"$ref": "#/$defs/manifestBinding"},
+    "batch_plan": {"$ref": "#/$defs/canonicalBinding"},
+    "scheduler_plan": {"$ref": "#/$defs/canonicalBinding"},
+    "production_contract": {"$ref": "#/$defs/binding"},
+    "environment_receipt": {"$ref": "#/$defs/binding"},
+    "checkpoint": {"$ref": "#/$defs/binding"},
+    "runtime_authority": {"$ref": "#/$defs/runtimeAuthority"},
+    "hard_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["studies", "subjects", "split", "max_objects", "max_bytes", "batch_id"],
+      "properties": {
+        "studies": {"const": 5},
+        "subjects": {"const": 5},
+        "split": {"const": "train"},
+        "max_objects": {"const": 750},
+        "max_bytes": {"const": 5000000000},
+        "batch_id": {"const": "c3_batch_000"}
+      }
+    },
+    "scheduler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordered_stage_ids", "scheduler_submission_count",
+        "maximum_scheduler_submission_count", "gpu_stage_count", "stage_retry_count",
+        "array_expansion_permitted", "automatic_resubmission_permitted",
+        "production_continuation"
+      ],
+      "properties": {
+        "ordered_stage_ids": {
+          "const": [
+            "DOWNLOAD", "DICOM_EXTRACTION", "ECHOPRIME_EMBEDDING",
+            "BATCH_PRESERVATION", "CANARY_FINALIZATION"
+          ]
+        },
+        "scheduler_submission_count": {"const": 5},
+        "maximum_scheduler_submission_count": {"const": 5},
+        "gpu_stage_count": {"const": 1},
+        "stage_retry_count": {"const": 0},
+        "array_expansion_permitted": {"const": false},
+        "automatic_resubmission_permitted": {"const": false},
+        "production_continuation": {"const": false}
+      }
+    },
+    "stage_authorizations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "DOWNLOAD", "DICOM_EXTRACTION", "ECHOPRIME_EMBEDDING",
+        "BATCH_PRESERVATION", "CANARY_FINALIZATION"
+      ],
+      "properties": {
+        "DOWNLOAD": {"$ref": "#/$defs/downloadGrant"},
+        "DICOM_EXTRACTION": {"$ref": "#/$defs/dicomGrant"},
+        "ECHOPRIME_EMBEDDING": {"$ref": "#/$defs/echoPrimeGrant"},
+        "BATCH_PRESERVATION": {"$ref": "#/$defs/preservationGrant"},
+        "CANARY_FINALIZATION": {"$ref": "#/$defs/finalizationGrant"}
+      }
+    },
+    "body_transfer_authorization": {"$ref": "#/$defs/binding"},
+    "launch_authority_sha256": {"$ref": "#/$defs/sha256"},
+    "gcloud": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binary_path", "resolution_receipt_path", "cloudsdk_config_path"],
+      "properties": {
+        "binary_path": {"$ref": "#/$defs/absolutePath"},
+        "resolution_receipt_path": {"$ref": "#/$defs/absolutePath"},
+        "cloudsdk_config_path": {"$ref": "#/$defs/absolutePath"}
+      }
+    },
+    "crc32c": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["python_path", "worker_path"],
+      "properties": {
+        "python_path": {"$ref": "#/$defs/absolutePath"},
+        "worker_path": {"$ref": "#/$defs/absolutePath"}
+      }
+    },
+    "owner_authorized": {"const": true},
+    "authorization_scopes": {"$ref": "#/$defs/authorizationScopes"},
+    "qsub": {"$ref": "#/$defs/binding"},
+    "stage_worker": {"$ref": "#/$defs/binding"},
+    "stage_launcher": {"$ref": "#/$defs/binding"},
+    "requester_pays": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["billing_environment_variable", "billing_project"],
+      "properties": {
+        "billing_environment_variable": {"const": "LVEF_C3_GCP_BILLING_PROJECT"},
+        "billing_project": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{4,62}[a-z0-9]$"
+        }
+      }
+    },
+    "authorization_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "runId": {
+      "type": "string",
+      "pattern": "^lvef_c3_exact_five_canary_[a-z0-9]{8}$"
+    },
+    "absolutePath": {"type": "string", "pattern": "^/[^\\u0000]*$"},
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "file_sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/absolutePath"},
+        "file_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "manifestBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "file_sha256", "embedded_sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/absolutePath"},
+        "file_sha256": {"$ref": "#/$defs/sha256"},
+        "embedded_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "canonicalBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "file_sha256", "canonical_sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/absolutePath"},
+        "file_sha256": {"$ref": "#/$defs/sha256"},
+        "canonical_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage_id", "path", "file_sha256", "authorized"],
+      "properties": {
+        "stage_id": {"type": "string"},
+        "path": {"$ref": "#/$defs/absolutePath"},
+        "file_sha256": {"$ref": "#/$defs/sha256"},
+        "authorized": {"const": true}
+      }
+    },
+    "downloadGrant": {
+      "allOf": [
+        {"$ref": "#/$defs/grant"},
+        {"properties": {"stage_id": {"const": "DOWNLOAD"}}}
+      ]
+    },
+    "dicomGrant": {
+      "allOf": [
+        {"$ref": "#/$defs/grant"},
+        {"properties": {"stage_id": {"const": "DICOM_EXTRACTION"}}}
+      ]
+    },
+    "echoPrimeGrant": {
+      "allOf": [
+        {"$ref": "#/$defs/grant"},
+        {"properties": {"stage_id": {"const": "ECHOPRIME_EMBEDDING"}}}
+      ]
+    },
+    "preservationGrant": {
+      "allOf": [
+        {"$ref": "#/$defs/grant"},
+        {"properties": {"stage_id": {"const": "BATCH_PRESERVATION"}}}
+      ]
+    },
+    "finalizationGrant": {
+      "allOf": [
+        {"$ref": "#/$defs/grant"},
+        {"properties": {"stage_id": {"const": "CANARY_FINALIZATION"}}}
+      ]
+    },
+    "runtimeAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "git_commit", "orchestration_contract_sha256", "selected_manifest_sha256",
+        "selected_source_manifest_sha256", "source_metadata_sha256", "split_map_sha256",
+        "checkpoint_sha256", "environment_receipt_sha256", "state_machine_schema_sha256",
+        "resume_ledger_schema_sha256", "gcloud_resolution_receipt_sha256",
+        "gcloud_executable_sha256", "crc32c_python_executable_sha256",
+        "crc32c_worker_sha256", "crc32c_distribution_sha256", "batch_plan_sha256"
+      ],
+      "properties": {
+        "git_commit": {"$ref": "#/$defs/commit"},
+        "orchestration_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "selected_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "selected_source_manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "source_metadata_sha256": {"$ref": "#/$defs/sha256"},
+        "split_map_sha256": {"$ref": "#/$defs/sha256"},
+        "checkpoint_sha256": {"$ref": "#/$defs/sha256"},
+        "environment_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "state_machine_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "resume_ledger_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "gcloud_resolution_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "gcloud_executable_sha256": {"$ref": "#/$defs/sha256"},
+        "crc32c_python_executable_sha256": {"$ref": "#/$defs/sha256"},
+        "crc32c_worker_sha256": {"$ref": "#/$defs/sha256"},
+        "crc32c_distribution_sha256": {"$ref": "#/$defs/sha256"},
+        "batch_plan_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "authorizationScopes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_execution_state_execute_permission_required",
+        "exact_declared_object_body_transfer", "dicom_header_pixel_decode_and_cine_extraction",
+        "echoprime_encoder_only_inference", "finite_float32_512d_clip_validation",
+        "study_mean_pooling", "canary_preservation", "aggregate_safe_canary_finalization",
+        "undeclared_object_access", "cohort_expansion", "object_listing",
+        "scheduler_resubmission", "production_continuation", "model_fitting",
+        "endpoint_prediction", "confirmatory_performance_access", "cache_retirement",
+        "raw_dicom_deletion"
+      ],
+      "properties": {
+        "canonical_execution_state_execute_permission_required": {"const": true},
+        "exact_declared_object_body_transfer": {"const": true},
+        "dicom_header_pixel_decode_and_cine_extraction": {"const": true},
+        "echoprime_encoder_only_inference": {"const": true},
+        "finite_float32_512d_clip_validation": {"const": true},
+        "study_mean_pooling": {"const": true},
+        "canary_preservation": {"const": true},
+        "aggregate_safe_canary_finalization": {"const": true},
+        "undeclared_object_access": {"const": false},
+        "cohort_expansion": {"const": false},
+        "object_listing": {"const": false},
+        "scheduler_resubmission": {"const": false},
+        "production_continuation": {"const": false},
+        "model_fitting": {"const": false},
+        "endpoint_prediction": {"const": false},
+        "confirmatory_performance_access": {"const": false},
+        "cache_retirement": {"const": false},
+        "raw_dicom_deletion": {"const": false}
+      }
+    }
+  }
+}
