@@ -146,7 +146,12 @@ def test_environment_preparer_preserves_fixed_scientific_authorities() -> None:
     ).read_text(encoding="utf-8")
     assert "lvef_c3_phase1ee_production_lock_005" in source
     assert "lvef_c3_phase1ee_production_lock_006" in source
-    assert "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004" in source
+    assert (
+        "PHASE1EF_PREP_ECHOPRIME_PYTHON=/restricted/project/mimicecho/"
+        "code/Echo_Cardio_VLM/.venv-echoprime/bin/python"
+    ) in source
+    assert '[[ "$LVEF_C3_PYTHON" = "$PHASE1EF_PREP_ECHOPRIME_PYTHON" ]]' in source
+    assert "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005" in source
     for prior in ("001", "002", "003"):
         assert (
             "PHASE1EF_PREP_ATTEMPT_ID="
@@ -257,7 +262,7 @@ def test_offline_runbook_is_strict_no_clobber_and_safe_profile_gated() -> None:
     assert "echoprime_environment=PINNED_EXTERNAL_SOURCE_RECONSTRUCTABLE" not in dispatcher
 
 
-def test_attempt_004_preparation_and_capture_are_no_clobber() -> None:
+def test_attempt_005_preparation_and_capture_are_no_clobber() -> None:
     preparer = (
         ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
     ).read_text(encoding="utf-8")
@@ -266,11 +271,11 @@ def test_attempt_004_preparation_and_capture_are_no_clobber() -> None:
     ).read_text(encoding="utf-8")
     assert (
         "PHASE1EF_PREP_ATTEMPT_ID="
-        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004"
+        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
     ) in preparer
     assert (
         "[[ \"$ATTEMPT_ID\" = "
-        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004 ]]"
+        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005 ]]"
     ) in capture
     assert '--attempt-id "$ATTEMPT_ID"' in capture
     assert "ATTEMPT_ID PHASE1EF_ATTEMPT_ROOT" in preparer

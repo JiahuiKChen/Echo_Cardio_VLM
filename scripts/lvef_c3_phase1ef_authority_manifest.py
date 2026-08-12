@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create and validate the private Phase 1E-F preexecution authority manifest.
 
-The manifest binds attempt 004 to exactly seven tracked control-plane files and
+The manifest binds attempt 005 to exactly seven tracked control-plane files and
 to zero execution scopes.  It intentionally contains no cloud identity,
 credential, billing, clinical, imaging, or patient-level authority.  Both the
 writer and validator fail closed, reject duplicate JSON keys, and expose only
@@ -26,7 +26,7 @@ from typing import Any, Final
 SCHEMA_NAME: Final = "lvef_c3_phase1ef_preexecution_authority_manifest"
 SCHEMA_VERSION: Final = 1
 AUTHORIZED_ATTEMPT_ID: Final = (
-    "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004"
+    "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
 )
 AUTHORIZED_BRANCH: Final = "codex/lvef-multitask-revalidation"
 HISTORICAL_BASE_COMMIT: Final = "23c74ccfd145ab9a423b6942a431a1894a34ab67"

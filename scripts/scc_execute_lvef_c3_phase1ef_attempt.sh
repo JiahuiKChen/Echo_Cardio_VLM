@@ -28,7 +28,9 @@ export PYTHONDONTWRITEBYTECODE
 
 PHASE1EF_KERNEL="$(/usr/bin/uname -s)"
 PHASE1EF_PINNED_EXTERNAL_PYTHON=/share/pkg.8/python3/3.10.12/install/bin/python3.10
+PHASE1EF_ECHOPRIME_PYTHON=/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python
 readonly PHASE1EF_KERNEL PHASE1EF_PINNED_EXTERNAL_PYTHON
+readonly PHASE1EF_ECHOPRIME_PYTHON
 
 [[ $- = *p* ]] || {
   printf '%s\n' 'PHASE1EF_PRIVILEGED_BASH_STARTUP=REQUIRED' >&2
@@ -329,7 +331,7 @@ export -n LVEF_C3_GCP_BILLING_PROJECT
 : "${PHASE1EF_AUTHORITY_MANIFEST_SHA256:?canonical manifest hash required}"
 test "$PHASE1EF_EXECUTION_SCOPES_GRANTED" = 0
 test "$PHASE1EF_ATTEMPT_ID" = \
-  lvef_multitask_phase1ef_post_reallocation_lock_attempt_004
+  lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
 test "$ATTEMPT_ID" = "$PHASE1EF_ATTEMPT_ID"
 test "$WORKTREE" = "$PHASE1EF_RUNNING_WORKTREE"
 test "$PHASE1EF_RUNNING_SCRIPT" = \
@@ -347,6 +349,8 @@ phase1ef_no_symlink_ancestors "$PHASE1EF_AUTHORITY_MANIFEST"
 test "$(phase1ef_sha256 "$PHASE1EF_AUTHORITY_MANIFEST")" = \
   "$PHASE1EF_AUTHORITY_MANIFEST_SHA256"
 test -e "$PYTHON"
+test "$PYTHON" = "$PHASE1EF_ECHOPRIME_PYTHON"
+phase1ef_no_symlink_ancestors "${PYTHON%/*}"
 test -f "$PYTHON_AUTHORITY"
 test ! -L "$PYTHON_AUTHORITY"
 phase1ef_assert_trusted_executable_authority "$PYTHON_AUTHORITY"
@@ -354,7 +358,9 @@ test "$(phase1ef_stat_identity "$PYTHON")" = \
   "$(phase1ef_stat_identity "$PYTHON_AUTHORITY")"
 test "$(phase1ef_sha256 "$PYTHON_AUTHORITY")" = \
   1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
-PYTHON="$PYTHON_AUTHORITY"
+# Preserve the lexical virtual-environment launcher for execution so Python
+# retains its environment prefix and installed packages.  The resolved regular
+# target remains the byte/checksum authority and the packet role below.
 
 PHASE1EF_STAGE=GIT_AUTHORITY
 test "$(/usr/bin/git -C "$WORKTREE" rev-parse HEAD)" = "$EXPECTED_COMMIT"
@@ -372,7 +378,7 @@ test "$(phase1ef_sha256 "$PHASE1EF_AUTHORITY_MANIFEST")" = \
 
 : "${ATTEMPT_ID:?owner-private environment must bind the no-clobber attempt}"
 test "$ATTEMPT_ID" = \
-  lvef_multitask_phase1ef_post_reallocation_lock_attempt_004
+  lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
 PRODUCTION_ATTEMPT_ID='lvef_c3_phase1ee_production_lock_006'
 test "$PRODUCTION_ROOT" = /restricted/projectnb/mimicecho/lvef_multitask_c3_v2
 test "$PHASE1EF_ATTEMPT_ROOT" = \
@@ -422,7 +428,7 @@ done
 if [[ "$PHASE1EF_DISPATCH_MODE" = --preflight-only ]]; then
   PHASE1EF_STAGE=PREFLIGHT_ONLY_COMPLETED
   printf '%s\n' 'PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS'
-  printf '%s\n' 'ATTEMPT_004_WORKFLOW_INVOKED=NO'
+  printf '%s\n' 'ATTEMPT_005_WORKFLOW_INVOKED=NO'
   printf '%s\n' 'CLOUD_REQUESTS=0'
   printf '%s\n' 'QSUB_SUBMISSIONS=0'
   exit 0

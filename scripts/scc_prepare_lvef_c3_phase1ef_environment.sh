@@ -192,16 +192,18 @@ assert_private_directory() {
 
 PHASE1EF_PREP_WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 PHASE1EF_PREP_SESSION_ENV=/restricted/projectnb/mimicecho/audits/lvef_multitask_phase1ebc_session.env
+PHASE1EF_PREP_ECHOPRIME_PYTHON=/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python
 PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2
 PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT="$PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT/attempts/lvef_c3_phase1ee_production_lock_005"
 PHASE1EF_PREP_PRIOR_EXECUTION_ENV="$PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT/authority/c3_execution_environment.restricted.env"
-PHASE1EF_PREP_ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_004
+PHASE1EF_PREP_ATTEMPT_ID=lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
 PHASE1EF_PREP_ATTEMPT_ROOT="/restricted/projectnb/mimicecho/audits/$PHASE1EF_PREP_ATTEMPT_ID"
-PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME=phase1ef_attempt004_authority_manifest.json
+PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME=phase1ef_attempt005_authority_manifest.json
 PHASE1EF_PREP_MANIFEST_TOOL="$PHASE1EF_PREP_WORKTREE/scripts/lvef_c3_phase1ef_authority_manifest.py"
 PHASE1EF_PREP_REQUESTED_AUTHORITY_MANIFEST="${PHASE1EF_PREP_REQUESTED_OUTPUT_ENV%/*}/$PHASE1EF_PREP_AUTHORITY_MANIFEST_NAME"
 readonly PHASE1EF_PREP_REQUESTED_COMMIT PHASE1EF_PREP_REQUESTED_OUTPUT_ENV
 readonly PHASE1EF_PREP_WORKTREE PHASE1EF_PREP_SESSION_ENV
+readonly PHASE1EF_PREP_ECHOPRIME_PYTHON
 readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ROOT
 readonly PHASE1EF_PREP_PRIOR_PRODUCTION_ATTEMPT_ROOT
 readonly PHASE1EF_PREP_PRIOR_EXECUTION_ENV PHASE1EF_PREP_ATTEMPT_ID
@@ -305,7 +307,9 @@ phase1ef_prep_assert_checkout_clean "$WORKTREE"
 /usr/bin/git -C "$WORKTREE" merge-base --is-ancestor \
   23c74ccfd145ab9a423b6942a431a1894a34ab67 "$EXPECTED_COMMIT"
 
-PYTHON="$LVEF_C3_PYTHON"
+[[ "$LVEF_C3_PYTHON" = "$PHASE1EF_PREP_ECHOPRIME_PYTHON" ]]
+PYTHON="$PHASE1EF_PREP_ECHOPRIME_PYTHON"
+assert_no_symlink_ancestors "${PYTHON%/*}"
 PYTHON_AUTHORITY="$(phase1ef_prep_resolve_path "$PYTHON")"
 CRC32C_PYTHON="$LVEF_C3_CRC32C_PYTHON"
 GCLOUD="$LVEF_C3_GCLOUD_BINARY"

@@ -4,6 +4,16 @@ Status: **implementation ready; final status depends on the no-clobber
 post-commit Phase 1E-F capacity, backup/restore, packet, and zero-scope launch
 receipts**.
 
+Phase 1E-F attempt 004 is immutable after one execution. It passed all
+capacity gates and stopped at current-environment capture. A bounded diagnostic
+proved `TORCH_IMPORT_FAILED`/`ModuleNotFoundError`: the dispatcher executed the
+resolved interpreter target instead of the byte-identical lexical EchoPrime
+virtual-environment launcher, losing the virtual-environment package context.
+The repaired contract preserves the launcher for execution and the resolved
+regular file for checksum/packet authority. Attempt 005 is the next unused
+logical attempt and requires a fresh preparation record and separate owner
+authorization.
+
 Phase 1E-E's 11-GB backed-tier failure remains immutable history. The owner
 reports the preferred 50/1,950 allocation active, and production attempt 005
 has passed 38/38 roles and 17/17 semantic gates. If the Phase 1E-F successor

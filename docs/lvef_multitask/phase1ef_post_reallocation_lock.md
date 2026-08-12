@@ -1,8 +1,8 @@
 # Phase 1E-F post-reallocation pretransfer lock
 
-Status: **attempts 001–003 are preserved after separate fail-closed capacity
-defects; attempt 004 is prepared offline but remains unexecuted and
-unauthorized**.
+Status: **attempts 001–004 are immutable; attempt 004 passed capacity and then
+stopped fail-closed at current-environment capture. Attempt 005 is the next
+unused logical attempt and remains unprepared, unexecuted, and unauthorized**.
 
 Phase 1E-F is limited to read-only capacity capture, a bounded owner-private
 control-authority backup and isolated restore test, and offline reconstruction
@@ -114,8 +114,33 @@ enclosing logical key. No capacity receipt or named downstream output was
 created, no downstream stage began, and neither attempt root may be reused or
 repaired in place.
 
+Attempt 004,
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_004`, ran exactly once
+under governing commit `6a814b3080f1159facf86ee60895117d187a41b7`. It passed
+the canonical 7/7 manifest and all capacity gates, then stopped at
+`CURRENT_ENVIRONMENT_CAPTURE`. The historical catch-all reported
+`ENVIRONMENT_RUNTIME_IMPORT_FAILED`; a bounded SCC diagnostic proved the exact
+failure was `TORCH_IMPORT_FAILED` with sanitized class `ModuleNotFoundError`.
+The dispatcher had replaced the lexical EchoPrime virtual-environment launcher
+with its resolved regular-file checksum authority. Executing the resolved
+target directly lost the virtual-environment package context, while the bound
+lexical launcher imported Torch and torchvision and completed every remaining
+metadata-only capture stage without GPU computation. The repair preserves the
+exact established launcher for execution and the resolved regular target for
+byte authority; an alternate launcher resolving to the same target is rejected.
+
+The 10,907-byte restricted capacity receipt (SHA-256
+`b3bae07dcd6958b7cdfdd827a0de565ae0972753e04955fd03cd137b2e30ab62`) and
+5,399-byte aggregate (SHA-256
+`4d15b0a1a80188ce95d31659eca50cf18c8b6a1ebdef4022a56975f6e3e4bd20`)
+remain immutable. No environment receipt or downstream output was created.
+One valid authorized `--execute` process ran. A later terminal-input buffering
+event formed a malformed `--executeprintf...` invocation; it was rejected at
+`DISPATCH_MODE` with status 64, passed no authority gate, created no root,
+mutated no evidence, and does not constitute a second attempt-004 execution.
+
 The repaired but unauthorized next attempt is
-`lvef_multitask_phase1ef_post_reallocation_lock_attempt_004`. Its future
+`lvef_multitask_phase1ef_post_reallocation_lock_attempt_005`. Its future
 restricted receipt set will bind the exact governing commit, both project
 quotas and file quotas, filesystem identities and physical availability, mount
 reconciliation, the approved backup manifest, isolated restore receipt, prior

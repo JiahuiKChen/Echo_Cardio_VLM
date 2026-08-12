@@ -33,14 +33,16 @@ current-commit authority roles:
 Before any output path is created, the dispatcher verifies its own canonical
 executed bytes, Git branch/commit/origin/ancestry/cleanliness, the private
 environment grammar and exact field set, the manifest path/hash/schema, all
-seven authority paths/sizes/hashes/modes/owners, exact attempt 004, zero
+seven authority paths/sizes/hashes/modes/owners, exact attempt 005, zero
 scopes, and the complete output-collision set. A manifest, environment,
 dispatcher, or collision failure is a **preexecution failure**, not an attempt
 execution.
 
-Attempts 001, 002, and 003 are immutable and cannot be selected. Attempt 004
-may execute only after a separate owner authorization names the synchronized
-commit and fresh environment/manifest authority.
+Attempts 001 through 004 are immutable and cannot be selected. Attempt 005 may
+execute only after a separate owner authorization names the synchronized commit
+and a fresh environment/manifest authority. Attempt 004 ran once, passed the
+capacity gates, and stopped during current-environment capture; it must never be
+reused or repaired in place.
 
 ## R2 validation command
 

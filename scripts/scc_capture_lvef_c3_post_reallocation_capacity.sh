@@ -20,7 +20,7 @@ umask 077
 : "${PHASE1EF_ATTEMPT_ROOT:?}"
 : "${ORIGINAL_AGGREGATE_ROOT:?}" "${SUPPLEMENTAL_AGGREGATE_ROOT:?}"
 : "${PRIOR_CAPACITY_PARENT:?}" "${PRIOR_CAPACITY_COMPOSITE:?}" "${PRIOR_PRODUCTION_PACKET:?}"
-[[ "$ATTEMPT_ID" = lvef_multitask_phase1ef_post_reallocation_lock_attempt_004 ]]
+[[ "$ATTEMPT_ID" = lvef_multitask_phase1ef_post_reallocation_lock_attempt_005 ]]
 [[ "$ATTEMPT_ID" = "$PHASE1EF_ATTEMPT_ID" ]]
 [[ "$PHASE1EF_ATTEMPT_ROOT" = "/restricted/projectnb/mimicecho/audits/$ATTEMPT_ID" ]]
 

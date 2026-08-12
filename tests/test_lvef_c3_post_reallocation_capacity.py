@@ -919,7 +919,7 @@ def test_production_command_constructor_receipt_and_projection_round_trip() -> N
         "packet_roles": 38, "packet_gates": 17,
     }
     receipt = capacity._build_capacity_receipt(
-        attempt_id="lvef_multitask_phase1ef_post_reallocation_lock_attempt_004",
+        attempt_id="lvef_multitask_phase1ef_post_reallocation_lock_attempt_005",
         governing_commit="a" * 40,
         native_quota_file=capacity.EXPECTED_NATIVE_QUOTA_FILE,
         native_payload=native_payload,
@@ -982,7 +982,7 @@ def test_capture_contract_has_no_storage_inventory_cloud_or_scheduler_path() -> 
     assert "pquota" in source and "findmnt" in source and "df" in source
     assert '--attempt-id "$ATTEMPT_ID"' in wrapper
     assert (
-        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004"
+        "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
         in wrapper
     )
     for prior in ("001", "002", "003"):

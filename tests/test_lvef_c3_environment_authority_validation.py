@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import lvef_c3_production_stages as stages
+import capture_lvef_c3_production_environment as capture
 
 
 def _packages() -> list[dict[str, str]]:
@@ -23,7 +24,7 @@ def _packages() -> list[dict[str, str]]:
 
 def _runtime() -> dict[str, str]:
     return {
-        "python_executable_sha256": "a" * 64,
+        "python_executable_sha256": capture.EXPECTED_PYTHON_SHA256,
         "python_version": "3.10.12",
         "torch_version": "2.11.0+cu130",
         "torchvision_version": "0.26.0+cu130",
@@ -71,6 +72,11 @@ def test_environment_receipt_retains_exact_closed_package_preimage() -> None:
     stages.validate_environment_receipt_payload(
         _receipt(), live_packages=_packages(), live_runtime=_runtime()
     )
+
+
+def test_environment_receipt_producer_and_consumer_share_exact_closed_keys() -> None:
+    assert capture.ENVIRONMENT_RECEIPT_KEYS == stages.ENVIRONMENT_RECEIPT_KEYS
+    capture.validate_receipt_schema(_receipt())
 
 
 def test_runtime_python_authority_resolves_virtual_environment_symlink() -> None:

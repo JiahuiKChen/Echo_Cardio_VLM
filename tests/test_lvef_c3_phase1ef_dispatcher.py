@@ -19,10 +19,14 @@ DISPATCHER = SCRIPTS / "scc_execute_lvef_c3_phase1ef_attempt.sh"
 PREPARER = SCRIPTS / "scc_prepare_lvef_c3_phase1ef_environment.sh"
 WRAPPER = SCRIPTS / "scc_capture_lvef_c3_post_reallocation_capacity.sh"
 MANIFEST_TOOL = SCRIPTS / "lvef_c3_phase1ef_authority_manifest.py"
-ATTEMPT = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004"
+ATTEMPT = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
 BASE = "23c74ccfd145ab9a423b6942a431a1894a34ab67"
 PINNED_PYTHON_SHA = (
     "1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb"
+)
+PINNED_ECHOPRIME_LAUNCHER = (
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/"
+    ".venv-echoprime/bin/python"
 )
 
 sys.path.insert(0, str(SCRIPTS))
@@ -42,7 +46,8 @@ def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
 
 
 def _copy_authority_worktree(
-    root: Path, *, synthetic_python_sha256: str
+    root: Path, *, synthetic_python_sha256: str,
+    synthetic_python_launcher: Path,
 ) -> tuple[Path, str]:
     worktree = root / "worktree"
     git = "/usr/bin/git"
@@ -71,8 +76,13 @@ def _copy_authority_worktree(
     dispatcher = worktree / authority.ROLE_SPECS["tracked_attempt_dispatcher"][0]
     dispatcher_payload = dispatcher.read_text(encoding="utf-8")
     assert PINNED_PYTHON_SHA in dispatcher_payload
+    assert PINNED_ECHOPRIME_LAUNCHER in dispatcher_payload
     dispatcher.write_text(
-        dispatcher_payload.replace(PINNED_PYTHON_SHA, synthetic_python_sha256),
+        dispatcher_payload.replace(
+            PINNED_PYTHON_SHA, synthetic_python_sha256
+        ).replace(
+            PINNED_ECHOPRIME_LAUNCHER, str(synthetic_python_launcher)
+        ),
         encoding="utf-8",
     )
     dispatcher.chmod(0o755)
@@ -132,15 +142,20 @@ def _synthetic_authority(root: Path) -> tuple[Path, Path, dict[str, str], dict[s
     private = root / "private"
     private.mkdir(mode=0o700)
     private.chmod(0o700)
-    fake_python = private / "pinned_python"
-    fake_python.write_text(
+    fake_python_authority = private / "pinned_python_authority"
+    fake_python_authority.write_text(
         f"#!/bin/bash\nexec {sys.executable!s} \"$@\"\n",
         encoding="utf-8",
     )
-    fake_python.chmod(0o700)
-    fake_python_sha256 = hashlib.sha256(fake_python.read_bytes()).hexdigest()
+    fake_python_authority.chmod(0o700)
+    fake_python = private / "echoprime" / "bin" / "python"
+    fake_python.parent.mkdir(parents=True, mode=0o700)
+    fake_python.symlink_to(fake_python_authority)
+    fake_python_sha256 = hashlib.sha256(fake_python_authority.read_bytes()).hexdigest()
     worktree, commit = _copy_authority_worktree(
-        root, synthetic_python_sha256=fake_python_sha256
+        root,
+        synthetic_python_sha256=fake_python_sha256,
+        synthetic_python_launcher=fake_python,
     )
     manifest = private / "authority.json"
     digest = authority.write_manifest_atomic(
@@ -159,7 +174,7 @@ def _synthetic_authority(root: Path) -> tuple[Path, Path, dict[str, str], dict[s
             "WORKTREE": str(worktree),
             "EXPECTED_COMMIT": commit,
             "PYTHON": str(fake_python),
-            "PYTHON_AUTHORITY": str(fake_python),
+            "PYTHON_AUTHORITY": str(fake_python_authority),
             "GCLOUD": "/synthetic/never-executed-gcloud",
             "PRODUCTION_ROOT": "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2",
             "ATTEMPT_ID": ATTEMPT,
@@ -226,7 +241,7 @@ def test_phase1ef_dispatcher_production_path_preflight_only_passes_without_side_
         result = _dispatch(worktree, environment_path, process_environment)
         assert result.returncode == 0, (result.stdout, result.stderr)
         assert "PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS" in result.stdout
-        assert "ATTEMPT_004_WORKFLOW_INVOKED=NO" in result.stdout
+        assert "ATTEMPT_005_WORKFLOW_INVOKED=NO" in result.stdout
         assert "PHASE1EF_PRETRANSFER_LAST_STAGE=PREFLIGHT_ONLY_COMPLETED" in result.stdout
         for name in (
             "git", "openssl", "sha256sum", "stat", "readlink", "gcloud", "qsub"
@@ -335,7 +350,7 @@ def test_phase1ef_dispatcher_trusted_python_rejects_leaf_and_ancestor_symlinks()
             assert (result.returncode == 0) is (expected == 0), candidate
 
 
-def test_phase1ef_dispatcher_accepts_launcher_symlink_only_for_bound_target() -> None:
+def test_phase1ef_dispatcher_rejects_alternate_same_target_launcher() -> None:
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw).resolve()
         worktree, private, values, process_environment = _synthetic_authority(root)
@@ -344,9 +359,15 @@ def test_phase1ef_dispatcher_accepts_launcher_symlink_only_for_bound_target() ->
         values["PYTHON"] = str(launcher)
         environment_path = _write_environment(private, values)
         result = _dispatch(worktree, environment_path, process_environment)
-        assert result.returncode == 0, (result.stdout, result.stderr)
-        assert "PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS" in result.stdout
-        assert "Darwin) /usr/bin/stat -Lf '%d:%i'" in DISPATCHER.read_text(encoding="utf-8")
+        assert result.returncode != 0
+        assert "PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS" not in result.stdout
+        source = DISPATCHER.read_text(encoding="utf-8")
+        assert "Darwin) /usr/bin/stat -Lf '%d:%i'" in source
+        assert PINNED_ECHOPRIME_LAUNCHER in source
+        assert 'test "$PYTHON" = "$PHASE1EF_ECHOPRIME_PYTHON"' in source
+        assert 'PYTHON="$PYTHON_AUTHORITY"' not in source
+        assert '"$PYTHON" "$WORKTREE/scripts/capture_lvef_c3_production_environment.py"' in source
+        assert '--artifact "python_executable=$PYTHON_AUTHORITY"' in source
 
 
 def test_phase1ef_dispatcher_external_python_exception_is_exact_and_nonwritable() -> None:
@@ -631,6 +652,20 @@ def test_phase1ef_dispatcher_bytes_are_the_tested_production_entrypoint() -> Non
     assert os.access(DISPATCHER, os.X_OK)
     assert hashlib.sha256(payload).hexdigest()
     assert "--preflight-only|--execute" in payload.decode("utf-8")
+
+
+def test_phase1ef_attempt_004_is_historical_and_cannot_be_selected() -> None:
+    dispatcher = DISPATCHER.read_text(encoding="utf-8")
+    preparer = PREPARER.read_text(encoding="utf-8")
+    wrapper = WRAPPER.read_text(encoding="utf-8")
+    active_attempt = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_005"
+    historical_attempt = "lvef_multitask_phase1ef_post_reallocation_lock_attempt_004"
+    assert authority.AUTHORIZED_ATTEMPT_ID == active_attempt
+    assert active_attempt in dispatcher and active_attempt in preparer
+    assert active_attempt in wrapper
+    assert historical_attempt not in dispatcher
+    assert historical_attempt not in wrapper
+    assert "ATTEMPT_004_PRESERVED_IMMUTABLE=YES" not in dispatcher
 
 
 def test_phase1ef_old_environment_archive_is_byte_identical_closed_and_no_clobber() -> None:

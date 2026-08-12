@@ -609,7 +609,24 @@ phase1e_bc_resource_metadata_preflight:
         named_downstream_outputs_created: 0
         repair_or_rerun_occurred: false
         preserved_immutable: true
-      next_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_004
+      attempt_004:
+        id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_004
+        governing_commit: 6a814b3080f1159facf86ee60895117d187a41b7
+        execution_count: 1
+        failure_stage: CURRENT_ENVIRONMENT_CAPTURE
+        historical_sanitized_error: ENVIRONMENT_RUNTIME_IMPORT_FAILED
+        diagnosed_stage: TORCH_IMPORT
+        diagnosed_error: TORCH_IMPORT_FAILED
+        diagnosed_exception_class: ModuleNotFoundError
+        capacity_receipt_bytes: 10907
+        capacity_receipt_sha256: b3bae07dcd6958b7cdfdd827a0de565ae0972753e04955fd03cd137b2e30ab62
+        capacity_aggregate_bytes: 5399
+        capacity_aggregate_sha256: 4d15b0a1a80188ce95d31659eca50cf18c8b6a1ebdef4022a56975f6e3e4bd20
+        downstream_stages_began: false
+        environment_receipt_created: false
+        repair_or_rerun_occurred: false
+        preserved_immutable: true
+      next_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
       next_attempt_authorized: false
       execution_timing: AFTER_FINAL_IMPLEMENTATION_COMMIT_SYNC
       native_quota_record_unit: KiB

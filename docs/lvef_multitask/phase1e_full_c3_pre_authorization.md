@@ -4,6 +4,14 @@ Status: **NO-GO pending the post-commit Phase 1E-F exact capacity,
 backup/restore, current packet, launch-envelope, and explicit owner-transfer
 gates**.
 
+Phase 1E-F attempt 004 is immutable after one execution. It passed every
+capacity gate and failed at the current-environment Torch import because the
+resolved interpreter byte-authority was used as the process launcher, which
+discarded the virtual-environment package context. The diagnosed repair keeps
+the lexical launcher for execution and the resolved regular target for
+checksum authority. The next unused logical attempt is 005; it remains
+unprepared, unexecuted, and owner-unauthorized.
+
 Phase 1E-E's backed-tier failure is preserved as historical evidence. The
 owner now reports the preferred 50/1,950 allocation active; only the new native
 integer-KiB Phase 1E-F receipt may close that successor capacity gate.
