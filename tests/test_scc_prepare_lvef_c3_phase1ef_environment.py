@@ -106,6 +106,33 @@ def test_environment_preparer_executable_mode_helper_accepts_umask_and_rejects_u
         assert (result.returncode == 0) is (expected == 0), mode
 
 
+def test_environment_preparer_trusted_python_owner_policy_matches_dispatcher() -> None:
+    preparer = (
+        ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"
+    ).read_text(encoding="utf-8")
+    dispatcher = (
+        ROOT / "scripts" / "scc_execute_lvef_c3_phase1ef_attempt.sh"
+    ).read_text(encoding="utf-8")
+    preparer_match = re.search(
+        r"phase1ef_prep_trusted_executable_metadata\(\) \{.*?\n\}",
+        preparer,
+        flags=re.DOTALL,
+    )
+    dispatcher_match = re.search(
+        r"phase1ef_trusted_executable_metadata\(\) \{.*?\n\}",
+        dispatcher,
+        flags=re.DOTALL,
+    )
+    assert preparer_match is not None and dispatcher_match is not None
+    assert '[[ "$owner_uid" = "$EUID" || "$owner_uid" = 0 ]]' in preparer_match.group(0)
+    assert '[[ "$owner_uid" = "$EUID" || "$owner_uid" = 0 ]]' in dispatcher_match.group(0)
+    assert 'phase1ef_prep_assert_trusted_executable_authority "$PYTHON_AUTHORITY"' in preparer
+    assert 'phase1ef_assert_trusted_executable_authority "$PYTHON_AUTHORITY"' in dispatcher
+    assert preparer.index(
+        'phase1ef_prep_assert_trusted_executable_authority "$PYTHON_AUTHORITY"'
+    ) < preparer.index("packet_binding()")
+
+
 def test_environment_preparer_preserves_fixed_scientific_authorities() -> None:
     source = (
         ROOT / "scripts" / "scc_prepare_lvef_c3_phase1ef_environment.sh"

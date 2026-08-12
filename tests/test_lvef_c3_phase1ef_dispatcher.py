@@ -236,6 +236,108 @@ def test_phase1ef_dispatcher_production_path_preflight_only_passes_without_side_
         assert not list(root.rglob("__pycache__"))
 
 
+def test_phase1ef_dispatcher_trusted_python_owner_and_mode_policy() -> None:
+    source = DISPATCHER.read_text(encoding="utf-8")
+    match = re.search(
+        r"phase1ef_trusted_executable_metadata\(\) \{.*?\n\}",
+        source,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    function_name = match.group(0).split("(", 1)[0]
+    current_uid = os.geteuid()
+    other_uid = 1 if current_uid not in (1,) else 2
+    cases = (
+        (str(current_uid), "700", 0),
+        (str(current_uid), "755", 0),
+        ("0", "755", 0),
+        (str(other_uid), "755", 1),
+        ("not-a-uid", "755", 1),
+        (str(current_uid), "600", 1),
+        (str(current_uid), "300", 1),
+        (str(current_uid), "775", 1),
+        (str(current_uid), "757", 1),
+        (str(current_uid), "4755", 1),
+        (str(current_uid), "2755", 1),
+        (str(current_uid), "1755", 1),
+        (str(current_uid), "invalid", 1),
+    )
+    for uid, mode, expected in cases:
+        result = _run(
+            [
+                "/bin/bash",
+                "-c",
+                f"set -e\n{match.group(0)}\n{function_name} {uid} {mode}",
+            ]
+        )
+        assert (result.returncode == 0) is (expected == 0), (uid, mode)
+
+
+def test_phase1ef_dispatcher_pinned_python_uses_narrow_trusted_owner_policy() -> None:
+    source = DISPATCHER.read_text(encoding="utf-8")
+    assert 'test -O "$PYTHON_AUTHORITY"' not in source
+    assert 'phase1ef_assert_trusted_executable_authority "$PYTHON_AUTHORITY"' in source
+    assert '[[ "$owner_uid" = "$EUID" || "$owner_uid" = 0 ]]' in source
+    assert 'phase1ef_no_symlink_ancestors "$candidate" || return 1' in source
+    assert '[[ -r "$candidate" && -x "$candidate" ]] || return 1' in source
+
+
+def test_phase1ef_dispatcher_trusted_python_rejects_leaf_and_ancestor_symlinks() -> None:
+    source = DISPATCHER.read_text(encoding="utf-8")
+    function_names = (
+        "phase1ef_no_symlink_ancestors",
+        "phase1ef_stat_mode",
+        "phase1ef_stat_uid",
+        "phase1ef_trusted_executable_metadata",
+        "phase1ef_assert_trusted_executable_authority",
+    )
+    functions: list[str] = []
+    for name in function_names:
+        match = re.search(rf"{name}\(\) \{{.*?\n\}}", source, flags=re.DOTALL)
+        assert match is not None
+        functions.append(match.group(0))
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw).resolve()
+        real_parent = root / "real"
+        real_parent.mkdir(mode=0o700)
+        executable = real_parent / "python"
+        executable.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o700)
+        leaf_link = root / "leaf-python"
+        leaf_link.symlink_to(executable)
+        ancestor_link = root / "linked-parent"
+        ancestor_link.symlink_to(real_parent, target_is_directory=True)
+        script = "\n".join(
+            [
+                "set -e",
+                f"PHASE1EF_KERNEL={os.uname().sysname}",
+                *functions,
+                'phase1ef_assert_trusted_executable_authority "$1"',
+            ]
+        )
+        for candidate, expected in (
+            (executable, 0),
+            (leaf_link, 1),
+            (ancestor_link / "python", 1),
+        ):
+            result = _run(["/bin/bash", "-c", script, "test", str(candidate)])
+            assert (result.returncode == 0) is (expected == 0), candidate
+
+
+def test_phase1ef_dispatcher_accepts_launcher_symlink_only_for_bound_target() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw).resolve()
+        worktree, private, values, process_environment = _synthetic_authority(root)
+        launcher = private / "python-launcher"
+        launcher.symlink_to(Path(values["PYTHON_AUTHORITY"]))
+        values["PYTHON"] = str(launcher)
+        environment_path = _write_environment(private, values)
+        result = _dispatch(worktree, environment_path, process_environment)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "PHASE1EF_TRACKED_DISPATCHER_PREFLIGHT=PASS_ZERO_SCOPE_NO_ROOTS" in result.stdout
+        assert "Darwin) /usr/bin/stat -Lf '%d:%i'" in DISPATCHER.read_text(encoding="utf-8")
+
+
 def test_phase1ef_dispatcher_rejects_untracked_import_shadow_before_python() -> None:
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw).resolve()

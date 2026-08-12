@@ -58,6 +58,14 @@ phase1ef_prep_stat_mode() {
   esac
 }
 
+phase1ef_prep_stat_uid() {
+  case "$PHASE1EF_PREP_KERNEL" in
+    Linux) /usr/bin/stat -c '%u' -- "$1" ;;
+    Darwin) /usr/bin/stat -f '%u' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
 phase1ef_prep_stat_size() {
   case "$PHASE1EF_PREP_KERNEL" in
     Linux) /usr/bin/stat -c '%s' -- "$1" ;;
@@ -72,6 +80,23 @@ phase1ef_prep_assert_executable_authority_mode() {
   (( (8#$mode & 07000) == 0 )) || return 1
   (( (8#$mode & 0500) == 0500 )) || return 1
   (( (8#$mode & 0022) == 0 )) || return 1
+}
+
+phase1ef_prep_trusted_executable_metadata() {
+  local owner_uid="$1" mode="$2"
+  [[ "$owner_uid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$owner_uid" = "$EUID" || "$owner_uid" = 0 ]] || return 1
+  phase1ef_prep_assert_executable_authority_mode "$mode"
+}
+
+phase1ef_prep_assert_trusted_executable_authority() {
+  local candidate="$1" owner_uid mode
+  [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+  [[ -r "$candidate" && -x "$candidate" ]] || return 1
+  assert_no_symlink_ancestors "$candidate" || return 1
+  owner_uid="$(phase1ef_prep_stat_uid "$candidate")" || return 1
+  mode="$(phase1ef_prep_stat_mode "$candidate")" || return 1
+  phase1ef_prep_trusted_executable_metadata "$owner_uid" "$mode"
 }
 
 phase1ef_prep_sha256() {
@@ -126,9 +151,12 @@ phase1ef_prep_assert_checkout_clean() {
 }
 
 readonly -f assert_no_symlink_ancestors phase1ef_prep_stat_mode
+readonly -f phase1ef_prep_stat_uid
 readonly -f phase1ef_prep_stat_size phase1ef_prep_sha256
 readonly -f phase1ef_prep_resolve_path phase1ef_prep_assert_checkout_clean
 readonly -f phase1ef_prep_assert_executable_authority_mode
+readonly -f phase1ef_prep_trusted_executable_metadata
+readonly -f phase1ef_prep_assert_trusted_executable_authority
 
 assert_private_directory() {
   local candidate="$1" mode
@@ -288,6 +316,7 @@ PRIOR_SAFE_12="$SUPPLEMENTAL_AGGREGATE_ROOT/c3_autoclass_combined_validation.sum
 # parse subordinate authorities.  This prevents an unverified executable or
 # packet from defining the identities that the rest of this preflight trusts.
 [[ -f "$PYTHON_AUTHORITY" && ! -L "$PYTHON_AUTHORITY" ]]
+phase1ef_prep_assert_trusted_executable_authority "$PYTHON_AUTHORITY"
 [[ "$(phase1ef_prep_sha256 "$PYTHON_AUTHORITY")" = 1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb ]]
 [[ -f "$CRC32C_PYTHON" && ! -L "$CRC32C_PYTHON" ]]
 [[ "$(phase1ef_prep_sha256 "$CRC32C_PYTHON")" = 52a2a75599d1bbbd1f5705af946fc3ffbd68b5430adcda0dea2d0a00b33fd1b5 ]]

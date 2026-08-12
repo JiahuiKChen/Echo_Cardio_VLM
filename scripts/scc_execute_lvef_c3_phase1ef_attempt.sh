@@ -81,12 +81,40 @@ phase1ef_stat_mode() {
   esac
 }
 
+phase1ef_stat_uid() {
+  case "$PHASE1EF_KERNEL" in
+    Linux) /usr/bin/stat -c '%u' -- "$1" ;;
+    Darwin) /usr/bin/stat -f '%u' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
 phase1ef_stat_identity() {
   case "$PHASE1EF_KERNEL" in
     Linux) /usr/bin/stat -Lc '%d:%i' -- "$1" ;;
-    Darwin) /usr/bin/stat -f '%d:%i' "$1" ;;
+    Darwin) /usr/bin/stat -Lf '%d:%i' "$1" ;;
     *) return 1 ;;
   esac
+}
+
+phase1ef_trusted_executable_metadata() {
+  local owner_uid="$1" mode="$2"
+  [[ "$owner_uid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$owner_uid" = "$EUID" || "$owner_uid" = 0 ]] || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 07000) == 0 )) || return 1
+  (( (8#$mode & 0500) == 0500 )) || return 1
+  (( (8#$mode & 0022) == 0 )) || return 1
+}
+
+phase1ef_assert_trusted_executable_authority() {
+  local candidate="$1" owner_uid mode
+  [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+  [[ -r "$candidate" && -x "$candidate" ]] || return 1
+  phase1ef_no_symlink_ancestors "$candidate" || return 1
+  owner_uid="$(phase1ef_stat_uid "$candidate")" || return 1
+  mode="$(phase1ef_stat_mode "$candidate")" || return 1
+  phase1ef_trusted_executable_metadata "$owner_uid" "$mode"
 }
 
 phase1ef_sha256() {
@@ -126,9 +154,11 @@ phase1ef_assert_checkout_clean() {
   done <<<"$checkout_status"
 }
 
-readonly -f phase1ef_no_symlink_ancestors phase1ef_stat_mode
+readonly -f phase1ef_no_symlink_ancestors phase1ef_stat_mode phase1ef_stat_uid
 readonly -f phase1ef_stat_identity phase1ef_sha256
 readonly -f phase1ef_canonical_nonsymlink_file phase1ef_assert_checkout_clean
+readonly -f phase1ef_trusted_executable_metadata
+readonly -f phase1ef_assert_trusted_executable_authority
 
 phase1ef_private_directory() {
   local candidate="$1" mode
@@ -289,11 +319,9 @@ test "$(phase1ef_sha256 "$PHASE1EF_AUTHORITY_MANIFEST")" = \
 test -e "$PYTHON"
 test -f "$PYTHON_AUTHORITY"
 test ! -L "$PYTHON_AUTHORITY"
-test -O "$PYTHON_AUTHORITY"
+phase1ef_assert_trusted_executable_authority "$PYTHON_AUTHORITY"
 test "$(phase1ef_stat_identity "$PYTHON")" = \
   "$(phase1ef_stat_identity "$PYTHON_AUTHORITY")"
-phase1ef_python_mode="$(phase1ef_stat_mode "$PYTHON_AUTHORITY")"
-(( (8#$phase1ef_python_mode & 0022) == 0 ))
 test "$(phase1ef_sha256 "$PYTHON_AUTHORITY")" = \
   1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
 PYTHON="$PYTHON_AUTHORITY"
