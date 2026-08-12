@@ -70,3 +70,31 @@ Attempts 001–004 remain immutable. The next unused logical identifier is
 `lvef_multitask_phase1ef_post_reallocation_lock_attempt_005`, determined from
 the preserved attempt sequence and collision check—not from any preparation
 record suffix. It remains unprepared, unexecuted, and owner-unauthorized.
+
+## D3R4–D3R7 recovery disposition
+
+Browser and in-app terminal typing were retired as unsafe command writers for
+this stage. A later default-SFTP transfer failed before execution and left only
+an ephemeral leaf whose current absence cannot support further causal
+inference. The owner classified it
+`EPHEMERAL_TRANSFER_LEAF_UNRESOLVED`, waived further symlink forensics, and did
+not authorize another SCP/SFTP/rsync attempt, OnDemand editor, or OnDemand
+upload.
+
+The separate failed editor artifact remains immutable diagnostic evidence at
+10,552 bytes with SHA-256
+`b3f2ef3620fb5a7db7c89214ee598e28f039085b7e880cb404895c6afeb1547a`.
+It was not used as source material for the tracked implementation.
+
+The reviewed canonical fallback is now preserved in Git at exact size 5,786
+bytes and SHA-256
+`873faf00b11658d6b11f5778088cfc028b663ec579c244f5a470168cb5086695`.
+It contains no credentials, private cloud values, clinical identifiers,
+patient rows, DICOM locators, labels, predictions, or restricted data. Because
+it pins the historical repair commit and has no shebang, it is a byte-exact
+semantic authority rather than the current executable interface.
+
+The tracked successor and its closed semantic mapping are documented in
+`phase1ef_d3_tracked_recovery.md`. This removes the need for any browser editor,
+file upload, large pasted shell block, or new transport artifact. No SCC
+synchronization or D3 execution occurred while implementing it.

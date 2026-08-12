@@ -628,6 +628,21 @@ phase1e_bc_resource_metadata_preflight:
         preserved_immutable: true
       next_attempt_id: lvef_multitask_phase1ef_post_reallocation_lock_attempt_005
       next_attempt_authorized: false
+      d3_recovery:
+        ephemeral_transfer_leaf_disposition: EPHEMERAL_TRANSFER_LEAF_UNRESOLVED
+        further_symlink_forensics_required: false
+        fresh_upload_authorized: false
+        transfer_retry_authorized: false
+        ondemand_editor_authorized: false
+        canonical_script_bytes: 5786
+        canonical_script_sha256: 873faf00b11658d6b11f5778088cfc028b663ec579c244f5a470168cb5086695
+        canonical_script_role: TRACKED_EXACT_BYTES_NONOPERATIVE_HISTORICAL_AUTHORITY
+        failed_editor_artifact_bytes: 10552
+        failed_editor_artifact_sha256: b3f2ef3620fb5a7db7c89214ee598e28f039085b7e880cb404895c6afeb1547a
+        failed_editor_artifact_used_as_source: false
+        tracked_entrypoint: scripts/scc_finalize_lvef_phase1ef_d3.sh
+        tracked_entrypoint_executed: false
+        scc_fast_forward_executed: false
       execution_timing: AFTER_FINAL_IMPLEMENTATION_COMMIT_SYNC
       native_quota_record_unit: KiB
       native_quota_bytes_per_unit: 1024

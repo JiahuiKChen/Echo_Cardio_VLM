@@ -1,0 +1,83 @@
+{
+  "schema_name": "lvef_phase1ef_d3_canonical_operation_mapping",
+  "schema_version": 1,
+  "canonical_artifact": {
+    "repository_relative_file": "scripts/scc_finalize_lvef_phase1ef_d3_canonical_2088832.sh",
+    "bytes": 5786,
+    "sha256": "873faf00b11658d6b11f5778088cfc028b663ec579c244f5a470168cb5086695",
+    "preservation": "TRACKED_EXACT_BYTES_NONOPERATIVE_HISTORICAL_AUTHORITY"
+  },
+  "operative_entrypoint": "scripts/scc_finalize_lvef_phase1ef_d3.sh",
+  "operative_implementation": "scripts/finalize_lvef_phase1ef_d3.py",
+  "scope_broadened": false,
+  "operation_groups": [
+    {
+      "canonical_lines": "1-17",
+      "canonical_role": "fixed authorities and private runtime roles",
+      "successor_role": "module constants plus bounded private-authority resolver",
+      "semantic_change": "target commit is an explicit public argument so the tracked ending commit can govern itself"
+    },
+    {
+      "canonical_lines": "19-33",
+      "canonical_role": "hashing and clean-checkout validation",
+      "successor_role": "sha256_file and validate_clean_status",
+      "semantic_change": "Git and Python injection surfaces are additionally quarantined"
+    },
+    {
+      "canonical_lines": "35-51",
+      "canonical_role": "private authority and output collision checks",
+      "successor_role": "resolve_private_authorities and no-follow owner/mode checks",
+      "semantic_change": "private inputs are recovered from exactly one established preparation and diagnostic record instead of shell positional values"
+    },
+    {
+      "canonical_lines": "53-60",
+      "canonical_role": "branch, commit, cleanliness, and base ancestry",
+      "successor_role": "run_recovery pre-migration Git authority gate",
+      "semantic_change": "none"
+    },
+    {
+      "canonical_lines": "62-73",
+      "canonical_role": "immutable attempt and frozen capacity authorities",
+      "successor_role": "validate_attempts_and_capacity",
+      "semantic_change": "owner and nonsymlink checks are strengthened"
+    },
+    {
+      "canonical_lines": "75-88",
+      "canonical_role": "origin verification and fast-forward-only migration",
+      "successor_role": "run_recovery migration state machine",
+      "semantic_change": "merge commits in the migration range are explicitly rejected"
+    },
+    {
+      "canonical_lines": "90-104",
+      "canonical_role": "one lexical-venv environment capture",
+      "successor_role": "run_recovery bounded capture subprocess",
+      "semantic_change": "a valid existing current receipt is validated without overwrite"
+    },
+    {
+      "canonical_lines": "106-110",
+      "canonical_role": "post-commit receipt validation",
+      "successor_role": "validate_current_receipt",
+      "semantic_change": "duplicate-key and full closed-v3 schema validation are added"
+    },
+    {
+      "canonical_lines": "112-129",
+      "canonical_role": "postconditions and safe markers",
+      "successor_role": "closed SAFE_SUCCESS_KEYS result",
+      "semantic_change": "receipt byte count and SHA-256 are added; private paths and values remain excluded"
+    }
+  ],
+  "prohibited_capabilities": {
+    "attempt_004_rerun": false,
+    "attempt_005_creation": false,
+    "production_attempt_006_creation": false,
+    "capacity_recapture": false,
+    "backup_or_restore": false,
+    "cloud_or_bigquery_request": false,
+    "object_listing_or_download": false,
+    "scheduler_submission": false,
+    "dicom_access_or_extraction": false,
+    "echoprime_inference_or_gpu_execution": false,
+    "embedding_or_model_execution": false,
+    "prediction_or_confirmatory_access": false
+  }
+}

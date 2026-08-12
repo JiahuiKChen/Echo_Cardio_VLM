@@ -76,3 +76,19 @@ list or download objects, submit `qsub`, decode a real DICOM, run EchoPrime,
 create embeddings, fit models, generate predictions, or access confirmatory
 performance. Its generated first-batch command remains separately gated and
 unexecuted.
+
+## Bounded D3 post-commit recovery
+
+The historical attempt dispatcher above must not be used to repair attempt
+004. The only supported D3 repair interface is now the tracked short wrapper:
+
+```bash
+: "${ENDING_COMMIT:?set the exact reviewed ending commit}"
+/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask/scripts/scc_finalize_lvef_phase1ef_d3.sh "$ENDING_COMMIT"
+```
+
+It validates or captures only the post-commit software-environment receipt. It
+cannot create attempt 005 or production attempt 006, rerun capacity, contact a
+cloud service, submit a scheduler job, or perform scientific computation. This
+command remains **UNEXECUTED** and requires separate owner authorization naming
+the exact commit and wrapper checksum.
