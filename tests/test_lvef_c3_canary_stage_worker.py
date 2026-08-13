@@ -576,3 +576,31 @@ def test_scoped_download_root_is_exact_five_only_and_default_is_unchanged() -> N
     assert '!= "lvef_multitask_c3_exact_five_canary_v1"' in source
     assert "requirements.normalized_source_objects > 750" in source
     assert "requirements.selected_source_bytes > 5_000_000_000" in source
+
+
+def test_live_worker_stage_paths_match_production_producers() -> None:
+    source = (ROOT / "scripts" / "lvef_c3_canary_stage_worker.py").read_text()
+    assert (
+        'selected_batch_manifest=raw_root / BATCH_ID / "selected_batch.restricted.csv"'
+        in source
+    )
+    assert "selected_batch_manifest.restricted.csv" not in source
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        context = _context(root / "canary_runs" / "run")
+        attempt_root = context.output_root / "attempts" / context.attempt_id
+        attempt_root.mkdir(parents=True, mode=0o700)
+        observed = worker._create_scoped_cache_root(context)
+        expected = attempt_root / "extracted_cache" / worker.BATCH_ID
+        assert observed == expected
+        for path in (expected.parent, expected):
+            metadata = os.lstat(path)
+            assert not path.is_symlink()
+            assert oct(metadata.st_mode & 0o777) == "0o700"
+        try:
+            worker._create_scoped_cache_root(context)
+        except worker.CanaryStageWorkerError as exc:
+            assert exc.code == "CANARY_CACHE_ROOT_ALREADY_EXISTS"
+        else:
+            raise AssertionError("existing cache root was reused")

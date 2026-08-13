@@ -74,8 +74,12 @@ PRIOR_SMOKE_RUN_NAME: Final = (
 # 2026-08-12 established these root-owned lexical entrypoints.  Live discovery
 # resolves each one to a root-owned regular executable, seals its exact current
 # identity in the preselection authority, and revalidates it before use.
-SCC_QSUB_LEXICAL_PATH: Final = Path("/usr/local/bin/qsub")
-SCC_QSTAT_LEXICAL_PATH: Final = Path("/usr/local/bin/qstat")
+SCC_QSUB_LEXICAL_PATH: Final = Path(
+    "/usr/local/ogs-ge2011.11.p1/sge_root/bin/linux-x64/qsub"
+)
+SCC_QSTAT_LEXICAL_PATH: Final = Path(
+    "/usr/local/ogs-ge2011.11.p1/sge_root/bin/linux-x64/qstat"
+)
 SCC_FINDMNT_PATH: Final = Path("/usr/bin/findmnt")
 SCC_DF_PATH: Final = Path("/usr/bin/df")
 TRANSACTION_MARKER_NAME: Final = ".materialization_transaction.restricted.json"

@@ -29,6 +29,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+
+def _assert_live_scheduler_tool_constants(materializer) -> None:
+    scheduler_root = Path(
+        "/usr/local/ogs-ge2011.11.p1/sge_root/bin/linux-x64"
+    )
+    assert materializer.SCC_QSUB_LEXICAL_PATH == scheduler_root / "qsub"
+    assert materializer.SCC_QSTAT_LEXICAL_PATH == scheduler_root / "qstat"
+
 import lvef_c3_canary as canary
 import lvef_c3_canary_dispatch as dispatch
 import lvef_c3_canary_execution_authority as execution_authority
@@ -670,6 +678,7 @@ def test_exact_live_canary_cli_path_passes_in_synthetic_sandbox() -> None:
     assert callable(materializer.prepare_live_authority)
     assert callable(canary_state.initialize_state)
     assert callable(canary_state.transition_state)
+    _assert_live_scheduler_tool_constants(materializer)
 
     _assert_manifest_scope_failures()
     _assert_production_function_identities()

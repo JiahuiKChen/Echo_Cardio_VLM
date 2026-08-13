@@ -829,6 +829,25 @@ def _create_scoped_download_root(context: CanaryStageContext) -> Path:
     return cursor
 
 
+def _create_scoped_cache_root(context: CanaryStageContext) -> Path:
+    """Create the exact canary cache batch root before production extraction."""
+
+    cursor = context.output_root / "attempts" / context.attempt_id
+    for component in ("extracted_cache", BATCH_ID):
+        cursor /= component
+        if os.path.lexists(cursor):
+            raise CanaryStageWorkerError("CANARY_CACHE_ROOT_ALREADY_EXISTS")
+        cursor.mkdir(mode=0o700)
+        metadata = os.lstat(cursor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            raise CanaryStageWorkerError("CANARY_CACHE_ROOT_INVALID")
+    return cursor
+
+
 def run_canary_stage(
     stage_id: str, context: CanaryStageContext, *,
     dependencies: CanaryStageDependencies | None = None,
@@ -914,6 +933,8 @@ def run_canary_stage(
         )
         return updated
     if stage_id == "DICOM_EXTRACTION":
+        if _create_scoped_cache_root(context) != cache_root:
+            raise CanaryStageWorkerError("CANARY_CACHE_ROOT_INVALID")
         verified = raw_root / BATCH_ID / "verified_download_manifest.restricted.csv"
         input_ledger = batch_root / "download_resume_ledger.restricted.json"
         stages.validate_stage_predecessor(
@@ -964,7 +985,7 @@ def run_canary_stage(
         )
         summary = dependency.echoprime(
             extraction_manifest=extraction, extraction_root=cache_root / "dicom_extraction" / "clips",
-            selected_batch_manifest=raw_root / BATCH_ID / "selected_batch_manifest.restricted.csv",
+            selected_batch_manifest=raw_root / BATCH_ID / "selected_batch.restricted.csv",
             checkpoint=context.checkpoint, environment_receipt=context.environment_receipt,
             orchestration_contract=context.contract_path, batch_plan=context.batch_plan_path,
             batch_id=BATCH_ID, batch_output_root=batch_root, batch_size=8, seed=20260803,
