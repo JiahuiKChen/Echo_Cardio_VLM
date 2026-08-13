@@ -763,6 +763,27 @@ def test_minimal_canary_exact_five_end_to_end(monkeypatch: Any) -> None:
             "ExternalCRC32CDigestWorker",
             _synthetic_external_crc32c_worker(fixture, authority, calls),
         )
+
+        def validate_synthetic_crc32c_runtime(
+            environment_receipt: Path,
+            crc32c_python: Path,
+            crc32c_worker: Path,
+        ) -> dict[str, Any]:
+            assert crc32c_python == stages.PINNED_CRC32C_PYTHON
+            assert crc32c_worker == (
+                stages.CANONICAL_REPOSITORY_ROOT
+                / "scripts/lvef_c3_crc32c_worker.py"
+            )
+            calls["mock_crc32c_runtime_validation"] = 1
+            return stages.load_json_object(
+                environment_receipt, "SYNTHETIC_ENVIRONMENT_RECEIPT"
+            )
+
+        monkeypatch.setattr(
+            stages,
+            "validate_crc32c_external_authority",
+            validate_synthetic_crc32c_runtime,
+        )
         modules = {
             "pydicom": fixture._synthetic_pydicom_module(),
             "cv2": fixture._synthetic_cv2_module(),
@@ -813,6 +834,7 @@ def test_minimal_canary_exact_five_end_to_end(monkeypatch: Any) -> None:
             "mock_requester_pays_transfer": 10,
             "mock_token_acquisition": 1,
             "mock_encoder_compute": 2,
+            "mock_crc32c_runtime_validation": 1,
             "synthetic_external_crc32c_worker_started": 1,
             "synthetic_external_crc32c_digests": 10,
             "synthetic_external_crc32c_worker_closed": 1,

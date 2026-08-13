@@ -122,25 +122,6 @@ TIMESTAMP_RE = re.compile(
     r"^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]+)?(?:Z|\+00:00)$"
 )
-ENVIRONMENT_RECEIPT_KEYS = {
-    "schema_version", "artifact_type", "status", "governing_commit",
-    "captured_at_utc", "source_environment_receipt_sha256",
-    "python_executable_sha256", "python_version", "torch_version",
-    "torchvision_version", "cuda_version", "cudnn_version",
-    "crc32c_runtime_source", "crc32c_python_executable_sha256",
-    "crc32c_python_version", "crc32c_worker_sha256",
-    "crc32c_worker_protocol_version",
-    "google_crc32c_version", "google_crc32c_implementation",
-    "google_crc32c_distribution_sha256",
-    "google_crc32c_distribution_file_count",
-    "google_crc32c_known_vector_base64",
-    "package_inventory", "package_inventory_sha256", "package_count",
-    "operating_system",
-    "gpu_execution_performed", "cloud_request_performed", "dicom_body_read",
-    "model_fitted", "prediction_generated", "confirmatory_performance_accessed",
-}
-
-
 class BatchPreservationError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
@@ -990,59 +971,21 @@ def preserve_batch(
             raise BatchPreservationError("SECOND_PASS_ARTIFACT_NOT_REGULAR")
         if artifact.stat().st_size != int(item["size_bytes"]) or sha256_file(artifact) != item["sha256"]:
             raise BatchPreservationError("SECOND_PASS_ARTIFACT_HASH_MISMATCH")
-    environment = load_json(external["environment_receipt"], "ENVIRONMENT_RECEIPT")
-    if (
-        set(environment) != ENVIRONMENT_RECEIPT_KEYS
-        or environment.get("schema_version") != 3
-        or environment.get("artifact_type")
-        != "lvef_c3_production_environment_authority_v3"
-        or environment.get("status")
-        != "PASS_OFFLINE_RUNTIME_AUTHORITY_NO_GPU_EXECUTION"
-        or environment.get("governing_commit") != governing_commit
-        or environment.get("google_crc32c_implementation") != "c"
-        or environment.get("crc32c_runtime_source")
-        != "PINNED_CLOUDSDK_BUNDLED_PYTHON"
-        or environment.get("crc32c_worker_protocol_version") != 1
-        or environment.get("google_crc32c_known_vector_base64") != "4waSgw=="
-        or not isinstance(
-            environment.get("google_crc32c_distribution_file_count"), int
-        )
-        or isinstance(
-            environment.get("google_crc32c_distribution_file_count"), bool
-        )
-        or environment["google_crc32c_distribution_file_count"] < 1
-        or not TIMESTAMP_RE.fullmatch(str(environment.get("captured_at_utc")))
-        or any(
-            environment.get(key) is not False
-            for key in (
-                "gpu_execution_performed", "cloud_request_performed",
-                "dicom_body_read", "model_fitted", "prediction_generated",
-                "confirmatory_performance_accessed",
+    try:
+        environment_authority = (
+            production_stages.validate_environment_authority_for_scientific_commit(
+                external["environment_receipt"],
+                expected_environment_receipt_sha256=runtime_authority[
+                    "environment_receipt_sha256"
+                ],
+                scientific_governing_commit=governing_commit,
             )
         )
-        or any(
-            not isinstance(environment.get(key), str) or not environment[key]
-            for key in (
-                "python_version", "torch_version", "torchvision_version",
-                "cuda_version", "cudnn_version", "crc32c_python_version",
-                "google_crc32c_version",
-            )
-        )
-        or any(
-            not SHA_RE.fullmatch(str(environment.get(key)))
-            for key in (
-                "python_executable_sha256", "package_inventory_sha256",
-                "source_environment_receipt_sha256",
-                "crc32c_python_executable_sha256", "crc32c_worker_sha256",
-                "google_crc32c_distribution_sha256",
-            )
-        )
-        or not isinstance(environment.get("package_inventory"), list)
-        or environment.get("package_count") != len(environment["package_inventory"])
-        or core.canonical_json_sha256(environment["package_inventory"])
-        != environment.get("package_inventory_sha256")
-    ):
-        raise BatchPreservationError("ENVIRONMENT_PROVENANCE_AUTHORITY_INVALID")
+    except production_stages.ProductionStageError as exc:
+        raise BatchPreservationError(
+            "ENVIRONMENT_PROVENANCE_AUTHORITY_INVALID"
+        ) from exc
+    environment = environment_authority["environment_receipt"]
     receipt_path = output_root / "batch_preservation_receipt.restricted.json"
     if receipt_path.exists() or receipt_path.is_symlink():
         prior_receipt = load_json(receipt_path, "PRESERVATION_RECEIPT")

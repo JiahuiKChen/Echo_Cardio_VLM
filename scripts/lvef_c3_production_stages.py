@@ -38,6 +38,11 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 BATCH_RE = re.compile(r"^c3_batch_(?:00[0-9]|01[0-8])$")
 ATTEMPT_RE = re.compile(r"^lvef_c3_[a-z0-9][a-z0-9_-]{7,95}$")
+CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PINNED_CRC32C_PYTHON = Path(
+    "/restricted/projectnb/mimicecho/tools/google-cloud-cli-579.0.0/"
+    "google-cloud-sdk/platform/bundledpythonunix/bin/python3.14"
+)
 
 AUTHORIZATION_KEYS = {
     "schema_version",
@@ -698,6 +703,131 @@ def validate_crc32c_external_authority(
     if any(probe.get(key) != value for key, value in expected.items()):
         raise ProductionStageError("CRC32C_EXTERNAL_RUNTIME_AUTHORITY_MISMATCH")
     return receipt
+
+
+def validate_environment_authority_for_scientific_commit(
+    environment_receipt: Path,
+    *,
+    expected_environment_receipt_sha256: str,
+    scientific_governing_commit: str,
+) -> dict[str, Any]:
+    """Bind one live runtime authority to an equal or ancestor code commit."""
+
+    if not SHA256_RE.fullmatch(str(expected_environment_receipt_sha256)):
+        raise ProductionStageError("ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH")
+    expected_sha256 = str(expected_environment_receipt_sha256)
+    if (
+        not isinstance(scientific_governing_commit, str)
+        or COMMIT_RE.fullmatch(scientific_governing_commit) is None
+    ):
+        raise ProductionStageError("ENVIRONMENT_AUTHORITY_COMMIT_INVALID")
+
+    def bound_receipt_sha256() -> str:
+        try:
+            return sha256_file(environment_receipt)
+        except ProductionStageError as exc:
+            raise ProductionStageError(
+                "ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH"
+            ) from exc
+
+    observed_sha256 = bound_receipt_sha256()
+    if observed_sha256 != expected_sha256:
+        raise ProductionStageError("ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH")
+
+    try:
+        receipt = validate_environment_receipt_against_current_runtime(
+            environment_receipt
+        )
+    except ProductionStageError as exc:
+        raise ProductionStageError(
+            "ENVIRONMENT_RECEIPT_LIVE_RUNTIME_MISMATCH"
+        ) from exc
+    if bound_receipt_sha256() != expected_sha256:
+        raise ProductionStageError("ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH")
+    try:
+        external_receipt = validate_crc32c_external_authority(
+            environment_receipt,
+            PINNED_CRC32C_PYTHON,
+            CANONICAL_REPOSITORY_ROOT / "scripts/lvef_c3_crc32c_worker.py",
+        )
+    except ProductionStageError as exc:
+        raise ProductionStageError(
+            "ENVIRONMENT_RECEIPT_LIVE_RUNTIME_MISMATCH"
+        ) from exc
+    if (
+        external_receipt != receipt
+        or bound_receipt_sha256() != expected_sha256
+    ):
+        raise ProductionStageError("ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH")
+
+    environment_commit = str(receipt["governing_commit"])
+    try:
+        repository = CANONICAL_REPOSITORY_ROOT.resolve(strict=True)
+    except OSError as exc:
+        raise ProductionStageError("CANONICAL_REPOSITORY_INVALID") from exc
+    if repository != CANONICAL_REPOSITORY_ROOT or not repository.is_dir():
+        raise ProductionStageError("CANONICAL_REPOSITORY_INVALID")
+    git_environment = {
+        "PATH": "/usr/bin:/bin",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    }
+
+    def git_check(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+        try:
+            return subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(repository),
+                    *arguments,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                env=git_environment,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ProductionStageError(
+                "ENVIRONMENT_AUTHORITY_ANCESTRY_UNAVAILABLE"
+            ) from exc
+
+    for commit in (environment_commit, scientific_governing_commit):
+        if git_check("cat-file", "-e", f"{commit}^{{commit}}").returncode != 0:
+            raise ProductionStageError(
+                "ENVIRONMENT_AUTHORITY_ANCESTRY_UNAVAILABLE"
+            )
+
+    if environment_commit == scientific_governing_commit:
+        relation, status = "EQUAL", "ENVIRONMENT_AUTHORITY_COMMIT_EQUAL"
+    else:
+        ancestry = git_check(
+            "merge-base",
+            "--is-ancestor",
+            environment_commit,
+            scientific_governing_commit,
+        )
+        if ancestry.returncode == 1:
+            raise ProductionStageError(
+                "ENVIRONMENT_AUTHORITY_COMMIT_NOT_ANCESTOR"
+            )
+        if ancestry.returncode != 0:
+            raise ProductionStageError(
+                "ENVIRONMENT_AUTHORITY_ANCESTRY_UNAVAILABLE"
+            )
+        relation, status = "ANCESTOR", "ENVIRONMENT_AUTHORITY_COMMIT_ANCESTOR"
+
+    return {
+        "status": status,
+        "environment_receipt": receipt,
+        "environment_receipt_sha256": observed_sha256,
+        "environment_authority_commit": environment_commit,
+        "scientific_governing_commit": scientific_governing_commit,
+        "environment_authority_relation": relation,
+    }
 
 
 def validate_checkpoint_and_environment(

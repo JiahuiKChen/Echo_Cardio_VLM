@@ -1027,12 +1027,43 @@ def _synthetic_hooks(
     )
 
 
-def test_exact_five_canary_end_to_end_reuses_production_functions() -> None:
+def test_exact_five_canary_end_to_end_reuses_production_functions(
+    monkeypatch: Any,
+) -> None:
     sealed = _sealed_exact_five_manifest()
     plan = _bound_scheduler_plan(sealed)
     calls: dict[str, int] = {}
     assert sealed["manifest"]["expected_object_count"] == 10
     assert sealed["manifest"]["expected_byte_total"] == 10 * SYNTHETIC_DICOM_SIZE
+
+    def validate_synthetic_environment_authority(
+        environment_receipt: Path,
+        *,
+        expected_environment_receipt_sha256: str,
+        scientific_governing_commit: str,
+    ) -> dict[str, Any]:
+        receipt = production_stages.load_json_object(
+            environment_receipt, "SYNTHETIC_ENVIRONMENT_RECEIPT"
+        )
+        assert preservation.sha256_file(environment_receipt) == (
+            expected_environment_receipt_sha256
+        )
+        assert scientific_governing_commit == COMMIT
+        calls["environment_authority_validation"] = 1
+        return {
+            "status": "ENVIRONMENT_AUTHORITY_COMMIT_EQUAL",
+            "environment_receipt": receipt,
+            "environment_receipt_sha256": expected_environment_receipt_sha256,
+            "environment_authority_commit": COMMIT,
+            "scientific_governing_commit": COMMIT,
+            "environment_authority_relation": "EQUAL",
+        }
+
+    monkeypatch.setattr(
+        production_stages,
+        "validate_environment_authority_for_scientific_commit",
+        validate_synthetic_environment_authority,
+    )
 
     result = integration.run_synthetic_integration(
         execution_state_path=ROOT / "configs/lvef_c3_execution_state_v1.yaml",
@@ -1048,6 +1079,7 @@ def test_exact_five_canary_end_to_end_reuses_production_functions() -> None:
         "cine_extraction": 1,
         "encoder_inference": 1,
         "preservation": 1,
+        "environment_authority_validation": 1,
     }
     assert result.completed_stages == scheduler.ORDERED_STAGE_IDS
     assert result.claim_ledger["status"] == "COMPLETE"
