@@ -15,10 +15,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import stat
 import subprocess
 import sys
+import time
 from typing import Any, Callable, Final, Mapping, Sequence
 
 # This process is preservation-only. Mask accelerators before any deferred
@@ -69,21 +71,38 @@ MANIFEST_PATH: Final = OWNER_PRIVATE_ROOT / "exact_five_manifest.restricted.json
 RUN_ID: Final = "lvef_c3_minimal_5907a1ac53b05036_e5ca24c4"
 RUN_ROOT: Final = PRODUCTION_ROOT / "minimal_canary_runs" / RUN_ID
 RECOVERY_ROOT: Final = OWNER_PRIVATE_ROOT / f"preservation_recovery_{RUN_ID}"
-RECOVERY_AUTHORITY_PATH: Final = (
+ATTEMPT_001_AUTHORITY_PATH: Final = (
     RECOVERY_ROOT / "preservation_recovery_authority.restricted.json"
 )
-RECOVERY_CLAIM_PATH: Final = (
+ATTEMPT_001_CLAIM_PATH: Final = (
     RECOVERY_ROOT / "preservation_recovery_submission_claim.restricted.json"
 )
-RECOVERY_SUBMISSION_PATH: Final = (
+ATTEMPT_001_SUBMISSION_PATH: Final = (
     RECOVERY_ROOT / "preservation_recovery_submission.aggregate_safe.json"
 )
-RECOVERY_TERMINAL_PATH: Final = (
+ATTEMPT_001_TERMINAL_PATH: Final = (
     RECOVERY_ROOT / "preservation_recovery_terminal.aggregate_safe.json"
 )
-RECOVERY_QSUB_STDOUT_PATH: Final = RECOVERY_ROOT / "qsub.stdout.restricted"
-RECOVERY_QSUB_STDERR_PATH: Final = RECOVERY_ROOT / "qsub.stderr.restricted"
-RECOVERY_QSUB_STATUS_PATH: Final = RECOVERY_ROOT / "qsub.exit_status.restricted"
+ATTEMPT_001_QSUB_STDOUT_PATH: Final = RECOVERY_ROOT / "qsub.stdout.restricted"
+ATTEMPT_001_QSUB_STDERR_PATH: Final = RECOVERY_ROOT / "qsub.stderr.restricted"
+ATTEMPT_001_QSUB_STATUS_PATH: Final = RECOVERY_ROOT / "qsub.exit_status.restricted"
+ATTEMPT_002_ROOT: Final = RECOVERY_ROOT / "submission_attempt_002"
+RECOVERY_AUTHORITY_PATH: Final = (
+    ATTEMPT_002_ROOT / "preservation_recovery_authority.restricted.json"
+)
+RECOVERY_CLAIM_PATH: Final = (
+    ATTEMPT_002_ROOT / "preservation_recovery_submission_claim.restricted.json"
+)
+RECOVERY_SUBMISSION_PATH: Final = (
+    ATTEMPT_002_ROOT / "preservation_recovery_submission.aggregate_safe.json"
+)
+RECOVERY_TERMINAL_PATH: Final = (
+    ATTEMPT_002_ROOT / "preservation_recovery_terminal.aggregate_safe.json"
+)
+RECOVERY_QSUB_STDOUT_PATH: Final = ATTEMPT_002_ROOT / "qsub.stdout.restricted"
+RECOVERY_QSUB_STDERR_PATH: Final = ATTEMPT_002_ROOT / "qsub.stderr.restricted"
+RECOVERY_QSUB_STATUS_PATH: Final = ATTEMPT_002_ROOT / "qsub.exit_status.restricted"
+RECOVERY_WORKER_LOG_PATH: Final = ATTEMPT_002_ROOT / "recovery_worker.log.restricted"
 
 STAGE_LEDGER_PATH: Final = RUN_ROOT / "minimal_canary_stage_ledger.restricted.json"
 ORIGINAL_TERMINAL_PATH: Final = (
@@ -110,16 +129,57 @@ FINALIZATION_PATH: Final = (
     RUN_ROOT / "minimal_canary_finalization_receipt.aggregate_safe.json"
 )
 
+PRESERVATION_MANIFEST_BYTES: Final = 431_817
+PRESERVATION_MANIFEST_SHA256: Final = (
+    "7b04baddb7c1b43b17be9a8a29f736aa71869622a9a4c75cfb8c065e362e14b0"
+)
+RECOVERY_BASE_IMPLEMENTATION_COMMIT: Final = (
+    "0661d46d66604580e49a3f59385335205415fdb3"
+)
+QSUB_REJECTION_CLASSIFICATION: Final = "QSUB_SCHEDULER_CONTEXT_MISSING"
+ATTEMPT_001_QSUB_STDERR: Final = (
+    b"\nUnable to initialize environment because of error: "
+    b"Please set the environment variable SGE_ROOT.\nExiting.\n"
+)
+ATTEMPT_001_QSUB_STDERR_SHA256: Final = (
+    "4514901da1f298e8485244e760767de8c28c7cc746932b164d6aae5f1cb9879b"
+)
+ATTEMPT_001_FROZEN_EVIDENCE: Final = {
+    "preservation_recovery_authority.restricted.json": {
+        "bytes": 1_792,
+        "sha256": "43a9a18910ac2305d5fda806f8cc48e34ae1bd4838fe309e51b896d39af844c3",
+    },
+    "preservation_recovery_submission_claim.restricted.json": {
+        "bytes": 1_303,
+        "sha256": "ccaab8a3d7dc787221e3b144344951c160810ef2397debc467a568a43960a938",
+    },
+    "qsub.stdout.restricted": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    "qsub.stderr.restricted": {
+        "bytes": 107,
+        "sha256": ATTEMPT_001_QSUB_STDERR_SHA256,
+    },
+    "qsub.exit_status.restricted": {
+        "bytes": 2,
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    },
+}
+
 RUNNER_PATH: Final = SCRIPT_ROOT / "scc_recover_lvef_c3_minimal_canary_preservation.sh"
 ORIGINAL_SCIENTIFIC_RUNNER_PATH: Final = (
     SCRIPT_ROOT / "scc_run_lvef_c3_minimal_canary.sh"
 )
 PRESERVATION_SCRIPT_PATH: Final = SCRIPT_ROOT / "preserve_lvef_c3_production_batch.py"
 FINALIZER_SCRIPT_PATH: Final = SCRIPT_ROOT / "finalize_lvef_c3_production.py"
-RECOVERY_JOB_NAME: Final = "lvef_c3_presrec_5907a1_e5ca"
+ATTEMPT_001_JOB_NAME: Final = "lvef_c3_presrec_5907a1_e5ca"
+RECOVERY_JOB_NAME: Final = "lvef_c3_presrec2_5907a1_e5ca"
 QSUB_PATH: Final = Path(
     "/usr/local/ogs-ge2011.11.p1/sge_root/bin/linux-x64/qsub"
 )
+QSTAT_PATH: Final = QSUB_PATH.with_name("qstat")
+CANONICAL_SGE_ROOT: Final = QSUB_PATH.parents[2]
 ECHOPRIME_PYTHON: Final = Path(
     "/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python"
 )
@@ -129,7 +189,30 @@ COMMIT_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 JOB_ID_RE: Final = re.compile(r"^[1-9][0-9]{0,19}$")
 SAFE_CODE_RE: Final = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 ALLOWED_UNTRACKED: Final = frozenset({".DS_Store", "docs/.DS_Store"})
-RECOVERY_AUTHORITY_KEYS: Final = frozenset(
+ATTEMPT_001_EVIDENCE_FILENAMES: Final = frozenset(
+    {
+        ATTEMPT_001_AUTHORITY_PATH.name,
+        ATTEMPT_001_CLAIM_PATH.name,
+        ATTEMPT_001_QSUB_STDOUT_PATH.name,
+        ATTEMPT_001_QSUB_STDERR_PATH.name,
+        ATTEMPT_001_QSUB_STATUS_PATH.name,
+    }
+)
+CONTROLLED_QSUB_ENVIRONMENT: Final = {
+    "PATH": "/usr/bin:/bin",
+    "CUDA_VISIBLE_DEVICES": "",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "LC_ALL": "C",
+}
+ATTEMPT_001_QSUB_ENVIRONMENT_NAMES: Final = tuple(
+    sorted(CONTROLLED_QSUB_ENVIRONMENT)
+)
+SCHEDULER_CONTEXT_NAMES: Final = (
+    "SGE_ROOT", "SGE_CELL", "SGE_QMASTER_PORT", "HOME", "USER", "LOGNAME", "SHELL"
+)
+ATTEMPT_001_AUTHORITY_KEYS: Final = frozenset(
     {
         "schema_version", "artifact_type", "status",
         "original_scientific_governing_commit", "recovery_implementation_commit",
@@ -146,7 +229,7 @@ RECOVERY_AUTHORITY_KEYS: Final = frozenset(
         "confirmatory_performance_access", "production_continuation",
     }
 )
-RECOVERY_CLAIM_KEYS: Final = frozenset(
+ATTEMPT_001_CLAIM_KEYS: Final = frozenset(
     {
         "schema_version", "artifact_type", "status", "recovery_authority_sha256",
         "original_scientific_governing_commit", "recovery_implementation_commit",
@@ -155,6 +238,62 @@ RECOVERY_CLAIM_KEYS: Final = frozenset(
         "manifest_semantic_sha256", "original_scheduler_job_id",
         "original_terminal_receipt_sha256", "scheduler_submission_count",
         "scientific_stage_reruns", "cpu_only", "cloud_requests", "dicom_reads",
+        "extraction_operations", "gpu_execution", "embedding_generation",
+        "model_fitting", "prediction_generation",
+        "confirmatory_performance_access", "production_continuation",
+    }
+)
+RECOVERY_AUTHORITY_KEYS: Final = frozenset(
+    {
+        "schema_version", "artifact_type", "status", "submission_attempt",
+        "original_scientific_governing_commit", "recovery_base_implementation_commit",
+        "recovery_implementation_commit", "environment_authority_commit",
+        "environment_receipt_sha256", "environment_to_scientific_commit_relation",
+        "manifest_file_sha256", "manifest_semantic_sha256",
+        "preservation_manifest_bytes", "preservation_manifest_sha256",
+        "original_scheduler_job_id", "original_terminal_receipt_sha256",
+        "attempt_001_status", "attempt_001_scheduler_job_id",
+        "attempt_001_qsub_exit_status", "qsub_rejection_classification",
+        "attempt_001_evidence", "attempt_001_evidence_set_sha256",
+        "attempt_001_qsub_argv", "attempt_001_qsub_environment_variable_names",
+        "attempt_002_qsub_argv", "attempt_002_qsub_argv_sha256",
+        "attempt_002_qsub_environment_variable_names",
+        "attempt_002_qsub_environment_names_sha256",
+        "attempt_002_qsub_environment_sha256",
+        "active_matching_scheduler_jobs", "preservation_script_sha256",
+        "finalizer_script_sha256", "recovery_worker_sha256",
+        "recovery_runner_sha256", "original_scientific_runner_sha256",
+        "scheduler_submission_maximum", "scientific_stage_reruns", "cpu_only",
+        "created_at_utc", "cloud_requests", "dicom_reads",
+        "extraction_operations", "gpu_execution", "embedding_generation",
+        "model_fitting", "prediction_generation",
+        "confirmatory_performance_access", "production_continuation",
+    }
+)
+RECOVERY_CLAIM_KEYS: Final = frozenset(
+    {
+        "schema_version", "artifact_type", "status", "submission_attempt",
+        "recovery_authority_sha256", "attempt_001_evidence_set_sha256",
+        "qsub_rejection_classification", "original_scientific_governing_commit",
+        "recovery_base_implementation_commit", "recovery_implementation_commit",
+        "manifest_file_sha256", "manifest_semantic_sha256",
+        "preservation_manifest_sha256", "scheduler_submission_maximum",
+        "attempt_002_qsub_environment_sha256",
+        "scientific_stage_reruns", "cpu_only", "cloud_requests", "dicom_reads",
+        "extraction_operations", "gpu_execution", "embedding_generation",
+        "model_fitting", "prediction_generation",
+        "confirmatory_performance_access", "production_continuation",
+    }
+)
+RECOVERY_SUBMISSION_KEYS: Final = frozenset(
+    {
+        "schema_version", "artifact_type", "status", "submission_attempt",
+        "recovery_authority_sha256", "attempt_001_evidence_set_sha256",
+        "qsub_rejection_classification", "qsub_exit_status",
+        "qsub_stdout_bytes", "qsub_stdout_sha256", "qsub_stderr_bytes",
+        "qsub_stderr_sha256", "scheduler_job_id", "scheduler_submission_count",
+        "captured_at_utc", "scientific_stage_reruns", "cpu_only",
+        "cloud_requests", "dicom_reads",
         "extraction_operations", "gpu_execution", "embedding_generation",
         "model_fitting", "prediction_generation",
         "confirmatory_performance_access", "production_continuation",
@@ -420,6 +559,8 @@ class PreservedState:
     original_stage_ledger_sha256: str
     original_pooling_ledger_sha256: str
     original_observation_sha256: str
+    attempt_001_evidence: Mapping[str, Mapping[str, Any]]
+    attempt_001_evidence_set_sha256: str
 
 
 def _environment_receipt() -> Path:
@@ -818,15 +959,17 @@ def validate_scientific_aggregates(
         ECHOPRIME_ROOT / "study_manifest.restricted.csv",
         preservation.STUDY_MANIFEST_HEADER,
     )
-    recomputed = preservation.mean_pool_study_embeddings(
-        clip_embeddings=clip_array,
-        clip_rows=clip_rows,
-        study_rows=study_rows,
-    )
-    if not np.array_equal(recomputed, study_array):
-        _fail("RECOVERY_STUDY_POOLING_RECOMPUTATION_MISMATCH")
-    if plan["batches"][0].get("n_studies") != 5:
-        _fail("RECOVERY_PLAN_STUDY_COUNT_MISMATCH")
+    if (
+        len(clip_rows) != 230
+        or len(study_rows) != 5
+        or {row.get("embedding_idx") for row in clip_rows}
+        != {str(index) for index in range(230)}
+        or {row.get("study_idx") for row in study_rows}
+        != {str(index) for index in range(5)}
+        or any(row.get("write_ok") not in {"true", "True"} for row in clip_rows)
+        or plan["batches"][0].get("n_studies") != 5
+    ):
+        _fail("RECOVERY_EMBEDDING_MANIFEST_MISMATCH")
 
 
 def scheduler_binding_sha256(plan_sha: str) -> str:
@@ -851,6 +994,162 @@ def scheduler_binding_sha256(plan_sha: str) -> str:
     )
 
 
+def _git_blob_sha256(commit: str, relative_path: str) -> str:
+    completed = subprocess.run(
+        ["/usr/bin/git", "show", f"{commit}:{relative_path}"],
+        cwd=REPOSITORY_ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+        },
+    )
+    if completed.returncode:
+        _fail("RECOVERY_ATTEMPT_001_CODE_AUTHORITY_UNAVAILABLE")
+    return sha256_bytes(completed.stdout)
+
+
+def indexed_argv(command: Sequence[str]) -> list[dict[str, Any]]:
+    return [
+        {"index": index, "value": value}
+        for index, value in enumerate(command)
+    ]
+
+
+def attempt_001_qsub_command() -> list[str]:
+    return [
+        str(QSUB_PATH), "-terse", "-r", "n", "-P", "mimicecho",
+        "-N", ATTEMPT_001_JOB_NAME, "-j", "y",
+        "-o", str(RECOVERY_ROOT), "-l", "h_rt=2:00:00",
+        "-pe", "omp", "4", "-l", "mem_per_core=8G", "-b", "y",
+        str(ECHOPRIME_PYTHON), "-I", "-B", "-X",
+        "pycache_prefix=/dev/null/lvef_c3_recovery",
+        str(Path(__file__).resolve()), "--run-recovery-worker",
+    ]
+
+
+def _validate_attempt_001_authority(
+    authority: Mapping[str, Any], claim: Mapping[str, Any], authority_sha: str
+) -> None:
+    expected_script_hashes = {
+        "preservation_script_sha256": _git_blob_sha256(
+            RECOVERY_BASE_IMPLEMENTATION_COMMIT,
+            "scripts/preserve_lvef_c3_production_batch.py",
+        ),
+        "finalizer_script_sha256": _git_blob_sha256(
+            RECOVERY_BASE_IMPLEMENTATION_COMMIT,
+            "scripts/finalize_lvef_c3_production.py",
+        ),
+        "recovery_worker_sha256": _git_blob_sha256(
+            RECOVERY_BASE_IMPLEMENTATION_COMMIT,
+            "scripts/lvef_c3_minimal_canary_preservation_recovery.py",
+        ),
+        "recovery_runner_sha256": _git_blob_sha256(
+            RECOVERY_BASE_IMPLEMENTATION_COMMIT,
+            "scripts/scc_recover_lvef_c3_minimal_canary_preservation.sh",
+        ),
+        "original_scientific_runner_sha256": _git_blob_sha256(
+            RECOVERY_BASE_IMPLEMENTATION_COMMIT,
+            "scripts/scc_run_lvef_c3_minimal_canary.sh",
+        ),
+    }
+    fixed = {
+        "original_scientific_governing_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+        "recovery_implementation_commit": RECOVERY_BASE_IMPLEMENTATION_COMMIT,
+        "environment_authority_commit": ENVIRONMENT_AUTHORITY_COMMIT,
+        "environment_receipt_sha256": ENVIRONMENT_RECEIPT_SHA256,
+        "environment_to_scientific_commit_relation": "ANCESTOR",
+        "manifest_file_sha256": MANIFEST_FILE_SHA256,
+        "manifest_semantic_sha256": MANIFEST_SEMANTIC_SHA256,
+        "original_scheduler_job_id": ORIGINAL_JOB_ID,
+        "original_terminal_receipt_sha256": ORIGINAL_TERMINAL_SHA256,
+        "scheduler_submission_count": 1,
+        "scientific_stage_reruns": 0,
+        "cpu_only": True,
+        **effect_zeros(),
+        "production_continuation": False,
+    }
+    try:
+        created = datetime.fromisoformat(str(authority.get("created_at_utc")))
+    except ValueError as exc:
+        raise RecoveryError("RECOVERY_ATTEMPT_001_AUTHORITY_INVALID") from exc
+    if (
+        set(authority) != ATTEMPT_001_AUTHORITY_KEYS
+        or authority.get("schema_version") != 1
+        or authority.get("artifact_type")
+        != "lvef_c3_minimal_canary_preservation_recovery_authority_v1"
+        or authority.get("status") != "PASS_PRESERVATION_RECOVERY_AUTHORITY"
+        or created.tzinfo is None
+        or created.utcoffset() != timezone.utc.utcoffset(created)
+        or any(authority.get(key) != value for key, value in fixed.items())
+        or any(
+            authority.get(key) != value
+            for key, value in expected_script_hashes.items()
+        )
+        or set(claim) != ATTEMPT_001_CLAIM_KEYS
+        or claim.get("schema_version") != 1
+        or claim.get("artifact_type")
+        != "lvef_c3_preservation_recovery_submission_claim_v1"
+        or claim.get("status") != "PREPARED"
+        or claim.get("recovery_authority_sha256") != authority_sha
+        or any(claim.get(key) != value for key, value in fixed.items())
+    ):
+        _fail("RECOVERY_ATTEMPT_001_AUTHORITY_INVALID")
+
+
+def validate_attempt_001_evidence(
+    *, allow_attempt_002: bool,
+) -> tuple[dict[str, dict[str, Any]], str]:
+    validate_private_directory(RECOVERY_ROOT)
+    expected = set(ATTEMPT_001_EVIDENCE_FILENAMES)
+    if allow_attempt_002:
+        expected.add(ATTEMPT_002_ROOT.name)
+    observed = {entry.name for entry in os.scandir(RECOVERY_ROOT)}
+    if observed != expected:
+        _fail("RECOVERY_ATTEMPT_001_TOPOLOGY_INVALID")
+    if allow_attempt_002:
+        validate_private_directory(ATTEMPT_002_ROOT)
+    payloads = {
+        path.name: read_regular(path, private=True)
+        for path in (
+            ATTEMPT_001_AUTHORITY_PATH,
+            ATTEMPT_001_CLAIM_PATH,
+            ATTEMPT_001_QSUB_STDOUT_PATH,
+            ATTEMPT_001_QSUB_STDERR_PATH,
+            ATTEMPT_001_QSUB_STATUS_PATH,
+        )
+    }
+    if (
+        payloads[ATTEMPT_001_QSUB_STDOUT_PATH.name] != b""
+        or payloads[ATTEMPT_001_QSUB_STATUS_PATH.name] != b"1\n"
+        or payloads[ATTEMPT_001_QSUB_STDERR_PATH.name]
+        != ATTEMPT_001_QSUB_STDERR
+        or len(ATTEMPT_001_QSUB_STDERR) != 107
+        or sha256_bytes(ATTEMPT_001_QSUB_STDERR)
+        != ATTEMPT_001_QSUB_STDERR_SHA256
+        or os.path.lexists(ATTEMPT_001_SUBMISSION_PATH)
+        or os.path.lexists(ATTEMPT_001_TERMINAL_PATH)
+    ):
+        _fail("RECOVERY_ATTEMPT_001_REJECTION_EVIDENCE_INVALID")
+    authority = load_json(ATTEMPT_001_AUTHORITY_PATH, private=True)
+    claim = load_json(ATTEMPT_001_CLAIM_PATH, private=True)
+    authority_sha = sha256_bytes(payloads[ATTEMPT_001_AUTHORITY_PATH.name])
+    _validate_attempt_001_authority(authority, claim, authority_sha)
+    records = {
+        name: {"bytes": len(payload), "sha256": sha256_bytes(payload)}
+        for name, payload in sorted(payloads.items())
+    }
+    if records != ATTEMPT_001_FROZEN_EVIDENCE:
+        _fail("RECOVERY_ATTEMPT_001_FROZEN_HASH_MISMATCH")
+    return records, sha256_bytes(canonical_payload(records))
+
+
 def validate_preserved_state(*, require_recovery_absent: bool) -> PreservedState:
     implementation = validate_repository_authority()
     observation = find_original_observation()
@@ -861,8 +1160,16 @@ def validate_preserved_state(*, require_recovery_absent: bool) -> PreservedState
     manifest_bytes, manifest_sha = validate_preservation_manifest_replay(
         expect_completion_outputs=False
     )
+    if (
+        manifest_bytes != PRESERVATION_MANIFEST_BYTES
+        or manifest_sha != PRESERVATION_MANIFEST_SHA256
+    ):
+        _fail("RECOVERY_PRESERVATION_MANIFEST_IDENTITY_MISMATCH")
     validate_scientific_aggregates(plan, runtime)
-    if require_recovery_absent and os.path.lexists(RECOVERY_ROOT):
+    attempt_001, attempt_001_set_sha = validate_attempt_001_evidence(
+        allow_attempt_002=not require_recovery_absent
+    )
+    if require_recovery_absent and os.path.lexists(ATTEMPT_002_ROOT):
         _fail("RECOVERY_ALREADY_CLAIMED")
     return PreservedState(
         implementation_commit=implementation,
@@ -881,6 +1188,8 @@ def validate_preserved_state(*, require_recovery_absent: bool) -> PreservedState
         original_stage_ledger_sha256=stage_ledger_sha,
         original_pooling_ledger_sha256=pooling_ledger_sha,
         original_observation_sha256=sha256_file(observation),
+        attempt_001_evidence=attempt_001,
+        attempt_001_evidence_set_sha256=attempt_001_set_sha,
     )
 
 
@@ -897,10 +1206,152 @@ def effect_zeros() -> dict[str, Any]:
     }
 
 
-def validate_installation() -> dict[str, Any]:
+def _safe_environment_text(value: str) -> bool:
+    return bool(value) and "\x00" not in value and "\n" not in value and "\r" not in value
+
+
+def build_qsub_environment(
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    observed = os.environ if source is None else source
+    sge_root = observed.get("SGE_ROOT")
+    raw_root_parts = sge_root.split("/") if isinstance(sge_root, str) else []
+    if (
+        not isinstance(sge_root, str)
+        or not _safe_environment_text(sge_root)
+        or not Path(sge_root).is_absolute()
+        or any(part in {".", ".."} for part in raw_root_parts)
+        or Path(sge_root) != CANONICAL_SGE_ROOT
+        or QSUB_PATH != CANONICAL_SGE_ROOT / "bin/linux-x64/qsub"
+        or QSTAT_PATH != CANONICAL_SGE_ROOT / "bin/linux-x64/qstat"
+    ):
+        _fail("RECOVERY_SGE_ROOT_AUTHORITY_INVALID")
+    if os.path.lexists(CANONICAL_SGE_ROOT):
+        _require_nonsymlink_components(CANONICAL_SGE_ROOT)
+    result = dict(CONTROLLED_QSUB_ENVIRONMENT)
+    # Canonicalize the one accepted harmless representation difference (a
+    # trailing slash) so the exact environment digest is deterministic.
+    result["SGE_ROOT"] = str(CANONICAL_SGE_ROOT)
+    cell = observed.get("SGE_CELL")
+    if cell is not None:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", cell) is None:
+            _fail("RECOVERY_SCHEDULER_CONTEXT_INVALID")
+        result["SGE_CELL"] = cell
+    port = observed.get("SGE_QMASTER_PORT")
+    if port is not None:
+        if (
+            re.fullmatch(r"[1-9][0-9]{0,4}", port) is None
+            or int(port) > 65_535
+        ):
+            _fail("RECOVERY_SCHEDULER_CONTEXT_INVALID")
+        result["SGE_QMASTER_PORT"] = port
+    try:
+        account = pwd.getpwuid(os.geteuid())
+    except (KeyError, OSError) as exc:
+        raise RecoveryError("RECOVERY_SCHEDULER_IDENTITY_INVALID") from exc
+    for name in ("HOME", "SHELL"):
+        value = observed.get(name)
+        if value is None:
+            _fail("RECOVERY_SCHEDULER_CONTEXT_MISSING")
+        path = Path(value)
+        if (
+            not _safe_environment_text(value)
+            or not path.is_absolute()
+            or Path(os.path.abspath(path)) != path
+        ):
+            _fail("RECOVERY_SCHEDULER_CONTEXT_INVALID")
+        result[name] = value
+    for name in ("USER", "LOGNAME"):
+        value = observed.get(name)
+        if value is None:
+            _fail("RECOVERY_SCHEDULER_CONTEXT_MISSING")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value) is None:
+            _fail("RECOVERY_SCHEDULER_CONTEXT_INVALID")
+        result[name] = value
+    if result["USER"] != result["LOGNAME"]:
+        _fail("RECOVERY_SCHEDULER_CONTEXT_CONFLICT")
+    if (
+        result["USER"] != account.pw_name
+        or Path(result["HOME"]) != Path(account.pw_dir)
+        or Path(result["SHELL"]) != Path(account.pw_shell)
+    ):
+        _fail("RECOVERY_SCHEDULER_IDENTITY_INVALID")
+    allowed = set(CONTROLLED_QSUB_ENVIRONMENT) | set(SCHEDULER_CONTEXT_NAMES)
+    prohibited_fragments = ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "GOOGLE", "CLOUDSDK")
+    if set(result) - allowed or any(
+        any(fragment in name.upper() for fragment in prohibited_fragments)
+        or name in {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT"}
+        for name in result
+    ):
+        _fail("RECOVERY_QSUB_ENVIRONMENT_NOT_CLOSED")
+    return result
+
+
+def _validate_scheduler_tools() -> None:
+    for path in (QSUB_PATH, QSTAT_PATH):
+        _require_nonsymlink_components(path)
+        if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+            _fail("RECOVERY_SCHEDULER_TOOL_AUTHORITY_INVALID")
+
+
+def revalidate_attempt_001_snapshot(state: PreservedState) -> None:
+    evidence, evidence_set_sha = validate_attempt_001_evidence(
+        allow_attempt_002=True
+    )
+    if (
+        evidence != state.attempt_001_evidence
+        or evidence_set_sha != state.attempt_001_evidence_set_sha256
+    ):
+        _fail("RECOVERY_ATTEMPT_001_IMMUTABILITY_MISMATCH")
+
+
+def validate_no_active_recovery_jobs(
+    environment: Mapping[str, str],
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> int:
+    import xml.etree.ElementTree as element_tree
+
+    completed = runner(
+        [str(QSTAT_PATH), "-xml", "-u", environment["USER"]],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=dict(environment),
+    )
+    stdout = bytes(completed.stdout)
+    if (
+        completed.returncode != 0
+        or len(stdout) > 4 * 1024 * 1024
+        or b"<!DOCTYPE" in stdout.upper()
+        or b"<!ENTITY" in stdout.upper()
+    ):
+        _fail("RECOVERY_ACTIVE_JOB_CHECK_FAILED")
+    try:
+        root = element_tree.fromstring(stdout)
+    except element_tree.ParseError as exc:
+        raise RecoveryError("RECOVERY_ACTIVE_JOB_CHECK_FAILED") from exc
+    names = [
+        (element.text or "")
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "JB_name"
+    ]
+    matching = sum(
+        name in {ATTEMPT_001_JOB_NAME, RECOVERY_JOB_NAME}
+        for name in names
+    )
+    if matching:
+        _fail("RECOVERY_ACTIVE_MATCHING_JOB_EXISTS")
+    return 0
+
+
+def validate_installation(
+    *, environment: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     state = validate_preserved_state(require_recovery_absent=True)
-    if QSUB_PATH.is_symlink() or not QSUB_PATH.is_file() or not os.access(QSUB_PATH, os.X_OK):
-        _fail("RECOVERY_QSUB_AUTHORITY_INVALID")
+    _validate_scheduler_tools()
+    qsub_environment = build_qsub_environment(environment)
     try:
         resolved_python = ECHOPRIME_PYTHON.resolve(strict=True)
     except OSError as exc:
@@ -911,12 +1362,22 @@ def validate_installation() -> dict[str, Any]:
         "status": "PASS_PRESERVATION_RECOVERY_INSTALLATION",
         "implementation_commit": state.implementation_commit,
         "environment_relation": state.environment_relation,
+        "qsub_environment_variable_names": sorted(qsub_environment),
+        "failed_submission_attempt_001_evidence": "PASS",
         **effect_zeros(),
     }
 
 
-def preflight() -> dict[str, Any]:
+def preflight(
+    *, environment: Mapping[str, str] | None = None,
+    qstat_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> dict[str, Any]:
     state = validate_preserved_state(require_recovery_absent=True)
+    _validate_scheduler_tools()
+    qsub_environment = build_qsub_environment(environment)
+    active = validate_no_active_recovery_jobs(
+        qsub_environment, runner=qstat_runner
+    )
     return {
         "status": "PASS_PRESERVATION_RECOVERY_PREFLIGHT",
         "implementation_commit": state.implementation_commit,
@@ -925,24 +1386,59 @@ def preflight() -> dict[str, Any]:
         "preservation_content_audit": "PASS",
         "preservation_manifest_sha256": state.preservation_manifest_sha256,
         "preservation_manifest_bytes": state.preservation_manifest_bytes,
+        "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
+        "failed_submission_attempt_001_evidence": "PASS",
+        "active_matching_scheduler_jobs": active,
         **effect_zeros(),
     }
 
 
-def recovery_authority(state: PreservedState) -> dict[str, Any]:
+def _canonical_value_sha256(value: Any) -> str:
+    return sha256_bytes(canonical_payload({"value": value}))
+
+
+def recovery_authority(
+    state: PreservedState,
+    *, command: Sequence[str], environment: Mapping[str, str],
+) -> dict[str, Any]:
+    attempt_001_argv = indexed_argv(attempt_001_qsub_command())
+    attempt_002_argv = indexed_argv(command)
+    closed_environment = dict(sorted(environment.items()))
+    names = sorted(closed_environment)
+    environment_sha = _canonical_value_sha256(closed_environment)
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_minimal_canary_preservation_recovery_authority_v1",
-        "status": "PASS_PRESERVATION_RECOVERY_AUTHORITY",
+        "artifact_type": "lvef_c3_preservation_recovery_attempt_002_authority_v1",
+        "status": "PASS_PRESERVATION_RECOVERY_ATTEMPT_002_AUTHORITY",
+        "submission_attempt": 2,
         "original_scientific_governing_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+        "recovery_base_implementation_commit": RECOVERY_BASE_IMPLEMENTATION_COMMIT,
         "recovery_implementation_commit": state.implementation_commit,
         "environment_authority_commit": ENVIRONMENT_AUTHORITY_COMMIT,
         "environment_receipt_sha256": ENVIRONMENT_RECEIPT_SHA256,
         "environment_to_scientific_commit_relation": state.environment_relation,
         "manifest_file_sha256": MANIFEST_FILE_SHA256,
         "manifest_semantic_sha256": MANIFEST_SEMANTIC_SHA256,
+        "preservation_manifest_bytes": PRESERVATION_MANIFEST_BYTES,
+        "preservation_manifest_sha256": PRESERVATION_MANIFEST_SHA256,
         "original_scheduler_job_id": ORIGINAL_JOB_ID,
         "original_terminal_receipt_sha256": ORIGINAL_TERMINAL_SHA256,
+        "attempt_001_status": "REJECTED_PRE_JOB",
+        "attempt_001_scheduler_job_id": "NOT_ASSIGNED",
+        "attempt_001_qsub_exit_status": 1,
+        "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
+        "attempt_001_evidence": state.attempt_001_evidence,
+        "attempt_001_evidence_set_sha256": state.attempt_001_evidence_set_sha256,
+        "attempt_001_qsub_argv": attempt_001_argv,
+        "attempt_001_qsub_environment_variable_names": list(
+            ATTEMPT_001_QSUB_ENVIRONMENT_NAMES
+        ),
+        "attempt_002_qsub_argv": attempt_002_argv,
+        "attempt_002_qsub_argv_sha256": _canonical_value_sha256(attempt_002_argv),
+        "attempt_002_qsub_environment_variable_names": names,
+        "attempt_002_qsub_environment_names_sha256": _canonical_value_sha256(names),
+        "attempt_002_qsub_environment_sha256": environment_sha,
+        "active_matching_scheduler_jobs": 0,
         "preservation_script_sha256": sha256_file(PRESERVATION_SCRIPT_PATH),
         "finalizer_script_sha256": sha256_file(FINALIZER_SCRIPT_PATH),
         "recovery_worker_sha256": sha256_file(Path(__file__).resolve()),
@@ -950,7 +1446,7 @@ def recovery_authority(state: PreservedState) -> dict[str, Any]:
         "original_scientific_runner_sha256": sha256_file(
             ORIGINAL_SCIENTIFIC_RUNNER_PATH
         ),
-        "scheduler_submission_count": 1,
+        "scheduler_submission_maximum": 1,
         "scientific_stage_reruns": 0,
         "cpu_only": True,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -959,32 +1455,41 @@ def recovery_authority(state: PreservedState) -> dict[str, Any]:
     }
 
 
-def create_submission_claim(state: PreservedState) -> None:
-    mkdir_private_no_clobber(RECOVERY_ROOT)
+def create_submission_claim(
+    state: PreservedState,
+    *, command: Sequence[str], environment: Mapping[str, str],
+) -> None:
+    mkdir_private_no_clobber(ATTEMPT_002_ROOT)
     authority_sha = write_json_no_clobber(
-        RECOVERY_AUTHORITY_PATH, recovery_authority(state)
+        RECOVERY_AUTHORITY_PATH,
+        recovery_authority(
+            state, command=command, environment=environment
+        ),
     )
     write_json_no_clobber(
         RECOVERY_CLAIM_PATH,
         {
             "schema_version": 1,
-            "artifact_type": "lvef_c3_preservation_recovery_submission_claim_v1",
+            "artifact_type": "lvef_c3_preservation_recovery_attempt_002_claim_v1",
             "status": "PREPARED",
+            "submission_attempt": 2,
             "recovery_authority_sha256": authority_sha,
+            "attempt_001_evidence_set_sha256": state.attempt_001_evidence_set_sha256,
+            "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
             "original_scientific_governing_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+            "recovery_base_implementation_commit": RECOVERY_BASE_IMPLEMENTATION_COMMIT,
             "recovery_implementation_commit": state.implementation_commit,
-            "environment_authority_commit": ENVIRONMENT_AUTHORITY_COMMIT,
-            "environment_receipt_sha256": ENVIRONMENT_RECEIPT_SHA256,
-            "environment_to_scientific_commit_relation": state.environment_relation,
             "manifest_file_sha256": MANIFEST_FILE_SHA256,
             "manifest_semantic_sha256": MANIFEST_SEMANTIC_SHA256,
-            "original_scheduler_job_id": ORIGINAL_JOB_ID,
-            "original_terminal_receipt_sha256": ORIGINAL_TERMINAL_SHA256,
-            "scheduler_submission_count": 1,
+            "preservation_manifest_sha256": PRESERVATION_MANIFEST_SHA256,
+            "attempt_002_qsub_environment_sha256": (
+                _canonical_value_sha256(dict(sorted(environment.items())))
+            ),
+            "scheduler_submission_maximum": 1,
             "scientific_stage_reruns": 0,
             "cpu_only": True,
-            "production_continuation": False,
             **effect_zeros(),
+            "production_continuation": False,
         },
     )
 
@@ -993,32 +1498,35 @@ def qsub_command() -> list[str]:
     return [
         str(QSUB_PATH), "-terse", "-r", "n", "-P", "mimicecho",
         "-N", RECOVERY_JOB_NAME, "-j", "y",
-        "-o", str(RECOVERY_ROOT), "-l", "h_rt=2:00:00",
+        "-o", str(RECOVERY_WORKER_LOG_PATH), "-l", "h_rt=2:00:00",
         "-pe", "omp", "4", "-l", "mem_per_core=8G", "-b", "y",
-        str(ECHOPRIME_PYTHON), "-I", "-B", "-X", "pycache_prefix=/dev/null/lvef_c3_recovery",
+        str(ECHOPRIME_PYTHON), "-I", "-B", "-X",
+        "pycache_prefix=/dev/null/lvef_c3_recovery",
         str(Path(__file__).resolve()), "--run-recovery-worker",
     ]
 
 
 def submit_recovery(
-    *, runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    *, environment: Mapping[str, str] | None = None,
+    qstat_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> dict[str, Any]:
     state = validate_preserved_state(require_recovery_absent=True)
-    create_submission_claim(state)
+    _validate_scheduler_tools()
+    qsub_environment = build_qsub_environment(environment)
+    validate_no_active_recovery_jobs(qsub_environment, runner=qstat_runner)
+    command = qsub_command()
+    create_submission_claim(
+        state, command=command, environment=qsub_environment
+    )
+    revalidate_attempt_001_snapshot(state)
     completed = runner(
-        qsub_command(),
+        command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "CUDA_VISIBLE_DEVICES": "",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "LC_ALL": "C",
-        },
+        env=qsub_environment,
     )
     stdout = bytes(completed.stdout)
     stderr = bytes(completed.stderr)
@@ -1027,6 +1535,7 @@ def submit_recovery(
     write_bytes_no_clobber(
         RECOVERY_QSUB_STATUS_PATH, f"{completed.returncode}\n".encode("ascii")
     )
+    revalidate_attempt_001_snapshot(state)
     if completed.returncode != 0:
         _fail("RECOVERY_QSUB_PROCESS_FAILED")
     if re.fullmatch(rb"[1-9][0-9]{0,19}(?:\n)?", stdout) is None:
@@ -1034,9 +1543,12 @@ def submit_recovery(
     job_id = stdout.rstrip(b"\n").decode("ascii")
     submission = {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_preservation_recovery_submission_v1",
+        "artifact_type": "lvef_c3_preservation_recovery_attempt_002_submission_v1",
         "status": "PASS_NUMERIC_QSUB_ID_CAPTURED",
+        "submission_attempt": 2,
         "recovery_authority_sha256": sha256_file(RECOVERY_AUTHORITY_PATH),
+        "attempt_001_evidence_set_sha256": state.attempt_001_evidence_set_sha256,
+        "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
         "qsub_exit_status": 0,
         "qsub_stdout_bytes": len(stdout),
         "qsub_stdout_sha256": sha256_bytes(stdout),
@@ -1045,7 +1557,10 @@ def submit_recovery(
         "scheduler_job_id": job_id,
         "scheduler_submission_count": 1,
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+        "scientific_stage_reruns": 0,
+        "cpu_only": True,
         **effect_zeros(),
+        "production_continuation": False,
     }
     write_json_no_clobber(RECOVERY_SUBMISSION_PATH, submission)
     return {
@@ -1054,6 +1569,124 @@ def submit_recovery(
         "scheduler_submissions": 1,
         **effect_zeros(),
     }
+
+
+def _validate_attempt_002_worker_topology() -> bool:
+    required_evidence = {
+        RECOVERY_QSUB_STDOUT_PATH.name,
+        RECOVERY_QSUB_STDERR_PATH.name,
+        RECOVERY_QSUB_STATUS_PATH.name,
+        RECOVERY_SUBMISSION_PATH.name,
+    }
+    required_fixed = {
+        RECOVERY_AUTHORITY_PATH.name,
+        RECOVERY_CLAIM_PATH.name,
+    }
+    allowed = required_fixed | required_evidence | {
+        RECOVERY_WORKER_LOG_PATH.name
+    }
+    entries = list(os.scandir(ATTEMPT_002_ROOT))
+    observed = {entry.name for entry in entries}
+    if not required_fixed <= observed:
+        _fail("RECOVERY_ATTEMPT_002_TOPOLOGY_INVALID")
+    transient_names: set[str] = set()
+    for name in observed - allowed:
+        matches_writer_partial = any(
+            re.fullmatch(
+                rf"\.{re.escape(evidence_name)}\.partial\.[1-9][0-9]*",
+                name,
+            )
+            is not None
+            for evidence_name in required_evidence
+        )
+        if not matches_writer_partial:
+            _fail("RECOVERY_ATTEMPT_002_TOPOLOGY_INVALID")
+        transient_names.add(name)
+    for entry in entries:
+        if entry.name in transient_names:
+            # Do not inspect a writer staging DirEntry: the submitter may
+            # unlink it immediately after scandir as part of atomic promotion.
+            # A persistent lookalike can only exhaust the bounded wait.
+            continue
+        path = Path(entry.path)
+        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+            _fail("RECOVERY_ATTEMPT_002_TOPOLOGY_INVALID")
+        if path != RECOVERY_WORKER_LOG_PATH:
+            read_regular(path, private=True)
+    return required_evidence <= observed and not transient_names
+
+
+def validate_attempt_002_submission_for_worker(
+    scheduler_job_id: str,
+    *,
+    expected_attempt_001_evidence_set_sha256: str | None = None,
+    wait_cycles: int = 100,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Bind the worker to the one successful attempt-002 qsub receipt.
+
+    Grid Engine may start the accepted job before the submitter has atomically
+    recorded qsub's return values.  A short bounded read-only wait closes that
+    race; it never creates evidence or retries a scheduler submission.
+    """
+    if JOB_ID_RE.fullmatch(scheduler_job_id) is None:
+        _fail("RECOVERY_SCHEDULER_JOB_ID_INVALID")
+    if not isinstance(wait_cycles, int) or isinstance(wait_cycles, bool) or wait_cycles < 1:
+        _fail("RECOVERY_SUBMISSION_WAIT_INVALID")
+    for cycle in range(wait_cycles):
+        if _validate_attempt_002_worker_topology():
+            break
+        if cycle + 1 < wait_cycles:
+            sleeper(0.1)
+    else:
+        _fail("RECOVERY_ATTEMPT_002_SUBMISSION_EVIDENCE_MISSING")
+
+    stdout = read_regular(RECOVERY_QSUB_STDOUT_PATH, private=True)
+    stderr = read_regular(RECOVERY_QSUB_STDERR_PATH, private=True)
+    status = read_regular(RECOVERY_QSUB_STATUS_PATH, private=True)
+    submission = load_json(RECOVERY_SUBMISSION_PATH, private=True)
+    try:
+        captured = datetime.fromisoformat(str(submission.get("captured_at_utc")))
+    except ValueError as exc:
+        raise RecoveryError("RECOVERY_ATTEMPT_002_SUBMISSION_INVALID") from exc
+    expected_zeros = effect_zeros()
+    evidence_set_sha = submission.get("attempt_001_evidence_set_sha256")
+    if (
+        set(submission) != RECOVERY_SUBMISSION_KEYS
+        or submission.get("schema_version") != 1
+        or submission.get("artifact_type")
+        != "lvef_c3_preservation_recovery_attempt_002_submission_v1"
+        or submission.get("status") != "PASS_NUMERIC_QSUB_ID_CAPTURED"
+        or submission.get("submission_attempt") != 2
+        or submission.get("recovery_authority_sha256")
+        != sha256_file(RECOVERY_AUTHORITY_PATH)
+        or not isinstance(evidence_set_sha, str)
+        or SHA256_RE.fullmatch(evidence_set_sha) is None
+        or (
+            expected_attempt_001_evidence_set_sha256 is not None
+            and evidence_set_sha != expected_attempt_001_evidence_set_sha256
+        )
+        or submission.get("qsub_rejection_classification")
+        != QSUB_REJECTION_CLASSIFICATION
+        or status != b"0\n"
+        or submission.get("qsub_exit_status") != 0
+        or re.fullmatch(rb"[1-9][0-9]{0,19}(?:\n)?", stdout) is None
+        or stdout.rstrip(b"\n").decode("ascii") != scheduler_job_id
+        or submission.get("scheduler_job_id") != scheduler_job_id
+        or submission.get("qsub_stdout_bytes") != len(stdout)
+        or submission.get("qsub_stdout_sha256") != sha256_bytes(stdout)
+        or submission.get("qsub_stderr_bytes") != len(stderr)
+        or submission.get("qsub_stderr_sha256") != sha256_bytes(stderr)
+        or submission.get("scheduler_submission_count") != 1
+        or submission.get("scientific_stage_reruns") != 0
+        or submission.get("cpu_only") is not True
+        or any(submission.get(key) != value for key, value in expected_zeros.items())
+        or submission.get("production_continuation") is not False
+        or captured.tzinfo is None
+        or captured.utcoffset() != timezone.utc.utcoffset(captured)
+    ):
+        _fail("RECOVERY_ATTEMPT_002_SUBMISSION_INVALID")
+    return submission
 
 
 @dataclass(frozen=True)
@@ -1088,17 +1721,64 @@ def _validate_worker_claim(state: PreservedState) -> None:
             ORIGINAL_SCIENTIFIC_RUNNER_PATH
         ),
     }
-    fixed = {
+    names = authority.get("attempt_002_qsub_environment_variable_names")
+    environment_sha = authority.get("attempt_002_qsub_environment_sha256")
+    command = qsub_command()
+    attempt_002_argv = indexed_argv(command)
+    allowed_names = set(CONTROLLED_QSUB_ENVIRONMENT) | set(
+        SCHEDULER_CONTEXT_NAMES
+    )
+    required_names = set(CONTROLLED_QSUB_ENVIRONMENT) | {
+        "SGE_ROOT", "HOME", "USER", "LOGNAME", "SHELL",
+    }
+    authority_fixed = {
+        "submission_attempt": 2,
         "original_scientific_governing_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+        "recovery_base_implementation_commit": RECOVERY_BASE_IMPLEMENTATION_COMMIT,
         "recovery_implementation_commit": state.implementation_commit,
         "environment_authority_commit": ENVIRONMENT_AUTHORITY_COMMIT,
         "environment_receipt_sha256": ENVIRONMENT_RECEIPT_SHA256,
         "environment_to_scientific_commit_relation": "ANCESTOR",
         "manifest_file_sha256": MANIFEST_FILE_SHA256,
         "manifest_semantic_sha256": MANIFEST_SEMANTIC_SHA256,
+        "preservation_manifest_bytes": PRESERVATION_MANIFEST_BYTES,
+        "preservation_manifest_sha256": PRESERVATION_MANIFEST_SHA256,
+        "attempt_002_qsub_environment_sha256": environment_sha,
         "original_scheduler_job_id": ORIGINAL_JOB_ID,
         "original_terminal_receipt_sha256": ORIGINAL_TERMINAL_SHA256,
-        "scheduler_submission_count": 1,
+        "attempt_001_status": "REJECTED_PRE_JOB",
+        "attempt_001_scheduler_job_id": "NOT_ASSIGNED",
+        "attempt_001_qsub_exit_status": 1,
+        "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
+        "attempt_001_evidence": state.attempt_001_evidence,
+        "attempt_001_evidence_set_sha256": state.attempt_001_evidence_set_sha256,
+        "attempt_001_qsub_argv": indexed_argv(attempt_001_qsub_command()),
+        "attempt_001_qsub_environment_variable_names": list(
+            ATTEMPT_001_QSUB_ENVIRONMENT_NAMES
+        ),
+        "attempt_002_qsub_argv": attempt_002_argv,
+        "attempt_002_qsub_argv_sha256": _canonical_value_sha256(
+            attempt_002_argv
+        ),
+        "active_matching_scheduler_jobs": 0,
+        "scheduler_submission_maximum": 1,
+        "scientific_stage_reruns": 0,
+        "cpu_only": True,
+        **effect_zeros(),
+        "production_continuation": False,
+    }
+    claim_fixed = {
+        "submission_attempt": 2,
+        "attempt_001_evidence_set_sha256": state.attempt_001_evidence_set_sha256,
+        "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
+        "original_scientific_governing_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+        "recovery_base_implementation_commit": RECOVERY_BASE_IMPLEMENTATION_COMMIT,
+        "recovery_implementation_commit": state.implementation_commit,
+        "manifest_file_sha256": MANIFEST_FILE_SHA256,
+        "manifest_semantic_sha256": MANIFEST_SEMANTIC_SHA256,
+        "preservation_manifest_sha256": PRESERVATION_MANIFEST_SHA256,
+        "attempt_002_qsub_environment_sha256": environment_sha,
+        "scheduler_submission_maximum": 1,
         "scientific_stage_reruns": 0,
         "cpu_only": True,
         **effect_zeros(),
@@ -1113,18 +1793,31 @@ def _validate_worker_claim(state: PreservedState) -> None:
         or set(claim) != RECOVERY_CLAIM_KEYS
         or authority.get("schema_version") != 1
         or authority.get("artifact_type")
-        != "lvef_c3_minimal_canary_preservation_recovery_authority_v1"
-        or authority.get("status") != "PASS_PRESERVATION_RECOVERY_AUTHORITY"
+        != "lvef_c3_preservation_recovery_attempt_002_authority_v1"
+        or authority.get("status")
+        != "PASS_PRESERVATION_RECOVERY_ATTEMPT_002_AUTHORITY"
         or created.tzinfo is None
         or created.utcoffset() != timezone.utc.utcoffset(created)
-        or any(authority.get(key) != value for key, value in fixed.items())
+        or not isinstance(names, list)
+        or names != sorted(names)
+        or len(names) != len(set(names))
+        or not isinstance(environment_sha, str)
+        or SHA256_RE.fullmatch(environment_sha) is None
+        or set(names) - allowed_names
+        or required_names - set(names)
+        or authority.get("attempt_002_qsub_environment_names_sha256")
+        != _canonical_value_sha256(names)
+        or any(
+            authority.get(key) != value
+            for key, value in authority_fixed.items()
+        )
         or any(authority.get(key) != value for key, value in expected_hashes.items())
         or claim.get("schema_version") != 1
         or claim.get("artifact_type")
-        != "lvef_c3_preservation_recovery_submission_claim_v1"
+        != "lvef_c3_preservation_recovery_attempt_002_claim_v1"
         or claim.get("status") != "PREPARED"
         or claim.get("recovery_authority_sha256") != sha256_file(RECOVERY_AUTHORITY_PATH)
-        or any(claim.get(key) != value for key, value in fixed.items())
+        or any(claim.get(key) != value for key, value in claim_fixed.items())
     ):
         _fail("RECOVERY_SUBMISSION_CLAIM_INVALID")
 
@@ -1222,6 +1915,14 @@ def validate_postwrite_state(
         != state.original_observation_sha256
     ):
         _fail("RECOVERY_POSTWRITE_IMMUTABILITY_MISMATCH")
+    attempt_001, attempt_001_set_sha = validate_attempt_001_evidence(
+        allow_attempt_002=True
+    )
+    if (
+        attempt_001 != state.attempt_001_evidence
+        or attempt_001_set_sha != state.attempt_001_evidence_set_sha256
+    ):
+        _fail("RECOVERY_ATTEMPT_001_IMMUTABILITY_MISMATCH")
     manifest, file_sha, plan, plan_sha, _, _ = _validate_manifest_and_plan()
     if (
         manifest != state.manifest
@@ -1248,12 +1949,19 @@ def execute_recovery(
 ) -> dict[str, Any]:
     if JOB_ID_RE.fullmatch(scheduler_job_id) is None:
         _fail("RECOVERY_SCHEDULER_JOB_ID_INVALID")
-    if not RECOVERY_ROOT.exists():
+    if not ATTEMPT_002_ROOT.exists():
         _fail("RECOVERY_SUBMISSION_CLAIM_MISSING")
-    validate_private_directory(RECOVERY_ROOT)
+    validate_private_directory(ATTEMPT_002_ROOT)
     if os.path.lexists(RECOVERY_TERMINAL_PATH):
         _fail("RECOVERY_ALREADY_TERMINAL")
+    submission = validate_attempt_002_submission_for_worker(scheduler_job_id)
+    submission_sha = sha256_file(RECOVERY_SUBMISSION_PATH)
     state = validate_preserved_state(require_recovery_absent=False)
+    if (
+        submission.get("attempt_001_evidence_set_sha256")
+        != state.attempt_001_evidence_set_sha256
+    ):
+        _fail("RECOVERY_ATTEMPT_002_SUBMISSION_INVALID")
     _validate_worker_claim(state)
     source = dependencies or production_dependencies()
     returned_receipt = source.preserve(
@@ -1298,20 +2006,35 @@ def execute_recovery(
     validate_postwrite_state(
         state, summary, closed_schema_validator=source.validate_finalization
     )
+    validate_attempt_002_submission_for_worker(
+        scheduler_job_id,
+        expected_attempt_001_evidence_set_sha256=(
+            state.attempt_001_evidence_set_sha256
+        ),
+        wait_cycles=1,
+    )
+    if sha256_file(RECOVERY_SUBMISSION_PATH) != submission_sha:
+        _fail("RECOVERY_ATTEMPT_002_SUBMISSION_CHANGED")
     terminal = {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_minimal_canary_preservation_recovery_terminal_v1",
+        "artifact_type": "lvef_c3_minimal_canary_preservation_recovery_attempt_002_terminal_v1",
         "status": "PASS_WITH_POSTJOB_PRESERVATION_RECOVERY",
+        "submission_attempt": 2,
+        "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
+        "attempt_001_evidence_set_sha256": state.attempt_001_evidence_set_sha256,
         "original_scientific_governing_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "recovery_implementation_commit": state.implementation_commit,
         "original_scheduler_job_id": ORIGINAL_JOB_ID,
         "recovery_scheduler_job_id": scheduler_job_id,
+        "recovery_submission_receipt_sha256": submission_sha,
+        "scheduler_submission_count": 1,
         "recovery_authority_sha256": sha256_file(RECOVERY_AUTHORITY_PATH),
         "original_terminal_receipt_sha256": ORIGINAL_TERMINAL_SHA256,
         "preservation_manifest_sha256": sha256_file(PRESERVATION_MANIFEST_PATH),
         "preservation_receipt_sha256": sha256_file(PRESERVATION_RECEIPT_PATH),
         "finalization_summary_sha256": sha256_file(FINALIZATION_PATH),
         "scientific_stage_reruns": 0,
+        "cpu_only": True,
         "raw_dicoms_retained": True,
         "extracted_clips_retained": True,
         **effect_zeros(),
@@ -1322,21 +2045,37 @@ def execute_recovery(
 
 
 def write_failure_terminal(code: str, job_id: str) -> None:
-    if not RECOVERY_ROOT.exists() or os.path.lexists(RECOVERY_TERMINAL_PATH):
+    if not ATTEMPT_002_ROOT.exists() or os.path.lexists(RECOVERY_TERMINAL_PATH):
         return
     try:
+        validate_attempt_002_submission_for_worker(
+            job_id, wait_cycles=1, sleeper=lambda _seconds: None
+        )
+        _, attempt_001_set_sha = validate_attempt_001_evidence(
+            allow_attempt_002=True
+        )
+        submission_sha = sha256_file(RECOVERY_SUBMISSION_PATH)
         write_json_no_clobber(
             RECOVERY_TERMINAL_PATH,
             {
                 "schema_version": 1,
-                "artifact_type": "lvef_c3_minimal_canary_preservation_recovery_terminal_v1",
+                "artifact_type": "lvef_c3_minimal_canary_preservation_recovery_attempt_002_terminal_v1",
                 "status": "FAIL",
+                "submission_attempt": 2,
+                "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
+                "attempt_001_evidence_set_sha256": attempt_001_set_sha,
                 "safe_failure_code": code,
                 "original_scientific_governing_commit": ORIGINAL_SCIENTIFIC_COMMIT,
                 "original_scheduler_job_id": ORIGINAL_JOB_ID,
                 "recovery_scheduler_job_id": job_id if JOB_ID_RE.fullmatch(job_id) else "NOT_AVAILABLE",
+                "recovery_submission_receipt_sha256": submission_sha,
+                "recovery_authority_sha256": sha256_file(
+                    RECOVERY_AUTHORITY_PATH
+                ),
+                "scheduler_submission_count": 1,
                 "original_terminal_receipt_sha256": ORIGINAL_TERMINAL_SHA256,
                 "scientific_stage_reruns": 0,
+                "cpu_only": True,
                 **effect_zeros(),
                 "production_continuation": False,
             },
@@ -1356,6 +2095,18 @@ def print_result(result: Mapping[str, Any]) -> None:
         print("PRESERVATION_CONTENT_AUDIT=PASS")
         print(f"PRESERVATION_MANIFEST_BYTES={result['preservation_manifest_bytes']}")
         print(f"PRESERVATION_MANIFEST_SHA256={result['preservation_manifest_sha256']}")
+    if result.get("failed_submission_attempt_001_evidence") == "PASS":
+        print("FAILED_SUBMISSION_ATTEMPT_001_EVIDENCE=PASS")
+    if "qsub_rejection_classification" in result:
+        print(
+            "QSUB_REJECTION_CLASSIFICATION="
+            f"{result['qsub_rejection_classification']}"
+        )
+    if "active_matching_scheduler_jobs" in result:
+        print(
+            "ACTIVE_MATCHING_SCHEDULER_JOBS="
+            f"{result['active_matching_scheduler_jobs']}"
+        )
     if result["status"] == "PASS_PRESERVATION_RECOVERY_PREFLIGHT":
         print("PRESERVATION_RECOVERY_PREFLIGHT=PASS")
     if "recovery_job_id" in result:

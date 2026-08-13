@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import stat
 import subprocess
@@ -98,8 +99,9 @@ def test_qsub_is_one_cpu_nonarray_job() -> None:
     joined = " ".join(command)
     assert "gpu" not in joined.casefold()
     assert " -t " not in f" {joined} " and "hold_jid" not in joined
-    assert command[command.index("-N") + 1] == "lvef_c3_presrec_5907a1_e5ca"
-    assert command[command.index("-o") + 1] == str(recovery.RECOVERY_ROOT)
+    assert command[command.index("-N") + 1] == "lvef_c3_presrec2_5907a1_e5ca"
+    assert command[command.index("-o") + 1] == str(recovery.RECOVERY_WORKER_LOG_PATH)
+    assert command[command.index("-b") + 1] == "y"
     assert command[-1] == "--run-recovery-worker"
 
 
@@ -260,7 +262,247 @@ def _synthetic_state(root: Path) -> recovery.PreservedState:
         original_stage_ledger_sha256="4" * 64,
         original_pooling_ledger_sha256="5" * 64,
         original_observation_sha256="6" * 64,
+        attempt_001_evidence={"evidence": {"bytes": 1, "sha256": "7" * 64}},
+        attempt_001_evidence_set_sha256="8" * 64,
     )
+
+
+def _scheduler_environment() -> dict[str, str]:
+    account = pwd.getpwuid(os.geteuid())
+    return {
+        "SGE_ROOT": str(recovery.CANONICAL_SGE_ROOT),
+        "SGE_CELL": "default",
+        "SGE_QMASTER_PORT": "6444",
+        "HOME": account.pw_dir,
+        "USER": account.pw_name,
+        "LOGNAME": account.pw_name,
+        "SHELL": account.pw_shell,
+        "CLOUDSDK_CONFIG": "/must/not/forward",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/must/not/forward",
+        "PYTHONPATH": "/must/not/forward",
+        "ACCESS_TOKEN": "must-not-forward",
+    }
+
+
+def _qstat_clear(command, **kwargs):
+    assert command == [
+        str(recovery.QSTAT_PATH), "-xml", "-u", kwargs["env"]["USER"]
+    ]
+    return subprocess.CompletedProcess(
+        command, 0, b"<job_info><queue_info/><job_info/></job_info>", b""
+    )
+
+
+def test_attempt_001_stderr_and_branch_a_classification_are_exact() -> None:
+    payload = recovery.ATTEMPT_001_QSUB_STDERR
+    assert len(payload) == 107
+    assert hashlib.sha256(payload).hexdigest() == recovery.ATTEMPT_001_QSUB_STDERR_SHA256
+    assert payload == (
+        b"\nUnable to initialize environment because of error: "
+        b"Please set the environment variable SGE_ROOT.\nExiting.\n"
+    )
+    assert recovery.QSUB_REJECTION_CLASSIFICATION == "QSUB_SCHEDULER_CONTEXT_MISSING"
+    assert recovery.qsub_command()[recovery.qsub_command().index("-b") + 1] == "y"
+    assert recovery.ATTEMPT_001_FROZEN_EVIDENCE == {
+        "preservation_recovery_authority.restricted.json": {
+            "bytes": 1792,
+            "sha256": "43a9a18910ac2305d5fda806f8cc48e34ae1bd4838fe309e51b896d39af844c3",
+        },
+        "preservation_recovery_submission_claim.restricted.json": {
+            "bytes": 1303,
+            "sha256": "ccaab8a3d7dc787221e3b144344951c160810ef2397debc467a568a43960a938",
+        },
+        "qsub.stdout.restricted": {
+            "bytes": 0,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+        },
+        "qsub.stderr.restricted": {
+            "bytes": 107,
+            "sha256": recovery.ATTEMPT_001_QSUB_STDERR_SHA256,
+        },
+        "qsub.exit_status.restricted": {
+            "bytes": 2,
+            "sha256": hashlib.sha256(b"1\n").hexdigest(),
+        },
+    }
+
+
+def test_qsub_environment_is_closed_and_preserves_required_scheduler_context() -> None:
+    source = _scheduler_environment()
+    observed = recovery.build_qsub_environment(source)
+    assert observed["SGE_ROOT"] == str(recovery.CANONICAL_SGE_ROOT)
+    assert all(
+        name in observed
+        for name in ("SGE_ROOT", "HOME", "USER", "LOGNAME", "SHELL")
+    )
+    assert observed["SGE_CELL"] == "default"
+    assert observed["SGE_QMASTER_PORT"] == "6444"
+    assert not {
+        "CLOUDSDK_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "PYTHONPATH",
+        "ACCESS_TOKEN",
+    } & set(observed)
+    assert set(observed) <= set(recovery.CONTROLLED_QSUB_ENVIRONMENT) | set(
+        recovery.SCHEDULER_CONTEXT_NAMES
+    )
+
+
+def test_sge_root_accepts_only_canonical_path_with_optional_trailing_slash() -> None:
+    source = _scheduler_environment()
+    source["SGE_ROOT"] = f"{recovery.CANONICAL_SGE_ROOT}/"
+    assert recovery.build_qsub_environment(source)["SGE_ROOT"] == str(
+        recovery.CANONICAL_SGE_ROOT
+    )
+    source["SGE_ROOT"] = f"{recovery.CANONICAL_SGE_ROOT}/../sge_root"
+    with pytest.raises(
+        recovery.RecoveryError, match="RECOVERY_SGE_ROOT_AUTHORITY_INVALID"
+    ):
+        recovery.build_qsub_environment(source)
+
+
+@pytest.mark.parametrize("missing", ["SGE_ROOT", "HOME", "USER", "LOGNAME", "SHELL"])
+def test_missing_required_scheduler_context_fails_before_claim(missing: str) -> None:
+    source = _scheduler_environment()
+    source.pop(missing)
+    with pytest.raises(
+        recovery.RecoveryError,
+        match="RECOVERY_(SGE_ROOT_AUTHORITY_INVALID|SCHEDULER_CONTEXT_MISSING)",
+    ):
+        recovery.build_qsub_environment(source)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SGE_ROOT", "/wrong/sge"),
+        ("SGE_CELL", "../unsafe"),
+        ("SGE_QMASTER_PORT", "70000"),
+        ("HOME", "relative/home"),
+        ("USER", "unsafe user"),
+        ("LOGNAME", "different"),
+    ],
+)
+def test_malformed_or_conflicting_scheduler_context_is_rejected(
+    name: str, value: str
+) -> None:
+    source = _scheduler_environment()
+    source[name] = value
+    with pytest.raises(recovery.RecoveryError):
+        recovery.build_qsub_environment(source)
+
+
+def test_active_matching_job_gate_is_fail_closed() -> None:
+    environment = recovery.build_qsub_environment(_scheduler_environment())
+
+    def active(command, **kwargs):
+        payload = (
+            b"<job_info><queue_info><job_list><JB_name>"
+            + recovery.RECOVERY_JOB_NAME.encode()
+            + b"</JB_name></job_list></queue_info></job_info>"
+        )
+        return subprocess.CompletedProcess(command, 0, payload, b"")
+
+    with pytest.raises(
+        recovery.RecoveryError, match="RECOVERY_ACTIVE_MATCHING_JOB_EXISTS"
+    ):
+        recovery.validate_no_active_recovery_jobs(environment, runner=active)
+
+
+def test_attempt_001_exact_rejection_evidence_is_required_and_immutable() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        root = _private_dir(Path(directory) / "recovery")
+        paths = {
+            "authority": _write(root / "authority.json", b"authority"),
+            "claim": _write(root / "claim.json", b"claim"),
+            "stdout": _write(root / "stdout", b""),
+            "stderr": _write(root / "stderr", recovery.ATTEMPT_001_QSUB_STDERR),
+            "status": _write(root / "status", b"1\n"),
+        }
+        authority = {"status": "fixed"}
+        claim = {"status": "fixed"}
+        patches = (
+            mock.patch.object(recovery, "RECOVERY_ROOT", root),
+            mock.patch.object(recovery, "ATTEMPT_001_AUTHORITY_PATH", paths["authority"]),
+            mock.patch.object(recovery, "ATTEMPT_001_CLAIM_PATH", paths["claim"]),
+            mock.patch.object(recovery, "ATTEMPT_001_QSUB_STDOUT_PATH", paths["stdout"]),
+            mock.patch.object(recovery, "ATTEMPT_001_QSUB_STDERR_PATH", paths["stderr"]),
+            mock.patch.object(recovery, "ATTEMPT_001_QSUB_STATUS_PATH", paths["status"]),
+            mock.patch.object(recovery, "ATTEMPT_001_SUBMISSION_PATH", root / "submission"),
+            mock.patch.object(recovery, "ATTEMPT_001_TERMINAL_PATH", root / "terminal"),
+            mock.patch.object(recovery, "ATTEMPT_002_ROOT", root / "submission_attempt_002"),
+            mock.patch.object(recovery, "ATTEMPT_001_EVIDENCE_FILENAMES", frozenset(path.name for path in paths.values())),
+            mock.patch.object(
+                recovery,
+                "load_json",
+                side_effect=lambda path, **kwargs: (
+                    authority if Path(path) == paths["authority"] else claim
+                ),
+            ),
+            mock.patch.object(recovery, "_validate_attempt_001_authority", return_value=None),
+            mock.patch.object(
+                recovery,
+                "ATTEMPT_001_FROZEN_EVIDENCE",
+                {
+                    path.name: {
+                        "bytes": path.stat().st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                    for path in paths.values()
+                },
+            ),
+        )
+        with ExitStack() as stack:
+            for patcher in patches:
+                stack.enter_context(patcher)
+            before, before_sha = recovery.validate_attempt_001_evidence(
+                allow_attempt_002=False
+            )
+            assert before["stderr"]["bytes"] == 107
+            for path in paths.values():
+                original = path.read_bytes()
+                path.write_bytes(original + b"x")
+                with pytest.raises(
+                    recovery.RecoveryError,
+                    match=(
+                        "RECOVERY_ATTEMPT_001_(?:REJECTION_EVIDENCE_INVALID|"
+                        "FROZEN_HASH_MISMATCH)"
+                    ),
+                ):
+                    recovery.validate_attempt_001_evidence(
+                        allow_attempt_002=False
+                    )
+                path.write_bytes(original)
+            after, after_sha = recovery.validate_attempt_001_evidence(
+                allow_attempt_002=False
+            )
+        assert (before, before_sha) == (after, after_sha)
+
+
+def test_attempt_002_claim_is_fixed_path_and_no_clobber() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        owner = _private_dir(Path(directory) / "owner")
+        root = _private_dir(owner / "recovery")
+        attempt = root / "submission_attempt_002"
+        state = _synthetic_state(owner)
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
+            recovery, "RECOVERY_AUTHORITY_PATH", attempt / "authority.json"
+        ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", attempt / "claim.json"):
+            recovery.create_submission_claim(
+                state,
+                command=recovery.qsub_command(),
+                environment=recovery.build_qsub_environment(
+                    _scheduler_environment()
+                ),
+            )
+            with pytest.raises(
+                recovery.RecoveryError, match="RECOVERY_OUTPUT_COLLISION"
+            ):
+                recovery.create_submission_claim(
+                    state,
+                    command=recovery.qsub_command(),
+                    environment=recovery.build_qsub_environment(
+                        _scheduler_environment()
+                    ),
+                )
 
 
 def test_submit_captures_exact_numeric_terse_output_once() -> None:
@@ -274,27 +516,38 @@ def test_submit_captures_exact_numeric_terse_output_once() -> None:
             assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == ""
             return subprocess.CompletedProcess(command, 0, b"8123456\n", b"notice\n")
 
+        _private_dir(root / "recovery")
+        attempt = root / "recovery/attempt2"
         patches = (
-            mock.patch.object(recovery, "RECOVERY_ROOT", root / "recovery"),
-            mock.patch.object(recovery, "RECOVERY_AUTHORITY_PATH", root / "recovery/authority.json"),
-            mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", root / "recovery/claim.json"),
-            mock.patch.object(recovery, "RECOVERY_SUBMISSION_PATH", root / "recovery/submission.json"),
-            mock.patch.object(recovery, "RECOVERY_QSUB_STDOUT_PATH", root / "recovery/stdout"),
-            mock.patch.object(recovery, "RECOVERY_QSUB_STDERR_PATH", root / "recovery/stderr"),
-            mock.patch.object(recovery, "RECOVERY_QSUB_STATUS_PATH", root / "recovery/status"),
+            mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt),
+            mock.patch.object(recovery, "RECOVERY_AUTHORITY_PATH", attempt / "authority.json"),
+            mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", attempt / "claim.json"),
+            mock.patch.object(recovery, "RECOVERY_SUBMISSION_PATH", attempt / "submission.json"),
+            mock.patch.object(recovery, "RECOVERY_QSUB_STDOUT_PATH", attempt / "stdout"),
+            mock.patch.object(recovery, "RECOVERY_QSUB_STDERR_PATH", attempt / "stderr"),
+            mock.patch.object(recovery, "RECOVERY_QSUB_STATUS_PATH", attempt / "status"),
+            mock.patch.object(recovery, "RECOVERY_WORKER_LOG_PATH", attempt / "worker.log"),
             mock.patch.object(recovery, "validate_preserved_state", return_value=state),
             mock.patch.object(recovery, "recovery_authority", return_value={"status": "PASS"}),
+            mock.patch.object(recovery, "_validate_scheduler_tools", return_value=None),
+            mock.patch.object(recovery, "revalidate_attempt_001_snapshot", return_value=None),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
-            result = recovery.submit_recovery(runner=runner)
+        with ExitStack() as stack:
+            for patcher in patches:
+                stack.enter_context(patcher)
+            result = recovery.submit_recovery(
+                environment=_scheduler_environment(),
+                qstat_runner=_qstat_clear,
+                runner=runner,
+            )
         assert len(calls) == 1
-        assert calls[0][calls[0].index("-o") + 1] == str(root / "recovery")
+        assert calls[0][calls[0].index("-o") + 1] == str(attempt / "worker.log")
         assert calls[0][calls[0].index("-N") + 1] == recovery.RECOVERY_JOB_NAME
         assert result["recovery_job_id"] == "8123456"
         assert result["scheduler_submissions"] == 1
-        assert (root / "recovery/stdout").read_bytes() == b"8123456\n"
-        assert (root / "recovery/stderr").read_bytes() == b"notice\n"
-        receipt = json.loads((root / "recovery/submission.json").read_text())
+        assert (attempt / "stdout").read_bytes() == b"8123456\n"
+        assert (attempt / "stderr").read_bytes() == b"notice\n"
+        receipt = json.loads((attempt / "submission.json").read_text())
         assert receipt["status"] == "PASS_NUMERIC_QSUB_ID_CAPTURED"
         assert receipt["scheduler_submission_count"] == 1
 
@@ -314,19 +567,29 @@ def test_submit_never_retries_ambiguous_qsub_output(stdout: bytes) -> None:
             count += 1
             return subprocess.CompletedProcess(command, 0, stdout, b"")
 
-        with mock.patch.object(recovery, "RECOVERY_ROOT", root / "recovery"), mock.patch.object(
-            recovery, "RECOVERY_AUTHORITY_PATH", root / "recovery/authority.json"
-        ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", root / "recovery/claim.json"), mock.patch.object(
-            recovery, "RECOVERY_SUBMISSION_PATH", root / "recovery/submission.json"
-        ), mock.patch.object(recovery, "RECOVERY_QSUB_STDOUT_PATH", root / "recovery/stdout"), mock.patch.object(
-            recovery, "RECOVERY_QSUB_STDERR_PATH", root / "recovery/stderr"
-        ), mock.patch.object(recovery, "RECOVERY_QSUB_STATUS_PATH", root / "recovery/status"), mock.patch.object(
+        _private_dir(root / "recovery")
+        attempt = root / "recovery/attempt2"
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
+            recovery, "RECOVERY_AUTHORITY_PATH", attempt / "authority.json"
+        ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", attempt / "claim.json"), mock.patch.object(
+            recovery, "RECOVERY_SUBMISSION_PATH", attempt / "submission.json"
+        ), mock.patch.object(recovery, "RECOVERY_QSUB_STDOUT_PATH", attempt / "stdout"), mock.patch.object(
+            recovery, "RECOVERY_QSUB_STDERR_PATH", attempt / "stderr"
+        ), mock.patch.object(recovery, "RECOVERY_QSUB_STATUS_PATH", attempt / "status"), mock.patch.object(
+            recovery, "RECOVERY_WORKER_LOG_PATH", attempt / "worker.log"
+        ), mock.patch.object(
             recovery, "validate_preserved_state", return_value=state
-        ), mock.patch.object(recovery, "recovery_authority", return_value={"status": "PASS"}):
+        ), mock.patch.object(recovery, "recovery_authority", return_value={"status": "PASS"}), mock.patch.object(
+            recovery, "_validate_scheduler_tools", return_value=None
+        ), mock.patch.object(recovery, "revalidate_attempt_001_snapshot", return_value=None):
             with pytest.raises(recovery.RecoveryError, match="RECOVERY_QSUB_OUTPUT_IDENTITY_AMBIGUOUS"):
-                recovery.submit_recovery(runner=runner)
+                recovery.submit_recovery(
+                    environment=_scheduler_environment(),
+                    qstat_runner=_qstat_clear,
+                    runner=runner,
+                )
         assert count == 1
-        assert (root / "recovery/stdout").read_bytes() == stdout
+        assert (attempt / "stdout").read_bytes() == stdout
 
 
 def test_submit_preserves_nonzero_qsub_evidence_without_retry() -> None:
@@ -340,33 +603,223 @@ def test_submit_preserves_nonzero_qsub_evidence_without_retry() -> None:
             count += 1
             return subprocess.CompletedProcess(command, 17, b"", b"safe restricted detail")
 
-        with mock.patch.object(recovery, "RECOVERY_ROOT", root / "recovery"), mock.patch.object(
-            recovery, "RECOVERY_AUTHORITY_PATH", root / "recovery/authority.json"
-        ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", root / "recovery/claim.json"), mock.patch.object(
-            recovery, "RECOVERY_SUBMISSION_PATH", root / "recovery/submission.json"
-        ), mock.patch.object(recovery, "RECOVERY_QSUB_STDOUT_PATH", root / "recovery/stdout"), mock.patch.object(
-            recovery, "RECOVERY_QSUB_STDERR_PATH", root / "recovery/stderr"
-        ), mock.patch.object(recovery, "RECOVERY_QSUB_STATUS_PATH", root / "recovery/status"), mock.patch.object(
+        _private_dir(root / "recovery")
+        attempt = root / "recovery/attempt2"
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
+            recovery, "RECOVERY_AUTHORITY_PATH", attempt / "authority.json"
+        ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", attempt / "claim.json"), mock.patch.object(
+            recovery, "RECOVERY_SUBMISSION_PATH", attempt / "submission.json"
+        ), mock.patch.object(recovery, "RECOVERY_QSUB_STDOUT_PATH", attempt / "stdout"), mock.patch.object(
+            recovery, "RECOVERY_QSUB_STDERR_PATH", attempt / "stderr"
+        ), mock.patch.object(recovery, "RECOVERY_QSUB_STATUS_PATH", attempt / "status"), mock.patch.object(
+            recovery, "RECOVERY_WORKER_LOG_PATH", attempt / "worker.log"
+        ), mock.patch.object(
             recovery, "validate_preserved_state", return_value=state
-        ), mock.patch.object(recovery, "recovery_authority", return_value={"status": "PASS"}):
+        ), mock.patch.object(recovery, "recovery_authority", return_value={"status": "PASS"}), mock.patch.object(
+            recovery, "_validate_scheduler_tools", return_value=None
+        ), mock.patch.object(recovery, "revalidate_attempt_001_snapshot", return_value=None):
             with pytest.raises(recovery.RecoveryError, match="RECOVERY_QSUB_PROCESS_FAILED"):
-                recovery.submit_recovery(runner=runner)
+                recovery.submit_recovery(
+                    environment=_scheduler_environment(),
+                    qstat_runner=_qstat_clear,
+                    runner=runner,
+                )
         assert count == 1
-        assert (root / "recovery/status").read_text() == "17\n"
-        assert (root / "recovery/stderr").read_bytes() == b"safe restricted detail"
+        assert (attempt / "status").read_text() == "17\n"
+        assert (attempt / "stderr").read_bytes() == b"safe restricted detail"
+
+
+@contextmanager
+def _attempt_002_submission_fixture(root: Path):
+    attempt = _private_dir(root / "submission_attempt_002")
+    paths = {
+        "authority": _write(attempt / "authority.json", b"{}\n"),
+        "claim": _write(attempt / "claim.json", b"{}\n"),
+        "stdout": _write(attempt / "stdout", b"8123456\n"),
+        "stderr": _write(attempt / "stderr", b"notice\n"),
+        "status": _write(attempt / "status", b"0\n"),
+        "submission": attempt / "submission.json",
+        "terminal": attempt / "terminal.json",
+        "worker_log": attempt / "worker.log",
+    }
+    evidence_set_sha = "8" * 64
+    submission = {
+        "schema_version": 1,
+        "artifact_type": (
+            "lvef_c3_preservation_recovery_attempt_002_submission_v1"
+        ),
+        "status": "PASS_NUMERIC_QSUB_ID_CAPTURED",
+        "submission_attempt": 2,
+        "recovery_authority_sha256": recovery.sha256_file(paths["authority"]),
+        "attempt_001_evidence_set_sha256": evidence_set_sha,
+        "qsub_rejection_classification": recovery.QSUB_REJECTION_CLASSIFICATION,
+        "qsub_exit_status": 0,
+        "qsub_stdout_bytes": paths["stdout"].stat().st_size,
+        "qsub_stdout_sha256": recovery.sha256_file(paths["stdout"]),
+        "qsub_stderr_bytes": paths["stderr"].stat().st_size,
+        "qsub_stderr_sha256": recovery.sha256_file(paths["stderr"]),
+        "scheduler_job_id": "8123456",
+        "scheduler_submission_count": 1,
+        "captured_at_utc": "2026-08-13T12:00:00+00:00",
+        "scientific_stage_reruns": 0,
+        "cpu_only": True,
+        **recovery.effect_zeros(),
+        "production_continuation": False,
+    }
+    _write(paths["submission"], recovery.canonical_payload(submission))
+    patches = (
+        mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt),
+        mock.patch.object(recovery, "RECOVERY_AUTHORITY_PATH", paths["authority"]),
+        mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", paths["claim"]),
+        mock.patch.object(recovery, "RECOVERY_QSUB_STDOUT_PATH", paths["stdout"]),
+        mock.patch.object(recovery, "RECOVERY_QSUB_STDERR_PATH", paths["stderr"]),
+        mock.patch.object(recovery, "RECOVERY_QSUB_STATUS_PATH", paths["status"]),
+        mock.patch.object(recovery, "RECOVERY_SUBMISSION_PATH", paths["submission"]),
+        mock.patch.object(recovery, "RECOVERY_TERMINAL_PATH", paths["terminal"]),
+        mock.patch.object(recovery, "RECOVERY_WORKER_LOG_PATH", paths["worker_log"]),
+    )
+    with ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        yield paths, submission, evidence_set_sha
+
+
+def test_worker_requires_exact_successful_attempt_002_submission_and_job_id() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        root = _private_dir(Path(directory) / "owner")
+        with _attempt_002_submission_fixture(root) as (
+            paths, submission, evidence_set_sha,
+        ):
+            observed = recovery.validate_attempt_002_submission_for_worker(
+                "8123456",
+                expected_attempt_001_evidence_set_sha256=evidence_set_sha,
+                wait_cycles=1,
+            )
+            assert observed == submission
+            with pytest.raises(
+                recovery.RecoveryError,
+                match="RECOVERY_ATTEMPT_002_SUBMISSION_INVALID",
+            ):
+                recovery.validate_attempt_002_submission_for_worker(
+                    "8123457", wait_cycles=1
+                )
+            paths["status"].write_bytes(b"1\n")
+            with pytest.raises(
+                recovery.RecoveryError,
+                match="RECOVERY_ATTEMPT_002_SUBMISSION_INVALID",
+            ):
+                recovery.validate_attempt_002_submission_for_worker(
+                    "8123456", wait_cycles=1
+                )
+
+
+def test_worker_rejects_claim_only_and_unexpected_attempt_002_topology() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        root = _private_dir(Path(directory) / "owner")
+        with _attempt_002_submission_fixture(root) as (paths, _, _):
+            paths["submission"].unlink()
+            with pytest.raises(
+                recovery.RecoveryError,
+                match="RECOVERY_ATTEMPT_002_SUBMISSION_EVIDENCE_MISSING",
+            ):
+                recovery.validate_attempt_002_submission_for_worker(
+                    "8123456", wait_cycles=1
+                )
+            _write(paths["submission"], b"{}\n")
+            _write(paths["authority"].parent / "unexpected", b"x")
+            with pytest.raises(
+                recovery.RecoveryError,
+                match="RECOVERY_ATTEMPT_002_TOPOLOGY_INVALID",
+            ):
+                recovery.validate_attempt_002_submission_for_worker(
+                    "8123456", wait_cycles=1
+                )
+
+
+def test_worker_bounded_wait_accepts_only_exact_writer_partial_race() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        root = _private_dir(Path(directory) / "owner")
+        with _attempt_002_submission_fixture(root) as (
+            paths, submission, evidence_set_sha,
+        ):
+            partial = paths["submission"].with_name(
+                f".{paths['submission'].name}.partial.4242"
+            )
+            _write(partial, paths["submission"].read_bytes())
+            sleeps: list[float] = []
+
+            def complete_atomic_promotion(seconds: float) -> None:
+                sleeps.append(seconds)
+                partial.unlink()
+
+            observed = recovery.validate_attempt_002_submission_for_worker(
+                "8123456",
+                expected_attempt_001_evidence_set_sha256=evidence_set_sha,
+                wait_cycles=2,
+                sleeper=complete_atomic_promotion,
+            )
+            assert observed == submission
+            assert sleeps == [0.1]
+
+            _write(partial, paths["submission"].read_bytes())
+            real_scandir = os.scandir
+            scans: list[int] = []
+
+            def unlink_after_scandir(path: Path):
+                entries = list(real_scandir(path))
+                scans.append(len(entries))
+                if partial.exists():
+                    partial.unlink()
+                return entries
+
+            race_sleeps: list[float] = []
+            with mock.patch.object(
+                recovery.os, "scandir", side_effect=unlink_after_scandir
+            ):
+                observed = recovery.validate_attempt_002_submission_for_worker(
+                    "8123456",
+                    expected_attempt_001_evidence_set_sha256=evidence_set_sha,
+                    wait_cycles=2,
+                    sleeper=race_sleeps.append,
+                )
+            assert observed == submission
+            assert len(scans) == 2
+            assert race_sleeps == [0.1]
+
+            malformed = paths["submission"].with_name(
+                f".{paths['submission'].name}.partial.not-a-pid"
+            )
+            _write(malformed, b"x")
+            with pytest.raises(
+                recovery.RecoveryError,
+                match="RECOVERY_ATTEMPT_002_TOPOLOGY_INVALID",
+            ):
+                recovery.validate_attempt_002_submission_for_worker(
+                    "8123456",
+                    wait_cycles=2,
+                    sleeper=lambda _seconds: (_ for _ in ()).throw(
+                        AssertionError("unexpected wait for malformed partial")
+                    ),
+                )
 
 
 def test_recovery_authority_and_claim_are_closed_and_exact() -> None:
     with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
         owner = _private_dir(Path(directory) / "owner")
         state = _synthetic_state(owner)
-        recovery_root = owner / "recovery"
-        authority_path = recovery_root / "authority.json"
-        claim_path = recovery_root / "claim.json"
-        with mock.patch.object(recovery, "RECOVERY_ROOT", recovery_root), mock.patch.object(
+        _private_dir(owner / "recovery")
+        attempt_root = owner / "recovery/attempt2"
+        authority_path = attempt_root / "authority.json"
+        claim_path = attempt_root / "claim.json"
+        environment = recovery.build_qsub_environment(_scheduler_environment())
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt_root), mock.patch.object(
             recovery, "RECOVERY_AUTHORITY_PATH", authority_path
         ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", claim_path):
-            recovery.create_submission_claim(state)
+            recovery.create_submission_claim(
+                state,
+                command=recovery.qsub_command(),
+                environment=environment,
+            )
             recovery._validate_worker_claim(state)
             authority = json.loads(authority_path.read_text())
             claim = json.loads(claim_path.read_text())
@@ -374,8 +827,17 @@ def test_recovery_authority_and_claim_are_closed_and_exact() -> None:
             assert set(claim) == recovery.RECOVERY_CLAIM_KEYS
             assert authority["cpu_only"] is claim["cpu_only"] is True
             assert authority["environment_receipt_sha256"] == recovery.ENVIRONMENT_RECEIPT_SHA256
-            assert claim["original_scheduler_job_id"] == recovery.ORIGINAL_JOB_ID
-            assert claim["original_terminal_receipt_sha256"] == recovery.ORIGINAL_TERMINAL_SHA256
+            assert authority["attempt_001_status"] == "REJECTED_PRE_JOB"
+            assert authority["qsub_rejection_classification"] == "QSUB_SCHEDULER_CONTEXT_MISSING"
+            assert claim["recovery_base_implementation_commit"] == recovery.RECOVERY_BASE_IMPLEMENTATION_COMMIT
+            expected_environment_sha = recovery._canonical_value_sha256(
+                dict(sorted(environment.items()))
+            )
+            assert (
+                authority["attempt_002_qsub_environment_sha256"]
+                == claim["attempt_002_qsub_environment_sha256"]
+                == expected_environment_sha
+            )
             claim["cloud_requests"] = 1
             claim_path.write_text(json.dumps(claim, indent=2, sort_keys=True) + "\n")
             with pytest.raises(recovery.RecoveryError, match="RECOVERY_SUBMISSION_CLAIM_INVALID"):
@@ -384,6 +846,24 @@ def test_recovery_authority_and_claim_are_closed_and_exact() -> None:
             claim["unexpected"] = False
             claim_path.write_text(json.dumps(claim, indent=2, sort_keys=True) + "\n")
             with pytest.raises(recovery.RecoveryError, match="RECOVERY_SUBMISSION_CLAIM_INVALID"):
+                recovery._validate_worker_claim(state)
+            claim.pop("unexpected")
+            names = authority["attempt_002_qsub_environment_variable_names"]
+            names.remove("HOME")
+            authority["attempt_002_qsub_environment_names_sha256"] = (
+                recovery._canonical_value_sha256(names)
+            )
+            authority_path.write_text(
+                json.dumps(authority, indent=2, sort_keys=True) + "\n"
+            )
+            claim["recovery_authority_sha256"] = recovery.sha256_file(
+                authority_path
+            )
+            claim_path.write_text(json.dumps(claim, indent=2, sort_keys=True) + "\n")
+            with pytest.raises(
+                recovery.RecoveryError,
+                match="RECOVERY_SUBMISSION_CLAIM_INVALID",
+            ):
                 recovery._validate_worker_claim(state)
 
 
@@ -443,6 +923,7 @@ def test_execute_validates_before_write_and_calls_only_recovery_functions_once()
         claim = _write(root / "claim.json", b"{}\n")
         preservation_manifest = _write(root / "manifest.tsv", b"header\n")
         preservation_receipt = _write(root / "preservation.json", b"{}\n")
+        submission_receipt = _write(root / "submission.json", b"submission\n")
         finalization = root / "finalization.json"
         terminal = root / "terminal.json"
         original_stage = _write(root / "stage_ledger.json", b"stage immutable\n")
@@ -517,15 +998,25 @@ def test_execute_validates_before_write_and_calls_only_recovery_functions_once()
             validate_finalization=validate,
             write_finalization=write,
         )
-        with mock.patch.object(recovery, "RECOVERY_ROOT", root), mock.patch.object(
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", root), mock.patch.object(
             recovery, "RECOVERY_AUTHORITY_PATH", authority
         ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", claim), mock.patch.object(
+            recovery, "RECOVERY_SUBMISSION_PATH", submission_receipt
+        ), mock.patch.object(
             recovery, "RECOVERY_TERMINAL_PATH", terminal
         ), mock.patch.object(recovery, "PRESERVATION_MANIFEST_PATH", preservation_manifest), mock.patch.object(
             recovery, "PRESERVATION_RECEIPT_PATH", preservation_receipt
         ), mock.patch.object(recovery, "FINALIZATION_PATH", finalization), mock.patch.object(
             recovery, "ORIGINAL_TERMINAL_PATH", original_terminal
         ), mock.patch.object(recovery, "validate_preserved_state", return_value=state), mock.patch.object(
+            recovery,
+            "validate_attempt_002_submission_for_worker",
+            return_value={
+                "attempt_001_evidence_set_sha256": (
+                    state.attempt_001_evidence_set_sha256
+                )
+            },
+        ), mock.patch.object(
             recovery, "_validate_worker_claim", return_value=None
         ), mock.patch.object(
             recovery, "validate_postwrite_state", side_effect=postwrite
@@ -548,7 +1039,7 @@ def test_execute_validates_before_write_and_calls_only_recovery_functions_once()
         assert result["cloud_requests"] == result["dicom_reads"] == 0
         assert result["gpu_execution"] == result["embedding_generation"] == 0
         assert all(path.read_bytes() == payload for path, payload in immutable_before.items())
-        with mock.patch.object(recovery, "RECOVERY_ROOT", root), mock.patch.object(
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", root), mock.patch.object(
             recovery, "RECOVERY_TERMINAL_PATH", terminal
         ):
             with pytest.raises(recovery.RecoveryError, match="RECOVERY_ALREADY_TERMINAL"):
@@ -564,6 +1055,7 @@ def test_recovery_source_has_no_scientific_stage_calls() -> None:
         "run_production_echoprime(",
         "GcloudADCTokenProvider(",
         "GCSExactObjectBodyTransport(",
+        "mean_pool_study_embeddings(",
         "torch.cuda",
         "model.fit(",
         "predict(",
@@ -571,6 +1063,12 @@ def test_recovery_source_has_no_scientific_stage_calls() -> None:
     assert all(item not in source for item in forbidden)
     assert source.count("source.preserve(") == 1
     assert source.count("source.finalize(") == 1
+    execute_source = source[source.index("def execute_recovery("):]
+    assert execute_source.index(
+        "submission = validate_attempt_002_submission_for_worker("
+    ) < execute_source.index(
+        "state = validate_preserved_state("
+    ) < execute_source.index("source.preserve(")
 
 
 def test_invalid_finalization_is_rejected_before_write() -> None:
@@ -829,8 +1327,20 @@ def test_failure_terminal_is_no_clobber_and_effect_free() -> None:
     with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
         root = _private_dir(Path(directory) / "recovery")
         terminal = root / "terminal.json"
-        with mock.patch.object(recovery, "RECOVERY_ROOT", root), mock.patch.object(
+        submission = _write(root / "submission.json", b"submission\n")
+        authority = _write(root / "authority.json", b"authority\n")
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", root), mock.patch.object(
             recovery, "RECOVERY_TERMINAL_PATH", terminal
+        ), mock.patch.object(
+            recovery, "RECOVERY_SUBMISSION_PATH", submission
+        ), mock.patch.object(
+            recovery, "RECOVERY_AUTHORITY_PATH", authority
+        ), mock.patch.object(
+            recovery, "validate_attempt_002_submission_for_worker", return_value={}
+        ), mock.patch.object(
+            recovery,
+            "validate_attempt_001_evidence",
+            return_value=({}, "8" * 64),
         ):
             recovery.write_failure_terminal("RECOVERY_SYNTHETIC_FAILURE", "8123456")
             first = terminal.read_bytes()
@@ -838,6 +1348,22 @@ def test_failure_terminal_is_no_clobber_and_effect_free() -> None:
         assert terminal.read_bytes() == first
         value = json.loads(first)
         assert value["status"] == "FAIL"
+        assert value["attempt_001_evidence_set_sha256"] == "8" * 64
         assert value["scientific_stage_reruns"] == 0
         assert value["cloud_requests"] == value["dicom_reads"] == 0
         assert value["gpu_execution"] == value["embedding_generation"] == 0
+
+
+def test_claim_only_hidden_worker_cannot_create_failure_terminal() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        root = _private_dir(Path(directory) / "submission_attempt_002")
+        terminal = root / "terminal.json"
+        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", root), mock.patch.object(
+            recovery, "RECOVERY_TERMINAL_PATH", terminal
+        ), mock.patch.object(
+            recovery, "RECOVERY_SUBMISSION_PATH", root / "submission.json"
+        ):
+            recovery.write_failure_terminal(
+                "RECOVERY_SUBMISSION_CLAIM_MISSING", "8123456"
+            )
+        assert not terminal.exists()
