@@ -34,7 +34,7 @@
       },
       "entrypoint": {
         "path": "scripts/lvef_c3_orchestration_core.py",
-        "sha256": "c92629ff395e395010287adbcdb9a7c1d42f9fe75814e094b2f07551d656f4c8",
+        "sha256": "e7abfb8c035ca19814c785b5b70abfaa7d9ad80121267befd2efa67f3e4b2ad5",
         "callable": "execute_exact_batch_download"
       },
       "required_predecessor_receipts": [],

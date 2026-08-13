@@ -1,5 +1,11 @@
 # Phase 1H-R1/R2 exact-five canary mode
 
+> **Deprecated/noncontrolling.** This document preserves the former
+> multi-packet, five-qsub design for comparison. The controlling future route
+> is the single-job minimal adapter documented in
+> `historical_pipeline_recovery_sprint.md`; none of the live commands below is
+> authorized by the recovery sprint.
+
 ## Authority boundary
 
 The tracked execution-state authority is

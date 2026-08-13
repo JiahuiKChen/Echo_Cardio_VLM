@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Production-scoped control plane for an exact-five C3 imaging canary.
+"""DEPRECATED historical five-qsub C3 canary control plane.
+
+This implementation is retained for evidence and comparison only. It is not
+the controlling canary route after the historical pipeline recovery sprint;
+the tracked single-job route is ``scc_submit_lvef_c3_minimal_canary.sh``.
 
 The installation and strengthened preflight modes are dependency-light and
 deliberately have no cloud client, real scheduler invocation, restricted-row

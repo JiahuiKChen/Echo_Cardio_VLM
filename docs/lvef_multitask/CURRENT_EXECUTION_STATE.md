@@ -1,5 +1,13 @@
 # Current execution state
 
+> **Superseded controlling route.** The five-qsub packet/lifecycle design
+> described below is retained as historical evidence and is noncontrolling.
+> The historical pipeline recovery sprint replaces it with
+> `scripts/scc_submit_lvef_c3_minimal_canary.sh`: one sealed manifest, one
+> `PREPARED`/`RUNNING`/`PASS`/`FAIL` ledger, and one sequential SCC job. No real
+> manifest or live canary is authorized by this repository change. See
+> `docs/lvef_multitask/historical_pipeline_recovery_sprint.md`.
+
 The sole tracked execution authority is
 `configs/lvef_c3_execution_state_v1.yaml`. Its `current_governing_commit`
 policy resolves to the checked-out Git `HEAD`, which must equal origin and the

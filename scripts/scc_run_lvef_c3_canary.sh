@@ -1,4 +1,6 @@
 #!/bin/bash -p
+# DEPRECATED/NONCONTROLLING: retained for historical comparison only.
+# The controlling future route is scc_submit_lvef_c3_minimal_canary.sh.
 set -euo pipefail
 umask 077
 

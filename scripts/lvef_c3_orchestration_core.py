@@ -2208,6 +2208,110 @@ def validate_body_transfer_authorization(
         raise OrchestrationError("BODY_TRANSFER_AUTHORIZATION_NOT_CURRENT")
 
 
+def validate_direct_manifest_download_scope(
+    *,
+    manifest: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    batch_id: str,
+    maximum_attempts_per_object: int,
+    expected_launch_authority_sha256: str,
+) -> None:
+    """Validate a direct-manifest exact-five download without a grant receipt.
+
+    This compatibility entrypoint is intentionally narrow.  It lets the
+    minimal one-job adapter reuse the production downloader while treating the
+    canonical sealed manifest, its manifest-bound plan, and the manifest-bound
+    production resume ledger as the only owner-authorized
+    scope. It creates no packet or grant.
+    """
+
+    body = manifest.get("manifest")
+    if not isinstance(body, Mapping):
+        raise OrchestrationError("DIRECT_MANIFEST_DOWNLOAD_SCOPE_INVALID")
+    objects = [
+        (study, item)
+        for study in body.get("studies", [])
+        if isinstance(study, Mapping)
+        for item in study.get("objects", [])
+        if isinstance(item, Mapping)
+    ]
+    try:
+        plan_authority = plan["authority"]
+        plan_batches = plan["batches"]
+    except (KeyError, TypeError) as exc:
+        raise OrchestrationError("DIRECT_MANIFEST_DOWNLOAD_SCOPE_INVALID") from exc
+    plan_sha = canonical_json_sha256(plan)
+    try:
+        from lvef_c3_canary_manifest import validate_manifest
+
+        canonical_manifest = validate_manifest(dict(manifest))
+    except Exception as exc:
+        raise OrchestrationError("DIRECT_MANIFEST_DOWNLOAD_SCOPE_INVALID") from exc
+    if canonical_manifest != dict(manifest):
+        raise OrchestrationError("DIRECT_MANIFEST_DOWNLOAD_SCOPE_INVALID")
+    manifest_objects = sorted(
+        [
+            (
+                str(item.get("source_object_key")),
+                str(item.get("source_relative_path")),
+                int(item.get("size_bytes", 0)),
+                str(item.get("generation")),
+                str(item.get("md5_base64")),
+                str(item.get("crc32c_base64")),
+                str(study.get("subject_id")),
+                str(study.get("study_id")),
+                str(study.get("split")),
+            )
+            for study, item in objects
+        ]
+    )
+    plan_objects = sorted(
+        [
+            (
+                str(item.get("source_object_key")),
+                str(item.get("source_relative_path")),
+                int(item.get("size_bytes", 0)),
+                str(item.get("generation")),
+                str(item.get("md5_base64")),
+                str(item.get("crc32c_base64")),
+                str(item.get("subject_id")),
+                str(item.get("study_id")),
+                str(item.get("split")),
+            )
+            for batch in plan_batches
+            for item in batch.get("objects", [])
+            if isinstance(item, Mapping)
+        ]
+    )
+    if (
+        manifest.get("manifest_sha256")
+        != plan_authority.get("selected_manifest_sha256")
+        or ledger.get("authority", {}).get("batch_plan_sha256") != plan_sha
+        or batch_id != "c3_batch_000"
+        or [row.get("batch_id") for row in plan_batches]
+        != ["c3_batch_000"]
+        or body.get("study_count") != 5
+        or body.get("subject_count") != 5
+        or body.get("split") != "train"
+        or body.get("complete_object_membership") is not True
+        or not 5 <= len(objects) <= 750
+        or len(objects) != body.get("expected_object_count")
+        or manifest_objects != plan_objects
+        or sum(int(row.get("size_bytes", 0)) for _, row in objects)
+        != body.get("expected_byte_total")
+        or not 1 <= int(body.get("expected_byte_total", 0)) <= 5_000_000_000
+        or maximum_attempts_per_object < 1
+        or maximum_attempts_per_object > 10
+        or _require_sha256(
+            expected_launch_authority_sha256,
+            "EXPECTED_LAUNCH_AUTHORITY_HASH_INVALID",
+        )
+        != expected_launch_authority_sha256
+    ):
+        raise OrchestrationError("DIRECT_MANIFEST_DOWNLOAD_SCOPE_INVALID")
+
+
 def validate_private_billing_environment(
     environment_variable: str, *, argv: Sequence[str], environ: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
@@ -3302,13 +3406,14 @@ def execute_exact_batch_download(
     *, plan: Mapping[str, Any], requirements: PlanRequirements,
     ledger: Mapping[str, Any], contract: Mapping[str, Any], batch_id: str,
     expected_runtime_authority: Mapping[str, Any],
-    authorization_receipt: Mapping[str, Any], output_root: Path,
+    authorization_receipt: Mapping[str, Any] | None, output_root: Path,
     launch_authority_sha256: str,
     argv: Sequence[str], token_provider: Any, transport: Any,
     now: datetime | None = None, monotonic_clock: Any = time.monotonic,
     sleeper: Any = time.sleep,
     digest_provider: Callable[[Path, str], Mapping[str, Any]] = _inprocess_digest_provider,
     scoped_production_root: Path | None = None,
+    direct_manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute one authorization-scoped exact batch; callers persist returned ledger."""
     plan_sha = validate_batch_plan(plan, requirements=requirements)
@@ -3320,15 +3425,29 @@ def execute_exact_batch_download(
     maximum_attempts = int(contract["downloader"]["maximum_attempts_per_object"])
     backoff_initial = int(contract["downloader"]["retry_backoff_initial_seconds"])
     backoff_maximum = int(contract["downloader"]["retry_backoff_max_seconds"])
-    validate_body_transfer_authorization(
-        authorization_receipt,
-        ledger=ledger,
-        plan=plan,
-        batch_id=batch_id,
-        maximum_attempts_per_object=maximum_attempts,
-        expected_launch_authority_sha256=launch_authority_sha256,
-        now=now,
-    )
+    if direct_manifest is None:
+        if authorization_receipt is None:
+            raise OrchestrationError("BODY_TRANSFER_AUTHORIZATION_MISSING")
+        validate_body_transfer_authorization(
+            authorization_receipt,
+            ledger=ledger,
+            plan=plan,
+            batch_id=batch_id,
+            maximum_attempts_per_object=maximum_attempts,
+            expected_launch_authority_sha256=launch_authority_sha256,
+            now=now,
+        )
+    else:
+        if authorization_receipt is not None:
+            raise OrchestrationError("DIRECT_MANIFEST_AND_GRANT_BOTH_SUPPLIED")
+        validate_direct_manifest_download_scope(
+            manifest=direct_manifest,
+            ledger=ledger,
+            plan=plan,
+            batch_id=batch_id,
+            maximum_attempts_per_object=maximum_attempts,
+            expected_launch_authority_sha256=launch_authority_sha256,
+        )
     billing_env = str(contract["downloader"]["billing_project_environment_variable"])
     validate_private_billing_environment(billing_env, argv=argv)
     billing_project = os.environ[billing_env]
@@ -3413,7 +3532,11 @@ def execute_exact_batch_download(
             "status": "PASS",
             "authority": updated["authority"],
             "input_receipt_sha256": [updated["authority"]["batch_plan_sha256"]],
-            "output_manifest_sha256": canonical_json_sha256(authorization_receipt),
+            "output_manifest_sha256": canonical_json_sha256(
+                direct_manifest
+                if direct_manifest is not None
+                else authorization_receipt
+            ),
         }
     elif batch_ledger["state"] not in {"DOWNLOAD_IN_PROGRESS", "DOWNLOAD_VERIFIED"}:
         raise OrchestrationError("DOWNLOAD_BATCH_NOT_RESUMABLE")
