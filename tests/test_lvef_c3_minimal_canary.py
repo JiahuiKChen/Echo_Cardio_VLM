@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 
@@ -21,6 +22,23 @@ def _expect(code: str, operation) -> None:
         assert exc.code == code
     else:
         raise AssertionError(f"expected {code}")
+
+
+def test_isolated_python_bootstrap_loads_only_the_tracked_sibling_root() -> None:
+    script = ROOT / "scripts/lvef_c3_minimal_canary.py"
+    probe = (
+        "import runpy; "
+        f"ns=runpy.run_path({str(script)!r}); "
+        "assert tuple(ns['_production_functions']()) == ns['ORDERED_STAGES']"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", probe],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_effective_private_mode_accepts_setgid_without_group_access() -> None:

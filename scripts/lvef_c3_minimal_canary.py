@@ -27,6 +27,11 @@ from typing import Any, Final
 
 
 SCRIPT_ROOT: Final = Path(__file__).resolve().parent
+# ``python -I`` deliberately removes the script directory from ``sys.path``.
+# Restore only this resolved, tracked sibling-module root; never inherit an
+# ambient PYTHONPATH or a caller-selected import directory.
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
 REPOSITORY_ROOT: Final = SCRIPT_ROOT.parent
 CONFIG_ROOT: Final = REPOSITORY_ROOT / "configs"
 CONTRACT_PATH: Final = CONFIG_ROOT / "lvef_c3_orchestration_v2.yaml"
