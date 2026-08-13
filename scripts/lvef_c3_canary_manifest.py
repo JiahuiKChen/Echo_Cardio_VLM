@@ -635,33 +635,48 @@ def serialize_manifest(value: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _validate_private_output_parent(parent: Path, *, code: str) -> os.stat_result:
+    try:
+        metadata = os.lstat(parent)
+        resolved = parent.resolve(strict=True)
+    except OSError:
+        _fail(code)
+    if (
+        resolved != parent
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) not in {0o700, 0o2700}
+    ):
+        _fail(code)
+    return metadata
+
+
 def write_private_manifest_no_clobber(
     output_path: Path, value: Mapping[str, Any]
 ) -> tuple[str, str]:
     """Atomically create one mode-0600 private manifest without replacement.
 
     Returns ``(exact_file_sha256, embedded_manifest_sha256)``.  The destination
-    parent must be a canonical, current-owner mode-0700 directory.  A temporary
-    inode is fully written and synced before a no-replace hard link publishes
-    it; no existing destination of any file type is followed or overwritten.
+    parent must be a canonical, current-owner mode-0700 or setgid-only mode-2700
+    directory.  A temporary inode is fully written and synced before a
+    no-replace hard link publishes it; no existing destination of any file type
+    is followed or overwritten.
     """
 
     if not output_path.is_absolute() or output_path.name in {"", ".", ".."}:
         _fail("CANARY_OUTPUT_PATH_INVALID")
     parent = output_path.parent
-    try:
-        parent_metadata = os.lstat(parent)
-        resolved_parent = parent.resolve(strict=True)
-    except OSError:
-        _fail("CANARY_OUTPUT_PARENT_INVALID")
-    if (
-        resolved_parent != parent
-        or stat.S_ISLNK(parent_metadata.st_mode)
-        or not stat.S_ISDIR(parent_metadata.st_mode)
-        or parent_metadata.st_uid != os.geteuid()
-        or stat.S_IMODE(parent_metadata.st_mode) != 0o700
-    ):
-        _fail("CANARY_OUTPUT_PARENT_INVALID")
+    parent_metadata = _validate_private_output_parent(
+        parent, code="CANARY_OUTPUT_PARENT_INVALID"
+    )
+    parent_identity = (
+        parent_metadata.st_dev,
+        parent_metadata.st_ino,
+        parent_metadata.st_uid,
+        parent_metadata.st_gid,
+        stat.S_IMODE(parent_metadata.st_mode),
+    )
     if os.path.lexists(output_path):
         _fail("CANARY_OUTPUT_ALREADY_EXISTS")
     payload = serialize_manifest(value)
@@ -688,6 +703,17 @@ def write_private_manifest_no_clobber(
             or metadata.st_size != len(payload)
         ):
             _fail("CANARY_OUTPUT_POSTWRITE_INVALID")
+        publication_parent = _validate_private_output_parent(
+            parent, code="CANARY_OUTPUT_PARENT_CHANGED"
+        )
+        if (
+            publication_parent.st_dev,
+            publication_parent.st_ino,
+            publication_parent.st_uid,
+            publication_parent.st_gid,
+            stat.S_IMODE(publication_parent.st_mode),
+        ) != parent_identity:
+            _fail("CANARY_OUTPUT_PARENT_CHANGED")
         os.close(descriptor)
         descriptor = None
         try:

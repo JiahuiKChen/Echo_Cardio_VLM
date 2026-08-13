@@ -281,6 +281,28 @@ def _synthetic_authority_and_manifest(
             source_rows,
         ),
     )
+    historical_manifest = _write_fixture(
+        authority_root / "historical_study_manifest.csv",
+        b"subject_id,study_id\n1,1\n",
+    )
+    prior_smoke_manifest = _write_fixture(
+        authority_root / "prior_smoke_source_manifest.restricted.csv",
+        b"subject_id,study_id\n1,1\n",
+    )
+    prior_smoke_summary = _write_fixture(
+        authority_root / "prior_smoke_source_summary.json",
+        b'{"status":"SYNTHETIC"}\n',
+    )
+    prior_smoke_safety = _write_fixture(
+        authority_root / "prior_smoke_source_safety.json",
+        b'{"status":"SYNTHETIC"}\n',
+    )
+    prior_smoke_preservation = _write_fixture(
+        authority_root / "prior_smoke_preservation_manifest.tsv",
+        b"relative_path\tsize_bytes\tsha256\nsynthetic\t1\t"
+        + b"7" * 64
+        + b"\n",
+    )
     gcloud = _write_fixture(
         authority_root / "gcloud", b"#!/bin/sh\nexit 70\n", 0o700
     )
@@ -302,6 +324,11 @@ def _synthetic_authority_and_manifest(
     authority = minimal.LiveAuthority(
         governing_commit=governing_commit,
         selection_authority_commit=governing_commit,
+        legacy_session_sha256="6" * 64,
+        legacy_session_size=1,
+        legacy_session_repeated_assignment_count=0,
+        legacy_session_repeated_name_count=0,
+        legacy_session_conflict_count=0,
         checkpoint=checkpoint,
         checkpoint_sha256=core.sha256_file(checkpoint),
         environment_receipt=environment,
@@ -339,6 +366,21 @@ def _synthetic_authority_and_manifest(
         "crc32c_python_executable": core.sha256_file(crc_python),
         "crc32c_worker": core.sha256_file(crc_worker),
         "crc32c_distribution": "5" * 64,
+        "governing_commit": hashlib.sha256(
+            governing_commit.encode("ascii")
+        ).hexdigest(),
+        "selection_authority_commit": hashlib.sha256(
+            governing_commit.encode("ascii")
+        ).hexdigest(),
+        "legacy_session_environment": authority.legacy_session_sha256,
+        "selected_studies": core.sha256_file(selected_studies),
+        "historical_study_manifest": core.sha256_file(historical_manifest),
+        "prior_smoke_source_manifest": core.sha256_file(prior_smoke_manifest),
+        "prior_smoke_source_summary": core.sha256_file(prior_smoke_summary),
+        "prior_smoke_source_safety": core.sha256_file(prior_smoke_safety),
+        "prior_smoke_preservation_manifest": core.sha256_file(
+            prior_smoke_preservation
+        ),
     }
     sealed = fixture.manifest_contract.build_sealed_manifest(
         selected_studies=selected,
@@ -420,6 +462,91 @@ def _synthetic_token_provider(
             return "synthetic-token"
 
     return _Provider()
+
+
+def test_direct_manifest_plan_rejects_each_runtime_identity_tamper(
+    monkeypatch: Any,
+) -> None:
+    """Every sealed source/runtime identity must fail closed before effects."""
+
+    fixture = _fixture_module()
+    with tempfile.TemporaryDirectory(
+        prefix="minimal-authority-tamper-", dir=str(minimal.SAFE_TEMPORARY_ROOT)
+    ) as directory:
+        root = Path(directory).resolve()
+        authority, sealed, _, _ = _synthetic_authority_and_manifest(fixture, root)
+        authority_root = authority.selected_studies.parent
+        monkeypatch.setattr(
+            core,
+            "EXPECTED_SPLIT_MAP_SHA256",
+            core.sha256_file(authority.split_map),
+        )
+        monkeypatch.setattr(
+            core,
+            "EXPECTED_CHECKPOINT_SHA256",
+            core.sha256_file(authority.checkpoint),
+        )
+        monkeypatch.setattr(
+            core,
+            "EXPECTED_SELECTED_SOURCE_MANIFEST_SHA256",
+            core.sha256_file(authority.selected_source),
+        )
+        monkeypatch.setattr(
+            minimal,
+            "CURRENT_ENVIRONMENT_SHA256",
+            core.sha256_file(authority.environment_receipt),
+        )
+        fixed_paths = {
+            "HISTORICAL_STUDY_MANIFEST_PATH": authority_root
+            / "historical_study_manifest.csv",
+            "PRIOR_SMOKE_SOURCE_MANIFEST_PATH": authority_root
+            / "prior_smoke_source_manifest.restricted.csv",
+            "PRIOR_SMOKE_SOURCE_SUMMARY_PATH": authority_root
+            / "prior_smoke_source_summary.json",
+            "PRIOR_SMOKE_SOURCE_SAFETY_PATH": authority_root
+            / "prior_smoke_source_safety.json",
+            "PRIOR_SMOKE_PRESERVATION_MANIFEST_PATH": authority_root
+            / "prior_smoke_preservation_manifest.tsv",
+        }
+        for name, path in fixed_paths.items():
+            monkeypatch.setattr(minimal, name, path)
+        monkeypatch.setattr(
+            minimal,
+            "HISTORICAL_STUDY_MANIFEST_SHA256",
+            core.sha256_file(fixed_paths["HISTORICAL_STUDY_MANIFEST_PATH"]),
+        )
+        monkeypatch.setattr(
+            minimal,
+            "PRIOR_SMOKE_PRESERVATION_MANIFEST_SHA256",
+            core.sha256_file(
+                fixed_paths["PRIOR_SMOKE_PRESERVATION_MANIFEST_PATH"]
+            ),
+        )
+
+        # The untampered fixture is accepted by the same production-plan path.
+        minimal._build_direct_manifest_plan(sealed, authority=authority)
+        cases = {
+            "source_metadata": "MINIMAL_SELECTED_SOURCE_AUTHORITY_MISMATCH",
+            "split_map": "MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH",
+            "checkpoint": "MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH",
+            "environment_receipt": "MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH",
+            "gcloud_executable": "MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH",
+            "crc32c_worker": "MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH",
+        }
+        for logical_name, expected_code in cases.items():
+            tampered = copy.deepcopy(sealed)
+            for row in tampered["manifest"]["source_configuration_hashes"]:
+                if row["logical_name"] == logical_name:
+                    row["sha256"] = "f" * 64
+                    break
+            else:
+                raise AssertionError(f"missing authority binding {logical_name}")
+            try:
+                minimal._build_direct_manifest_plan(tampered, authority=authority)
+            except minimal.MinimalCanaryError as exc:
+                assert exc.code == expected_code
+            else:
+                raise AssertionError(f"accepted tampered authority {logical_name}")
 
 
 def _synthetic_external_crc32c_worker(
@@ -561,6 +688,42 @@ def test_minimal_canary_exact_five_end_to_end(monkeypatch: Any) -> None:
             core.sha256_file(authority.environment_receipt),
         )
         monkeypatch.setattr(minimal, "PRODUCTION_ROOT", test_root)
+        authority_root = authority.selected_studies.parent
+        monkeypatch.setattr(
+            minimal,
+            "HISTORICAL_STUDY_MANIFEST_PATH",
+            authority_root / "historical_study_manifest.csv",
+        )
+        monkeypatch.setattr(
+            minimal,
+            "HISTORICAL_STUDY_MANIFEST_SHA256",
+            core.sha256_file(minimal.HISTORICAL_STUDY_MANIFEST_PATH),
+        )
+        monkeypatch.setattr(
+            minimal,
+            "PRIOR_SMOKE_SOURCE_MANIFEST_PATH",
+            authority_root / "prior_smoke_source_manifest.restricted.csv",
+        )
+        monkeypatch.setattr(
+            minimal,
+            "PRIOR_SMOKE_SOURCE_SUMMARY_PATH",
+            authority_root / "prior_smoke_source_summary.json",
+        )
+        monkeypatch.setattr(
+            minimal,
+            "PRIOR_SMOKE_SOURCE_SAFETY_PATH",
+            authority_root / "prior_smoke_source_safety.json",
+        )
+        monkeypatch.setattr(
+            minimal,
+            "PRIOR_SMOKE_PRESERVATION_MANIFEST_PATH",
+            authority_root / "prior_smoke_preservation_manifest.tsv",
+        )
+        monkeypatch.setattr(
+            minimal,
+            "PRIOR_SMOKE_PRESERVATION_MANIFEST_SHA256",
+            core.sha256_file(minimal.PRIOR_SMOKE_PRESERVATION_MANIFEST_PATH),
+        )
         monkeypatch.setattr(
             core,
             "load_orchestration_contract",

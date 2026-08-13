@@ -15,10 +15,9 @@ unset CLOUDSDK_CONFIG GOOGLE_APPLICATION_CREDENTIALS
 WORKTREE=/restricted/project/mimicecho/code/Echo_Cardio_VLM_lvef_multitask
 ECHOPRIME_PYTHON=/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python
 EXPECTED_PYTHON_SHA256=1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
-[[ $# -ge 1 && $# -le 2 ]] || exit 64
+[[ $# -eq 1 ]] || exit 64
 case "$1:$#" in
-  --validate-installation:1|--preflight-only:1|--preflight-live-authority:1) ;;
-  --validate-sealed-manifest:2|--claim-sealed-manifest:2|--run-sealed-manifest:2) ;;
+  --validate-installation:1|--preflight-only:1|--preflight-live-authority:1|--seal-exact-five-manifest:1|--validate-sealed-manifest:1|--claim-sealed-manifest:1|--run-sealed-manifest:1) ;;
   *) exit 64 ;;
 esac
 if [[ "$1" = --run-sealed-manifest ]]; then

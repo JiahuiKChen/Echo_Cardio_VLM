@@ -11,9 +11,11 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
+import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -41,8 +43,63 @@ AUDIT_ROOT: Final = Path("/restricted/projectnb/mimicecho/audits")
 SESSION_AUTHORITY_PATH: Final = (
     AUDIT_ROOT / "lvef_multitask_phase1ebc_session.env"
 )
+LEGACY_SESSION_REQUIRED_NAMES: Final = frozenset(
+    {
+        "EXPECTED_COMMIT",
+        "PREFLIGHT_ENV",
+        "RUN_ROOT",
+        "PYTHON",
+        "SELECTED_STUDIES",
+        "EXPECTED_SELECTED_STUDIES_SHA256",
+        "SELECTED_SOURCE_MANIFEST",
+        "EXPECTED_SELECTED_SOURCE_SHA256",
+        "SPLIT_MAP",
+        "EXPECTED_SPLIT_MAP_SHA256",
+        "GCLOUD",
+        "GCLOUD_RESOLUTION_RECORD",
+        "EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256",
+        "CLOUDSDK_CONFIG",
+    }
+)
 PRODUCTION_ROOT: Final = Path(
     "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2"
+)
+OWNER_PRIVATE_ROOT: Final = PRODUCTION_ROOT / "owner_private"
+EXACT_FIVE_MANIFEST_PATH: Final = (
+    OWNER_PRIVATE_ROOT / "exact_five_manifest.restricted.json"
+)
+HISTORICAL_STUDY_MANIFEST_PATH: Final = Path(
+    "/restricted/project/mimicecho/code/Echo_Cardio_VLM/outputs/"
+    "cloud_cohorts/fullscale_all/study_embeddings_512/"
+    "study_embedding_manifest.csv"
+)
+HISTORICAL_STUDY_MANIFEST_SHA256: Final = (
+    "feaf0cf7da58ae3d9c8901a583e4319d1b34a8cc26ae57dfcecd309940f81a60"
+)
+PRIOR_SMOKE_RUN_ROOT: Final = Path(
+    "/restricted/project/mimicecho/audits/"
+    "lvef_multitask_phase1e_a_20260804T125829Z_022d7581eee4"
+)
+PRIOR_SMOKE_SOURCE_MANIFEST_PATH: Final = (
+    PRIOR_SMOKE_RUN_ROOT
+    / "restricted/source/technical_smoke_source_manifest_restricted.csv"
+)
+PRIOR_SMOKE_SOURCE_SUMMARY_PATH: Final = (
+    PRIOR_SMOKE_RUN_ROOT
+    / "aggregate/source/reconstruction_source_manifest.summary.json"
+)
+PRIOR_SMOKE_SOURCE_SAFETY_PATH: Final = (
+    PRIOR_SMOKE_RUN_ROOT
+    / "aggregate/source/reconstruction_source_manifest_safety_gate.json"
+)
+PRIOR_SMOKE_PRESERVATION_MANIFEST_PATH: Final = Path(
+    f"{PRIOR_SMOKE_RUN_ROOT}_preservation/preservation_manifest.tsv"
+)
+PRIOR_SMOKE_PRESERVATION_MANIFEST_SHA256: Final = (
+    "7be4f39e7ce9123d3f59407432cd39257082f13ceebbca8390266979f81fcc8b"
+)
+PRIOR_SMOKE_SOURCE_RELATIVE_PATH: Final = (
+    "restricted/source/technical_smoke_source_manifest_restricted.csv"
 )
 CHECKPOINT_PATH: Final = Path(
     "/restricted/project/mimicecho/echoprime_weights/echo_prime_encoder.pt"
@@ -68,6 +125,15 @@ ORDERED_STAGES: Final = (
 )
 MAX_OBJECTS: Final = 750
 MAX_BYTES: Final = 5_000_000_000
+EXPECTED_SELECTED_STUDIES: Final = 4_530
+EXPECTED_SPLIT_COUNTS: Final = {"train": 3_171, "val": 679, "test": 680}
+EXPECTED_HISTORICAL_SELECTED_STUDIES: Final = 4_525
+EXPECTED_HISTORICAL_NO_CINE_STUDIES: Final = 5
+EXPECTED_TRAIN_NO_CINE_STUDIES: Final = 3
+EXPECTED_PRIOR_SMOKE_STUDIES: Final = 4
+EXPECTED_RAW_SOURCE_ROWS: Final = 336_016
+EXPECTED_NORMALIZED_SOURCE_OBJECTS: Final = 335_984
+EXPECTED_COLLAPSED_SOURCE_ROWS: Final = 32
 CURRENT_ENVIRONMENT_COMMIT: Final = (
     "0bfcba9973fa6592ca75aa23c6cf0e42d432c5cb"
 )
@@ -211,6 +277,128 @@ def _parse_literal_environment(
     return result
 
 
+def _strict_csv_rows(payload: bytes, *, delimiter: str = ",") -> list[dict[str, str]]:
+    """Decode a nonempty CSV/TSV authority with a closed, duplicate-free header."""
+
+    try:
+        reader = csv.reader(
+            io.StringIO(payload.decode("utf-8-sig"), newline=""),
+            delimiter=delimiter,
+            strict=True,
+        )
+        rows = list(reader)
+    except (UnicodeError, csv.Error) as exc:
+        raise MinimalCanaryError("MINIMAL_ROW_AUTHORITY_INVALID") from exc
+    if not rows or not rows[0] or len(rows[0]) != len(set(rows[0])):
+        _fail("MINIMAL_ROW_AUTHORITY_INVALID")
+    header = rows[0]
+    if any(not name or name.strip() != name for name in header):
+        _fail("MINIMAL_ROW_AUTHORITY_INVALID")
+    result: list[dict[str, str]] = []
+    for cells in rows[1:]:
+        if len(cells) != len(header):
+            _fail("MINIMAL_ROW_AUTHORITY_INVALID")
+        result.append(dict(zip(header, cells, strict=True)))
+    if not result:
+        _fail("MINIMAL_ROW_AUTHORITY_EMPTY")
+    return result
+
+
+def _strict_json_object(payload: bytes) -> Mapping[str, Any]:
+    def pairs(items: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in items:
+            if key in value:
+                _fail("MINIMAL_ROW_AUTHORITY_DUPLICATE_KEY")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=pairs)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise MinimalCanaryError("MINIMAL_ROW_AUTHORITY_INVALID") from exc
+    if not isinstance(value, Mapping):
+        _fail("MINIMAL_ROW_AUTHORITY_INVALID")
+    return value
+
+
+def _strict_jsonl_rows(payload: bytes) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    for line in payload.splitlines():
+        if not line:
+            _fail("MINIMAL_ROW_AUTHORITY_INVALID")
+        rows.append(_strict_json_object(line))
+    if not rows:
+        _fail("MINIMAL_ROW_AUTHORITY_EMPTY")
+    return rows
+
+
+@dataclass(frozen=True)
+class LegacySessionProjection:
+    """Collapsed semantics and aggregate-safe metadata for one fixed legacy file."""
+
+    values: Mapping[str, str]
+    source_sha256: str
+    source_size: int
+    repeated_assignment_count: int
+    repeated_name_count: int
+    conflict_count: int
+
+
+def _project_legacy_session_environment(
+    *, required_names: frozenset[str]
+) -> LegacySessionProjection:
+    """Project identical repeats only from the fixed legacy session authority.
+
+    This compatibility parser is deliberately not parameterized by a path and
+    is never used for the canonical private billing environment.  It parses
+    literal bytes only; no shell or environment expansion is available.
+    """
+
+    if (
+        not required_names
+        or any(ENV_NAME_RE.fullmatch(name) is None for name in required_names)
+    ):
+        _fail("MINIMAL_PRIVATE_ENVIRONMENT_INVALID")
+    payload = _read_regular(SESSION_AUTHORITY_PATH, private=True)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MinimalCanaryError("MINIMAL_PRIVATE_ENVIRONMENT_INVALID") from exc
+    occurrences: dict[str, list[str]] = {name: [] for name in required_names}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name not in required_names:
+            continue
+        if (
+            ENV_NAME_RE.fullmatch(name) is None
+            or not value
+            or ENV_VALUE_RE.fullmatch(value) is None
+        ):
+            _fail("MINIMAL_PRIVATE_ENVIRONMENT_INVALID")
+        occurrences[name].append(value)
+
+    if any(not values for values in occurrences.values()):
+        _fail("MINIMAL_PRIVATE_ENVIRONMENT_INCOMPLETE")
+    conflicts = sum(len(set(values)) > 1 for values in occurrences.values())
+    if conflicts:
+        _fail("MINIMAL_LEGACY_SESSION_DUPLICATE_CONFLICT")
+    repeated_names = sum(len(values) > 1 for values in occurrences.values())
+    repeated_assignments = sum(len(values) - 1 for values in occurrences.values())
+    return LegacySessionProjection(
+        values={name: values[0] for name, values in occurrences.items()},
+        source_sha256=_sha256_bytes(payload),
+        source_size=len(payload),
+        repeated_assignment_count=repeated_assignments,
+        repeated_name_count=repeated_names,
+        conflict_count=0,
+    )
+
+
 def _git(*arguments: str, repository: Path = REPOSITORY_ROOT) -> str:
     value = subprocess.run(
         ["/usr/bin/git", *arguments],
@@ -234,6 +422,11 @@ def _git(*arguments: str, repository: Path = REPOSITORY_ROOT) -> str:
 class LiveAuthority:
     governing_commit: str
     selection_authority_commit: str
+    legacy_session_sha256: str
+    legacy_session_size: int
+    legacy_session_repeated_assignment_count: int
+    legacy_session_repeated_name_count: int
+    legacy_session_conflict_count: int
     checkpoint: Path
     checkpoint_sha256: str
     environment_receipt: Path
@@ -257,6 +450,17 @@ class LiveAuthority:
     source_metadata: Path
     split_map: Path
     split_map_sha256: str
+
+
+@dataclass(frozen=True)
+class FixedSelectionEvidence:
+    selected_rows: tuple[Mapping[str, Any], ...]
+    selected_source_rows: tuple[Mapping[str, Any], ...]
+    source_metadata_rows: tuple[Mapping[str, Any], ...]
+    split_rows: tuple[Mapping[str, Any], ...]
+    historical_rows: tuple[Mapping[str, Any], ...]
+    prior_smoke_rows: tuple[Mapping[str, Any], ...]
+    hashes: Mapping[str, str]
 
 
 def _validate_row_authority_metadata(path: Path) -> int:
@@ -347,19 +551,10 @@ def discover_live_authority(*, repository: Path = REPOSITORY_ROOT) -> LiveAuthor
     import lvef_c3_orchestration_core as core
     import lvef_c3_production_stages as production_stages
 
-    session_names = frozenset(
-        {
-            "EXPECTED_COMMIT", "PREFLIGHT_ENV", "RUN_ROOT", "PYTHON",
-            "SELECTED_STUDIES", "EXPECTED_SELECTED_STUDIES_SHA256",
-            "SELECTED_SOURCE_MANIFEST", "EXPECTED_SELECTED_SOURCE_SHA256",
-            "SPLIT_MAP", "EXPECTED_SPLIT_MAP_SHA256", "GCLOUD",
-            "GCLOUD_RESOLUTION_RECORD",
-            "EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256", "CLOUDSDK_CONFIG",
-        }
+    legacy_session = _project_legacy_session_environment(
+        required_names=LEGACY_SESSION_REQUIRED_NAMES
     )
-    values = _parse_literal_environment(
-        SESSION_AUTHORITY_PATH, required_names=session_names
-    )
+    values = legacy_session.values
     billing_values = _parse_literal_environment(
         Path(values["PREFLIGHT_ENV"]),
         required_names=frozenset({"LVEF_C3_GCP_BILLING_PROJECT"}),
@@ -433,6 +628,13 @@ def discover_live_authority(*, repository: Path = REPOSITORY_ROOT) -> LiveAuthor
     return LiveAuthority(
         governing_commit=head,
         selection_authority_commit=selection_commit,
+        legacy_session_sha256=legacy_session.source_sha256,
+        legacy_session_size=legacy_session.source_size,
+        legacy_session_repeated_assignment_count=(
+            legacy_session.repeated_assignment_count
+        ),
+        legacy_session_repeated_name_count=legacy_session.repeated_name_count,
+        legacy_session_conflict_count=legacy_session.conflict_count,
         checkpoint=CHECKPOINT_PATH,
         checkpoint_sha256=core.EXPECTED_CHECKPOINT_SHA256,
         environment_receipt=environment,
@@ -459,6 +661,504 @@ def discover_live_authority(*, repository: Path = REPOSITORY_ROOT) -> LiveAuthor
         split_map=split_map,
         split_map_sha256=values["EXPECTED_SPLIT_MAP_SHA256"],
     )
+
+
+def _bound_payload(
+    path: Path, *, expected_sha256: str, private: bool
+) -> bytes:
+    if SHA256_RE.fullmatch(expected_sha256) is None:
+        _fail("MINIMAL_ROW_AUTHORITY_HASH_INVALID")
+    payload = _read_regular(path, private=private)
+    if _sha256_bytes(payload) != expected_sha256:
+        _fail("MINIMAL_ROW_AUTHORITY_HASH_MISMATCH")
+    return payload
+
+
+def _load_fixed_selection_evidence(authority: LiveAuthority) -> FixedSelectionEvidence:
+    """Open the frozen row authorities only after all no-row gates pass."""
+
+    import lvef_c3_canary_manifest as manifest_contract
+
+    preservation_payload = _bound_payload(
+        PRIOR_SMOKE_PRESERVATION_MANIFEST_PATH,
+        expected_sha256=PRIOR_SMOKE_PRESERVATION_MANIFEST_SHA256,
+        private=False,
+    )
+    preservation_rows = _strict_csv_rows(preservation_payload, delimiter="\t")
+    if tuple(preservation_rows[0]) != (
+        "relative_path",
+        "size_bytes",
+        "sha256",
+    ):
+        _fail("MINIMAL_PRIOR_SMOKE_PRESERVATION_INVALID")
+    smoke_bindings = [
+        row
+        for row in preservation_rows
+        if row.get("relative_path") == PRIOR_SMOKE_SOURCE_RELATIVE_PATH
+    ]
+    if len(smoke_bindings) != 1:
+        _fail("MINIMAL_PRIOR_SMOKE_PRESERVATION_INVALID")
+    smoke_binding = smoke_bindings[0]
+    smoke_sha256 = str(smoke_binding.get("sha256", ""))
+    try:
+        smoke_size = int(str(smoke_binding.get("size_bytes", "")))
+    except ValueError as exc:
+        raise MinimalCanaryError("MINIMAL_PRIOR_SMOKE_PRESERVATION_INVALID") from exc
+    if smoke_size < 1 or SHA256_RE.fullmatch(smoke_sha256) is None:
+        _fail("MINIMAL_PRIOR_SMOKE_PRESERVATION_INVALID")
+
+    selected_payload = _bound_payload(
+        authority.selected_studies,
+        expected_sha256=authority.selected_studies_sha256,
+        private=False,
+    )
+    selected_source_payload = _bound_payload(
+        authority.selected_source,
+        expected_sha256=authority.selected_source_sha256,
+        private=True,
+    )
+    source_metadata_payload = _read_regular(authority.source_metadata, private=True)
+    split_payload = _bound_payload(
+        authority.split_map,
+        expected_sha256=authority.split_map_sha256,
+        private=False,
+    )
+    historical_payload = _bound_payload(
+        HISTORICAL_STUDY_MANIFEST_PATH,
+        expected_sha256=HISTORICAL_STUDY_MANIFEST_SHA256,
+        private=False,
+    )
+    smoke_payload = _bound_payload(
+        PRIOR_SMOKE_SOURCE_MANIFEST_PATH,
+        expected_sha256=smoke_sha256,
+        private=True,
+    )
+    if len(smoke_payload) != smoke_size:
+        _fail("MINIMAL_PRIOR_SMOKE_PRESERVATION_INVALID")
+    summary_payload = _read_regular(PRIOR_SMOKE_SOURCE_SUMMARY_PATH)
+    safety_payload = _read_regular(PRIOR_SMOKE_SOURCE_SAFETY_PATH)
+    summary = _strict_json_object(summary_payload)
+    safety = _strict_json_object(safety_payload)
+    expected_summary = {
+        "status": "PASS",
+        "schema_version": 2,
+        "historical_study_manifest_sha256": HISTORICAL_STUDY_MANIFEST_SHA256,
+        "selected_source_manifest_sha256": authority.selected_source_sha256,
+        "technical_smoke_source_manifest_sha256": smoke_sha256,
+        "n_selected_subjects": 4_530,
+        "n_selected_studies": 4_530,
+        "n_source_studies": 4_530,
+        "n_source_objects": 335_984,
+        "n_source_manifest_input_rows": 336_016,
+        "n_source_locator_duplicate_groups": 32,
+        "n_source_manifest_rows_collapsed": 32,
+        "n_source_duplicate_rows_total": 64,
+        "maximum_source_record_multiplicity": 2,
+        "n_source_locator_conflict_groups": 0,
+        "n_outside_selected_source_studies": 0,
+        "n_missing_selected_source_studies": 0,
+        "source_paths_safe_and_normalized": True,
+        "source_ownership_exact": True,
+        "source_objects_unique": True,
+        "raw_source_row_counts_match_selected_n_dicoms_authority": True,
+        "source_locator_conflict_gate_passed": True,
+        "source_object_key_bijection_gate_passed": True,
+        "smoke_n_roles": 4,
+        "smoke_n_studies": 4,
+        "smoke_all_train": True,
+        "outcomes_read": False,
+        "predictions_read": False,
+        "embedding_arrays_read": False,
+        "performance_computed": False,
+        "source_values_emitted_to_stdout": False,
+        "candidate_construction_mode": "phase1d_restricted_provenance",
+        "locked_split_counts_match": True,
+    }
+    expected_safety = {
+        "status": "PASS",
+        "aggregate_contains_identifiers": False,
+        "aggregate_contains_object_locators": False,
+        "restricted_outputs_outside_repository": True,
+        "smoke_hard_caps_passed": True,
+        "outcome_blind_selection_passed": True,
+        "restricted_input_authority_hash_gate_passed": True,
+        "locked_split_counts_gate_passed": True,
+        "gcs_exact_object_metadata_gate_required": True,
+        "source_locator_conflict_gate_passed": True,
+        "source_locator_reconciliation_recorded": True,
+        "raw_n_dicoms_reconciliation_gate_passed": True,
+    }
+    if any(summary.get(key) != value for key, value in expected_summary.items()):
+        _fail("MINIMAL_PRIOR_SOURCE_AUTHORITY_INVALID")
+    if any(safety.get(key) != value for key, value in expected_safety.items()):
+        _fail("MINIMAL_PRIOR_SOURCE_AUTHORITY_INVALID")
+
+    row_sets: tuple[list[Mapping[str, Any]], ...] = (
+        _strict_csv_rows(selected_payload),
+        _strict_csv_rows(selected_source_payload),
+        _strict_jsonl_rows(source_metadata_payload),
+        _strict_csv_rows(split_payload),
+        _strict_csv_rows(historical_payload),
+        _strict_csv_rows(smoke_payload),
+    )
+    for rows in row_sets:
+        for row in rows:
+            manifest_contract.reject_prohibited_fields(dict(row))
+    return FixedSelectionEvidence(
+        selected_rows=tuple(row_sets[0]),
+        selected_source_rows=tuple(row_sets[1]),
+        source_metadata_rows=tuple(row_sets[2]),
+        split_rows=tuple(row_sets[3]),
+        historical_rows=tuple(row_sets[4]),
+        prior_smoke_rows=tuple(row_sets[5]),
+        hashes={
+            "selected_studies": authority.selected_studies_sha256,
+            "source_metadata": _sha256_bytes(source_metadata_payload),
+            "historical_study_manifest": HISTORICAL_STUDY_MANIFEST_SHA256,
+            "prior_smoke_source_manifest": smoke_sha256,
+            "prior_smoke_source_summary": _sha256_bytes(summary_payload),
+            "prior_smoke_source_safety": _sha256_bytes(safety_payload),
+            "prior_smoke_preservation_manifest": (
+                PRIOR_SMOKE_PRESERVATION_MANIFEST_SHA256
+            ),
+        },
+    )
+
+
+def _project_selection_candidates(
+    evidence: FixedSelectionEvidence,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project outcome-blind candidates and exact source objects in memory."""
+
+    import lvef_c3_canary_manifest as manifest_contract
+    import lvef_c3_orchestration_core as core
+
+    try:
+        normalized = core.reconcile_selected_source_metadata(
+            evidence.selected_source_rows,
+            evidence.source_metadata_rows,
+            release=manifest_contract.SOURCE_RELEASE,
+        )
+    except Exception as exc:
+        raise MinimalCanaryError("MINIMAL_SELECTED_SOURCE_RECONCILIATION_FAILED") from exc
+    split_by_subject: dict[str, str] = {}
+    for row in evidence.split_rows:
+        subject = str(row.get("subject_id", ""))
+        split = str(row.get("split", ""))
+        if (
+            not subject.isdigit()
+            or str(int(subject)) != subject
+            or int(subject) < 1
+            or subject in split_by_subject
+            or split not in {"train", "val", "test"}
+        ):
+            _fail("MINIMAL_SPLIT_AUTHORITY_INVALID")
+        split_by_subject[subject] = split
+    if (
+        len(split_by_subject) != EXPECTED_SELECTED_STUDIES
+        or {name: tuple(split_by_subject.values()).count(name) for name in ("train", "val", "test")}
+        != EXPECTED_SPLIT_COUNTS
+    ):
+        _fail("MINIMAL_SPLIT_AUTHORITY_INVALID")
+
+    selected_ownership: dict[str, str] = {}
+    selected_pairs: set[tuple[str, str]] = set()
+    selected_counts: dict[tuple[str, str], int] = {}
+    for row in evidence.selected_rows:
+        subject, study = str(row.get("subject_id", "")), str(row.get("study_id", ""))
+        if (
+            not subject.isdigit()
+            or not study.isdigit()
+            or str(int(subject)) != subject
+            or str(int(study)) != study
+            or int(subject) < 1
+            or int(study) < 1
+            or study in selected_ownership
+            or (subject, study) in selected_pairs
+            or subject not in split_by_subject
+        ):
+            _fail("MINIMAL_SELECTED_STUDY_AUTHORITY_INVALID")
+        selected_ownership[study] = subject
+        selected_pairs.add((subject, study))
+        raw_count = str(row.get("n_dicoms", ""))
+        if not raw_count.isdigit() or int(raw_count) < 1:
+            _fail("MINIMAL_SELECTED_SOURCE_COUNT_INVALID")
+        selected_counts[(subject, study)] = int(raw_count)
+
+    def owned_pairs(rows: Sequence[Mapping[str, Any]], *, outside_ok: bool) -> set[tuple[str, str]]:
+        pairs: set[tuple[str, str]] = set()
+        for row in rows:
+            subject, study = str(row.get("subject_id", "")), str(row.get("study_id", ""))
+            owner = selected_ownership.get(study)
+            if owner is None:
+                if outside_ok:
+                    continue
+                _fail("MINIMAL_PRIOR_SOURCE_AUTHORITY_INVALID")
+            if owner != subject:
+                _fail("MINIMAL_PRIOR_SOURCE_OWNERSHIP_MISMATCH")
+            pairs.add((subject, study))
+        return pairs
+
+    historical_pairs = owned_pairs(evidence.historical_rows, outside_ok=True)
+    smoke_pairs = owned_pairs(evidence.prior_smoke_rows, outside_ok=False)
+    no_cine_pairs = selected_pairs - historical_pairs
+    if (
+        len(selected_pairs) != EXPECTED_SELECTED_STUDIES
+        or len({subject for subject, _ in selected_pairs}) != EXPECTED_SELECTED_STUDIES
+        or len(historical_pairs) != EXPECTED_HISTORICAL_SELECTED_STUDIES
+        or len(no_cine_pairs) != EXPECTED_HISTORICAL_NO_CINE_STUDIES
+        or sum(split_by_subject[subject] == "train" for subject, _ in no_cine_pairs)
+        != EXPECTED_TRAIN_NO_CINE_STUDIES
+        or len(smoke_pairs) != EXPECTED_PRIOR_SMOKE_STUDIES
+        or len({subject for subject, _ in smoke_pairs}) != EXPECTED_PRIOR_SMOKE_STUDIES
+        or any(split_by_subject.get(subject) != "train" for subject, _ in smoke_pairs)
+    ):
+        _fail("MINIMAL_PRIOR_SOURCE_AUTHORITY_INVALID")
+
+    objects_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    source_objects: list[dict[str, Any]] = []
+    for row in normalized:
+        subject, study = str(row["subject_id"]), str(row["study_id"])
+        pair = (subject, study)
+        if pair not in selected_pairs or str(row["split"]) != split_by_subject.get(subject):
+            _fail("MINIMAL_SELECTED_SOURCE_SCOPE_MISMATCH")
+        projected = {
+            "subject_id": subject,
+            "study_id": study,
+            "split": str(row["split"]),
+            "source_object_key": str(row["source_object_key"]),
+            "source_relative_path": str(row["source_relative_path"]),
+            "size_bytes": int(row["remote_size_bytes"]),
+            "generation": str(row["remote_generation"]),
+            "md5_base64": str(row["remote_md5_base64"]),
+            "crc32c_base64": str(row["remote_crc32c_base64"]),
+        }
+        objects_by_pair.setdefault(pair, []).append(projected)
+        source_objects.append(projected)
+    if (
+        set(objects_by_pair) != selected_pairs
+        or len(source_objects) != EXPECTED_NORMALIZED_SOURCE_OBJECTS
+    ):
+        _fail("MINIMAL_SELECTED_SOURCE_SCOPE_MISMATCH")
+    deficits = 0
+    for pair, objects in objects_by_pair.items():
+        if len(objects) > selected_counts.get(pair, 0):
+            _fail("MINIMAL_SELECTED_SOURCE_COUNT_INVALID")
+        deficits += selected_counts[pair] - len(objects)
+    if (
+        sum(selected_counts.values()) != EXPECTED_RAW_SOURCE_ROWS
+        or deficits != EXPECTED_COLLAPSED_SOURCE_ROWS
+    ):
+        _fail("MINIMAL_SELECTED_SOURCE_COUNT_INVALID")
+
+    candidates = [
+        {
+            "study_id": study,
+            "subject_id": subject,
+            "split": split_by_subject[subject],
+            "expected_object_count": len(objects_by_pair[(subject, study)]),
+            "expected_byte_total": sum(
+                int(item["size_bytes"]) for item in objects_by_pair[(subject, study)]
+            ),
+            "known_no_cine": (subject, study) in no_cine_pairs,
+            "prior_reconstruction_smoke": (subject, study) in smoke_pairs,
+        }
+        for subject, study in selected_pairs
+    ]
+    candidates.sort(key=lambda row: (int(row["subject_id"]), int(row["study_id"])))
+    source_objects.sort(
+        key=lambda row: (
+            int(row["subject_id"]),
+            int(row["study_id"]),
+            row["source_relative_path"],
+        )
+    )
+    return candidates, source_objects
+
+
+def _manifest_configuration_hashes(
+    authority: LiveAuthority, evidence: FixedSelectionEvidence
+) -> dict[str, str]:
+    values = {
+        "governing_commit": _sha256_bytes(
+            authority.governing_commit.encode("ascii")
+        ),
+        "selection_authority_commit": _sha256_bytes(
+            authority.selection_authority_commit.encode("ascii")
+        ),
+        "production_contract": _sha256_bytes(_read_regular(CONTRACT_PATH)),
+        "source_metadata": str(evidence.hashes["source_metadata"]),
+        "split_map": authority.split_map_sha256,
+        "checkpoint": authority.checkpoint_sha256,
+        "environment_receipt": authority.environment_receipt_sha256,
+        "state_machine_schema": _sha256_bytes(_read_regular(STATE_MACHINE_PATH)),
+        "resume_ledger_schema": _sha256_bytes(_read_regular(RESUME_LEDGER_PATH)),
+        "gcloud_resolution_receipt": authority.gcloud_receipt_sha256,
+        "gcloud_executable": authority.gcloud_sha256,
+        "crc32c_python_executable": authority.crc32c_python_sha256,
+        "crc32c_worker": authority.crc32c_worker_sha256,
+        "crc32c_distribution": authority.crc32c_distribution_sha256,
+        "legacy_session_environment": authority.legacy_session_sha256,
+        **{name: str(value) for name, value in evidence.hashes.items()},
+    }
+    if any(SHA256_RE.fullmatch(value) is None for value in values.values()):
+        _fail("MINIMAL_MANIFEST_RUNTIME_AUTHORITY_INCOMPLETE")
+    return dict(sorted(values.items()))
+
+
+def _require_manifest_run_absent(
+    *, manifest_file_sha256: str, governing_commit: str
+) -> Path:
+    run_root = (
+        PRODUCTION_ROOT
+        / "minimal_canary_runs"
+        / _minimal_run_identity(manifest_file_sha256, governing_commit)
+    )
+    run_parent = run_root.parent
+    if os.path.lexists(run_parent):
+        _validate_private_child(run_parent)
+    if os.path.lexists(run_root):
+        _fail("MINIMAL_MANIFEST_RUN_ALREADY_EXISTS")
+    return run_root
+
+
+def _require_sealer_destination_ready() -> None:
+    """Prove the fixed private publication target is ready without creating it."""
+
+    _validate_private_child(OWNER_PRIVATE_ROOT)
+    if os.path.lexists(EXACT_FIVE_MANIFEST_PATH):
+        _fail("MINIMAL_MANIFEST_OUTPUT_ALREADY_EXISTS")
+
+
+def seal_exact_five_manifest(
+    *, authority: LiveAuthority | None = None
+) -> dict[str, Any]:
+    """Seal the one fixed exact-five manifest; never submit or create a run root."""
+
+    import lvef_c3_canary_manifest as manifest_contract
+
+    _require_sealer_destination_ready()
+    current = _validate_live_no_row_gates(authority)
+    evidence = _load_fixed_selection_evidence(current)
+    candidates, source_objects = _project_selection_candidates(evidence)
+    try:
+        selected = manifest_contract.select_exact_five(candidates)
+        selected_pairs = {(item.subject_id, item.study_id) for item in selected}
+        selected_objects = [
+            row
+            for row in source_objects
+            if (str(row["subject_id"]), str(row["study_id"])) in selected_pairs
+        ]
+        configuration = _manifest_configuration_hashes(current, evidence)
+        manifest = manifest_contract.build_sealed_manifest(
+            selected_studies=selected,
+            source_objects=selected_objects,
+            source_authority_commit=current.selection_authority_commit,
+            source_manifest_sha256=current.selected_source_sha256,
+            source_configuration_hashes=configuration,
+        )
+        payload = manifest_contract.serialize_manifest(manifest)
+    except MinimalCanaryError:
+        raise
+    except Exception as exc:
+        code = getattr(exc, "code", "MINIMAL_MANIFEST_BUILD_INVALID")
+        raise MinimalCanaryError(str(code)) from exc
+    manifest_file_sha256 = _sha256_bytes(payload)
+    run_root = _require_manifest_run_absent(
+        manifest_file_sha256=manifest_file_sha256,
+        governing_commit=current.governing_commit,
+    )
+    # The frozen source inventory is large.  Release the first independent
+    # projection before repeating the full read/reconciliation so the no-body
+    # sealer never retains two cohort-wide row projections at once.
+    del evidence, candidates, source_objects
+    del selected, selected_objects, configuration
+
+    # Re-read every current authority and fully reconcile the exact-five plan
+    # immediately before the single publication effect.
+    refreshed = discover_live_authority()
+    if refreshed != current:
+        _fail("MINIMAL_LIVE_AUTHORITY_CHANGED")
+    refreshed_evidence = _load_fixed_selection_evidence(refreshed)
+    refreshed_candidates, refreshed_objects = _project_selection_candidates(
+        refreshed_evidence
+    )
+    refreshed_selected = manifest_contract.select_exact_five(refreshed_candidates)
+    refreshed_pairs = {
+        (item.subject_id, item.study_id) for item in refreshed_selected
+    }
+    refreshed_manifest = manifest_contract.build_sealed_manifest(
+        selected_studies=refreshed_selected,
+        source_objects=[
+            row
+            for row in refreshed_objects
+            if (str(row["subject_id"]), str(row["study_id"])) in refreshed_pairs
+        ],
+        source_authority_commit=refreshed.selection_authority_commit,
+        source_manifest_sha256=refreshed.selected_source_sha256,
+        source_configuration_hashes=_manifest_configuration_hashes(
+            refreshed, refreshed_evidence
+        ),
+    )
+    if refreshed_manifest != manifest:
+        _fail("MINIMAL_LIVE_AUTHORITY_CHANGED")
+    del refreshed_evidence, refreshed_candidates, refreshed_objects
+    del refreshed_selected
+    _build_direct_manifest_plan(refreshed_manifest, authority=refreshed)
+    if os.path.lexists(EXACT_FIVE_MANIFEST_PATH) or os.path.lexists(run_root):
+        _fail("MINIMAL_MANIFEST_OUTPUT_ALREADY_EXISTS")
+    exact_sha256, semantic_sha256 = manifest_contract.write_private_manifest_no_clobber(
+        EXACT_FIVE_MANIFEST_PATH, manifest
+    )
+    if exact_sha256 != manifest_file_sha256 or semantic_sha256 != manifest["manifest_sha256"]:
+        _fail("MINIMAL_MANIFEST_PUBLICATION_IDENTITY_MISMATCH")
+    reloaded = manifest_contract.load_and_validate_manifest(
+        EXACT_FIVE_MANIFEST_PATH,
+        expected_file_sha256=manifest_file_sha256,
+        expected_manifest_sha256=str(manifest["manifest_sha256"]),
+        expected_source_authority_commit=current.selection_authority_commit,
+    )
+    if reloaded != manifest or manifest_contract.serialize_manifest(reloaded) != payload:
+        _fail("MINIMAL_MANIFEST_POSTPUBLICATION_INVALID")
+    postpublication_authority = discover_live_authority()
+    if postpublication_authority != refreshed:
+        _fail("MINIMAL_LIVE_AUTHORITY_CHANGED")
+    independently_loaded, independent_payload, independent_sha256 = _load_manifest(
+        EXACT_FIVE_MANIFEST_PATH
+    )
+    if (
+        independently_loaded != reloaded
+        or independent_payload != payload
+        or independent_sha256 != manifest_file_sha256
+    ):
+        _fail("MINIMAL_MANIFEST_POSTPUBLICATION_INVALID")
+    _build_direct_manifest_plan(
+        independently_loaded, authority=postpublication_authority
+    )
+    if _require_manifest_run_absent(
+        manifest_file_sha256=manifest_file_sha256,
+        governing_commit=postpublication_authority.governing_commit,
+    ) != run_root:
+        _fail("MINIMAL_MANIFEST_RUN_IDENTITY_CHANGED")
+    body = reloaded["manifest"]
+    return {
+        "status": "PASS_MINIMAL_EXACT_FIVE_MANIFEST_SEALED",
+        "governing_commit": current.governing_commit,
+        "study_count": int(body["study_count"]),
+        "subject_count": int(body["subject_count"]),
+        "declared_object_count": int(body["expected_object_count"]),
+        "declared_expected_bytes": int(body["expected_byte_total"]),
+        "manifest_file_sha256": manifest_file_sha256,
+        "manifest_sha256": str(reloaded["manifest_sha256"]),
+        "sealed_exact_five_manifest": "PASS",
+        "real_manifest_created": True,
+        "ready_to_seal_exact_five_manifest": "NO",
+        "ready_for_first_body_request": "YES",
+        "cloud_requests": 0,
+        "qsub_submissions": 0,
+        "dicom_bodies_processed": 0,
+        "gpu_execution": False,
+    }
 
 
 def _load_manifest(path: Path) -> tuple[dict[str, Any], bytes, str]:
@@ -750,6 +1450,15 @@ def _manifest_configuration(manifest: Mapping[str, Any]) -> dict[str, str]:
         "crc32c_python_executable",
         "crc32c_worker",
         "crc32c_distribution",
+        "governing_commit",
+        "selection_authority_commit",
+        "legacy_session_environment",
+        "selected_studies",
+        "historical_study_manifest",
+        "prior_smoke_source_manifest",
+        "prior_smoke_source_summary",
+        "prior_smoke_source_safety",
+        "prior_smoke_preservation_manifest",
     }
     if not required.issubset(values) or any(
         SHA256_RE.fullmatch(values[name]) is None for name in required
@@ -785,7 +1494,10 @@ def _manifest_object_rows(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _reconcile_manifest_membership(
-    manifest: Mapping[str, Any], *, authority: LiveAuthority
+    manifest: Mapping[str, Any],
+    *,
+    authority: LiveAuthority,
+    configuration: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Prove every sealed object is an exact member of the frozen sources.
 
@@ -799,20 +1511,28 @@ def _reconcile_manifest_membership(
 
     body = manifest["manifest"]
     try:
+        selected_payload = _read_regular(authority.selected_studies)
+        selected_source_payload = _read_regular(
+            authority.selected_source, private=True
+        )
+        metadata_payload = _read_regular(authority.source_metadata, private=True)
+        split_payload = _read_regular(authority.split_map)
         if (
-            core.sha256_file(authority.selected_studies)
-            != authority.selected_studies_sha256
-            or core.sha256_file(authority.selected_source)
+            _sha256_bytes(selected_payload) != authority.selected_studies_sha256
+            or _sha256_bytes(selected_source_payload)
             != authority.selected_source_sha256
+            or _sha256_bytes(metadata_payload) != configuration["source_metadata"]
+            or _sha256_bytes(split_payload) != authority.split_map_sha256
+            or authority.split_map_sha256 != configuration["split_map"]
             or str(body["source_manifest_sha256"])
             != authority.selected_source_sha256
         ):
             _fail("MINIMAL_SELECTED_SOURCE_AUTHORITY_MISMATCH")
 
-        selected_rows = core._read_csv_rows(authority.selected_studies)
-        selected_source_rows = core._read_csv_rows(authority.selected_source)
-        metadata_rows = core._read_jsonl_rows(authority.source_metadata)
-        split_rows = core._read_csv_rows(authority.split_map)
+        selected_rows = _strict_csv_rows(selected_payload)
+        selected_source_rows = _strict_csv_rows(selected_source_payload)
+        metadata_rows = _strict_jsonl_rows(metadata_payload)
+        split_rows = _strict_csv_rows(split_payload)
         normalized = core.reconcile_selected_source_metadata(
             selected_source_rows,
             metadata_rows,
@@ -889,6 +1609,16 @@ def _build_direct_manifest_plan(
 
     body = manifest["manifest"]
     configuration = _manifest_configuration(manifest)
+    fixed_provenance = {
+        "historical_study_manifest": (HISTORICAL_STUDY_MANIFEST_PATH, False),
+        "prior_smoke_source_manifest": (PRIOR_SMOKE_SOURCE_MANIFEST_PATH, True),
+        "prior_smoke_source_summary": (PRIOR_SMOKE_SOURCE_SUMMARY_PATH, False),
+        "prior_smoke_source_safety": (PRIOR_SMOKE_SOURCE_SAFETY_PATH, False),
+        "prior_smoke_preservation_manifest": (
+            PRIOR_SMOKE_PRESERVATION_MANIFEST_PATH,
+            False,
+        ),
+    }
     fixed_files = {
         "production_contract": CONTRACT_PATH,
         "checkpoint": authority.checkpoint,
@@ -902,6 +1632,9 @@ def _build_direct_manifest_plan(
     }
     for name, path in fixed_files.items():
         if core.sha256_file(path) != configuration[name]:
+            _fail("MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH")
+    for name, (path, private) in fixed_provenance.items():
+        if _sha256_bytes(_read_regular(path, private=private)) != configuration[name]:
             _fail("MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH")
     # Row-bearing authorities are not opened in no-body preflight. Their
     # detached identities are fixed by the preserved source selection, then
@@ -919,9 +1652,18 @@ def _build_direct_manifest_plan(
         or configuration["crc32c_worker"] != authority.crc32c_worker_sha256
         or configuration["crc32c_distribution"]
         != authority.crc32c_distribution_sha256
-        or core.sha256_file(authority.split_map) != authority.split_map_sha256
-        or core.sha256_file(authority.source_metadata)
-        != configuration["source_metadata"]
+        or configuration["governing_commit"]
+        != _sha256_bytes(authority.governing_commit.encode("ascii"))
+        or configuration["selection_authority_commit"]
+        != _sha256_bytes(authority.selection_authority_commit.encode("ascii"))
+        or configuration["legacy_session_environment"]
+        != authority.legacy_session_sha256
+        or configuration["selected_studies"]
+        != authority.selected_studies_sha256
+        or configuration["historical_study_manifest"]
+        != HISTORICAL_STUDY_MANIFEST_SHA256
+        or configuration["prior_smoke_preservation_manifest"]
+        != PRIOR_SMOKE_PRESERVATION_MANIFEST_SHA256
     ):
         _fail("MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH")
     environment = json.loads(_read_regular(authority.environment_receipt, private=True))
@@ -963,7 +1705,7 @@ def _build_direct_manifest_plan(
     }
     requirements = _manifest_requirements(manifest)
     reconciled_objects = _reconcile_manifest_membership(
-        manifest, authority=authority
+        manifest, authority=authority, configuration=configuration
     )
     selected_rows = [
         {"subject_id": row["subject_id"], "study_id": row["study_id"]}
@@ -1492,6 +2234,8 @@ def claim_sealed_manifest_submission(
         "manifest_file_sha256": file_sha256,
         "cloud_requests": 0,
         "qsub_submissions": 0,
+        "dicom_bodies_processed": 0,
+        "gpu_execution": False,
     }
 
 
@@ -1744,8 +2488,12 @@ def synthetic_preflight() -> dict[str, Any]:
     }
 
 
-def live_authority_no_body_preflight() -> dict[str, Any]:
-    authority = discover_live_authority()
+def _validate_live_no_row_gates(
+    authority: LiveAuthority | None = None,
+) -> LiveAuthority:
+    """Validate current capacity and scheduler metadata before any row body read."""
+
+    current = authority or discover_live_authority()
     import capture_lvef_c3_post_reallocation_capacity as capacity
 
     headroom = capacity.validate_current_canary_headroom(
@@ -1762,6 +2510,12 @@ def live_authority_no_body_preflight() -> dict[str, Any]:
         or len(scheduler_payload) != scheduler_metadata.st_size
     ):
         _fail("MINIMAL_LIVE_PREFLIGHT_EFFECT_OR_SCHEDULER_INVALID")
+    return current
+
+
+def live_authority_no_body_preflight() -> dict[str, Any]:
+    authority = _validate_live_no_row_gates()
+    _require_sealer_destination_ready()
     # Validate the scientific shape in memory. No real manifest or output is
     # created and the first body boundary (transport.fetch) is not called.
     manifest = _synthetic_manifest()
@@ -1770,7 +2524,14 @@ def live_authority_no_body_preflight() -> dict[str, Any]:
     return {
         "status": "PASS_MINIMAL_LIVE_AUTHORITY_NO_BODY_PREFLIGHT",
         "governing_commit": authority.governing_commit,
-        "ready_for_first_body_request": "YES",
+        "legacy_session_projection": "PASS",
+        "legacy_session_repeated_names": (
+            authority.legacy_session_repeated_name_count
+        ),
+        "legacy_session_conflicts": authority.legacy_session_conflict_count,
+        "canonical_env_duplicate_rejection": "ENFORCED",
+        "ready_to_seal_exact_five_manifest": "YES",
+        "ready_for_first_body_request": "NO",
         "real_manifest_created": False,
         "cloud_requests": 0,
         "qsub_submissions": 0,
@@ -1780,22 +2541,67 @@ def live_authority_no_body_preflight() -> dict[str, Any]:
 
 
 def _print_result(value: Mapping[str, Any]) -> None:
+    required_effects = {
+        "cloud_requests",
+        "qsub_submissions",
+        "dicom_bodies_processed",
+        "gpu_execution",
+    }
+    if not required_effects.issubset(value):
+        _fail("MINIMAL_RESULT_EFFECT_ATTESTATION_INCOMPLETE")
     print("LVEF_C3_MINIMAL_CANARY=PASS")
     print(f"STATUS={value['status']}")
     if "governing_commit" in value:
         print(f"GOVERNING_COMMIT={value['governing_commit']}")
+    for key, marker in (
+        ("study_count", "MANIFEST_STUDIES"),
+        ("subject_count", "MANIFEST_SUBJECTS"),
+        ("declared_object_count", "DECLARED_OBJECTS"),
+        ("declared_expected_bytes", "DECLARED_EXPECTED_BYTES"),
+        ("manifest_file_sha256", "MANIFEST_FILE_SHA256"),
+        ("manifest_sha256", "MANIFEST_SEMANTIC_SHA256"),
+    ):
+        if key in value:
+            print(f"{marker}={value[key]}")
     if value.get("echoprime_runtime") == "PASS":
         print("ECHOPRIME_RUNTIME=PASS")
     if value.get("crc32c_external_runtime") == "PASS":
         print("CRC32C_EXTERNAL_RUNTIME=PASS")
     if value.get("minimal_canary_preflight") == "PASS":
         print("MINIMAL_CANARY_PREFLIGHT=PASS")
-    if value.get("ready_for_first_body_request") == "YES":
-        print("READY_FOR_FIRST_BODY_REQUEST=YES")
-    print(f"CLOUD_REQUESTS={value.get('cloud_requests', 0)}")
-    print(f"QSUB_SUBMISSIONS={value.get('qsub_submissions', 0)}")
-    print("DICOM_BODIES_DOWNLOADED=NO")
-    print("GPU_EXECUTION=NO")
+    if value.get("legacy_session_projection") == "PASS":
+        print("LEGACY_SESSION_PROJECTION=PASS")
+        print(
+            "LEGACY_SESSION_REPEATED_NAMES="
+            f"{value['legacy_session_repeated_names']}"
+        )
+        print(f"LEGACY_SESSION_CONFLICTS={value['legacy_session_conflicts']}")
+    if value.get("canonical_env_duplicate_rejection") == "ENFORCED":
+        print("CANONICAL_ENV_DUPLICATE_REJECTION=ENFORCED")
+    if value.get("ready_to_seal_exact_five_manifest") in {"YES", "NO"}:
+        print(
+            "READY_TO_SEAL_EXACT_FIVE_MANIFEST="
+            f"{value['ready_to_seal_exact_five_manifest']}"
+        )
+    if isinstance(value.get("real_manifest_created"), bool):
+        print(
+            "REAL_CANARY_MANIFEST_CREATED="
+            f"{'YES' if value['real_manifest_created'] else 'NO'}"
+        )
+    if value.get("sealed_exact_five_manifest") == "PASS":
+        print("SEALED_EXACT_FIVE_MANIFEST=PASS")
+    if value.get("ready_for_first_body_request") in {"YES", "NO"}:
+        print(
+            "READY_FOR_FIRST_BODY_REQUEST="
+            f"{value['ready_for_first_body_request']}"
+        )
+    print(f"CLOUD_REQUESTS={value['cloud_requests']}")
+    print(f"QSUB_SUBMISSIONS={value['qsub_submissions']}")
+    print(
+        "DICOM_BODIES_DOWNLOADED="
+        f"{'YES' if value['dicom_bodies_processed'] else 'NO'}"
+    )
+    print(f"GPU_EXECUTION={'YES' if value['gpu_execution'] else 'NO'}")
 
 
 def _failure_effect_markers(*, live_run: bool) -> tuple[str, ...]:
@@ -1820,9 +2626,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--validate-installation", action="store_true")
     modes.add_argument("--preflight-only", action="store_true")
     modes.add_argument("--preflight-live-authority", action="store_true")
-    modes.add_argument("--validate-sealed-manifest", type=Path)
-    modes.add_argument("--claim-sealed-manifest", type=Path)
-    modes.add_argument("--run-sealed-manifest", type=Path)
+    modes.add_argument("--seal-exact-five-manifest", action="store_true")
+    modes.add_argument("--validate-sealed-manifest", action="store_true")
+    modes.add_argument("--claim-sealed-manifest", action="store_true")
+    modes.add_argument("--run-sealed-manifest", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -1845,20 +2652,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             "echoprime_runtime": installation["echoprime_runtime"],
             "crc32c_external_runtime": installation["crc32c_external_runtime"],
         }
-    elif args.validate_sealed_manifest is not None:
+    elif args.seal_exact_five_manifest:
         validate_installation()
-        manifest, _, file_sha = _load_manifest(args.validate_sealed_manifest)
+        result = seal_exact_five_manifest()
+    elif args.validate_sealed_manifest:
+        validate_installation()
+        manifest, _, file_sha = _load_manifest(EXACT_FIVE_MANIFEST_PATH)
+        authority = _validate_live_no_row_gates()
+        _build_direct_manifest_plan(manifest, authority=authority)
         result = {
             "status": "PASS_MINIMAL_SEALED_MANIFEST",
+            "governing_commit": authority.governing_commit,
             "manifest_sha256": manifest["manifest_sha256"],
             "manifest_file_sha256": file_sha,
+            "study_count": manifest["manifest"]["study_count"],
+            "subject_count": manifest["manifest"]["subject_count"],
+            "declared_object_count": manifest["manifest"]["expected_object_count"],
+            "declared_expected_bytes": manifest["manifest"]["expected_byte_total"],
+            "sealed_exact_five_manifest": "PASS",
+            "real_manifest_created": True,
+            "ready_to_seal_exact_five_manifest": "NO",
+            "ready_for_first_body_request": "YES",
             "cloud_requests": 0,
             "qsub_submissions": 0,
+            "dicom_bodies_processed": 0,
+            "gpu_execution": False,
         }
-    elif args.claim_sealed_manifest is not None:
+    elif args.claim_sealed_manifest:
         validate_installation()
         result = claim_sealed_manifest_submission(
-            manifest_path=args.claim_sealed_manifest
+            manifest_path=EXACT_FIVE_MANIFEST_PATH
         )
     else:
         validate_installation()
@@ -1866,7 +2689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if re.fullmatch(r"[1-9][0-9]{0,19}", job_id) is None:
             _fail("MINIMAL_SCHEDULER_JOB_IDENTITY_INVALID")
         terminal = run_sealed_manifest(
-            manifest_path=args.run_sealed_manifest,
+            manifest_path=EXACT_FIVE_MANIFEST_PATH,
             scheduler_job_identity=job_id,
         )
         print("LVEF_C3_MINIMAL_CANARY=PASS")

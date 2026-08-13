@@ -8,9 +8,11 @@ import json
 import os
 from pathlib import Path
 import random
+import stat
 import sys
 import tempfile
 from typing import Any, Callable
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -334,6 +336,115 @@ def test_private_file_load_no_follow_and_write_no_clobber() -> None:
             "CANARY_MANIFEST_MODE_INVALID",
             lambda: canary.load_and_validate_manifest(manifest_path),
         )
+
+
+def _metadata_with_mode(metadata: os.stat_result, mode: int) -> os.stat_result:
+    return os.stat_result(
+        (stat.S_IFMT(metadata.st_mode) | mode, *tuple(metadata)[1:])
+    )
+
+
+def test_private_manifest_writer_accepts_only_0700_or_setgid_only_2700() -> None:
+    _, _, sealed = _fixture()
+    with tempfile.TemporaryDirectory() as raw:
+        private = Path(raw).resolve() / "private"
+        private.mkdir(mode=0o700)
+        private.chmod(0o700)
+        real_lstat = os.lstat
+
+        def write_with_effective_parent_mode(mode: int, name: str) -> Path:
+            def effective_lstat(path: os.PathLike[str] | str) -> os.stat_result:
+                metadata = real_lstat(path)
+                if Path(path) == private:
+                    return _metadata_with_mode(metadata, mode)
+                return metadata
+
+            output = private / name
+            with mock.patch.object(canary.os, "lstat", side_effect=effective_lstat):
+                canary.write_private_manifest_no_clobber(output, sealed)
+            return output
+
+        mode_0700 = write_with_effective_parent_mode(0o700, "mode-0700.json")
+        mode_2700 = write_with_effective_parent_mode(0o2700, "mode-2700.json")
+        assert stat.S_IMODE(mode_0700.stat().st_mode) == 0o600
+        assert stat.S_IMODE(mode_2700.stat().st_mode) == 0o600
+
+        for mode in (0o770, 0o2770, 0o1700, 0o4700):
+            output = private / f"forbidden-{mode:o}.json"
+
+            def forbidden_lstat(
+                path: os.PathLike[str] | str, *, effective_mode: int = mode
+            ) -> os.stat_result:
+                metadata = real_lstat(path)
+                if Path(path) == private:
+                    return _metadata_with_mode(metadata, effective_mode)
+                return metadata
+
+            with mock.patch.object(canary.os, "lstat", side_effect=forbidden_lstat):
+                _assert_error(
+                    "CANARY_OUTPUT_PARENT_INVALID",
+                    lambda: canary.write_private_manifest_no_clobber(output, sealed),
+                )
+            assert not output.exists()
+
+
+def test_private_manifest_writer_rechecks_parent_identity_before_publish() -> None:
+    _, _, sealed = _fixture()
+    with tempfile.TemporaryDirectory() as raw:
+        private = Path(raw).resolve() / "private"
+        private.mkdir(mode=0o700)
+        private.chmod(0o700)
+        output = private / "identity-change.json"
+        real_lstat = os.lstat
+
+        def changed_parent_lstat(path: os.PathLike[str] | str) -> os.stat_result:
+            metadata = real_lstat(path)
+            if Path(path) == private and any(
+                private.glob(f".{output.name}.tmp.*")
+            ):
+                values = list(metadata)
+                values[1] = int(metadata.st_ino) + 1
+                return os.stat_result(values)
+            return metadata
+
+        with mock.patch.object(
+            canary.os, "lstat", side_effect=changed_parent_lstat
+        ):
+            _assert_error(
+                "CANARY_OUTPUT_PARENT_CHANGED",
+                lambda: canary.write_private_manifest_no_clobber(output, sealed),
+            )
+        assert not output.exists()
+        assert not list(private.glob(f".{output.name}.tmp.*"))
+
+
+def test_private_manifest_writer_preserves_existing_symlink_destination() -> None:
+    _, _, sealed = _fixture()
+    with tempfile.TemporaryDirectory() as raw:
+        private = Path(raw).resolve() / "private"
+        private.mkdir(mode=0o700)
+        private.chmod(0o700)
+        existing = private / "existing.json"
+        existing.write_bytes(b"existing-private-evidence\n")
+        existing.chmod(0o600)
+        destination = private / "canary.restricted.json"
+        destination.symlink_to(existing)
+        _assert_error(
+            "CANARY_OUTPUT_ALREADY_EXISTS",
+            lambda: canary.write_private_manifest_no_clobber(destination, sealed),
+        )
+        assert destination.is_symlink()
+        assert existing.read_bytes() == b"existing-private-evidence\n"
+        assert not list(private.glob(f".{destination.name}.tmp.*"))
+
+        linked_parent = Path(raw).resolve() / "linked-private"
+        linked_parent.symlink_to(private, target_is_directory=True)
+        linked_output = linked_parent / "through-parent-symlink.json"
+        _assert_error(
+            "CANARY_OUTPUT_PARENT_INVALID",
+            lambda: canary.write_private_manifest_no_clobber(linked_output, sealed),
+        )
+        assert not (private / linked_output.name).exists()
 
 
 def test_tracked_json_schema_is_closed_and_matches_runtime_constants() -> None:
