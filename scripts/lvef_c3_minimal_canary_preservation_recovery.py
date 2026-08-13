@@ -700,26 +700,57 @@ def validate_pooling_ledger_state(
     except Exception as exc:
         raise RecoveryError("RECOVERY_POOLING_LEDGER_AUTHORITY_INVALID") from exc
     batch_ledger = pooling_ledger["batches"].get(BATCH_ID)
-    expected_states = [
-        "PLANNED",
-        "DOWNLOAD_VERIFIED",
-        "DICOM_AUDIT_COMPLETE",
-        "EXTRACTION_COMPLETE",
-        "EMBEDDING_COMPLETE",
-        "STUDY_POOLING_COMPLETE",
-    ]
+    expected_states = list(
+        core.STATE_SEQUENCE[
+            : core.STATE_SEQUENCE.index("STUDY_POOLING_COMPLETE") + 1
+        ]
+    )
+    events = (
+        batch_ledger.get("events", [])
+        if isinstance(batch_ledger, Mapping)
+        else []
+    )
+    transition = load_json(
+        ECHOPRIME_ROOT
+        / "transition_receipts"
+        / "study_pooling_complete.restricted.json",
+        private=True,
+    )
     if (
         pooling_ledger.get("status") != "ACTIVE"
         or not isinstance(batch_ledger, Mapping)
         or batch_ledger.get("state") != "STUDY_POOLING_COMPLETE"
         or batch_ledger.get("resume_state") is not None
         or batch_ledger.get("completed_states") != expected_states
-        or [event.get("to_state") for event in batch_ledger.get("events", [])]
-        != expected_states[1:]
+        or not isinstance(events, list)
+        or len(events) < 2
+        or any(
+            not isinstance(event, Mapping)
+            or set(event) != {"from_state", "to_state", "receipt_sha256"}
+            for event in events
+        )
+        or [
+            (event.get("from_state"), event.get("to_state"))
+            for event in events
+        ]
+        != list(zip(expected_states, expected_states[1:]))
         or batch_ledger.get("download_manifest_sha256")
         != sha256_file(RAW_BATCH_ROOT / "verified_download_manifest.restricted.csv")
-        or batch_ledger.get("events", [])[-1].get("output_manifest_sha256")
+        or set(transition) != core.RECEIPT_KEYS
+        or transition.get("schema_version") != 2
+        or transition.get("receipt_type") != "lvef_c3_state_transition_v2"
+        or transition.get("attempt_id") != RUN_ID
+        or transition.get("batch_id") != BATCH_ID
+        or transition.get("from_state") != "EMBEDDING_COMPLETE"
+        or transition.get("to_state") != "STUDY_POOLING_COMPLETE"
+        or transition.get("status") != "PASS"
+        or transition.get("authority") != runtime_authority
+        or transition.get("input_receipt_sha256")
+        != [events[-2].get("receipt_sha256")]
+        or transition.get("output_manifest_sha256")
         != sha256_file(ECHOPRIME_ROOT / "study_manifest.restricted.csv")
+        or core.canonical_json_sha256(transition)
+        != events[-1].get("receipt_sha256")
     ):
         _fail("RECOVERY_POOLING_LEDGER_STATE_INVALID")
 

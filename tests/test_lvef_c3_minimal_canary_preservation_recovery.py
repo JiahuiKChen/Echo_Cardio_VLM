@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import lvef_c3_minimal_canary_preservation_recovery as recovery
+import lvef_c3_orchestration_core as orchestration_core
 
 
 def _private_dir(path: Path) -> Path:
@@ -742,38 +743,65 @@ def test_retained_cache_replay_rejects_every_material_mutation(target: str) -> N
 def test_exact_post_pooling_state_required() -> None:
     plan = {"batches": [{"objects": [{"source_object_key": "object-1"}]}]}
     authority = {"batch_plan_sha256": "a" * 64}
+    completed_states = list(
+        orchestration_core.STATE_SEQUENCE[
+            : orchestration_core.STATE_SEQUENCE.index("STUDY_POOLING_COMPLETE")
+            + 1
+        ]
+    )
+    events = [
+        {
+            "from_state": from_state,
+            "to_state": to_state,
+            "receipt_sha256": f"{index + 1:064x}",
+        }
+        for index, (from_state, to_state) in enumerate(
+            zip(completed_states, completed_states[1:])
+        )
+    ]
     ledger = {
         "status": "ACTIVE",
         "batches": {
             recovery.BATCH_ID: {
                 "state": "STUDY_POOLING_COMPLETE",
                 "resume_state": None,
-                "completed_states": [
-                    "PLANNED", "DOWNLOAD_VERIFIED", "DICOM_AUDIT_COMPLETE",
-                    "EXTRACTION_COMPLETE", "EMBEDDING_COMPLETE", "STUDY_POOLING_COMPLETE",
-                ],
-                "events": [
-                    {"to_state": state, "output_manifest_sha256": "0" * 64}
-                    for state in (
-                        "DOWNLOAD_VERIFIED", "DICOM_AUDIT_COMPLETE", "EXTRACTION_COMPLETE",
-                        "EMBEDDING_COMPLETE", "STUDY_POOLING_COMPLETE",
-                    )
-                ],
+                "completed_states": completed_states,
+                "events": events,
                 "download_manifest_sha256": "d" * 64,
             }
         },
     }
-    ledger["batches"][recovery.BATCH_ID]["events"][-1]["output_manifest_sha256"] = "s" * 64
     with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
         root = _private_dir(Path(directory) / "root")
-        ledger_path = _write(root / "pooling.json", (json.dumps(ledger) + "\n").encode())
         download_manifest = _write(
             root / "verified_download_manifest.restricted.csv", b"download"
         )
         study_manifest = _write(root / "study_manifest.restricted.csv", b"study")
         ledger["batches"][recovery.BATCH_ID]["download_manifest_sha256"] = recovery.sha256_file(download_manifest)
-        ledger["batches"][recovery.BATCH_ID]["events"][-1]["output_manifest_sha256"] = recovery.sha256_file(study_manifest)
-        ledger_path.write_text(json.dumps(ledger) + "\n")
+        transition = {
+            "schema_version": 2,
+            "receipt_type": "lvef_c3_state_transition_v2",
+            "attempt_id": recovery.RUN_ID,
+            "batch_id": recovery.BATCH_ID,
+            "from_state": "EMBEDDING_COMPLETE",
+            "to_state": "STUDY_POOLING_COMPLETE",
+            "status": "PASS",
+            "authority": authority,
+            "input_receipt_sha256": [events[-2]["receipt_sha256"]],
+            "output_manifest_sha256": recovery.sha256_file(study_manifest),
+        }
+        events[-1]["receipt_sha256"] = orchestration_core.canonical_json_sha256(
+            transition
+        )
+        transition_path = _write(
+            root
+            / "transition_receipts"
+            / "study_pooling_complete.restricted.json",
+            orchestration_core.canonical_json_bytes(transition),
+        )
+        ledger_path = _write(
+            root / "pooling.json", (json.dumps(ledger) + "\n").encode()
+        )
         with mock.patch.object(recovery, "POOLING_LEDGER_PATH", ledger_path), mock.patch.object(
             recovery, "RAW_BATCH_ROOT", root
         ), mock.patch.object(recovery, "ECHOPRIME_ROOT", root), mock.patch(
@@ -783,6 +811,17 @@ def test_exact_post_pooling_state_required() -> None:
             ledger["batches"][recovery.BATCH_ID]["state"] = "EMBEDDING_COMPLETE"
             ledger_path.write_text(json.dumps(ledger) + "\n")
             with pytest.raises(recovery.RecoveryError, match="RECOVERY_POOLING_LEDGER_STATE_INVALID"):
+                recovery.validate_pooling_ledger_state(plan, authority)
+            ledger["batches"][recovery.BATCH_ID]["state"] = "STUDY_POOLING_COMPLETE"
+            ledger_path.write_text(json.dumps(ledger) + "\n")
+            transition["output_manifest_sha256"] = "f" * 64
+            transition_path.write_bytes(
+                orchestration_core.canonical_json_bytes(transition)
+            )
+            with pytest.raises(
+                recovery.RecoveryError,
+                match="RECOVERY_POOLING_LEDGER_STATE_INVALID",
+            ):
                 recovery.validate_pooling_ledger_state(plan, authority)
 
 
