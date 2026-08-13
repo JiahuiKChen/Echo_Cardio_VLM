@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import os
 from pathlib import Path
@@ -264,6 +265,8 @@ def _synthetic_state(root: Path) -> recovery.PreservedState:
         original_observation_sha256="6" * 64,
         attempt_001_evidence={"evidence": {"bytes": 1, "sha256": "7" * 64}},
         attempt_001_evidence_set_sha256="8" * 64,
+        pooling_validation_recomputation="PASS",
+        study_embedding_artifact_generation=0,
     )
 
 
@@ -290,6 +293,14 @@ def _qstat_clear(command, **kwargs):
     ]
     return subprocess.CompletedProcess(
         command, 0, b"<job_info><queue_info/><job_info/></job_info>", b""
+    )
+
+
+def _canonical_sge_filesystem():
+    return mock.patch.object(
+        recovery,
+        "_validate_pinned_sge_root",
+        return_value=recovery.CANONICAL_SGE_ROOT,
     )
 
 
@@ -329,7 +340,8 @@ def test_attempt_001_stderr_and_branch_a_classification_are_exact() -> None:
 
 def test_qsub_environment_is_closed_and_preserves_required_scheduler_context() -> None:
     source = _scheduler_environment()
-    observed = recovery.build_qsub_environment(source)
+    with _canonical_sge_filesystem():
+        observed = recovery.build_qsub_environment(source)
     assert observed["SGE_ROOT"] == str(recovery.CANONICAL_SGE_ROOT)
     assert all(
         name in observed
@@ -346,26 +358,134 @@ def test_qsub_environment_is_closed_and_preserves_required_scheduler_context() -
     )
 
 
-def test_sge_root_accepts_only_canonical_path_with_optional_trailing_slash() -> None:
+def test_sge_root_canonical_input_passes_and_forwarding_is_pinned() -> None:
     source = _scheduler_environment()
-    source["SGE_ROOT"] = f"{recovery.CANONICAL_SGE_ROOT}/"
-    assert recovery.build_qsub_environment(source)["SGE_ROOT"] == str(
-        recovery.CANONICAL_SGE_ROOT
+    with _canonical_sge_filesystem():
+        environment, input_class = recovery._build_qsub_environment(source)
+    assert input_class == "SGE_ROOT_CANONICAL_INPUT"
+    assert environment["SGE_ROOT"] == str(recovery.CANONICAL_SGE_ROOT)
+    assert recovery.QSUB_PATH == (
+        recovery.CANONICAL_SGE_ROOT / "bin/linux-x64/qsub"
     )
-    source["SGE_ROOT"] = f"{recovery.CANONICAL_SGE_ROOT}/../sge_root"
-    with pytest.raises(
-        recovery.RecoveryError, match="RECOVERY_SGE_ROOT_AUTHORITY_INVALID"
+    assert recovery.QSTAT_PATH == (
+        recovery.CANONICAL_SGE_ROOT / "bin/linux-x64/qstat"
+    )
+
+
+def _secure_alias_controls():
+    def resolve(path: Path, *, failure_code: str) -> Path:
+        resolved = {
+            recovery.APPROVED_SGE_ROOT_ALIAS: recovery.CANONICAL_SGE_ROOT,
+            Path("/"): Path("/"),
+            Path("/usr"): Path("/usr"),
+            Path("/usr/local"): Path("/usr/local"),
+            Path("/usr/local/sge"): recovery.CANONICAL_SGE_ROOT.parent,
+        }
+        return resolved[path]
+
+    def lstat(path: Path, *, failure_code: str):
+        mode = (
+            stat.S_IFLNK | 0o777
+            if path == Path("/usr/local/sge")
+            else stat.S_IFDIR | 0o755
+        )
+        return SimpleNamespace(st_uid=0, st_mode=mode)
+
+    return resolve, lstat
+
+
+def test_exact_sge_root_alias_resolves_and_is_canonicalized() -> None:
+    source = _scheduler_environment()
+    source["SGE_ROOT"] = str(recovery.APPROVED_SGE_ROOT_ALIAS)
+    resolve, lstat = _secure_alias_controls()
+    with _canonical_sge_filesystem(), mock.patch.object(
+        recovery, "_strict_sge_resolve", side_effect=resolve
+    ), mock.patch.object(recovery, "_sge_lstat", side_effect=lstat):
+        environment, input_class = recovery._build_qsub_environment(source)
+    assert input_class == "SGE_ROOT_APPROVED_ALIAS_RESOLVED"
+    assert environment["SGE_ROOT"] == str(recovery.CANONICAL_SGE_ROOT)
+
+
+def test_sge_root_rejects_unapproved_lexical_paths_before_resolution() -> None:
+    rejected = (
+        "/tmp/third-sge-alias",
+        f"{recovery.CANONICAL_SGE_ROOT}/",
+        f"{recovery.CANONICAL_SGE_ROOT}/../sge_root",
+        "/usr/local/./sge/sge_root",
+    )
+    for value in rejected:
+        with mock.patch.object(
+            recovery, "_validate_pinned_sge_root"
+        ) as pinned, pytest.raises(
+            recovery.RecoveryError,
+            match="SGE_ROOT_UNAPPROVED_LEXICAL_PATH",
+        ):
+            recovery.validate_sge_root_authority(value)
+        pinned.assert_not_called()
+
+
+def test_sge_root_alias_target_mismatch_and_broken_alias_fail_closed() -> None:
+    with _canonical_sge_filesystem(), mock.patch.object(
+        recovery,
+        "_strict_sge_resolve",
+        return_value=Path("/usr/local/elsewhere/sge_root"),
+    ), pytest.raises(
+        recovery.RecoveryError, match="SGE_ROOT_ALIAS_TARGET_MISMATCH"
     ):
-        recovery.build_qsub_environment(source)
+        recovery.validate_sge_root_authority(
+            str(recovery.APPROVED_SGE_ROOT_ALIAS)
+        )
+
+    def broken(path: Path, *, failure_code: str) -> Path:
+        raise recovery.RecoveryError(failure_code)
+
+    with _canonical_sge_filesystem(), mock.patch.object(
+        recovery, "_strict_sge_resolve", side_effect=broken
+    ), pytest.raises(
+        recovery.RecoveryError, match="SGE_ROOT_ALIAS_TARGET_MISMATCH"
+    ):
+        recovery.validate_sge_root_authority(
+            str(recovery.APPROVED_SGE_ROOT_ALIAS)
+        )
+
+
+def test_sge_root_alias_requires_root_control_and_nonwritable_parents() -> None:
+    resolve, secure_lstat = _secure_alias_controls()
+
+    def wrong_owner(path: Path, *, failure_code: str):
+        info = secure_lstat(path, failure_code=failure_code)
+        if path == Path("/usr/local/sge"):
+            return SimpleNamespace(st_uid=501, st_mode=info.st_mode)
+        return info
+
+    def writable_parent(path: Path, *, failure_code: str):
+        info = secure_lstat(path, failure_code=failure_code)
+        if path == Path("/usr/local"):
+            return SimpleNamespace(
+                st_uid=0, st_mode=stat.S_IFDIR | 0o775
+            )
+        return info
+
+    for lstat in (wrong_owner, writable_parent):
+        with _canonical_sge_filesystem(), mock.patch.object(
+            recovery, "_strict_sge_resolve", side_effect=resolve
+        ), mock.patch.object(
+            recovery, "_sge_lstat", side_effect=lstat
+        ), pytest.raises(
+            recovery.RecoveryError, match="SGE_ROOT_ALIAS_CONTROL_INVALID"
+        ):
+            recovery.validate_sge_root_authority(
+                str(recovery.APPROVED_SGE_ROOT_ALIAS)
+            )
 
 
 @pytest.mark.parametrize("missing", ["SGE_ROOT", "HOME", "USER", "LOGNAME", "SHELL"])
 def test_missing_required_scheduler_context_fails_before_claim(missing: str) -> None:
     source = _scheduler_environment()
     source.pop(missing)
-    with pytest.raises(
+    with _canonical_sge_filesystem(), pytest.raises(
         recovery.RecoveryError,
-        match="RECOVERY_(SGE_ROOT_AUTHORITY_INVALID|SCHEDULER_CONTEXT_MISSING)",
+        match="(SGE_ROOT_UNAPPROVED_LEXICAL_PATH|RECOVERY_SCHEDULER_CONTEXT_MISSING)",
     ):
         recovery.build_qsub_environment(source)
 
@@ -386,12 +506,13 @@ def test_malformed_or_conflicting_scheduler_context_is_rejected(
 ) -> None:
     source = _scheduler_environment()
     source[name] = value
-    with pytest.raises(recovery.RecoveryError):
+    with _canonical_sge_filesystem(), pytest.raises(recovery.RecoveryError):
         recovery.build_qsub_environment(source)
 
 
 def test_active_matching_job_gate_is_fail_closed() -> None:
-    environment = recovery.build_qsub_environment(_scheduler_environment())
+    with _canonical_sge_filesystem():
+        environment = recovery.build_qsub_environment(_scheduler_environment())
 
     def active(command, **kwargs):
         payload = (
@@ -405,6 +526,74 @@ def test_active_matching_job_gate_is_fail_closed() -> None:
         recovery.RecoveryError, match="RECOVERY_ACTIVE_MATCHING_JOB_EXISTS"
     ):
         recovery.validate_no_active_recovery_jobs(environment, runner=active)
+
+
+def test_alias_preflight_reports_closed_markers_without_claiming_namespace() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        root = _private_dir(Path(directory) / "owner")
+        state = _synthetic_state(root)
+        attempt = root / "submission_attempt_002"
+        closed_environment = dict(recovery.CONTROLLED_QSUB_ENVIRONMENT)
+        closed_environment.update(
+            {
+                "SGE_ROOT": str(recovery.CANONICAL_SGE_ROOT),
+                "HOME": _scheduler_environment()["HOME"],
+                "USER": _scheduler_environment()["USER"],
+                "LOGNAME": _scheduler_environment()["LOGNAME"],
+                "SHELL": _scheduler_environment()["SHELL"],
+            }
+        )
+        with mock.patch.object(
+            recovery, "ATTEMPT_002_ROOT", attempt
+        ), mock.patch.object(
+            recovery, "validate_preserved_state", return_value=state
+        ), mock.patch.object(
+            recovery, "_validate_scheduler_tools", return_value=None
+        ), mock.patch.object(
+            recovery,
+            "_build_qsub_environment",
+            return_value=(
+                closed_environment,
+                "SGE_ROOT_APPROVED_ALIAS_RESOLVED",
+            ),
+        ), mock.patch.object(
+            recovery, "validate_no_active_recovery_jobs", return_value=0
+        ):
+            result = recovery.preflight(environment=_scheduler_environment())
+        assert not attempt.exists()
+        assert result["sge_root_authority"] == (
+            "PASS_APPROVED_ALIAS_RESOLVED"
+        )
+        assert result["qsub_forwarded_sge_root"] == "CANONICAL_PINNED"
+        assert result["attempt_002_namespace_unconsumed"] is True
+        assert result["pooling_validation_recomputation"] == "PASS"
+        assert result["study_embedding_artifact_generation"] == 0
+        assert result["embedding_generation"] == 0
+
+
+def test_failed_sge_preflight_leaves_attempt_002_namespace_absent() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        root = _private_dir(Path(directory) / "owner")
+        attempt = root / "submission_attempt_002"
+        state = _synthetic_state(root)
+        with mock.patch.object(
+            recovery, "ATTEMPT_002_ROOT", attempt
+        ), mock.patch.object(
+            recovery, "validate_preserved_state", return_value=state
+        ), mock.patch.object(
+            recovery, "_validate_scheduler_tools", return_value=None
+        ), mock.patch.object(
+            recovery,
+            "_build_qsub_environment",
+            side_effect=recovery.RecoveryError(
+                "SGE_ROOT_UNAPPROVED_LEXICAL_PATH"
+            ),
+        ), pytest.raises(
+            recovery.RecoveryError,
+            match="SGE_ROOT_UNAPPROVED_LEXICAL_PATH",
+        ):
+            recovery.preflight(environment=_scheduler_environment())
+        assert not attempt.exists()
 
 
 def test_attempt_001_exact_rejection_evidence_is_required_and_immutable() -> None:
@@ -483,7 +672,7 @@ def test_attempt_002_claim_is_fixed_path_and_no_clobber() -> None:
         root = _private_dir(owner / "recovery")
         attempt = root / "submission_attempt_002"
         state = _synthetic_state(owner)
-        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
+        with _canonical_sge_filesystem(), mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
             recovery, "RECOVERY_AUTHORITY_PATH", attempt / "authority.json"
         ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", attempt / "claim.json"):
             recovery.create_submission_claim(
@@ -531,6 +720,7 @@ def test_submit_captures_exact_numeric_terse_output_once() -> None:
             mock.patch.object(recovery, "recovery_authority", return_value={"status": "PASS"}),
             mock.patch.object(recovery, "_validate_scheduler_tools", return_value=None),
             mock.patch.object(recovery, "revalidate_attempt_001_snapshot", return_value=None),
+            _canonical_sge_filesystem(),
         )
         with ExitStack() as stack:
             for patcher in patches:
@@ -569,7 +759,7 @@ def test_submit_never_retries_ambiguous_qsub_output(stdout: bytes) -> None:
 
         _private_dir(root / "recovery")
         attempt = root / "recovery/attempt2"
-        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
+        with _canonical_sge_filesystem(), mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
             recovery, "RECOVERY_AUTHORITY_PATH", attempt / "authority.json"
         ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", attempt / "claim.json"), mock.patch.object(
             recovery, "RECOVERY_SUBMISSION_PATH", attempt / "submission.json"
@@ -605,7 +795,7 @@ def test_submit_preserves_nonzero_qsub_evidence_without_retry() -> None:
 
         _private_dir(root / "recovery")
         attempt = root / "recovery/attempt2"
-        with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
+        with _canonical_sge_filesystem(), mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt), mock.patch.object(
             recovery, "RECOVERY_AUTHORITY_PATH", attempt / "authority.json"
         ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", attempt / "claim.json"), mock.patch.object(
             recovery, "RECOVERY_SUBMISSION_PATH", attempt / "submission.json"
@@ -811,7 +1001,10 @@ def test_recovery_authority_and_claim_are_closed_and_exact() -> None:
         attempt_root = owner / "recovery/attempt2"
         authority_path = attempt_root / "authority.json"
         claim_path = attempt_root / "claim.json"
-        environment = recovery.build_qsub_environment(_scheduler_environment())
+        with _canonical_sge_filesystem():
+            environment = recovery.build_qsub_environment(
+                _scheduler_environment()
+            )
         with mock.patch.object(recovery, "ATTEMPT_002_ROOT", attempt_root), mock.patch.object(
             recovery, "RECOVERY_AUTHORITY_PATH", authority_path
         ), mock.patch.object(recovery, "RECOVERY_CLAIM_PATH", claim_path):
@@ -1047,6 +1240,182 @@ def test_execute_validates_before_write_and_calls_only_recovery_functions_once()
         assert calls["preserve"] == calls["finalize"] == calls["write"] == 1
 
 
+class _SizedArtifact:
+    def __init__(self, size: int):
+        self.size = size
+
+    def stat(self, *, follow_symlinks: bool = False):
+        assert follow_symlinks is False
+        return SimpleNamespace(st_size=self.size)
+
+
+@contextmanager
+def _pooling_replay_fixture(root: Path, *, mutation: str | None = None):
+    import numpy as np
+    import preserve_lvef_c3_production_batch as preservation
+
+    echoprime = _private_dir(root / "echoprime")
+    raw = _private_dir(root / "raw")
+    extraction = _private_dir(root / "extraction")
+    clips_root = _private_dir(extraction / "clips")
+    clip_array = (
+        np.arange(230 * 512, dtype=np.float32).reshape(230, 512) / 1000.0
+    )
+    clip_rows: list[dict[str, str]] = []
+    for index in range(230):
+        study_index = index // 46
+        clip_rows.append(
+            {
+                "embedding_idx": str(index),
+                "subject_id": f"subject-{study_index}",
+                "study_id": f"study-{study_index}",
+                "clip_key": f"clip-{index}",
+                "physical_source_key": f"source-{index}",
+                "embedding_l2_norm": "1.0",
+                "embedding_sha256": f"{index:064x}",
+                "write_ok": "true",
+            }
+        )
+    study_rows = [
+        {
+            "study_idx": str(index),
+            "subject_id": f"subject-{index}",
+            "study_id": f"study-{index}",
+            "n_clips": "46",
+            "embedding_sha256": f"{index + 1000:064x}",
+        }
+        for index in range(5)
+    ]
+    study_array = np.stack(
+        [
+            clip_array[index * 46:(index + 1) * 46].mean(
+                axis=0, dtype=np.float64
+            ).astype(np.float32)
+            for index in range(5)
+        ]
+    )
+    if mutation == "clip":
+        clip_array[0, 0] += np.float32(1.0)
+    elif mutation == "mapping":
+        clip_rows[0]["study_id"] = "study-1"
+    elif mutation == "study":
+        study_array[0, 0] += np.float32(1.0)
+    np.savez(echoprime / "clip_embeddings.restricted.npz", embeddings=clip_array)
+    np.savez(
+        echoprime / "study_embeddings.restricted.npz", embeddings=study_array
+    )
+    for path, header, rows in (
+        (
+            echoprime / "clip_manifest.restricted.csv",
+            preservation.CLIP_MANIFEST_HEADER,
+            clip_rows,
+        ),
+        (
+            echoprime / "study_manifest.restricted.csv",
+            preservation.STUDY_MANIFEST_HEADER,
+            study_rows,
+        ),
+    ):
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(rows)
+    before = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+    raw_artifacts = [
+        _SizedArtifact(recovery.DECLARED_EXPECTED_BYTES),
+        *[_SizedArtifact(0) for _ in range(379)],
+    ]
+    clip_artifacts = [_SizedArtifact(1) for _ in range(230)]
+
+    def walk(path: Path):
+        if path == raw / "objects":
+            return raw_artifacts
+        if path == clips_root:
+            return clip_artifacts
+        raise AssertionError(f"unexpected retained root: {path}")
+
+    dicom_summary = {
+        "status": "PASS_DICOM_EXTRACTION",
+        "n_objects": 380,
+        "n_readable": 380,
+        "n_unreadable": 0,
+        "n_multiframe_candidates": 230,
+        "n_single_frame": 150,
+        "n_pixel_decode_failures": 0,
+        "n_extracted_clips": 230,
+    }
+    embedding_summary = {
+        "status": "PASS_ECHOPRIME_AND_POOLING",
+        "n_clip_embeddings": 230,
+        "n_pooled_studies": 5,
+        "n_no_cine_studies": 0,
+        "embedding_dimension": 512,
+        "embedding_dtype": "float32",
+        "all_finite": True,
+        "encoder_only": True,
+        "view_classifier_used": False,
+    }
+
+    def load(path: Path, **_kwargs):
+        return (
+            dicom_summary
+            if Path(path).name == "dicom_extraction.summary.json"
+            else embedding_summary
+        )
+
+    patches = (
+        mock.patch.object(recovery, "ECHOPRIME_ROOT", echoprime),
+        mock.patch.object(recovery, "RAW_BATCH_ROOT", raw),
+        mock.patch.object(recovery, "EXTRACTION_ROOT", extraction),
+        mock.patch.object(
+            recovery, "validate_pooling_ledger_state", return_value=None
+        ),
+        mock.patch.object(recovery, "_walk_regular", side_effect=walk),
+        mock.patch.object(recovery, "load_json", side_effect=load),
+    )
+    with ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
+        yield {"batches": [{"n_studies": 5}]}, {}, before
+    after = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_read_only_pooling_replay_passes_without_artifact_generation() -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with _pooling_replay_fixture(Path(directory)) as (plan, authority, _):
+            result = recovery.validate_scientific_aggregates(plan, authority)
+    assert result == {
+        "pooling_validation_recomputation": "PASS",
+        "study_embedding_artifact_generation": 0,
+    }
+
+
+@pytest.mark.parametrize("mutation", ["clip", "mapping", "study"])
+def test_read_only_pooling_replay_rejects_one_value_mutations(
+    mutation: str,
+) -> None:
+    with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+        with _pooling_replay_fixture(
+            Path(directory), mutation=mutation
+        ) as (plan, authority, _), pytest.raises(
+            recovery.RecoveryError,
+            match=(
+                "RECOVERY_STUDY_POOLING_(?:RECOMPUTATION_FAILED|"
+                "RECOMPUTATION_MISMATCH)"
+            ),
+        ):
+            recovery.validate_scientific_aggregates(plan, authority)
+
+
 def test_recovery_source_has_no_scientific_stage_calls() -> None:
     source = (SCRIPTS / "lvef_c3_minimal_canary_preservation_recovery.py").read_text()
     forbidden = (
@@ -1055,7 +1424,6 @@ def test_recovery_source_has_no_scientific_stage_calls() -> None:
         "run_production_echoprime(",
         "GcloudADCTokenProvider(",
         "GCSExactObjectBodyTransport(",
-        "mean_pool_study_embeddings(",
         "torch.cuda",
         "model.fit(",
         "predict(",
@@ -1063,6 +1431,19 @@ def test_recovery_source_has_no_scientific_stage_calls() -> None:
     assert all(item not in source for item in forbidden)
     assert source.count("source.preserve(") == 1
     assert source.count("source.finalize(") == 1
+    validation_source = source[
+        source.index("def validate_scientific_aggregates("):
+        source.index("def scheduler_binding_sha256(")
+    ]
+    assert validation_source.count("mean_pool_study_embeddings(") == 1
+    assert all(
+        item not in validation_source
+        for item in (
+            "write_npz_atomic(", "np.savez", "os.replace(",
+            "atomic_write", "advance_stage_ledger(", "write_bytes_no_clobber(",
+            "write_json_no_clobber(", "source.preserve(", "source.finalize(",
+        )
+    )
     execute_source = source[source.index("def execute_recovery("):]
     assert execute_source.index(
         "submission = validate_attempt_002_submission_for_worker("

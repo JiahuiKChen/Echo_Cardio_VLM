@@ -180,6 +180,7 @@ QSUB_PATH: Final = Path(
 )
 QSTAT_PATH: Final = QSUB_PATH.with_name("qstat")
 CANONICAL_SGE_ROOT: Final = QSUB_PATH.parents[2]
+APPROVED_SGE_ROOT_ALIAS: Final = Path("/usr/local/sge/sge_root")
 ECHOPRIME_PYTHON: Final = Path(
     "/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python"
 )
@@ -561,6 +562,8 @@ class PreservedState:
     original_observation_sha256: str
     attempt_001_evidence: Mapping[str, Mapping[str, Any]]
     attempt_001_evidence_set_sha256: str
+    pooling_validation_recomputation: str
+    study_embedding_artifact_generation: int
 
 
 def _environment_receipt() -> Path:
@@ -898,7 +901,7 @@ def validate_pooling_ledger_state(
 
 def validate_scientific_aggregates(
     plan: Mapping[str, Any], runtime_authority: Mapping[str, Any]
-) -> None:
+) -> dict[str, Any]:
     import numpy as np
     import preserve_lvef_c3_production_batch as preservation
 
@@ -970,6 +973,22 @@ def validate_scientific_aggregates(
         or plan["batches"][0].get("n_studies") != 5
     ):
         _fail("RECOVERY_EMBEDDING_MANIFEST_MISMATCH")
+    try:
+        recomputed = preservation.mean_pool_study_embeddings(
+            clip_embeddings=clip_array,
+            clip_rows=clip_rows,
+            study_rows=study_rows,
+        )
+    except Exception as exc:
+        raise RecoveryError(
+            "RECOVERY_STUDY_POOLING_RECOMPUTATION_FAILED"
+        ) from exc
+    if not np.array_equal(recomputed, study_array):
+        _fail("RECOVERY_STUDY_POOLING_RECOMPUTATION_MISMATCH")
+    return {
+        "pooling_validation_recomputation": "PASS",
+        "study_embedding_artifact_generation": 0,
+    }
 
 
 def scheduler_binding_sha256(plan_sha: str) -> str:
@@ -1165,7 +1184,7 @@ def validate_preserved_state(*, require_recovery_absent: bool) -> PreservedState
         or manifest_sha != PRESERVATION_MANIFEST_SHA256
     ):
         _fail("RECOVERY_PRESERVATION_MANIFEST_IDENTITY_MISMATCH")
-    validate_scientific_aggregates(plan, runtime)
+    pooling_validation = validate_scientific_aggregates(plan, runtime)
     attempt_001, attempt_001_set_sha = validate_attempt_001_evidence(
         allow_attempt_002=not require_recovery_absent
     )
@@ -1190,6 +1209,12 @@ def validate_preserved_state(*, require_recovery_absent: bool) -> PreservedState
         original_observation_sha256=sha256_file(observation),
         attempt_001_evidence=attempt_001,
         attempt_001_evidence_set_sha256=attempt_001_set_sha,
+        pooling_validation_recomputation=str(
+            pooling_validation["pooling_validation_recomputation"]
+        ),
+        study_embedding_artifact_generation=int(
+            pooling_validation["study_embedding_artifact_generation"]
+        ),
     )
 
 
@@ -1210,27 +1235,111 @@ def _safe_environment_text(value: str) -> bool:
     return bool(value) and "\x00" not in value and "\n" not in value and "\r" not in value
 
 
-def build_qsub_environment(
+def _strict_sge_resolve(path: Path, *, failure_code: str) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except OSError as exc:
+        raise RecoveryError(failure_code) from exc
+
+
+def _sge_lstat(path: Path, *, failure_code: str) -> os.stat_result:
+    try:
+        return os.lstat(path)
+    except OSError as exc:
+        raise RecoveryError(failure_code) from exc
+
+
+def _validate_pinned_sge_root() -> Path:
+    _require_nonsymlink_components(CANONICAL_SGE_ROOT)
+    info = _sge_lstat(
+        CANONICAL_SGE_ROOT, failure_code="SGE_ROOT_ALIAS_TARGET_MISMATCH"
+    )
+    resolved = _strict_sge_resolve(
+        CANONICAL_SGE_ROOT,
+        failure_code="SGE_ROOT_ALIAS_TARGET_MISMATCH",
+    )
+    if not stat.S_ISDIR(info.st_mode) or resolved != CANONICAL_SGE_ROOT:
+        _fail("SGE_ROOT_ALIAS_TARGET_MISMATCH")
+    return resolved
+
+
+def _validate_approved_sge_alias_control() -> None:
+    # Validate the complete fixed lexical chain and the resolved parent of
+    # every component.  Symlink mode bits are intentionally ignored; control
+    # rests on root ownership and non-writable containing directories.
+    components = (
+        Path("/usr"),
+        Path("/usr/local"),
+        Path("/usr/local/sge"),
+        APPROVED_SGE_ROOT_ALIAS,
+    )
+    for component in components:
+        info = _sge_lstat(
+            component, failure_code="SGE_ROOT_ALIAS_CONTROL_INVALID"
+        )
+        if (
+            info.st_uid != 0
+            or not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode))
+        ):
+            _fail("SGE_ROOT_ALIAS_CONTROL_INVALID")
+        parent = _strict_sge_resolve(
+            component.parent,
+            failure_code="SGE_ROOT_ALIAS_CONTROL_INVALID",
+        )
+        parent_info = _sge_lstat(
+            parent, failure_code="SGE_ROOT_ALIAS_CONTROL_INVALID"
+        )
+        if (
+            parent_info.st_uid != 0
+            or not stat.S_ISDIR(parent_info.st_mode)
+            or stat.S_IMODE(parent_info.st_mode) & 0o022
+        ):
+            _fail("SGE_ROOT_ALIAS_CONTROL_INVALID")
+
+
+def validate_sge_root_authority(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not _safe_environment_text(value)
+        or not Path(value).is_absolute()
+        or any(part in {".", ".."} for part in value.split("/"))
+        or value
+        not in {str(CANONICAL_SGE_ROOT), str(APPROVED_SGE_ROOT_ALIAS)}
+    ):
+        _fail("SGE_ROOT_UNAPPROVED_LEXICAL_PATH")
+    canonical_resolved = _validate_pinned_sge_root()
+    if value == str(CANONICAL_SGE_ROOT):
+        return "SGE_ROOT_CANONICAL_INPUT"
+    alias_resolved = _strict_sge_resolve(
+        APPROVED_SGE_ROOT_ALIAS,
+        failure_code="SGE_ROOT_ALIAS_TARGET_MISMATCH",
+    )
+    if alias_resolved != canonical_resolved:
+        _fail("SGE_ROOT_ALIAS_TARGET_MISMATCH")
+    _validate_approved_sge_alias_control()
+    # Close a resolution/control TOCTOU window before returning authority.
+    if _strict_sge_resolve(
+        APPROVED_SGE_ROOT_ALIAS,
+        failure_code="SGE_ROOT_ALIAS_TARGET_MISMATCH",
+    ) != canonical_resolved:
+        _fail("SGE_ROOT_ALIAS_TARGET_MISMATCH")
+    return "SGE_ROOT_APPROVED_ALIAS_RESOLVED"
+
+
+def _build_qsub_environment(
     source: Mapping[str, str] | None = None,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], str]:
     observed = os.environ if source is None else source
     sge_root = observed.get("SGE_ROOT")
-    raw_root_parts = sge_root.split("/") if isinstance(sge_root, str) else []
+    input_class = validate_sge_root_authority(sge_root)
     if (
-        not isinstance(sge_root, str)
-        or not _safe_environment_text(sge_root)
-        or not Path(sge_root).is_absolute()
-        or any(part in {".", ".."} for part in raw_root_parts)
-        or Path(sge_root) != CANONICAL_SGE_ROOT
-        or QSUB_PATH != CANONICAL_SGE_ROOT / "bin/linux-x64/qsub"
+        QSUB_PATH != CANONICAL_SGE_ROOT / "bin/linux-x64/qsub"
         or QSTAT_PATH != CANONICAL_SGE_ROOT / "bin/linux-x64/qstat"
     ):
-        _fail("RECOVERY_SGE_ROOT_AUTHORITY_INVALID")
-    if os.path.lexists(CANONICAL_SGE_ROOT):
-        _require_nonsymlink_components(CANONICAL_SGE_ROOT)
+        _fail("SGE_ROOT_ALIAS_TARGET_MISMATCH")
     result = dict(CONTROLLED_QSUB_ENVIRONMENT)
-    # Canonicalize the one accepted harmless representation difference (a
-    # trailing slash) so the exact environment digest is deterministic.
+    # The alias is an authenticated-shell representation only. Never forward
+    # it to qstat/qsub or bind it into the closed environment digest.
     result["SGE_ROOT"] = str(CANONICAL_SGE_ROOT)
     cell = observed.get("SGE_CELL")
     if cell is not None:
@@ -1284,7 +1393,13 @@ def build_qsub_environment(
         for name in result
     ):
         _fail("RECOVERY_QSUB_ENVIRONMENT_NOT_CLOSED")
-    return result
+    return result, input_class
+
+
+def build_qsub_environment(
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    return _build_qsub_environment(source)[0]
 
 
 def _validate_scheduler_tools() -> None:
@@ -1351,7 +1466,9 @@ def validate_installation(
 ) -> dict[str, Any]:
     state = validate_preserved_state(require_recovery_absent=True)
     _validate_scheduler_tools()
-    qsub_environment = build_qsub_environment(environment)
+    qsub_environment, sge_root_input_class = _build_qsub_environment(
+        environment
+    )
     try:
         resolved_python = ECHOPRIME_PYTHON.resolve(strict=True)
     except OSError as exc:
@@ -1363,7 +1480,21 @@ def validate_installation(
         "implementation_commit": state.implementation_commit,
         "environment_relation": state.environment_relation,
         "qsub_environment_variable_names": sorted(qsub_environment),
+        "sge_root_input_class": sge_root_input_class,
+        "sge_root_authority": (
+            "PASS_APPROVED_ALIAS_RESOLVED"
+            if sge_root_input_class == "SGE_ROOT_APPROVED_ALIAS_RESOLVED"
+            else "PASS_CANONICAL_INPUT"
+        ),
+        "qsub_forwarded_sge_root": "CANONICAL_PINNED",
         "failed_submission_attempt_001_evidence": "PASS",
+        "attempt_002_namespace_unconsumed": True,
+        "pooling_validation_recomputation": (
+            state.pooling_validation_recomputation
+        ),
+        "study_embedding_artifact_generation": (
+            state.study_embedding_artifact_generation
+        ),
         **effect_zeros(),
     }
 
@@ -1374,7 +1505,9 @@ def preflight(
 ) -> dict[str, Any]:
     state = validate_preserved_state(require_recovery_absent=True)
     _validate_scheduler_tools()
-    qsub_environment = build_qsub_environment(environment)
+    qsub_environment, sge_root_input_class = _build_qsub_environment(
+        environment
+    )
     active = validate_no_active_recovery_jobs(
         qsub_environment, runner=qstat_runner
     )
@@ -1388,7 +1521,21 @@ def preflight(
         "preservation_manifest_bytes": state.preservation_manifest_bytes,
         "qsub_rejection_classification": QSUB_REJECTION_CLASSIFICATION,
         "failed_submission_attempt_001_evidence": "PASS",
+        "attempt_002_namespace_unconsumed": True,
         "active_matching_scheduler_jobs": active,
+        "sge_root_input_class": sge_root_input_class,
+        "sge_root_authority": (
+            "PASS_APPROVED_ALIAS_RESOLVED"
+            if sge_root_input_class == "SGE_ROOT_APPROVED_ALIAS_RESOLVED"
+            else "PASS_CANONICAL_INPUT"
+        ),
+        "qsub_forwarded_sge_root": "CANONICAL_PINNED",
+        "pooling_validation_recomputation": (
+            state.pooling_validation_recomputation
+        ),
+        "study_embedding_artifact_generation": (
+            state.study_embedding_artifact_generation
+        ),
         **effect_zeros(),
     }
 
@@ -1513,7 +1660,7 @@ def submit_recovery(
 ) -> dict[str, Any]:
     state = validate_preserved_state(require_recovery_absent=True)
     _validate_scheduler_tools()
-    qsub_environment = build_qsub_environment(environment)
+    qsub_environment, _ = _build_qsub_environment(environment)
     validate_no_active_recovery_jobs(qsub_environment, runner=qstat_runner)
     command = qsub_command()
     create_submission_claim(
@@ -2034,6 +2181,12 @@ def execute_recovery(
         "preservation_receipt_sha256": sha256_file(PRESERVATION_RECEIPT_PATH),
         "finalization_summary_sha256": sha256_file(FINALIZATION_PATH),
         "scientific_stage_reruns": 0,
+        "pooling_validation_recomputation": (
+            state.pooling_validation_recomputation
+        ),
+        "study_embedding_artifact_generation": (
+            state.study_embedding_artifact_generation
+        ),
         "cpu_only": True,
         "raw_dicoms_retained": True,
         "extracted_clips_retained": True,
@@ -2089,6 +2242,13 @@ def print_result(result: Mapping[str, Any]) -> None:
     print(f"ORIGINAL_SCIENTIFIC_COMMIT={ORIGINAL_SCIENTIFIC_COMMIT}")
     if "environment_relation" in result:
         print(f"ENVIRONMENT_AUTHORITY_RELATION={result['environment_relation']}")
+    if "sge_root_input_class" in result:
+        print(f"SGE_ROOT_INPUT_CLASS={result['sge_root_input_class']}")
+        print(f"SGE_ROOT_AUTHORITY={result['sge_root_authority']}")
+        print(
+            "QSUB_FORWARDED_SGE_ROOT="
+            f"{result['qsub_forwarded_sge_root']}"
+        )
     if result.get("scientific_stages_complete") == 3:
         print("SCIENTIFIC_STAGES_COMPLETE=3")
     if result.get("preservation_content_audit") == "PASS":
@@ -2097,6 +2257,15 @@ def print_result(result: Mapping[str, Any]) -> None:
         print(f"PRESERVATION_MANIFEST_SHA256={result['preservation_manifest_sha256']}")
     if result.get("failed_submission_attempt_001_evidence") == "PASS":
         print("FAILED_SUBMISSION_ATTEMPT_001_EVIDENCE=PASS")
+    if result.get("attempt_002_namespace_unconsumed") is True:
+        print("ATTEMPT_002_NAMESPACE_UNCONSUMED=YES")
+    if result.get("pooling_validation_recomputation") == "PASS":
+        print("POOLING_VALIDATION_RECOMPUTATION=PASS")
+    if "study_embedding_artifact_generation" in result:
+        print(
+            "STUDY_EMBEDDING_ARTIFACT_GENERATION="
+            f"{result['study_embedding_artifact_generation']}"
+        )
     if "qsub_rejection_classification" in result:
         print(
             "QSUB_REJECTION_CLASSIFICATION="
