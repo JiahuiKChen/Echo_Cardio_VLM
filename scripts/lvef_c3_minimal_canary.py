@@ -553,6 +553,54 @@ def _validate_installation_files(repository: Path) -> str:
     return head
 
 
+def _validate_two_runtime_installation(*, repository: Path) -> dict[str, str]:
+    """Validate the imaging and CRC32C runtimes without crossing an effect boundary."""
+
+    import lvef_c3_orchestration_core as core
+    import lvef_c3_production_stages as production_stages
+
+    environment = _discover_current_environment_receipt(repository=repository)
+    try:
+        receipt = production_stages.validate_environment_receipt_against_current_runtime(
+            environment
+        )
+    except production_stages.ProductionStageError as exc:
+        raise MinimalCanaryError(str(exc)) from exc
+    required_hashes = {
+        "crc32c_python_executable_sha256": receipt.get(
+            "crc32c_python_executable_sha256"
+        ),
+        "crc32c_worker_sha256": receipt.get("crc32c_worker_sha256"),
+        "google_crc32c_distribution_sha256": receipt.get(
+            "google_crc32c_distribution_sha256"
+        ),
+    }
+    if any(
+        not isinstance(value, str) or SHA256_RE.fullmatch(value) is None
+        for value in required_hashes.values()
+    ):
+        _fail("MINIMAL_CRC32C_RUNTIME_AUTHORITY_INVALID")
+    try:
+        with core.ExternalCRC32CDigestWorker(
+            python_executable=CRC32C_PYTHON_PATH,
+            worker_script=SCRIPT_ROOT / "lvef_c3_crc32c_worker.py",
+            expected_python_sha256=required_hashes[
+                "crc32c_python_executable_sha256"
+            ],
+            expected_worker_sha256=required_hashes["crc32c_worker_sha256"],
+            expected_distribution_sha256=required_hashes[
+                "google_crc32c_distribution_sha256"
+            ],
+        ):
+            pass
+    except core.OrchestrationError as exc:
+        raise MinimalCanaryError(str(exc)) from exc
+    return {
+        "echoprime_runtime": "PASS",
+        "crc32c_external_runtime": "PASS",
+    }
+
+
 def validate_installation(*, repository: Path = REPOSITORY_ROOT, enforce_git: bool = True) -> dict[str, Any]:
     head = (
         _validate_installation_files(repository)
@@ -568,6 +616,7 @@ def validate_installation(*, repository: Path = REPOSITORY_ROOT, enforce_git: bo
         "qsub_submissions": 0,
         "dicom_bodies_processed": 0,
         "gpu_execution": False,
+        **_validate_two_runtime_installation(repository=repository),
     }
 
 
@@ -1735,6 +1784,12 @@ def _print_result(value: Mapping[str, Any]) -> None:
     print(f"STATUS={value['status']}")
     if "governing_commit" in value:
         print(f"GOVERNING_COMMIT={value['governing_commit']}")
+    if value.get("echoprime_runtime") == "PASS":
+        print("ECHOPRIME_RUNTIME=PASS")
+    if value.get("crc32c_external_runtime") == "PASS":
+        print("CRC32C_EXTERNAL_RUNTIME=PASS")
+    if value.get("minimal_canary_preflight") == "PASS":
+        print("MINIMAL_CANARY_PREFLIGHT=PASS")
     if value.get("ready_for_first_body_request") == "YES":
         print("READY_FOR_FIRST_BODY_REQUEST=YES")
     print(f"CLOUD_REQUESTS={value.get('cloud_requests', 0)}")
@@ -1776,11 +1831,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.validate_installation:
         result = validate_installation()
     elif args.preflight_only:
-        validate_installation()
-        result = synthetic_preflight()
+        installation = validate_installation()
+        result = {
+            **synthetic_preflight(),
+            "echoprime_runtime": installation["echoprime_runtime"],
+            "crc32c_external_runtime": installation["crc32c_external_runtime"],
+            "minimal_canary_preflight": "PASS",
+        }
     elif args.preflight_live_authority:
-        validate_installation()
-        result = live_authority_no_body_preflight()
+        installation = validate_installation()
+        result = {
+            **live_authority_no_body_preflight(),
+            "echoprime_runtime": installation["echoprime_runtime"],
+            "crc32c_external_runtime": installation["crc32c_external_runtime"],
+        }
     elif args.validate_sealed_manifest is not None:
         validate_installation()
         manifest, _, file_sha = _load_manifest(args.validate_sealed_manifest)

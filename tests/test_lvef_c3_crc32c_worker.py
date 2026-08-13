@@ -136,6 +136,67 @@ def test_worker_rejects_symlink_outside_scope_and_wrong_distribution_authority()
             raise AssertionError("changed distribution authority was accepted")
 
 
+def test_external_worker_rejects_wrong_file_hashes_before_startup() -> None:
+    expected_python = core.sha256_file(PYTHON)
+    expected_worker = core.sha256_file(WORKER)
+    for python_hash, worker_hash, expected in (
+        ("0" * 64, expected_worker, "CRC32C_PYTHON_AUTHORITY_MISMATCH"),
+        (expected_python, "0" * 64, "CRC32C_WORKER_AUTHORITY_MISMATCH"),
+    ):
+        try:
+            core.ExternalCRC32CDigestWorker(
+                python_executable=PYTHON,
+                worker_script=WORKER,
+                expected_python_sha256=python_hash,
+                expected_worker_sha256=worker_hash,
+                expected_distribution_sha256="1" * 64,
+                allowed_root=Path(tempfile.gettempdir()).resolve(strict=True),
+            )
+        except core.OrchestrationError as exc:
+            assert str(exc) == expected
+        else:
+            raise AssertionError("changed worker file authority was accepted")
+
+
+def test_external_worker_rejects_non_c_backend_and_known_vector_mismatch() -> None:
+    base_ready = {
+        "protocol_version": 1,
+        "status": "READY",
+        "google_crc32c_version": "synthetic",
+        "google_crc32c_implementation": "c",
+        "google_crc32c_distribution_sha256": "1" * 64,
+        "google_crc32c_distribution_file_count": 1,
+        "known_vector_crc32c_base64": "4waSgw==",
+    }
+    for mutation in (
+        {"google_crc32c_implementation": "python"},
+        {"known_vector_crc32c_base64": "AAAAAA=="},
+        {"google_crc32c_distribution_sha256": "2" * 64},
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(strict=True)
+            worker = root / "synthetic_worker.py"
+            ready = {**base_ready, **mutation}
+            worker.write_text(
+                "import json,sys\n"
+                f"print(json.dumps({ready!r}, sort_keys=True), flush=True)\n"
+                "for _line in sys.stdin: pass\n"
+            )
+            try:
+                core.ExternalCRC32CDigestWorker(
+                    python_executable=PYTHON,
+                    worker_script=worker,
+                    expected_python_sha256=core.sha256_file(PYTHON),
+                    expected_worker_sha256=core.sha256_file(worker),
+                    expected_distribution_sha256="1" * 64,
+                    allowed_root=root,
+                )
+            except core.OrchestrationError as exc:
+                assert str(exc) == "CRC32C_WORKER_STARTUP_AUTHORITY_MISMATCH"
+            else:
+                raise AssertionError("invalid external-worker READY was accepted")
+
+
 def test_worker_protocol_fails_closed_on_duplicate_keys_and_oversized_line() -> None:
     with tempfile.TemporaryDirectory() as directory:
         allowed_root = Path(directory).resolve(strict=True)

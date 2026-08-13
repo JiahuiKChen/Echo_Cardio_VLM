@@ -10,6 +10,7 @@ minimal Part-10 byte fixture is read only inside a private temporary directory.
 """
 
 import base64
+import builtins
 from collections import deque
 import copy
 from contextlib import contextmanager
@@ -362,6 +363,52 @@ def _candidate(index: int) -> dict[str, Any]:
     }
 
 
+_SYNTHETIC_CRC32C_TABLE: tuple[int, ...] | None = None
+
+
+def _synthetic_crc32c_base64(payload: bytes) -> str:
+    """Test-only Castagnoli reference; never a production checksum authority."""
+
+    global _SYNTHETIC_CRC32C_TABLE
+    if _SYNTHETIC_CRC32C_TABLE is None:
+        rows: list[int] = []
+        for index in range(256):
+            value = index
+            for _ in range(8):
+                value = (
+                    (value >> 1) ^ 0x82F63B78
+                    if value & 1
+                    else value >> 1
+                )
+            rows.append(value)
+        _SYNTHETIC_CRC32C_TABLE = tuple(rows)
+    checksum = 0xFFFFFFFF
+    for byte in payload:
+        checksum = (
+            _SYNTHETIC_CRC32C_TABLE[(checksum ^ byte) & 0xFF]
+            ^ (checksum >> 8)
+        )
+    checksum ^= 0xFFFFFFFF
+    return base64.b64encode(checksum.to_bytes(4, "big")).decode("ascii")
+
+
+def test_synthetic_crc32c_reference_has_no_google_runtime_dependency() -> None:
+    original_import = builtins.__import__
+
+    def reject_google_crc32c(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "google_crc32c":
+            raise AssertionError("synthetic fixture imported google_crc32c")
+        return original_import(name, *args, **kwargs)
+
+    builtins.__import__ = reject_google_crc32c
+    try:
+        assert _synthetic_crc32c_base64(b"123456789") == "4waSgw=="
+        sealed = _sealed_exact_five_manifest()
+        assert len(sealed["manifest"]["studies"]) == 5
+    finally:
+        builtins.__import__ = original_import
+
+
 def _source_object(
     selected: manifest_contract.SelectedStudy, ordinal: int
 ) -> dict[str, Any]:
@@ -383,7 +430,7 @@ def _source_object(
         "md5_base64": base64.b64encode(
             hashlib.md5(payload, usedforsecurity=False).digest()
         ).decode("ascii"),
-        "crc32c_base64": orchestration_core._crc32c_base64(payload),
+        "crc32c_base64": _synthetic_crc32c_base64(payload),
     }
 
 
@@ -790,7 +837,7 @@ def _synthetic_hooks(
             assert base64.b64encode(
                 hashlib.md5(payload, usedforsecurity=False).digest()
             ).decode("ascii") == row["md5_base64"]
-            assert orchestration_core._crc32c_base64(payload) == row["crc32c_base64"]
+            assert _synthetic_crc32c_base64(payload) == row["crc32c_base64"]
         context.artifacts["integrity_verified"] = True
 
     def dicom_audit_decode(context: integration.CanaryIntegrationContext) -> None:

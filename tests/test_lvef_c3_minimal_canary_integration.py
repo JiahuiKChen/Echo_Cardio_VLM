@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import copy
 import csv
 import hashlib
@@ -421,6 +422,90 @@ def _synthetic_token_provider(
     return _Provider()
 
 
+def _synthetic_external_crc32c_worker(
+    fixture: ModuleType,
+    authority: minimal.LiveAuthority,
+    calls: dict[str, int],
+) -> type:
+    """Test double for the closed external-worker seam, never production authority."""
+
+    class _Worker:
+        def __init__(
+            self,
+            *,
+            python_executable: Path,
+            worker_script: Path,
+            expected_python_sha256: str,
+            expected_worker_sha256: str,
+            expected_distribution_sha256: str,
+            allowed_root: Path = Path("/restricted/projectnb"),
+        ) -> None:
+            assert python_executable == authority.crc32c_python
+            assert worker_script == authority.crc32c_worker
+            assert expected_python_sha256 == core.sha256_file(
+                authority.crc32c_python
+            )
+            assert expected_worker_sha256 == core.sha256_file(
+                authority.crc32c_worker
+            )
+            assert expected_distribution_sha256 == (
+                authority.crc32c_distribution_sha256
+            )
+            assert allowed_root == Path("/restricted/projectnb")
+            calls["synthetic_external_crc32c_worker_started"] = 1
+
+        def __enter__(self) -> _Worker:
+            return self
+
+        def __exit__(self, *_args: Any) -> bool:
+            calls["synthetic_external_crc32c_worker_closed"] = 1
+            return False
+
+        def digest(
+            self,
+            path: Path,
+            request_id: str,
+            *,
+            chunk_size: int = 8 * 1024 * 1024,
+        ) -> dict[str, Any]:
+            assert re.fullmatch(r"[0-9a-f]{64}", request_id)
+            before = path.stat(follow_symlinks=False)
+            payload = path.read_bytes()
+            after = path.stat(follow_symlinks=False)
+            assert (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) == (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            )
+            calls["synthetic_external_crc32c_digests"] = (
+                calls.get("synthetic_external_crc32c_digests", 0) + 1
+            )
+            return {
+                "protocol_version": 1,
+                "status": "PASS",
+                "request_id": request_id,
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "md5_base64": base64.b64encode(
+                    hashlib.md5(payload, usedforsecurity=False).digest()
+                ).decode("ascii"),
+                "crc32c_base64": fixture._synthetic_crc32c_base64(payload),
+                "file_device": int(after.st_dev),
+                "file_inode": int(after.st_ino),
+                "file_mtime_ns": int(after.st_mtime_ns),
+                "chunk_size_bytes": chunk_size,
+                "backend": "google_crc32c_c_external_worker_v1",
+            }
+
+    return _Worker
+
+
 def test_minimal_canary_exact_five_end_to_end(monkeypatch: Any) -> None:
     """Exercise the deployed one-job builder with only external effects mocked."""
 
@@ -510,6 +595,11 @@ def test_minimal_canary_exact_five_end_to_end(monkeypatch: Any) -> None:
             return original_subprocess_run(arguments, *args, **kwargs)
 
         monkeypatch.setattr(minimal.subprocess, "run", no_scheduler_process)
+        monkeypatch.setattr(
+            core,
+            "ExternalCRC32CDigestWorker",
+            _synthetic_external_crc32c_worker(fixture, authority, calls),
+        )
         modules = {
             "pydicom": fixture._synthetic_pydicom_module(),
             "cv2": fixture._synthetic_cv2_module(),
@@ -522,7 +612,6 @@ def test_minimal_canary_exact_five_end_to_end(monkeypatch: Any) -> None:
             transport_factory=lambda: _synthetic_body_transport(
                 fixture, sealed, calls
             ),
-            digest_provider_factory=lambda _active: core._inprocess_digest_provider,
             extraction_workers=1,
             echoprime_batch_size=8,
             monotonic_clock=lambda: 0.0,
@@ -561,6 +650,9 @@ def test_minimal_canary_exact_five_end_to_end(monkeypatch: Any) -> None:
             "mock_requester_pays_transfer": 10,
             "mock_token_acquisition": 1,
             "mock_encoder_compute": 2,
+            "synthetic_external_crc32c_worker_started": 1,
+            "synthetic_external_crc32c_digests": 10,
+            "synthetic_external_crc32c_worker_closed": 1,
         }
         ledger = core.load_strict_json(
             run_root / "minimal_canary_stage_ledger.restricted.json"

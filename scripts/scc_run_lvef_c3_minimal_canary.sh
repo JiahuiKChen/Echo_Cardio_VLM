@@ -33,11 +33,5 @@ resolved_python=$(/usr/bin/readlink -f -- "$ECHOPRIME_PYTHON") || exit 65
 read -r observed_sha _ < <(/usr/bin/sha256sum -- "$resolved_python") || exit 65
 [[ "$observed_sha" = "$EXPECTED_PYTHON_SHA256" ]] || exit 65
 
-if [[ "$1" = --preflight-only ]]; then
-  "$ECHOPRIME_PYTHON" -I -B -X pycache_prefix=/dev/null/lvef_c3_minimal \
-    "$WORKTREE/scripts/lvef_c3_minimal_canary.py" "$@"
-  exec "$ECHOPRIME_PYTHON" -I -B -X pycache_prefix=/dev/null/lvef_c3_minimal \
-    "$WORKTREE/tests/test_lvef_c3_minimal_canary_integration.py"
-fi
 exec "$ECHOPRIME_PYTHON" -I -B -X pycache_prefix=/dev/null/lvef_c3_minimal \
   "$WORKTREE/scripts/lvef_c3_minimal_canary.py" "$@"

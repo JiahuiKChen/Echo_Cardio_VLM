@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -7,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,11 +102,38 @@ def test_submitter_is_exactly_one_qsub_without_dag_or_array_flags() -> None:
     assert "scc_run_lvef_c3_canary.sh" not in text
     assert text.index('--claim-sealed-manifest "$manifest"') < text.index('exec "$QSUB"')
     runner = (ROOT / "scripts/scc_run_lvef_c3_minimal_canary.sh").read_text()
+    assert "test_lvef_c3_minimal_canary_integration.py" not in runner
+    assert runner.count('"$WORKTREE/scripts/lvef_c3_minimal_canary.py" "$@"') == 1
+    assert "pip install" not in runner and "google-crc32c" not in runner
     assert "unset CUDA_VISIBLE_DEVICES" not in runner
     assert "export CUDA_VISIBLE_DEVICES=''" in runner
     assert runner.index('if [[ "$1" = --run-sealed-manifest ]]') < runner.index(
         "export CUDA_VISIBLE_DEVICES=''"
     )
+
+
+def test_installation_reports_independent_runtime_markers() -> None:
+    with mock.patch.object(
+        minimal,
+        "_validate_installation_files",
+        return_value="a" * 40,
+    ), mock.patch.object(
+        minimal,
+        "_validate_two_runtime_installation",
+        return_value={
+            "echoprime_runtime": "PASS",
+            "crc32c_external_runtime": "PASS",
+        },
+    ):
+        result = minimal.validate_installation(repository=ROOT)
+    assert result["echoprime_runtime"] == "PASS"
+    assert result["crc32c_external_runtime"] == "PASS"
+    output = io.StringIO()
+    with redirect_stdout(output):
+        minimal._print_result(result)
+    markers = output.getvalue().splitlines()
+    assert "ECHOPRIME_RUNTIME=PASS" in markers
+    assert "CRC32C_EXTERNAL_RUNTIME=PASS" in markers
 
 
 def test_prepared_claim_is_no_clobber_and_adopted_once() -> None:
