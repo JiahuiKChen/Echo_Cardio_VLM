@@ -20,6 +20,53 @@
   "production_attempt_006_exists": false,
   "permitted_execution_scopes": [
     "preflight_only",
-    "capture_current_environment"
-  ]
+    "capture_current_environment",
+    "prepare_exact_five_canary_authority",
+    "seal_exact_five_canary_manifest",
+    "begin_exact_five_canary_execution"
+  ],
+  "canary_lifecycle": {
+    "schema_version": 1,
+    "initial_state": "PRECANARY_READY",
+    "ordered_nonterminal_states": [
+      "PRECANARY_READY",
+      "CANARY_AUTHORITY_PREPARED",
+      "CANARY_MANIFEST_SEALED",
+      "CANARY_EXECUTING"
+    ],
+    "terminal_states": [
+      "CANARY_TERMINAL_PASS",
+      "CANARY_TERMINAL_FAIL"
+    ],
+    "transitions": [
+      {
+        "expected_current": "PRECANARY_READY",
+        "target_state": "CANARY_AUTHORITY_PREPARED"
+      },
+      {
+        "expected_current": "CANARY_AUTHORITY_PREPARED",
+        "target_state": "CANARY_MANIFEST_SEALED"
+      },
+      {
+        "expected_current": "CANARY_MANIFEST_SEALED",
+        "target_state": "CANARY_EXECUTING"
+      },
+      {
+        "expected_current": "CANARY_EXECUTING",
+        "target_state": "CANARY_TERMINAL_PASS"
+      },
+      {
+        "expected_current": "CANARY_EXECUTING",
+        "target_state": "CANARY_TERMINAL_FAIL"
+      }
+    ],
+    "private_state_root": "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/owner_private/exact_five_canary/lifecycle_state",
+    "state_filename": "canary_state.restricted.json",
+    "lock_filename": "canary_state.restricted.json.lock",
+    "temporary_filename": "canary_state.restricted.json.partial",
+    "directory_mode": "0700",
+    "file_mode": "0600",
+    "mutation_policy": "ATOMIC_EXPECTED_CURRENT_FORWARD_ONLY_V1",
+    "tracked_state_mutation_permitted": false
+  }
 }

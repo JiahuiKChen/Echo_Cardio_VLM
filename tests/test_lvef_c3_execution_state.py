@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -45,7 +46,25 @@ EXPECTED_STATE = {
     "permitted_execution_scopes": (
         "preflight_only",
         "capture_current_environment",
+        "prepare_exact_five_canary_authority",
+        "seal_exact_five_canary_manifest",
+        "begin_exact_five_canary_execution",
     ),
+    "canary_lifecycle": {
+        "schema_version": 1,
+        "initial_state": "PRECANARY_READY",
+        "ordered_nonterminal_states": execution_state.CANARY_NONTERMINAL_STATES,
+        "terminal_states": execution_state.CANARY_TERMINAL_STATES,
+        "transitions": execution_state.CANARY_TRANSITIONS,
+        "private_state_root": execution_state.CANARY_PRIVATE_STATE_ROOT,
+        "state_filename": "canary_state.restricted.json",
+        "lock_filename": "canary_state.restricted.json.lock",
+        "temporary_filename": "canary_state.restricted.json.partial",
+        "directory_mode": "0700",
+        "file_mode": "0600",
+        "mutation_policy": "ATOMIC_EXPECTED_CURRENT_FORWARD_ONLY_V1",
+        "tracked_state_mutation_permitted": False,
+    },
 }
 
 OPERATIVE_CONSUMERS = (
@@ -81,7 +100,12 @@ def _assert_invalid(value: Any, expected_code: str) -> None:
 def test_checked_in_execution_state_has_exact_authoritative_invariants() -> None:
     state = execution_state.load_execution_state()
 
-    assert asdict(state) == EXPECTED_STATE
+    observed = asdict(state)
+    authority_sha = observed.pop("canonical_authority_sha256")
+    assert authority_sha == hashlib.sha256(
+        execution_state.DEFAULT_STATE_PATH.read_bytes()
+    ).hexdigest()
+    assert observed == EXPECTED_STATE
     assert set(_payload()) == execution_state.STATE_KEYS
     assert state.logical_execution_attempt == 4
     assert state.next_unused_execution_attempt == 5
@@ -109,9 +133,15 @@ def test_attempt_ids_and_scope_permissions_are_derived_exactly() -> None:
     assert state.permitted_execution_scopes == (
         "preflight_only",
         "capture_current_environment",
+        "prepare_exact_five_canary_authority",
+        "seal_exact_five_canary_manifest",
+        "begin_exact_five_canary_execution",
     )
     assert state.permits("preflight_only")
     assert state.permits("capture_current_environment")
+    assert state.permits("prepare_exact_five_canary_authority")
+    assert state.permits("seal_exact_five_canary_manifest")
+    assert state.permits("begin_exact_five_canary_execution")
     for forbidden_scope in (
         "cloud_object_body_request",
         "dicom_transfer",
@@ -152,6 +182,27 @@ def test_execution_state_schema_is_closed() -> None:
     unknown = _payload()
     unknown["logical_attempt_inferred_from_preparation"] = 5
     _assert_invalid(unknown, "EXECUTION_STATE_SCHEMA_NOT_CLOSED")
+
+
+def test_canary_lifecycle_is_closed_and_exact() -> None:
+    state = execution_state.load_execution_state()
+    lifecycle = state.canary_lifecycle
+    assert lifecycle.initial_state == "PRECANARY_READY"
+    assert lifecycle.transitions == execution_state.CANARY_TRANSITIONS
+    assert lifecycle.terminal_states == (
+        "CANARY_TERMINAL_PASS",
+        "CANARY_TERMINAL_FAIL",
+    )
+    assert lifecycle.tracked_state_mutation_permitted is False
+
+    unknown = _payload()
+    unknown["canary_lifecycle"]["unknown"] = True
+    _assert_invalid(
+        unknown, "EXECUTION_STATE_CANARY_LIFECYCLE_SCHEMA_INVALID"
+    )
+    reordered = _payload()
+    reordered["canary_lifecycle"]["transitions"].reverse()
+    _assert_invalid(reordered, "EXECUTION_STATE_CANARY_LIFECYCLE_INVALID")
 
 
 def test_execution_state_loader_rejects_duplicate_keys() -> None:
@@ -251,7 +302,14 @@ def test_execution_state_rejects_scope_expansion_reordering_or_omission() -> Non
     for scopes in (
         ["capture_current_environment", "preflight_only"],
         ["preflight_only"],
-        ["preflight_only", "capture_current_environment", "dicom_transfer"],
+        [
+            "preflight_only",
+            "capture_current_environment",
+            "prepare_exact_five_canary_authority",
+            "seal_exact_five_canary_manifest",
+            "begin_exact_five_canary_execution",
+            "dicom_transfer",
+        ],
     ):
         value = _payload()
         value["permitted_execution_scopes"] = scopes

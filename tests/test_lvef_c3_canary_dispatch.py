@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import sys
 import tempfile
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,15 +16,25 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _tool_identity(path: Path) -> dict[str, object]:
+    return dispatch.scheduler_tool_identity(path)
+
+
 def _authority(root: Path) -> dict:
     private = root / "private"
     private.mkdir(mode=0o700)
     runs = root / "canary_runs"
     runs.mkdir(mode=0o700)
     qsub = private / "qsub"
+    qstat = private / "qstat"
     worker = private / "worker.py"
     launcher = private / "launcher.sh"
-    for path, body in ((qsub, b"qsub"), (worker, b"worker"), (launcher, b"launcher")):
+    for path, body in (
+        (qsub, b"qsub"),
+        (qstat, b"qstat"),
+        (worker, b"worker"),
+        (launcher, b"launcher"),
+    ):
         path.write_bytes(body)
         path.chmod(0o700)
     run_id = "lvef_c3_exact_five_canary_ab12cd34"
@@ -35,6 +46,7 @@ def _authority(root: Path) -> dict:
         "launch_authority_sha256": "b" * 64,
         "run_id": run_id,
         "attempt_id": run_id,
+        "governing_commit": "b" * 40,
         "output_root": str(runs / run_id),
         "manifest": {"file_sha256": "c" * 64, "embedded_sha256": "d" * 64},
         "scheduler_plan": {"canonical_sha256": "e" * 64},
@@ -49,6 +61,10 @@ def _authority(root: Path) -> dict:
             "production_continuation": False,
         },
         "qsub": {"path": str(qsub), "file_sha256": _sha(qsub)},
+        "scheduler_tool_identities": {
+            "qsub": _tool_identity(qsub),
+            "qstat": _tool_identity(qstat),
+        },
         "stage_worker": {"path": str(worker), "file_sha256": _sha(worker)},
         "stage_launcher": {"path": str(launcher), "file_sha256": _sha(launcher)},
     }
@@ -87,8 +103,18 @@ def test_durable_dispatch_submits_exact_five_once_and_binds_holds() -> None:
             hold = command.index("-hold_jid")
             assert command[hold + 1] == str(7000 + index)
         assert sum("gpus=1" in command for command in commands) == 1
-        assert all(command[-2] == authority["authorization_path"] for command in commands)
-        assert [command[-1] for command in commands] == list(dispatch.ORDERED_STAGE_IDS)
+        assert all(command[-6] == authority["authorization_path"] for command in commands)
+        assert [command[-5] for command in commands] == list(dispatch.ORDERED_STAGE_IDS)
+        assert all(command[-4] == authority["governing_commit"] for command in commands)
+        assert all(command[-3] == authority["run_id"] for command in commands)
+        assert all(
+            command[-2] == authority["stage_launcher"]["file_sha256"]
+            for command in commands
+        )
+        assert all(
+            command[-1] == authority["stage_worker"]["file_sha256"]
+            for command in commands
+        )
         snapshots = sorted(
             (Path(authority["output_root"]) / "scheduler_claims").glob("*.json")
         )
@@ -151,3 +177,46 @@ def test_dispatch_rejects_unbound_scope_dynamic_stage_and_tampered_binary() -> N
                 log_root=Path(directory), work_root=Path(directory),
             ),
         )
+
+
+def test_dispatch_revalidates_exact_qsub_identity_and_sanitizes_environment() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        authority = _authority(Path(directory))
+        commands: list[tuple[str, ...]] = []
+
+        def submit(command):
+            commands.append(tuple(command))
+            return str(9000 + len(commands))
+
+        original = dispatch.scheduler_tool_identity
+        calls = 0
+
+        def changing(path: Path, **kwargs):
+            nonlocal calls
+            identity = original(path, **kwargs)
+            if Path(path) == Path(authority["qsub"]["path"]):
+                calls += 1
+                if calls >= 3:
+                    return {**identity, "inode": int(identity["inode"]) + 1}
+            return identity
+
+        with mock.patch.object(dispatch, "scheduler_tool_identity", side_effect=changing):
+            _expect(
+                "CANARY_QSUB_SUBMISSION_FAILED",
+                lambda: dispatch.dispatch_authorized_canary(
+                    authority, submitter=submit
+                ),
+            )
+        assert commands == []
+
+        completed = mock.Mock(returncode=0, stdout="12345\n", stderr="")
+        with mock.patch.object(dispatch.subprocess, "run", return_value=completed) as run:
+            assert dispatch.default_qsub_submitter(
+                (str(authority["qsub"]["path"]), "-terse")
+            ) == "12345"
+        assert run.call_args.kwargs["env"] == {
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        }

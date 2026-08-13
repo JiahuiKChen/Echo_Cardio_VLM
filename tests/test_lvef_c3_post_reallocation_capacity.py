@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 from unittest import mock
 
@@ -270,12 +271,303 @@ def _expect(code: str, function) -> None:
         raise AssertionError(f"Expected {code}")
 
 
+def _canary_native(
+    *,
+    remaining_bytes: int = capacity.CANARY_REQUIRED_REMAINING_PROJECT_BYTES,
+    remaining_file_slots: int = capacity.CANARY_REQUIRED_REMAINING_FILE_SLOTS,
+) -> bytes:
+    if remaining_bytes % 1024:
+        raise AssertionError("synthetic native quota is integer KiB")
+    research_quota_kib = capacity.EXPECTED_RESEARCH_QUOTA_KIB
+    research_usage_kib = research_quota_kib - remaining_bytes // 1024
+    research_file_quota = capacity.EXPECTED_RESEARCH_FILE_QUOTA
+    research_files_used = research_file_quota - remaining_file_slots
+    return (
+        "rproject_mimicecho root FILESET 1 52428800 0 0 none | "
+        "1 1638400 0 0 none\n"
+        "rprojectnb_mimicecho root FILESET "
+        f"{research_usage_kib} {research_quota_kib} 0 0 none | "
+        f"{research_files_used} {research_file_quota} 0 0 none\n"
+    ).encode()
+
+
+def _canary_probe_fixture(
+    temporary_root: Path,
+    *,
+    native_payload: bytes | None = None,
+    real_scripts: bool = False,
+) -> tuple[capacity.CurrentCanaryHeadroomAuthority, list[Path]]:
+    root = temporary_root.resolve(strict=True)
+    tools = root / "tools"
+    tools.mkdir(mode=0o700)
+    research = root / "research"
+    backed = root / "backed"
+    research.mkdir(mode=0o700)
+    backed.mkdir(mode=0o700)
+    created: list[Path] = []
+    script_payloads = {
+        "pquota": b"#!/bin/sh\nexit 1\n",
+        "findmnt": (
+            b"#!/bin/sh\n"
+            b"target=\n"
+            b"previous=\n"
+            b"for argument do\n"
+            b"  if [ \"$previous\" = --target ]; then target=$argument; fi\n"
+            b"  previous=$argument\n"
+            b"done\n"
+            b"case $target in *research) role=research ;; *) role=backed ;; esac\n"
+            b"printf '{\"filesystems\":[{\"source\":\"synthetic:/%s\",' \"$role\"\n"
+            b"printf '\"target\":\"%s\",\"fstype\":\"syntheticfs\",' \"$target\"\n"
+            b"printf '\"options\":\"rw\",\"fsroot\":\"/\"}]}\\n'\n"
+        ),
+        "df": (
+            b"#!/bin/sh\n"
+            b"target=\n"
+            b"for argument do target=$argument; done\n"
+            b"case $target in *research) role=research ;; *) role=backed ;; esac\n"
+            b"printf 'Filesystem 1B-blocks Used Avail Mounted on\\n'\n"
+            b"printf 'synthetic:/%s 10000000001 1 10000000000 %s\\n' \"$role\" \"$target\"\n"
+        ),
+    }
+    for name in ("pquota", "findmnt", "df"):
+        path = tools / name
+        path.write_bytes(
+            script_payloads[name]
+            if real_scripts
+            else b"#!/bin/sh\nexit 97\n"
+        )
+        path.chmod(0o700)
+        created.append(path)
+    native = tools / "project.quota"
+    native.write_bytes(native_payload or _canary_native())
+    native.chmod(0o600)
+    return (
+        capacity.CurrentCanaryHeadroomAuthority(
+            native_quota_path=native,
+            pquota_path=tools / "pquota",
+            findmnt_path=tools / "findmnt",
+            df_path=tools / "df",
+            research_path=research,
+            backed_path=backed,
+        ),
+        created,
+    )
+
+
+def _canary_process_runner(
+    authority: capacity.CurrentCanaryHeadroomAuthority,
+    *,
+    research_available: int = capacity.CANARY_REQUIRED_REMAINING_PROJECT_BYTES,
+    pquota_returncode: int = 1,
+    pquota_stdout: bytes = b"",
+    calls: list[tuple[str, ...]] | None = None,
+):
+    def run(argv, **_kwargs):
+        command = Path(argv[0]).name
+        if calls is not None:
+            calls.append(tuple(str(item) for item in argv))
+        if command == "pquota":
+            return subprocess.CompletedProcess(
+                argv, pquota_returncode, pquota_stdout, b""
+            )
+        target = Path(argv[-1] if command == "df" else argv[3])
+        role = "research" if target == authority.research_path else "backed"
+        source = f"synthetic:/{role}"
+        if command == "findmnt":
+            stdout = json.dumps(
+                {
+                    "filesystems": [
+                        {
+                            "source": source,
+                            "target": str(target),
+                            "fstype": "syntheticfs",
+                            "options": "rw",
+                            "fsroot": "/",
+                        }
+                    ]
+                }
+            ).encode()
+        else:
+            available = (
+                research_available if role == "research" else 20_000_000_000
+            )
+            stdout = (
+                "Filesystem 1B-blocks Used Avail Mounted on\n"
+                f"{source} {available + 1} 1 {available} {target}\n"
+            ).encode()
+        return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+    return run
+
+
 def test_native_kib_rows_produce_exact_binary_scaled_bytes_and_file_counts() -> None:
     rows = capacity._parse_native_quota(_native())
     assert rows["research"]["quota_kib"] * 1024 == 2_093_796_556_800
     assert rows["backed"]["quota_kib"] * 1024 == 53_687_091_200
     assert rows["research"]["files_used"] == 106_407
     assert rows["backed"]["file_quota"] == 1_638_400
+
+
+def test_current_canary_headroom_probe_is_closed_read_only_and_exact() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        authority, tools = _canary_probe_fixture(Path(temporary))
+        before = {path: path.read_bytes() for path in tools}
+        before[authority.native_quota_path] = (
+            authority.native_quota_path.read_bytes()
+        )
+        calls: list[tuple[str, ...]] = []
+        with mock.patch.object(
+            capacity.os,
+            "statvfs",
+            side_effect=AssertionError("statvfs is not quota authority"),
+        ):
+            result = capacity.probe_current_canary_headroom(
+                authority,
+                process_runner=_canary_process_runner(
+                    authority, calls=calls
+                ),
+            )
+        capacity.validate_current_canary_headroom(result)
+        assert set(result) == capacity.CANARY_HEADROOM_KEYS
+        assert result["project_quota_remaining_bytes"] == 10_000_000_000
+        assert result["frozen_overhead_bytes"] == 5_000_000_000
+        assert result["required_object_bytes"] == 5_000_000_000
+        assert result["project_file_slots_remaining"] == 2_048
+        assert result["physical_filesystem_available_bytes"] == 10_000_000_000
+        assert result["pquota_display_crosscheck"] == (
+            capacity.DISPLAY_CROSSCHECK_UNAVAILABLE
+        )
+        assert [Path(call[0]).name for call in calls] == [
+            "pquota",
+            "findmnt",
+            "findmnt",
+            "df",
+            "df",
+        ]
+        assert calls[0][1:] == ("-u", capacity.EXPECTED_QUOTA_PRINCIPAL)
+        assert calls[1][1:] == (
+            "--json",
+            "--target",
+            str(authority.research_path),
+            "--output",
+            "SOURCE,TARGET,FSTYPE,OPTIONS,FSROOT",
+        )
+        assert calls[3][1:] == (
+            "-B1",
+            "--output=source,size,used,avail,target",
+            str(authority.research_path),
+        )
+        assert not {
+            "argv",
+            "path",
+            "principal",
+            "stdout_text",
+        }.intersection(result)
+        assert {path: path.read_bytes() for path in before} == before
+
+
+def test_current_canary_headroom_exact_thresholds_fail_closed() -> None:
+    cases = (
+        (
+            _canary_native(
+                remaining_bytes=(
+                    capacity.CANARY_REQUIRED_REMAINING_PROJECT_BYTES - 1024
+                )
+            ),
+            capacity.CANARY_REQUIRED_REMAINING_PROJECT_BYTES,
+            "CURRENT_CANARY_PROJECT_BYTE_HEADROOM_INSUFFICIENT",
+        ),
+        (
+            _canary_native(remaining_file_slots=2_047),
+            capacity.CANARY_REQUIRED_REMAINING_PROJECT_BYTES,
+            "CURRENT_CANARY_FILE_SLOT_HEADROOM_INSUFFICIENT",
+        ),
+        (
+            _canary_native(),
+            capacity.CANARY_REQUIRED_REMAINING_PROJECT_BYTES - 1,
+            "CURRENT_CANARY_PHYSICAL_BYTE_HEADROOM_INSUFFICIENT",
+        ),
+    )
+    for native, physical_available, code in cases:
+        with tempfile.TemporaryDirectory() as temporary:
+            authority, _ = _canary_probe_fixture(
+                Path(temporary), native_payload=native
+            )
+            _expect(
+                code,
+                lambda authority=authority, physical_available=physical_available: (
+                    capacity.probe_current_canary_headroom(
+                        authority,
+                        process_runner=_canary_process_runner(
+                            authority,
+                            research_available=physical_available,
+                        ),
+                    )
+                ),
+            )
+
+
+def test_current_canary_headroom_executes_supplied_sandbox_tools() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        authority, _ = _canary_probe_fixture(
+            Path(temporary), real_scripts=True
+        )
+        result = capacity.probe_current_canary_headroom(authority)
+        assert result["status"] == capacity.CANARY_HEADROOM_STATUS
+        assert result["writes_performed"] == 0
+        assert result["pquota_display_crosscheck"] == (
+            capacity.DISPLAY_CROSSCHECK_UNAVAILABLE
+        )
+
+
+def test_current_canary_headroom_pquota_contradiction_and_path_drift() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        authority, _ = _canary_probe_fixture(Path(temporary))
+        contradictory = _observed_display().replace(
+            " 1950 ", " 1951 ", 1
+        ).encode()
+        _expect(
+            "CURRENT_CANARY_HEADROOM_PQUOTA_CONTRADICTION",
+            lambda: capacity.probe_current_canary_headroom(
+                authority,
+                process_runner=_canary_process_runner(
+                    authority,
+                    pquota_returncode=0,
+                    pquota_stdout=contradictory,
+                ),
+            ),
+        )
+        changed = capacity.CurrentCanaryHeadroomAuthority(
+            **{**authority.__dict__, "df_path": Path("relative-df")}
+        )
+        _expect(
+            "CURRENT_CANARY_HEADROOM_AUTHORITY_INVALID",
+            lambda: capacity.probe_current_canary_headroom(
+                changed,
+                process_runner=_canary_process_runner(authority),
+            ),
+        )
+        mixed = capacity.CurrentCanaryHeadroomAuthority(
+            **{
+                **authority.__dict__,
+                "df_path": capacity.EXPECTED_DF_EXECUTABLE,
+            }
+        )
+        _expect(
+            "CURRENT_CANARY_HEADROOM_AUTHORITY_MIXED",
+            lambda: capacity.probe_current_canary_headroom(
+                mixed,
+                process_runner=_canary_process_runner(authority),
+            ),
+        )
+        authority.df_path.chmod(0o722)
+        _expect(
+            "CURRENT_CANARY_HEADROOM_AUTHORITY_INVALID",
+            lambda: capacity.probe_current_canary_headroom(
+                authority,
+                process_runner=_canary_process_runner(authority),
+            ),
+        )
 
 
 def test_native_quota_rejects_duplicate_missing_or_changed_allocation() -> None:

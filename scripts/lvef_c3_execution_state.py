@@ -9,7 +9,8 @@ their spelling is never parsed to infer an execution attempt.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -28,6 +29,50 @@ FILENAME_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 PERMITTED_SCOPES: Final = (
     "preflight_only",
     "capture_current_environment",
+    "prepare_exact_five_canary_authority",
+    "seal_exact_five_canary_manifest",
+    "begin_exact_five_canary_execution",
+)
+CANARY_NONTERMINAL_STATES: Final = (
+    "PRECANARY_READY",
+    "CANARY_AUTHORITY_PREPARED",
+    "CANARY_MANIFEST_SEALED",
+    "CANARY_EXECUTING",
+)
+CANARY_TERMINAL_STATES: Final = (
+    "CANARY_TERMINAL_PASS",
+    "CANARY_TERMINAL_FAIL",
+)
+CANARY_TRANSITIONS: Final = (
+    ("PRECANARY_READY", "CANARY_AUTHORITY_PREPARED"),
+    ("CANARY_AUTHORITY_PREPARED", "CANARY_MANIFEST_SEALED"),
+    ("CANARY_MANIFEST_SEALED", "CANARY_EXECUTING"),
+    ("CANARY_EXECUTING", "CANARY_TERMINAL_PASS"),
+    ("CANARY_EXECUTING", "CANARY_TERMINAL_FAIL"),
+)
+CANARY_PRIVATE_STATE_ROOT: Final = (
+    "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/owner_private/"
+    "exact_five_canary/lifecycle_state"
+)
+CANARY_LIFECYCLE_KEYS: Final = frozenset(
+    {
+        "schema_version",
+        "initial_state",
+        "ordered_nonterminal_states",
+        "terminal_states",
+        "transitions",
+        "private_state_root",
+        "state_filename",
+        "lock_filename",
+        "temporary_filename",
+        "directory_mode",
+        "file_mode",
+        "mutation_policy",
+        "tracked_state_mutation_permitted",
+    }
+)
+CANARY_TRANSITION_KEYS: Final = frozenset(
+    {"expected_current", "target_state"}
 )
 STATE_KEYS: Final = frozenset(
     {
@@ -51,6 +96,7 @@ STATE_KEYS: Final = frozenset(
         "next_unused_production_attempt",
         "production_attempt_006_exists",
         "permitted_execution_scopes",
+        "canary_lifecycle",
     }
 )
 
@@ -79,6 +125,23 @@ def _attempt_id(namespace: str, number: int) -> str:
 
 
 @dataclass(frozen=True)
+class CanaryLifecycle:
+    schema_version: int
+    initial_state: str
+    ordered_nonterminal_states: tuple[str, ...]
+    terminal_states: tuple[str, ...]
+    transitions: tuple[tuple[str, str], ...]
+    private_state_root: str
+    state_filename: str
+    lock_filename: str
+    temporary_filename: str
+    directory_mode: str
+    file_mode: str
+    mutation_policy: str
+    tracked_state_mutation_permitted: bool
+
+
+@dataclass(frozen=True)
 class ExecutionState:
     schema_name: str
     schema_version: int
@@ -100,6 +163,8 @@ class ExecutionState:
     next_unused_production_attempt: int
     production_attempt_006_exists: bool
     permitted_execution_scopes: tuple[str, ...]
+    canary_lifecycle: CanaryLifecycle
+    canonical_authority_sha256: str
 
     @property
     def logical_execution_attempt_id(self) -> str:
@@ -143,6 +208,71 @@ def _require_commit(value: Any, code: str) -> str:
     if not isinstance(value, str) or COMMIT_RE.fullmatch(value) is None:
         raise ExecutionStateError(code)
     return value
+
+
+def _canonical_authority_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_canary_lifecycle(value: Any) -> CanaryLifecycle:
+    if not isinstance(value, dict) or set(value) != CANARY_LIFECYCLE_KEYS:
+        raise ExecutionStateError("EXECUTION_STATE_CANARY_LIFECYCLE_SCHEMA_INVALID")
+    raw_transitions = value.get("transitions")
+    raw_nonterminal = value.get("ordered_nonterminal_states")
+    raw_terminal = value.get("terminal_states")
+    if (
+        type(value.get("schema_version")) is not int
+        or value["schema_version"] != 1
+        or value.get("initial_state") != CANARY_NONTERMINAL_STATES[0]
+        or not isinstance(raw_nonterminal, list)
+        or tuple(raw_nonterminal) != CANARY_NONTERMINAL_STATES
+        or not isinstance(raw_terminal, list)
+        or tuple(raw_terminal) != CANARY_TERMINAL_STATES
+        or not isinstance(raw_transitions, list)
+        or any(
+            not isinstance(item, dict) or set(item) != CANARY_TRANSITION_KEYS
+            for item in raw_transitions
+        )
+        or tuple(
+            (item["expected_current"], item["target_state"])
+            for item in raw_transitions
+        )
+        != CANARY_TRANSITIONS
+        or value.get("private_state_root") != CANARY_PRIVATE_STATE_ROOT
+        or value.get("state_filename") != "canary_state.restricted.json"
+        or value.get("lock_filename") != "canary_state.restricted.json.lock"
+        or value.get("temporary_filename")
+        != "canary_state.restricted.json.partial"
+        or value.get("directory_mode") != "0700"
+        or value.get("file_mode") != "0600"
+        or value.get("mutation_policy")
+        != "ATOMIC_EXPECTED_CURRENT_FORWARD_ONLY_V1"
+        or value.get("tracked_state_mutation_permitted") is not False
+    ):
+        raise ExecutionStateError("EXECUTION_STATE_CANARY_LIFECYCLE_INVALID")
+    return CanaryLifecycle(
+        schema_version=1,
+        initial_state=CANARY_NONTERMINAL_STATES[0],
+        ordered_nonterminal_states=CANARY_NONTERMINAL_STATES,
+        terminal_states=CANARY_TERMINAL_STATES,
+        transitions=CANARY_TRANSITIONS,
+        private_state_root=CANARY_PRIVATE_STATE_ROOT,
+        state_filename="canary_state.restricted.json",
+        lock_filename="canary_state.restricted.json.lock",
+        temporary_filename="canary_state.restricted.json.partial",
+        directory_mode="0700",
+        file_mode="0600",
+        mutation_policy="ATOMIC_EXPECTED_CURRENT_FORWARD_ONLY_V1",
+        tracked_state_mutation_permitted=False,
+    )
 
 
 def validate_execution_state(value: Any) -> ExecutionState:
@@ -233,6 +363,7 @@ def validate_execution_state(value: Any) -> ExecutionState:
         or tuple(scopes) != PERMITTED_SCOPES
     ):
         raise ExecutionStateError("EXECUTION_STATE_SCOPE_INVALID")
+    lifecycle = _validate_canary_lifecycle(value.get("canary_lifecycle"))
 
     return ExecutionState(
         schema_name=SCHEMA_NAME,
@@ -255,6 +386,8 @@ def validate_execution_state(value: Any) -> ExecutionState:
         next_unused_production_attempt=next_production_attempt,
         production_attempt_006_exists=False,
         permitted_execution_scopes=tuple(scopes),
+        canary_lifecycle=lifecycle,
+        canonical_authority_sha256=_canonical_authority_sha256(value),
     )
 
 
@@ -262,14 +395,18 @@ def load_execution_state(path: Path = DEFAULT_STATE_PATH) -> ExecutionState:
     try:
         if path.is_symlink() or not path.is_file():
             raise ExecutionStateError("EXECUTION_STATE_NOT_REGULAR")
+        payload = path.read_bytes()
         value = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_strict_pairs
+            payload.decode("utf-8"), object_pairs_hook=_strict_pairs
         )
     except ExecutionStateError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ExecutionStateError("EXECUTION_STATE_UNREADABLE") from exc
-    return validate_execution_state(value)
+    return replace(
+        validate_execution_state(value),
+        canonical_authority_sha256=hashlib.sha256(payload).hexdigest(),
+    )
 
 
 EMIT_FIELDS: Final = {

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 import copy
+from dataclasses import replace
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 from unittest import mock
@@ -39,6 +41,17 @@ def _binding(path: Path) -> dict[str, str]:
     return {"path": str(path), "file_sha256": _sha(path.read_bytes())}
 
 
+def _scheduler_tool_identity(path: Path) -> dict[str, object]:
+    metadata = os.lstat(path)
+    return {
+        "path": str(path),
+        "file_sha256": _sha(path.read_bytes()),
+        "size_bytes": metadata.st_size,
+        "device_id": metadata.st_dev,
+        "inode": metadata.st_ino,
+    }
+
+
 class SyntheticAuthority:
     def __init__(self, root: Path):
         self.root = root.resolve()
@@ -50,14 +63,39 @@ class SyntheticAuthority:
         self.public = self.root / "public"
         self.public.mkdir(mode=0o700)
 
-        self.contract = _write(self.public / "contract.yaml", b"synthetic contract\n", 0o600)
-        self.execution_state = _write(self.public / "state.json", b"synthetic state\n", 0o600)
-        self.state_machine = _write(self.public / "state-machine.json", b"synthetic state machine\n", 0o600)
-        self.resume_schema = _write(self.public / "resume-schema.json", b"synthetic resume schema\n", 0o600)
+        self.contract = _write(
+            self.public / "configs/lvef_c3_orchestration_v2.yaml",
+            b"synthetic contract\n",
+            0o600,
+        )
+        self.execution_state = _write(
+            self.public / "configs/lvef_c3_execution_state_v1.yaml",
+            b"synthetic state\n",
+            0o600,
+        )
+        self.state_machine = _write(
+            self.public / "configs/lvef_c3_state_machine_v2.json",
+            b"synthetic state machine\n",
+            0o600,
+        )
+        self.resume_schema = _write(
+            self.public / "configs/lvef_c3_resume_ledger_v2.json",
+            b"synthetic resume schema\n",
+            0o600,
+        )
         self.checkpoint = _write(self.public / "checkpoint.pt", b"synthetic checkpoint\n", 0o600)
-        self.stage_worker = _write(self.public / "worker.py", b"synthetic worker\n", 0o600)
-        self.stage_launcher = _write(self.public / "launcher.sh", b"#!/bin/sh\nexit 0\n", 0o700)
+        self.stage_worker = _write(
+            self.public / "scripts/lvef_c3_canary_stage_worker.py",
+            b"synthetic worker\n",
+            0o600,
+        )
+        self.stage_launcher = _write(
+            self.public / "scripts/scc_run_lvef_c3_canary_stage.sh",
+            b"#!/bin/sh\nexit 0\n",
+            0o700,
+        )
         self.qsub = _write(self.public / "qsub", b"#!/bin/sh\nexit 0\n", 0o700)
+        self.qstat = _write(self.public / "qstat", b"#!/bin/sh\nexit 0\n", 0o700)
         self.gcloud = _write(self.public / "gcloud", b"#!/bin/sh\nexit 0\n", 0o700)
         self.crc_python = _write(self.public / "crc-python", b"#!/bin/sh\nexit 0\n", 0o700)
         self.crc_worker = _write(self.public / "crc-worker.py", b"synthetic crc worker\n", 0o600)
@@ -70,12 +108,33 @@ class SyntheticAuthority:
             self.cloudsdk / "application_default_credentials.json",
             b"credential bytes must not be opened by loader\n",
         )
+        self.preselection_value = authority.build_preselection_authority(
+            governing_commit=COMMIT,
+            run_id=RUN_ID,
+            created_at_utc="2026-08-12T12:00:00+00:00",
+            scheduler_tools={
+                "qsub": _scheduler_tool_identity(self.qsub),
+                "qstat": _scheduler_tool_identity(self.qstat),
+            },
+        )
+        self.preselection = _write(
+            self.private / "preselection_scope.restricted.json",
+            authority.serialize_preselection_authority(self.preselection_value),
+        )
+        self.preselection_sha = self.preselection_value[
+            "preselection_authority_sha256"
+        ]
 
         configuration = {
             "execution_state": _sha(self.execution_state.read_bytes()),
             "production_contract": _sha(self.contract.read_bytes()),
             "source_metadata": "1" * 64,
             "split_map": "2" * 64,
+            "historical_study_manifest": "4" * 64,
+            "prior_smoke_source_manifest": "5" * 64,
+            "prior_smoke_source_summary": "6" * 64,
+            "prior_smoke_source_safety": "7" * 64,
+            "prior_smoke_preservation_manifest": "8" * 64,
             "checkpoint": _sha(self.checkpoint.read_bytes()),
             "environment_receipt": _sha(self.environment.read_bytes()),
             "state_machine_schema": _sha(self.state_machine.read_bytes()),
@@ -199,7 +258,7 @@ class SyntheticAuthority:
                     "production_contract"
                 ],
                 "batch_plan_sha256": self.plan_sha,
-                "launch_authority_sha256": "5" * 64,
+                "launch_authority_sha256": self.preselection_sha,
                 "owner_authorized": True,
                 "owner_authorization_date": "2026-08-12",
             }
@@ -217,11 +276,16 @@ class SyntheticAuthority:
             "schema_version": 1,
             "artifact_type": authority.ARTIFACT_TYPE,
             "status": authority.STATUS,
+            "created_at_utc": "2026-08-12T12:00:00+00:00",
             "governing_commit": COMMIT,
             "branch": authority.BRANCH,
             "run_id": RUN_ID,
             "attempt_id": RUN_ID,
             "output_root": str(self.runs / RUN_ID),
+            "preselection_authority": {
+                **_binding(self.preselection),
+                "semantic_sha256": self.preselection_sha,
+            },
             "manifest": {
                 **_binding(self.manifest),
                 "embedded_sha256": self.manifest_value["manifest_sha256"],
@@ -239,7 +303,7 @@ class SyntheticAuthority:
             "scheduler": copy.deepcopy(authority.SCHEDULER_SCOPE),
             "stage_authorizations": grants,
             "body_transfer_authorization": _binding(self.body),
-            "launch_authority_sha256": "5" * 64,
+            "launch_authority_sha256": self.preselection_sha,
             "gcloud": {
                 "binary_path": str(self.gcloud),
                 "resolution_receipt_path": str(self.gcloud_receipt),
@@ -261,6 +325,20 @@ class SyntheticAuthority:
         }
         self.authorization = self.private / "execution_authorization_v1.json"
         self.write_packet()
+
+    def authority_paths(self) -> authority.CanaryExecutionAuthorityPaths:
+        return authority.CanaryExecutionAuthorityPaths(
+            private_root=self.private,
+            fixed_path=self.authorization,
+            canary_run_root=self.runs,
+            tracked_worktree=self.public,
+            production_contract_path=self.contract,
+            execution_state_path=self.execution_state,
+            state_machine_path=self.state_machine,
+            resume_ledger_path=self.resume_schema,
+            stage_worker_path=self.stage_worker,
+            stage_launcher_path=self.stage_launcher,
+        )
 
     def write_packet(self, *, canonical: bool = True) -> None:
         self.packet.pop("authorization_sha256", None)
@@ -327,7 +405,7 @@ class SyntheticAuthority:
                 return_value=self.scheduler_value,
             )
         )
-        stack.enter_context(
+        self.scheduler_validator = stack.enter_context(
             mock.patch.object(
                 authority.scheduler_contract,
                 "validate_scheduler_plan",
@@ -366,6 +444,79 @@ def test_synthetic_closed_authority_passes_and_returns_worker_mapping() -> None:
             "canonical_execution_state_execute_permission_required"
         ] is True
         fixture.body_validator.assert_called_once()
+        fixture.scheduler_validator.assert_called_once_with(
+            fixture.scheduler_value,
+            repository_root=fixture.public,
+            require_bound_manifest=True,
+        )
+
+
+def test_explicit_path_bundle_supplies_default_packet_path_and_enforces_topology() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = SyntheticAuthority(Path(directory))
+        paths = fixture.authority_paths()
+        with fixture.patches():
+            result = authority.load_and_validate_execution_authority(paths=paths)
+        assert result["authorization_path"] == str(fixture.authorization)
+
+        invalid = replace(
+            paths,
+            canary_run_root=fixture.private / "not-the-canonical-run-root",
+        )
+        _expect(
+            "CANARY_EXECUTION_AUTHORITY_PATHS_INVALID",
+            lambda: authority.load_and_validate_execution_authority(paths=invalid),
+        )
+
+        nested = replace(
+            paths,
+            tracked_worktree=fixture.private / "public",
+            production_contract_path=fixture.private
+            / "public/configs/lvef_c3_orchestration_v2.yaml",
+            execution_state_path=fixture.private
+            / "public/configs/lvef_c3_execution_state_v1.yaml",
+            state_machine_path=fixture.private
+            / "public/configs/lvef_c3_state_machine_v2.json",
+            resume_ledger_path=fixture.private
+            / "public/configs/lvef_c3_resume_ledger_v2.json",
+            stage_worker_path=fixture.private
+            / "public/scripts/lvef_c3_canary_stage_worker.py",
+            stage_launcher_path=fixture.private
+            / "public/scripts/scc_run_lvef_c3_canary_stage.sh",
+        )
+        _expect(
+            "CANARY_EXECUTION_AUTHORITY_PATHS_INVALID",
+            lambda: authority.load_and_validate_execution_authority(paths=nested),
+        )
+
+
+def test_authority_rejects_invalid_or_unsealed_creation_timestamp() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = SyntheticAuthority(Path(directory))
+        fixture.packet["created_at_utc"] = "2026-08-12T12:00:00-04:00"
+        fixture.write_packet()
+        with fixture.patches():
+            _expect(
+                "CANARY_EXECUTION_CREATED_AT_UTC_INVALID",
+                lambda: authority.load_and_validate_execution_authority(
+                    fixture.authorization
+                ),
+            )
+
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = SyntheticAuthority(Path(directory))
+        sealed = fixture.authorization.read_bytes()
+        fixture.packet["created_at_utc"] = "2026-08-12T12:00:01+00:00"
+        fixture.authorization.write_bytes(authority.serialize_authorization(fixture.packet))
+        fixture.authorization.chmod(0o600)
+        assert fixture.authorization.read_bytes() != sealed
+        with fixture.patches():
+            _expect(
+                "CANARY_EXECUTION_AUTHORIZATION_SHA256_MISMATCH",
+                lambda: authority.load_and_validate_execution_authority(
+                    fixture.authorization
+                ),
+            )
 
 
 def test_authority_rejects_noncanonical_serialization_and_unknown_key() -> None:
@@ -469,7 +620,87 @@ def test_authority_schema_is_closed_and_matches_runtime_packet_keys() -> None:
     assert set(schema["required"]) == set(authority.PACKET_KEYS)
     assert set(schema["properties"]) == set(authority.PACKET_KEYS)
     assert schema["properties"]["owner_authorized"]["const"] is True
+    assert schema["properties"]["created_at_utc"] == {
+        "$ref": "#/$defs/utcTimestamp"
+    }
     assert schema["properties"]["scheduler"]["additionalProperties"] is False
     assert schema["properties"]["stage_authorizations"]["additionalProperties"] is False
     assert schema["$defs"]["runtimeAuthority"]["additionalProperties"] is False
     assert schema["$defs"]["authorizationScopes"]["additionalProperties"] is False
+
+
+def test_preselection_authority_is_identifier_free_closed_and_tamper_evident() -> None:
+    value = authority.build_preselection_authority(
+        governing_commit=COMMIT,
+        run_id=RUN_ID,
+        created_at_utc="2026-08-12T12:00:00+00:00",
+        scheduler_tools={
+            "qsub": {
+                "path": "/synthetic/qsub",
+                "file_sha256": "1" * 64,
+                "size_bytes": 100,
+                "device_id": 1,
+                "inode": 10,
+            },
+            "qstat": {
+                "path": "/synthetic/qstat",
+                "file_sha256": "2" * 64,
+                "size_bytes": 200,
+                "device_id": 1,
+                "inode": 11,
+            },
+        },
+    )
+    serialized = authority.serialize_preselection_authority(value)
+    assert b"subject_id" not in serialized
+    assert b"study_id" not in serialized
+    assert b"source_object" not in serialized
+    assert b"billing_project" not in serialized
+    assert authority.validate_preselection_authority_value(
+        value,
+        expected_governing_commit=COMMIT,
+        expected_run_id=RUN_ID,
+    ) == value
+    altered = copy.deepcopy(value)
+    altered["hard_scope"]["studies"] = 4
+    _expect(
+        "CANARY_PRESELECTION_AUTHORITY_INVALID",
+        lambda: authority.validate_preselection_authority_value(altered),
+    )
+    schema = json.loads(
+        (
+            ROOT
+            / "configs/lvef_c3_canary_preselection_authority_schema_v1.json"
+        ).read_text()
+    )
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(authority.PRESELECTION_KEYS)
+    assert set(schema["properties"]) == set(authority.PRESELECTION_KEYS)
+    path_pattern = schema["$defs"]["schedulerToolIdentity"]["properties"][
+        "path"
+    ]["pattern"]
+    for accepted in ("/qsub", "/usr/local/bin/qsub"):
+        assert re.fullmatch(path_pattern, accepted)
+        assert authority._path(
+            accepted, "CANARY_PRESELECTION_SCHEDULER_TOOL_INVALID"
+        ) == Path(accepted)
+    for rejected in ("/", "//a", "/a/../qsub", "/a/./qsub", "/a//qsub"):
+        assert re.fullmatch(path_pattern, rejected) is None
+        _expect(
+            "CANARY_PRESELECTION_SCHEDULER_TOOL_INVALID",
+            lambda value=rejected: authority._path(
+                value, "CANARY_PRESELECTION_SCHEDULER_TOOL_INVALID"
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = SyntheticAuthority(Path(directory))
+        fixture.qstat.write_bytes(b"#!/bin/sh\nexit 97\n")
+        fixture.qstat.chmod(0o700)
+        with fixture.patches():
+            _expect(
+                "CANARY_PRESELECTION_SCHEDULER_TOOL_CHANGED",
+                lambda: authority.load_and_validate_execution_authority(
+                    fixture.authorization
+                ),
+            )

@@ -39,6 +39,7 @@ STAGE_RESOURCES = {
     "CANARY_FINALIZATION": ("12:00:00", "32G", ()),
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 JOB_ID_RE = re.compile(r"^[0-9]+(?:[.][0-9-]+:[0-9]+)?$")
 RUN_ID_RE = re.compile(r"^lvef_c3_exact_five_canary_[a-z0-9]{8}$")
 
@@ -82,14 +83,70 @@ def canonical_json_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
-def sha256_file(path: Path) -> str:
-    if path.is_symlink() or not path.is_file():
+def scheduler_tool_identity(
+    path: Path, *, require_executable: bool = True
+) -> dict[str, Any]:
+    """Return one stable no-follow executable identity."""
+
+    try:
+        before = os.lstat(path)
+    except OSError as exc:
+        raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_NOT_REGULAR") from exc
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or stat.S_IMODE(before.st_mode) & 0o022
+        or (require_executable and not stat.S_IMODE(before.st_mode) & stat.S_IXUSR)
+    ):
         raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_NOT_REGULAR")
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
+    byte_count = 0
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_NOT_REGULAR") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_CHANGED")
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
             digest.update(block)
-    return digest.hexdigest()
+            byte_count += len(block)
+        final = os.fstat(descriptor)
+        if (
+            (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+            != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+        ):
+            raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_CHANGED")
+    finally:
+        os.close(descriptor)
+    try:
+        after = os.lstat(path)
+    except OSError as exc:
+        raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_CHANGED") from exc
+    if (
+        byte_count != final.st_size
+        or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        != (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+    ):
+        raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_CHANGED")
+    return {
+        "path": str(path),
+        "file_sha256": digest.hexdigest(),
+        "size_bytes": final.st_size,
+        "device_id": final.st_dev,
+        "inode": final.st_ino,
+    }
+
+
+def sha256_file(path: Path) -> str:
+    return str(
+        scheduler_tool_identity(path, require_executable=False)["file_sha256"]
+    )
 
 
 def _authority_value(authority: Mapping[str, Any], name: str) -> Any:
@@ -102,7 +159,14 @@ def _validate_dispatch_authority(authority: Mapping[str, Any]) -> None:
     if authority.get("owner_authorized") is not True:
         raise CanaryDispatchError("CANARY_DISPATCH_NOT_OWNER_AUTHORIZED")
     run_id = str(_authority_value(authority, "run_id"))
-    if RUN_ID_RE.fullmatch(run_id) is None or authority.get("attempt_id") != run_id:
+    if (
+        RUN_ID_RE.fullmatch(run_id) is None
+        or authority.get("attempt_id") != run_id
+        or COMMIT_RE.fullmatch(
+            str(_authority_value(authority, "governing_commit"))
+        )
+        is None
+    ):
         raise CanaryDispatchError("CANARY_DISPATCH_RUN_ID_INVALID")
     for name in (
         "authorization_sha256", "authorization_file_sha256",
@@ -114,10 +178,13 @@ def _validate_dispatch_authority(authority: Mapping[str, Any]) -> None:
     scheduler_plan = _authority_value(authority, "scheduler_plan")
     scheduler = _authority_value(authority, "scheduler")
     qsub = _authority_value(authority, "qsub")
+    scheduler_tools = _authority_value(authority, "scheduler_tool_identities")
     worker = _authority_value(authority, "stage_worker")
     launcher = _authority_value(authority, "stage_launcher")
-    if not all(isinstance(value, Mapping) for value in (manifest, scheduler_plan, scheduler, qsub, worker, launcher)):
+    if not all(isinstance(value, Mapping) for value in (manifest, scheduler_plan, scheduler, qsub, worker, launcher, scheduler_tools)):
         raise CanaryDispatchError("CANARY_DISPATCH_AUTHORITY_INCOMPLETE")
+    if set(scheduler_tools) != {"qsub", "qstat"}:
+        raise CanaryDispatchError("CANARY_DISPATCH_SCHEDULER_TOOL_AUTHORITY_INVALID")
     if (
         set(scheduler) != {
             "ordered_stage_ids", "scheduler_submission_count",
@@ -149,6 +216,15 @@ def _validate_dispatch_authority(authority: Mapping[str, Any]) -> None:
         path = Path(str(executable.get("path")))
         if not path.is_absolute() or sha256_file(path) != executable.get("file_sha256"):
             raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_HASH_MISMATCH")
+    if (
+        scheduler_tool_identity(Path(str(scheduler_tools["qsub"]["path"])))
+        != scheduler_tools["qsub"]
+        or scheduler_tool_identity(Path(str(scheduler_tools["qstat"]["path"])))
+        != scheduler_tools["qstat"]
+        or qsub.get("path") != scheduler_tools["qsub"]["path"]
+        or qsub.get("file_sha256") != scheduler_tools["qsub"]["file_sha256"]
+    ):
+        raise CanaryDispatchError("CANARY_DISPATCH_SCHEDULER_TOOL_CHANGED")
 
 
 def initialize_dispatch_ledger(authority: Mapping[str, Any]) -> dict[str, Any]:
@@ -305,14 +381,32 @@ def build_qsub_command(
         if JOB_ID_RE.fullmatch(predecessor_job_id) is None:
             raise CanaryDispatchError("CANARY_DISPATCH_PREDECESSOR_JOB_INVALID")
         command.extend(("-hold_jid", predecessor_job_id))
-    command.extend((launcher, authorization_path, stage_id))
+    command.extend(
+        (
+            launcher,
+            authorization_path,
+            stage_id,
+            str(authority["governing_commit"]),
+            str(authority["run_id"]),
+            str(authority["stage_launcher"]["file_sha256"]),
+            str(authority["stage_worker"]["file_sha256"]),
+        )
+    )
     return tuple(command)
 
 
 def default_qsub_submitter(command: Sequence[str]) -> str:
+    if not command or not Path(str(command[0])).is_absolute():
+        raise CanaryDispatchError("CANARY_QSUB_COMMAND_INVALID")
     result = subprocess.run(
         list(command), check=False, text=True, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "LC_ALL": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        },
     )
     if result.returncode != 0:
         raise CanaryDispatchError("CANARY_QSUB_SUBMISSION_FAILED")
@@ -368,6 +462,26 @@ def dispatch_authorized_canary(
         sequence += 1
         _write_snapshot(claims_root, sequence, claimed)
         try:
+            scheduler_tools = authority["scheduler_tool_identities"]
+            if (
+                scheduler_tool_identity(
+                    Path(str(scheduler_tools["qsub"]["path"]))
+                )
+                != scheduler_tools["qsub"]
+            ):
+                raise CanaryDispatchError("CANARY_DISPATCH_SCHEDULER_TOOL_CHANGED")
+            if (
+                scheduler_tool_identity(
+                    Path(str(authority["stage_launcher"]["path"]))
+                )["file_sha256"]
+                != authority["stage_launcher"]["file_sha256"]
+                or scheduler_tool_identity(
+                    Path(str(authority["stage_worker"]["path"])),
+                    require_executable=False,
+                )["file_sha256"]
+                != authority["stage_worker"]["file_sha256"]
+            ):
+                raise CanaryDispatchError("CANARY_DISPATCH_EXECUTABLE_HASH_MISMATCH")
             job_id = submitter(command)
             if JOB_ID_RE.fullmatch(str(job_id)) is None:
                 raise CanaryDispatchError("CANARY_QSUB_JOB_ID_INVALID")

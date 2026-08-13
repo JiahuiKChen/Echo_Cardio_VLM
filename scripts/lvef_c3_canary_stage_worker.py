@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 
@@ -42,6 +43,8 @@ CANARY_RUN_ROOT = OWNER_PRIVATE_ROOT / "canary_runs"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID_RE = re.compile(r"^lvef_c3_exact_five_canary_[a-z0-9]{8}$")
+DISPATCH_SUBMITTED_WAIT_SECONDS = 30.0
+DISPATCH_SUBMITTED_POLL_SECONDS = 0.1
 
 
 class CanaryStageWorkerError(RuntimeError):
@@ -173,9 +176,11 @@ def _project_execution_authority(
 ) -> CanaryStageContext:
     """Project an already validated owner packet into a stage-only context."""
     expected = {
-        "schema_version", "artifact_type", "status",
+        "schema_version", "artifact_type", "status", "created_at_utc",
         "authorization_path", "authorization_sha256", "authorization_file_sha256", "branch",
+        "scheduler_tool_identities",
         "governing_commit", "run_id", "attempt_id", "output_root", "manifest",
+        "preselection_authority",
         "batch_plan", "scheduler_plan", "production_contract",
         "environment_receipt", "checkpoint", "runtime_authority", "hard_scope",
         "scheduler", "stage_authorizations", "body_transfer_authorization",
@@ -206,6 +211,10 @@ def _project_execution_authority(
     manifest = _binding(
         value.get("manifest"), extras=frozenset({"embedded_sha256"})
     )
+    preselection = _binding(
+        value.get("preselection_authority"),
+        extras=frozenset({"semantic_sha256"}),
+    )
     plan = _binding(
         value.get("batch_plan"), extras=frozenset({"canonical_sha256"})
     )
@@ -216,6 +225,12 @@ def _project_execution_authority(
     environment = _binding(value.get("environment_receipt"))
     checkpoint = _binding(value.get("checkpoint"))
     body = _binding(value.get("body_transfer_authorization"))
+    if str(preselection["semantic_sha256"]) != str(
+        value.get("launch_authority_sha256")
+    ):
+        raise CanaryStageWorkerError(
+            "CANARY_PRESELECTION_LAUNCH_BINDING_INVALID"
+        )
     hard_scope = _mapping(value.get("hard_scope"), "CANARY_HARD_SCOPE_INVALID")
     _keys(hard_scope, {"studies", "subjects", "split", "max_objects", "max_bytes", "batch_id"}, "CANARY_HARD_SCOPE_INVALID")
     if dict(hard_scope) != {
@@ -245,6 +260,36 @@ def _project_execution_authority(
     requester_pays = _mapping(
         value.get("requester_pays"), "CANARY_REQUESTER_PAYS_BINDING_INVALID"
     )
+    scheduler_tool_identities = _mapping(
+        value.get("scheduler_tool_identities"),
+        "CANARY_SCHEDULER_TOOL_IDENTITIES_INVALID",
+    )
+    _keys(
+        scheduler_tool_identities,
+        {"qsub", "qstat"},
+        "CANARY_SCHEDULER_TOOL_IDENTITIES_INVALID",
+    )
+    for role in ("qsub", "qstat"):
+        identity = _mapping(
+            scheduler_tool_identities[role],
+            "CANARY_SCHEDULER_TOOL_IDENTITIES_INVALID",
+        )
+        _keys(
+            identity,
+            {"path", "file_sha256", "size_bytes", "device_id", "inode"},
+            "CANARY_SCHEDULER_TOOL_IDENTITIES_INVALID",
+        )
+        _sha(
+            identity.get("file_sha256"),
+            "CANARY_SCHEDULER_TOOL_IDENTITIES_INVALID",
+        )
+    if (
+        value["qsub"].get("path")
+        != scheduler_tool_identities["qsub"].get("path")
+        or value["qsub"].get("file_sha256")
+        != scheduler_tool_identities["qsub"].get("file_sha256")
+    ):
+        raise CanaryStageWorkerError("CANARY_SCHEDULER_TOOL_IDENTITIES_INVALID")
     for executable_name in ("qsub", "stage_worker", "stage_launcher"):
         executable = _binding(value.get(executable_name))
         path = Path(str(executable["path"]))
@@ -418,9 +463,100 @@ def _load_latest_dispatch_ledger(
     record = next(
         (row for row in ledger["stages"] if row["stage_id"] == stage_id), None
     )
-    if record is None or record.get("status") != "SUBMITTED":
+    if ledger.get("status") == "SUBMISSION_FAILED":
+        raise CanaryStageWorkerError("CANARY_DISPATCH_TERMINAL_FAILURE")
+    if (
+        record is None
+        or record.get("status") != "SUBMITTED"
+        or ledger.get("status") != "DISPATCHED_FROZEN_DAG"
+        or ledger.get("submission_count") != 5
+        or any(row.get("status") != "SUBMITTED" for row in ledger["stages"])
+    ):
         raise CanaryStageWorkerError("CANARY_STAGE_NOT_SUBMITTED")
     return ledger
+
+
+def _wait_for_submitted_dispatch_ledger(
+    context: CanaryStageContext,
+    *,
+    stage_id: str,
+    timeout_seconds: float = DISPATCH_SUBMITTED_WAIT_SECONDS,
+    poll_seconds: float = DISPATCH_SUBMITTED_POLL_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    ledger_loader: Callable[..., Mapping[str, Any]] | None = None,
+) -> Mapping[str, Any]:
+    """Wait read-only for the dispatcher's post-qsub SUBMITTED snapshot.
+
+    qsub may start a worker after returning its job id but before the dispatcher
+    has published the next immutable ledger snapshot.  A worker may observe a
+    valid CLAIMED snapshot (or the currently-being-written next snapshot), but
+    it must not claim or execute its stage until SUBMITTED is independently
+    visible and valid.  Persistent absence or an incomplete snapshot times out
+    closed; all other authority/schema failures remain immediately terminal.
+    """
+
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or timeout_seconds <= 0
+        or timeout_seconds > 60
+        or isinstance(poll_seconds, bool)
+        or not isinstance(poll_seconds, (int, float))
+        or poll_seconds <= 0
+        or poll_seconds > timeout_seconds
+    ):
+        raise CanaryStageWorkerError("CANARY_DISPATCH_WAIT_POLICY_INVALID")
+    load_ledger = ledger_loader or _load_latest_dispatch_ledger
+    deadline = monotonic() + float(timeout_seconds)
+    while True:
+        try:
+            return load_ledger(context, stage_id=stage_id)
+        except CanaryStageWorkerError as exc:
+            if exc.code != "CANARY_STAGE_NOT_SUBMITTED":
+                raise
+        except core.OrchestrationError:
+            # A newly O_EXCL-created dispatcher snapshot is visible before its
+            # fsynced body is complete. Never fall back to an older snapshot;
+            # wait for this newest snapshot to become valid or time out.
+            pass
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise CanaryStageWorkerError(
+                "CANARY_STAGE_SUBMISSION_CONFIRMATION_TIMEOUT"
+            )
+        sleep(min(float(poll_seconds), remaining))
+
+
+def _require_bound_scheduler_job(
+    ledger: Mapping[str, Any], *, stage_id: str, scheduler_job_identity: str
+) -> None:
+    """Require complete five-job dispatch and this worker's exact SGE job id."""
+
+    records = ledger.get("stages")
+    record = next(
+        (
+            row
+            for row in records
+            if isinstance(row, Mapping) and row.get("stage_id") == stage_id
+        ),
+        None,
+    ) if isinstance(records, list) else None
+    if (
+        ledger.get("status") != "DISPATCHED_FROZEN_DAG"
+        or ledger.get("submission_count") != 5
+        or not isinstance(records, list)
+        or len(records) != 5
+        or any(
+            not isinstance(row, Mapping) or row.get("status") != "SUBMITTED"
+            for row in records
+        )
+        or not isinstance(scheduler_job_identity, str)
+        or re.fullmatch(r"[0-9]+", scheduler_job_identity) is None
+        or record is None
+        or record.get("job_id") != scheduler_job_identity
+    ):
+        raise CanaryStageWorkerError("CANARY_STAGE_SCHEDULER_JOB_BINDING_INVALID")
 
 
 def _load_predecessor_stage_result(
@@ -602,6 +738,80 @@ def _write_stage_result(
     return value
 
 
+def _lifecycle_paths(context: CanaryStageContext) -> tuple[Path, Path]:
+    """Derive the one canonical private lifecycle and tracked state paths."""
+
+    owner_private_root = context.output_root.parent.parent
+    lifecycle_root = owner_private_root / "lifecycle_state"
+    execution_state_path = context.contract_path.parent / "lvef_c3_execution_state_v1.yaml"
+    return lifecycle_root, execution_state_path
+
+
+def _require_executing_lifecycle(context: CanaryStageContext) -> None:
+    import lvef_c3_canary_state as canary_state
+
+    lifecycle_root, execution_state_path = _lifecycle_paths(context)
+    try:
+        snapshot = canary_state.load_state(
+            root=lifecycle_root,
+            execution_state_path=execution_state_path,
+            expected_governing_commit=context.governing_commit,
+            expected_run_id=context.run_id,
+        )
+    except canary_state.CanaryStateError as exc:
+        raise CanaryStageWorkerError(
+            "CANARY_STAGE_LIFECYCLE_AUTHORITY_INVALID"
+        ) from exc
+    if snapshot.get("current_state") != "CANARY_EXECUTING":
+        raise CanaryStageWorkerError("CANARY_STAGE_LIFECYCLE_NOT_EXECUTING")
+
+
+def _transition_terminal_lifecycle(
+    context: CanaryStageContext,
+    *,
+    target_state: str,
+    reason_code: str,
+    bindings: Mapping[str, str] | None = None,
+) -> None:
+    """Record a receipt-bound terminal result without allowing a second edge."""
+
+    import lvef_c3_canary_state as canary_state
+
+    if target_state not in {"CANARY_TERMINAL_PASS", "CANARY_TERMINAL_FAIL"}:
+        raise CanaryStageWorkerError("CANARY_STAGE_TERMINAL_STATE_INVALID")
+    lifecycle_root, execution_state_path = _lifecycle_paths(context)
+    try:
+        snapshot = canary_state.load_state(
+            root=lifecycle_root,
+            execution_state_path=execution_state_path,
+            expected_governing_commit=context.governing_commit,
+            expected_run_id=context.run_id,
+        )
+        if (
+            target_state == "CANARY_TERMINAL_FAIL"
+            and snapshot.get("current_state") == "CANARY_TERMINAL_FAIL"
+        ):
+            return
+        if snapshot.get("current_state") != "CANARY_EXECUTING":
+            raise canary_state.CanaryStateError(
+                "CANARY_STATE_EXPECTED_CURRENT_MISMATCH"
+            )
+        canary_state.transition_state(
+            root=lifecycle_root,
+            execution_state_path=execution_state_path,
+            expected_current="CANARY_EXECUTING",
+            target_state=target_state,
+            governing_commit=context.governing_commit,
+            run_id=context.run_id,
+            reason_code=reason_code,
+            bindings={} if bindings is None else bindings,
+        )
+    except canary_state.CanaryStateError as exc:
+        raise CanaryStageWorkerError(
+            "CANARY_STAGE_TERMINAL_TRANSITION_FAILED"
+        ) from exc
+
+
 def _create_scoped_download_root(context: CanaryStageContext) -> Path:
     cursor = context.output_root
     for component in ("attempts", context.attempt_id, "raw"):
@@ -627,8 +837,19 @@ def run_canary_stage(
     """Validate all sealed inputs, then invoke exactly one production stage."""
     dependency = dependencies or CanaryStageDependencies()
     manifest, plan, requirements, contract = _validate_context(context, stage_id=stage_id)
-    _load_latest_dispatch_ledger(context, stage_id=stage_id)
+    dispatch_ledger = _wait_for_submitted_dispatch_ledger(
+        context, stage_id=stage_id
+    )
+    _require_bound_scheduler_job(
+        dispatch_ledger,
+        stage_id=stage_id,
+        scheduler_job_identity=scheduler_job_identity,
+    )
     predecessor_sha, _ = _load_predecessor_stage_result(context, stage_id=stage_id)
+    # Recheck immediately before the irreversible O_EXCL claim. A later qsub
+    # failure may have transitioned the shared run to terminal FAIL while this
+    # worker was waiting for its SUBMITTED snapshot.
+    _require_executing_lifecycle(context)
     _, claim_sha = _claim_stage_execution(
         context, stage_id=stage_id, predecessor_result_sha256=predecessor_sha
     )
@@ -829,10 +1050,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.scope_authority, require_output_absent=False
     )
     context = _project_execution_authority(authority, stage_id=args.stage)
-    result = run_canary_stage(
-        args.stage, context, argv=sys.argv,
-        scheduler_job_identity=args.scheduler_job_identity,
-    )
+    try:
+        result = run_canary_stage(
+            args.stage, context, argv=sys.argv,
+            scheduler_job_identity=args.scheduler_job_identity,
+        )
+    except Exception:
+        _transition_terminal_lifecycle(
+            context,
+            target_state="CANARY_TERMINAL_FAIL",
+            reason_code="CANARY_STAGE_FAILED_NO_RETRY",
+        )
+        raise
+    if args.stage == "CANARY_FINALIZATION":
+        _transition_terminal_lifecycle(
+            context,
+            target_state="CANARY_TERMINAL_PASS",
+            reason_code="CANARY_FINALIZATION_RECEIPT_VALIDATED",
+            bindings={
+                "aggregate_safe_finalization_sha256": core.canonical_json_sha256(
+                    result
+                )
+            },
+        )
     print(json.dumps({
         "status": str(result.get("status", "PASS")), "stage_id": args.stage,
         "identifiers_emitted": False, "paths_emitted": False,

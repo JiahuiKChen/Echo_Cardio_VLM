@@ -18,7 +18,7 @@ ECHOPRIME_PYTHON=/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echopr
 EXPECTED_PYTHON_SHA256=1adea0a17d0e729bbd80669793b337f67daa55176be37438bc188fc76b7decdb
 [[ $# -eq 1 ]] || exit 64
 case "$1" in
-  --validate-installation|--preflight-only|--execute) ;;
+  --validate-installation|--prepare-live-authority|--preflight-only|--execute) ;;
   *) exit 64 ;;
 esac
 [[ -d "$WORKTREE" && ! -L "$WORKTREE" ]] || exit 65
@@ -39,4 +39,5 @@ resolved_mode=$(/usr/bin/stat -c %a -- "$resolved_python" 2>/dev/null) || exit 6
 read -r resolved_sha _ < <(/usr/bin/sha256sum -- "$resolved_python" 2>/dev/null) || exit 65
 [[ "$resolved_sha" = "$EXPECTED_PYTHON_SHA256" ]] || exit 65
 
-exec "$ECHOPRIME_PYTHON" -I -B "$WORKTREE/scripts/lvef_c3_canary.py" "$1"
+exec "$ECHOPRIME_PYTHON" -I -B -X pycache_prefix=/dev/null/lvef_c3_canary \
+  "$WORKTREE/scripts/lvef_c3_canary.py" "$1"

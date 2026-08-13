@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Production-scoped control plane for an exact-five C3 imaging canary.
 
-The installation and preflight modes are dependency-light and deliberately
-have no cloud client, scheduler invocation, restricted-row reader, DICOM body
-reader, GPU, model-fitting, prediction, or confirmatory-performance path.
-Future live execution is doubly gated by a later canonical-state transition
-and an independently sealed owner-private execution authority.  Neither
-authority exists in the current phase.
+The installation and strengthened preflight modes are dependency-light and
+deliberately have no cloud client, real scheduler invocation, restricted-row
+reader, DICOM body reader, GPU, model-fitting, prediction, or confirmatory-
+performance path.  Live execution is gated by the tracked lifecycle policy,
+one validated owner-private lifecycle snapshot, and one independently sealed
+owner-private execution authority.
 
 The synthetic integration surface below is an in-process proof harness.  Its
 hooks substitute only external effects; every scientific contract check,
@@ -24,6 +24,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 
@@ -51,6 +52,9 @@ REQUIRED_BRANCH = "codex/lvef-multitask-revalidation"
 CANARY_EXECUTION_SCOPE = "execute_exact_five_canary"
 PHASE1HR1_STARTING_AUTHORITY_COMMIT = (
     "0bfcba9973fa6592ca75aa23c6cf0e42d432c5cb"
+)
+PHASE1HR2_STARTING_AUTHORITY_COMMIT = (
+    "34c8ad795a7059f1d76b53a9a8be543132b095f7"
 )
 PHASE1HR1_CURRENT_ENVIRONMENT_RECEIPT_BYTES = 6_026
 PHASE1HR1_CURRENT_ENVIRONMENT_RECEIPT_SHA256 = (
@@ -80,16 +84,46 @@ LIVE_PLAN_CONFIGURATION_MAP = {
     "crc32c_distribution": "crc32c_distribution_sha256",
 }
 TRACKED_CANARY_CONTROL_FILES = (
+    REPOSITORY_ROOT / "configs/lvef_c3_execution_state_v1.yaml",
     REPOSITORY_ROOT / "configs/lvef_c3_canary_manifest_schema_v1.json",
     REPOSITORY_ROOT / "configs/lvef_c3_canary_scheduler_plan_v1.json",
     REPOSITORY_ROOT / "configs/lvef_c3_canary_execution_authority_schema_v1.json",
+    REPOSITORY_ROOT / "configs/lvef_c3_canary_preselection_authority_schema_v1.json",
+    REPOSITORY_ROOT / "configs/lvef_c3_canary_state_snapshot_schema_v1.json",
+    REPOSITORY_ROOT / "configs/lvef_c3_canary_live_dependencies_v1.json",
+    SCRIPT_ROOT / "lvef_c3_execution_state.py",
+    SCRIPT_ROOT / "lvef_c3_canary.py",
     SCRIPT_ROOT / "lvef_c3_canary_manifest.py",
     SCRIPT_ROOT / "lvef_c3_canary_scheduler_plan.py",
     SCRIPT_ROOT / "lvef_c3_canary_execution_authority.py",
+    SCRIPT_ROOT / "lvef_c3_canary_state.py",
+    SCRIPT_ROOT / "lvef_c3_canary_authority_materializer.py",
+    SCRIPT_ROOT / "capture_lvef_c3_post_reallocation_capacity.py",
     SCRIPT_ROOT / "lvef_c3_canary_dispatch.py",
     SCRIPT_ROOT / "lvef_c3_canary_stage_worker.py",
     SCRIPT_ROOT / "scc_run_lvef_c3_canary.sh",
     SCRIPT_ROOT / "scc_run_lvef_c3_canary_stage.sh",
+)
+TRACKED_CONTROL_RELATIVE_FILES = (
+    "configs/lvef_c3_execution_state_v1.yaml",
+    "configs/lvef_c3_canary_manifest_schema_v1.json",
+    "configs/lvef_c3_canary_scheduler_plan_v1.json",
+    "configs/lvef_c3_canary_execution_authority_schema_v1.json",
+    "configs/lvef_c3_canary_preselection_authority_schema_v1.json",
+    "configs/lvef_c3_canary_state_snapshot_schema_v1.json",
+    "configs/lvef_c3_canary_live_dependencies_v1.json",
+    "scripts/lvef_c3_execution_state.py",
+    "scripts/lvef_c3_canary.py",
+    "scripts/lvef_c3_canary_manifest.py",
+    "scripts/lvef_c3_canary_scheduler_plan.py",
+    "scripts/lvef_c3_canary_execution_authority.py",
+    "scripts/lvef_c3_canary_state.py",
+    "scripts/lvef_c3_canary_authority_materializer.py",
+    "scripts/capture_lvef_c3_post_reallocation_capacity.py",
+    "scripts/lvef_c3_canary_dispatch.py",
+    "scripts/lvef_c3_canary_stage_worker.py",
+    "scripts/scc_run_lvef_c3_canary.sh",
+    "scripts/scc_run_lvef_c3_canary_stage.sh",
 )
 
 
@@ -141,6 +175,31 @@ class CanaryPrivateAuthorityConfig:
     current_environment_commit: str = PHASE1HR1_STARTING_AUTHORITY_COMMIT
     current_environment_bytes: int = PHASE1HR1_CURRENT_ENVIRONMENT_RECEIPT_BYTES
     current_environment_sha256: str = PHASE1HR1_CURRENT_ENVIRONMENT_RECEIPT_SHA256
+
+
+@dataclass(frozen=True)
+class CanaryControlRuntime:
+    """Inject only filesystem roots and irreversible-effect adapters for tests.
+
+    The public SCC wrapper supplies no overrides.  Synthetic acceptance uses a
+    real clean Git sandbox and the same control components while substituting
+    only qsub.  No field can weaken manifest, packet, lifecycle, hash, mode, or
+    no-clobber validation.
+    """
+
+    repository_root: Path = REPOSITORY_ROOT
+    execution_state_path: Path = DEFAULT_EXECUTION_STATE
+    orchestration_contract_path: Path = DEFAULT_ORCHESTRATION_CONTRACT
+    scheduler_plan_path: Path = DEFAULT_SCHEDULER_PLAN
+    lifecycle_root: Path | None = None
+    authority_path: Path | None = None
+    authority_paths: Any | None = None
+    materialization_authority_source: Any | None = None
+    private_authority_config: CanaryPrivateAuthorityConfig = field(
+        default_factory=CanaryPrivateAuthorityConfig
+    )
+    qsub_submitter: Callable[[Sequence[str]], str] | None = None
+    synthetic_external_effects: bool = False
 
 
 @dataclass
@@ -676,9 +735,11 @@ def run_synthetic_integration(
     )
 
 
-def _run_git(arguments: Sequence[str]) -> str:
+def _run_git(
+    arguments: Sequence[str], *, repository_root: Path = REPOSITORY_ROOT
+) -> str:
     result = subprocess.run(
-        ["git", *arguments], cwd=REPOSITORY_ROOT, text=True,
+        ["git", *arguments], cwd=repository_root, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         env={"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"},
     )
@@ -966,18 +1027,31 @@ def validate_scc_private_authority(
     return _pass_private_authority_summary()
 
 
-def validate_installation() -> dict[str, Any]:
+def validate_installation(
+    runtime: CanaryControlRuntime | None = None,
+) -> dict[str, Any]:
     """Validate only tracked code/config/state and local Git authority."""
 
-    state = execution_state.load_execution_state(DEFAULT_EXECUTION_STATE)
-    if state.branch != REQUIRED_BRANCH or _run_git(("branch", "--show-current")) != state.branch:
+    control = runtime or CanaryControlRuntime()
+    repository_root = Path(control.repository_root)
+    state = execution_state.load_execution_state(control.execution_state_path)
+
+    def git(arguments: Sequence[str]) -> str:
+        # Preserve the one-argument seam used by older dependency-light tests.
+        return (
+            _run_git(arguments)
+            if runtime is None
+            else _run_git(arguments, repository_root=repository_root)
+        )
+
+    if state.branch != REQUIRED_BRANCH or git(("branch", "--show-current")) != state.branch:
         raise CanaryControlError("CANARY_BRANCH_AUTHORITY_INVALID")
-    head = _run_git(("rev-parse", "HEAD"))
-    remote = _run_git(("rev-parse", f"refs/remotes/origin/{state.branch}"))
+    head = git(("rev-parse", "HEAD"))
+    remote = git(("rev-parse", f"refs/remotes/origin/{state.branch}"))
     if head != remote or re.fullmatch(r"[0-9a-f]{40}", head) is None:
         raise CanaryControlError("CANARY_LOCAL_ORIGIN_COMMIT_MISMATCH")
-    _run_git(("merge-base", "--is-ancestor", state.starting_authority_commit, head))
-    _run_git(
+    git(("merge-base", "--is-ancestor", state.starting_authority_commit, head))
+    git(
         (
             "merge-base",
             "--is-ancestor",
@@ -985,11 +1059,30 @@ def validate_installation() -> dict[str, Any]:
             head,
         )
     )
-    status = _run_git(("status", "--porcelain=v1", "--untracked-files=all"))
+    git(
+        (
+            "merge-base",
+            "--is-ancestor",
+            PHASE1HR2_STARTING_AUTHORITY_COMMIT,
+            head,
+        )
+    )
+    status = git(("status", "--porcelain=v1", "--untracked-files=all"))
     allowed = {"?? .DS_Store", "?? docs/.DS_Store"}
     if any(line not in allowed for line in status.splitlines() if line):
         raise CanaryControlError("CANARY_TRACKED_WORKTREE_DIRTY")
-    for path in TRACKED_CANARY_CONTROL_FILES:
+    untracked_scripts = git(("ls-files", "--others", "--", "scripts"))
+    if any(
+        line and not line.startswith("scripts/__pycache__/")
+        for line in untracked_scripts.splitlines()
+    ):
+        raise CanaryControlError("CANARY_UNTRACKED_IMPORT_PATH_PRESENT")
+    tracked_files = (
+        TRACKED_CANARY_CONTROL_FILES
+        if runtime is None
+        else tuple(repository_root / value for value in TRACKED_CONTROL_RELATIVE_FILES)
+    )
+    for path in tracked_files:
         try:
             metadata = os.lstat(path)
         except OSError as exc:
@@ -1003,9 +1096,12 @@ def validate_installation() -> dict[str, Any]:
         ):
             raise CanaryControlError("CANARY_TRACKED_CONTROL_FILE_INVALID")
     for schema_path in (
-        REPOSITORY_ROOT / "configs/lvef_c3_canary_manifest_schema_v1.json",
-        REPOSITORY_ROOT
+        repository_root / "configs/lvef_c3_canary_manifest_schema_v1.json",
+        repository_root
         / "configs/lvef_c3_canary_execution_authority_schema_v1.json",
+        repository_root
+        / "configs/lvef_c3_canary_preselection_authority_schema_v1.json",
+        repository_root / "configs/lvef_c3_canary_state_snapshot_schema_v1.json",
     ):
         try:
             schema_value = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -1017,13 +1113,13 @@ def validate_installation() -> dict[str, Any]:
         ):
             raise CanaryControlError("CANARY_TRACKED_SCHEMA_NOT_CLOSED")
     contract = orchestration_core.load_orchestration_contract(
-        DEFAULT_ORCHESTRATION_CONTRACT
+        control.orchestration_contract_path
     )
     if contract["cohort"]["release"] != manifest_contract.SOURCE_RELEASE:
         raise CanaryControlError("CANARY_PRODUCTION_RELEASE_MISMATCH")
     scheduler.validate_scheduler_plan(
-        scheduler.load_scheduler_plan(DEFAULT_SCHEDULER_PLAN),
-        repository_root=REPOSITORY_ROOT,
+        scheduler.load_scheduler_plan(control.scheduler_plan_path),
+        repository_root=repository_root,
     )
     required_callables = {
         scheduler.EXPECTED_ENTRYPOINTS[stage_id][1]
@@ -1048,7 +1144,11 @@ def validate_installation() -> dict[str, Any]:
     }
 
 
-def _synthetic_preflight_manifest(governing_commit: str) -> dict[str, Any]:
+def _synthetic_preflight_manifest(
+    governing_commit: str,
+    *, execution_state_path: Path = DEFAULT_EXECUTION_STATE,
+    orchestration_contract_path: Path = DEFAULT_ORCHESTRATION_CONTRACT,
+) -> dict[str, Any]:
     candidates = [
         {
             "study_id": str(900000 + index),
@@ -1089,27 +1189,130 @@ def _synthetic_preflight_manifest(governing_commit: str) -> dict[str, Any]:
         source_authority_commit=governing_commit,
         source_manifest_sha256="0" * 64,
         source_configuration_hashes={
-            "execution_state": hashlib.sha256(DEFAULT_EXECUTION_STATE.read_bytes()).hexdigest(),
-            "production_contract": hashlib.sha256(DEFAULT_ORCHESTRATION_CONTRACT.read_bytes()).hexdigest(),
+            "execution_state": hashlib.sha256(execution_state_path.read_bytes()).hexdigest(),
+            "production_contract": hashlib.sha256(
+                orchestration_contract_path.read_bytes()
+            ).hexdigest(),
         },
     )
 
 
-def preflight_only() -> dict[str, Any]:
-    """Validate one zero-value exact-five fixture without live side effects."""
+def preflight_only(
+    runtime: CanaryControlRuntime | None = None,
+) -> dict[str, Any]:
+    """Prove the complete future control path in a disposable synthetic root."""
 
-    state = execution_state.load_execution_state(DEFAULT_EXECUTION_STATE)
+    control = runtime or CanaryControlRuntime()
+    state = execution_state.load_execution_state(control.execution_state_path)
     if not state.permits("preflight_only"):
         raise CanaryControlError("CANARY_PREFLIGHT_SCOPE_NOT_PERMITTED")
-    installation = validate_installation()
-    private_authority = validate_scc_private_authority()
-    manifest = _synthetic_preflight_manifest(str(installation["governing_commit"]))
-    bound = scheduler.bind_scheduler_plan(
-        scheduler.load_scheduler_plan(DEFAULT_SCHEDULER_PLAN),
-        manifest["manifest_sha256"],
-        repository_root=REPOSITORY_ROOT,
+    installation = validate_installation(runtime)
+    private_authority = (
+        {
+            "status": "PASS_SYNTHETIC_PRIVATE_AUTHORITY_NOT_REQUIRED",
+            "scc_private_authority_required": False,
+        }
+        if control.synthetic_external_effects
+        else validate_scc_private_authority(control.private_authority_config)
     )
-    plan, requirements = build_canary_batch_plan(manifest, synthetic_authority=True)
+
+    # Importing both producers here is itself part of the strengthened proof.
+    import lvef_c3_canary_authority_materializer as materializer
+    import lvef_c3_canary_state as canary_state
+    import lvef_c3_canary_execution_authority as execution_authority
+    import lvef_c3_canary_dispatch as canary_dispatch
+
+    governing_commit = str(installation["governing_commit"])
+    if control.materialization_authority_source is not None:
+        authority_source = control.materialization_authority_source
+        cleanup = None
+    else:
+        cleanup = tempfile.TemporaryDirectory(prefix="lvef_c3_canary_preflight_")
+        sandbox_root = Path(cleanup.name).resolve()
+        authority_source = materializer.build_synthetic_materialization_authority_source(
+            sandbox_root,
+            repository=Path(control.repository_root),
+            governing_commit=governing_commit,
+        )
+    try:
+        materialization_config = materializer.discover_live_materialization_config(
+            repository=Path(control.repository_root),
+            execution_state_path=Path(control.execution_state_path),
+            authority_source=authority_source,
+        )
+        prepared = materializer.prepare_live_authority(materialization_config)
+        authority_paths = prepared.authority_paths
+        authority = execution_authority.load_and_validate_execution_authority(
+            prepared.authority_path,
+            expected_governing_commit=governing_commit,
+            require_output_absent=True,
+            paths=authority_paths,
+        )
+        tracked = execution_state.load_execution_state(control.execution_state_path)
+        private_state = canary_state.load_state(
+            root=prepared.lifecycle_root,
+            execution_state_path=control.execution_state_path,
+            expected_governing_commit=governing_commit,
+            expected_run_id=prepared.run_id,
+        )
+        canary_state.assert_execute_permitted(
+            tracked,
+            private_state,
+            governing_commit=governing_commit,
+            run_id=prepared.run_id,
+        )
+        job_counter = 0
+
+        def synthetic_submitter(command: Sequence[str]) -> str:
+            nonlocal job_counter
+            if not command or Path(command[0]) != Path(authority["qsub"]["path"]):
+                raise CanaryControlError("CANARY_SYNTHETIC_QSUB_BOUNDARY_INVALID")
+            job_counter += 1
+            return str(91_000 + job_counter)
+
+        execute_result = execute_authorized_canary(
+            CanaryControlRuntime(
+                repository_root=Path(control.repository_root),
+                execution_state_path=Path(control.execution_state_path),
+                orchestration_contract_path=Path(
+                    control.orchestration_contract_path
+                ),
+                scheduler_plan_path=Path(control.scheduler_plan_path),
+                lifecycle_root=prepared.lifecycle_root,
+                authority_path=prepared.authority_path,
+                authority_paths=authority_paths,
+                private_authority_config=control.private_authority_config,
+                qsub_submitter=synthetic_submitter,
+                synthetic_external_effects=True,
+            )
+        )
+    finally:
+        if cleanup is not None:
+            cleanup.cleanup()
+
+    if (
+        prepared.lifecycle_state != "CANARY_MANIFEST_SEALED"
+        or prepared.preselection_identifier_fields != 0
+        or execute_result.get("status")
+        != "PASS_OWNER_AUTHORIZED_FROZEN_DAG_DISPATCH"
+        or execute_result.get("frozen_scheduler_submissions") != 5
+        or execute_result.get("production_continuation") is not False
+    ):
+        raise CanaryControlError("CANARY_SYNTHETIC_LIVE_PATH_INVALID")
+
+    manifest = _synthetic_preflight_manifest(
+        governing_commit,
+        execution_state_path=control.execution_state_path,
+        orchestration_contract_path=control.orchestration_contract_path,
+    )
+    bound = scheduler.bind_scheduler_plan(
+        scheduler.load_scheduler_plan(control.scheduler_plan_path),
+        manifest["manifest_sha256"],
+        repository_root=control.repository_root,
+    )
+    plan, requirements = build_canary_batch_plan(
+        manifest, synthetic_authority=True
+    )
     plan_sha = orchestration_core.validate_batch_plan(plan, requirements=requirements)
     aggregate = orchestration_core.aggregate_batch_plan(plan, requirements=requirements)
     if (
@@ -1139,46 +1342,186 @@ def preflight_only() -> dict[str, Any]:
         "restricted_rows_accessed": 0,
         "dicom_bodies_processed": 0,
         "gpu_execution": False,
+        "tracked_state_transition_producer_valid": True,
+        "tracked_materializer_valid": True,
+        "synthetic_live_execute_path_accepted": True,
+        "synthetic_qsub_adapter_calls": 5,
     }
 
 
-def execute_authorized_canary() -> dict[str, Any]:
-    """Dispatch the sealed five-stage DAG only after both future authorities.
+def prepare_live_authority(
+    runtime: CanaryControlRuntime | None = None,
+) -> dict[str, Any]:
+    """Materialize one sealed owner-private authority without live effects."""
 
-    Gate order is intentional: the current canonical state denies this scope,
-    so no owner-private file is discovered and no run root or scheduler path is
-    reached in Phase 1H-R1.  A later tracked state transition is necessary but
-    is never treated as a substitute for the separate owner packet.
-    """
-
-    state = execution_state.load_execution_state(DEFAULT_EXECUTION_STATE)
-    if not state.permits(CANARY_EXECUTION_SCOPE):
-        raise CanaryControlError(
-            "REAL_CANARY_CANONICAL_STATE_AUTHORIZATION_REQUIRED"
-        )
-    installation = validate_installation()
-    private_authority = validate_scc_private_authority()
-    if (
-        private_authority.get("status") != "PASS_SCC_PRIVATE_AUTHORITY_READ_ONLY"
-        or private_authority.get("scc_private_authority_required") is not True
+    control = runtime or CanaryControlRuntime()
+    tracked = execution_state.load_execution_state(control.execution_state_path)
+    if not (
+        tracked.permits("prepare_exact_five_canary_authority")
+        and tracked.permits("seal_exact_five_canary_manifest")
     ):
-        raise CanaryControlError("REAL_CANARY_SCC_PRIVATE_AUTHORITY_REQUIRED")
+        raise CanaryControlError("CANARY_AUTHORITY_PREPARATION_SCOPE_DENIED")
+    installation = validate_installation(runtime)
+    if not control.synthetic_external_effects:
+        private = validate_scc_private_authority(control.private_authority_config)
+        if private.get("status") != "PASS_SCC_PRIVATE_AUTHORITY_READ_ONLY":
+            raise CanaryControlError("REAL_CANARY_SCC_PRIVATE_AUTHORITY_REQUIRED")
+    import lvef_c3_canary_authority_materializer as materializer
 
-    # These imports remain unreachable from installation/preflight modes.
+    try:
+        config = materializer.discover_live_materialization_config(
+            repository=Path(control.repository_root),
+            execution_state_path=Path(control.execution_state_path),
+            private_authority_config=(
+                control.private_authority_config
+                if control.materialization_authority_source is None
+                else None
+            ),
+            authority_source=control.materialization_authority_source,
+        )
+        result = materializer.prepare_live_authority(config)
+    except materializer.CanaryAuthorityMaterializationError as exc:
+        raise CanaryControlError(exc.code) from exc
+    if (
+        result.lifecycle_state != "CANARY_MANIFEST_SEALED"
+        or result.preselection_identifier_fields != 0
+    ):
+        raise CanaryControlError("CANARY_AUTHORITY_MATERIALIZATION_INVALID")
+    return {
+        "status": "PASS_OWNER_PRIVATE_CANARY_AUTHORITY_MATERIALIZED",
+        "governing_commit": installation["governing_commit"],
+        "lifecycle_state": result.lifecycle_state,
+        "preselection_identifier_fields": 0,
+        "manifest_studies": 5,
+        "frozen_scheduler_submissions": 5,
+        "production_continuation": False,
+        "cloud_requests": 0,
+        "qsub_submissions": 0,
+        "restricted_identifiers_emitted": False,
+        "private_paths_emitted": False,
+    }
+
+
+def execute_authorized_canary(
+    runtime: CanaryControlRuntime | None = None,
+) -> dict[str, Any]:
+    """Dispatch the sealed five-stage DAG after lifecycle and packet gates."""
+
+    control = runtime or CanaryControlRuntime()
+    state = execution_state.load_execution_state(control.execution_state_path)
+    installation = validate_installation(runtime)
+
+    import lvef_c3_canary_state as canary_state
     import lvef_c3_canary_execution_authority as execution_authority
     import lvef_c3_canary_dispatch as canary_dispatch
 
+    lifecycle_root = (
+        Path(state.canary_lifecycle.private_state_root)
+        if control.lifecycle_root is None
+        else Path(control.lifecycle_root)
+    )
+    try:
+        private_state = canary_state.load_state(
+            root=lifecycle_root,
+            execution_state_path=control.execution_state_path,
+            expected_governing_commit=str(installation["governing_commit"]),
+        )
+        canary_state.assert_execute_permitted(
+            state,
+            private_state,
+            governing_commit=str(installation["governing_commit"]),
+            run_id=str(private_state["run_id"]),
+        )
+    except canary_state.CanaryStateError as exc:
+        raise CanaryControlError(
+            "REAL_CANARY_CANONICAL_STATE_AUTHORIZATION_REQUIRED"
+        ) from exc
+    if private_state.get("current_state") != "CANARY_MANIFEST_SEALED":
+        raise CanaryControlError("REAL_CANARY_STATE_NOT_SEALED_FOR_DISPATCH")
+
+    private_authority = (
+        {
+            "status": "PASS_SYNTHETIC_PRIVATE_AUTHORITY_NOT_REQUIRED",
+            "scc_private_authority_required": False,
+        }
+        if control.synthetic_external_effects
+        else validate_scc_private_authority(control.private_authority_config)
+    )
+    if (
+        not control.synthetic_external_effects
+        and (
+            private_authority.get("status")
+            != "PASS_SCC_PRIVATE_AUTHORITY_READ_ONLY"
+            or private_authority.get("scc_private_authority_required") is not True
+        )
+    ):
+        raise CanaryControlError("REAL_CANARY_SCC_PRIVATE_AUTHORITY_REQUIRED")
+    authority_path = (
+        execution_authority.FIXED_PATH
+        if control.authority_path is None
+        else Path(control.authority_path)
+    )
     try:
         authority = execution_authority.load_and_validate_execution_authority(
+            authority_path,
             expected_governing_commit=str(installation["governing_commit"]),
             require_output_absent=True,
+            paths=control.authority_paths,
         )
-        ledger = canary_dispatch.dispatch_authorized_canary(authority)
+        if authority.get("run_id") != private_state.get("run_id"):
+            raise CanaryControlError("CANARY_STATE_PACKET_IDENTITY_MISMATCH")
+        canary_state.transition_state(
+            root=lifecycle_root,
+            execution_state_path=control.execution_state_path,
+            expected_current="CANARY_MANIFEST_SEALED",
+            target_state="CANARY_EXECUTING",
+            governing_commit=str(installation["governing_commit"]),
+            run_id=str(authority["run_id"]),
+            reason_code="OWNER_AUTHORIZED_FROZEN_DAG_DISPATCH",
+            bindings={
+                "authorization_sha256": str(authority["authorization_sha256"]),
+                "manifest_sha256": str(authority["manifest"]["embedded_sha256"]),
+                "scheduler_plan_sha256": str(
+                    authority["scheduler_plan"]["canonical_sha256"]
+                ),
+            },
+        )
+        ledger = canary_dispatch.dispatch_authorized_canary(
+            authority,
+            **(
+                {}
+                if control.qsub_submitter is None
+                else {"submitter": control.qsub_submitter}
+            ),
+        )
     except (
         execution_authority.CanaryExecutionAuthorityError,
         canary_dispatch.CanaryDispatchError,
+        canary_state.CanaryStateError,
+        OSError,
     ) as exc:
-        raise CanaryControlError(getattr(exc, "code", "CANARY_EXECUTION_BLOCKED")) from exc
+        try:
+            latest = canary_state.load_state(
+                root=lifecycle_root,
+                execution_state_path=control.execution_state_path,
+                expected_governing_commit=str(installation["governing_commit"]),
+                expected_run_id=str(private_state["run_id"]),
+            )
+            if latest.get("current_state") == "CANARY_EXECUTING":
+                canary_state.transition_state(
+                    root=lifecycle_root,
+                    execution_state_path=control.execution_state_path,
+                    expected_current="CANARY_EXECUTING",
+                    target_state="CANARY_TERMINAL_FAIL",
+                    governing_commit=str(installation["governing_commit"]),
+                    run_id=str(private_state["run_id"]),
+                    reason_code="CANARY_DISPATCH_FAILED_NO_RETRY",
+                )
+        except canary_state.CanaryStateError:
+            pass
+        raise CanaryControlError(
+            getattr(exc, "code", "CANARY_DISPATCH_FILESYSTEM_FAILED")
+        ) from exc
     if (
         ledger.get("status") != "DISPATCHED_FROZEN_DAG"
         or ledger.get("submission_count") != 5
@@ -1199,21 +1542,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--validate-installation", action="store_true")
+    modes.add_argument("--prepare-live-authority", action="store_true")
     modes.add_argument("--preflight-only", action="store_true")
     modes.add_argument("--execute", action="store_true")
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *, runtime: CanaryControlRuntime | None = None,
+) -> int:
     args = parse_args(argv)
     try:
         if args.execute:
-            result = execute_authorized_canary()
+            result = execute_authorized_canary(runtime)
+        elif args.prepare_live_authority:
+            result = prepare_live_authority(runtime)
         else:
             result = (
-                validate_installation()
+                validate_installation(runtime)
                 if args.validate_installation
-                else preflight_only()
+                else preflight_only(runtime)
             )
     except (
         CanaryControlError,

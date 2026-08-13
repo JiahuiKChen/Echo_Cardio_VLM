@@ -1,0 +1,1076 @@
+{
+  "schema_name": "lvef_c3_canary_live_dependencies_v1",
+  "schema_version": 1,
+  "audit_baseline_commit": "34c8ad795a7059f1d76b53a9a8be543132b095f7",
+  "tracked_field_semantics": "true means the current producer implementation is repository-tracked; owner-private output artifacts remain untracked by design",
+  "post_repair_expectations": {
+    "execute_scope_transition": {
+      "producer_must_become_available": true,
+      "planned_tracked_modules": [
+        "scripts/lvef_c3_canary_state.py"
+      ],
+      "realized_tracked_modules": [
+        "scripts/lvef_c3_canary_state.py"
+      ],
+      "required_outcomes": [
+        "explicit forward-only canary lifecycle transition",
+        "governing commit match",
+        "atomic no-clobber snapshot mutation",
+        "no tracked-state edit"
+      ]
+    },
+    "conflicting_process_and_scheduler_absence": {
+      "producer_must_become_available": true,
+      "planned_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "realized_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "required_outcomes": [
+        "process probe completed before materialization",
+        "scheduler probe completed before materialization",
+        "qsub and qstat identities sealed before scheduler probing",
+        "sealed scheduler identities revalidated before dispatch",
+        "no conflicting canary process",
+        "no conflicting scheduler job",
+        "probe output remains aggregate-safe"
+      ]
+    },
+    "live_byte_and_file_quota_gate": {
+      "producer_must_become_available": true,
+      "planned_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py",
+        "scripts/capture_lvef_c3_post_reallocation_capacity.py"
+      ],
+      "realized_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py",
+        "scripts/capture_lvef_c3_post_reallocation_capacity.py"
+      ],
+      "required_outcomes": [
+        "sealed capacity authorities validate",
+        "current no-body quota probe completed before materialization",
+        "byte headroom is sufficient",
+        "file-slot headroom is sufficient",
+        "probe output remains aggregate-safe"
+      ]
+    },
+    "owner_private_directory_layout": {
+      "producer_must_become_available": true,
+      "planned_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "realized_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "required_outcomes": [
+        "fixed owner-private root created no-clobber",
+        "canary-runs parent created no-clobber",
+        "current ownership and mode 0700",
+        "no symlink ancestor"
+      ]
+    },
+    "restricted_candidate_inventory": {
+      "producer_must_become_available": true,
+      "planned_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "realized_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "required_outcomes": [
+        "source-only candidate projection",
+        "train-only eligibility",
+        "no-cine and prior-smoke exclusion",
+        "no prohibited clinical or performance fields"
+      ]
+    },
+    "execution_authorization_packet": {
+      "producer_must_become_available": true,
+      "planned_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "realized_tracked_modules": [
+        "scripts/lvef_c3_canary_authority_materializer.py"
+      ],
+      "required_outcomes": [
+        "closed execution packet validates before state advancement",
+        "creation timestamp is closed-schema and self-seal bound",
+        "mode 0600 atomic no-clobber publication",
+        "all exact file and semantic seals bound",
+        "no credentials or restricted identifiers emitted"
+      ]
+    }
+  },
+  "canonical_entrypoint": "scripts/scc_run_lvef_c3_canary.sh",
+  "execute_mode": "--execute",
+  "dependency_count": 42,
+  "missing_producer_dependency_ids": [
+    "execute_scope_transition",
+    "conflicting_process_and_scheduler_absence",
+    "live_byte_and_file_quota_gate",
+    "owner_private_directory_layout",
+    "restricted_candidate_inventory",
+    "execution_authorization_packet"
+  ],
+  "dependencies": [
+    {
+      "dependency_id": "tracked_canary_entrypoint",
+      "phase": "tracked_launch",
+      "prerequisite": "The sole tracked SCC entrypoint accepts --execute and invokes the tracked Python driver.",
+      "artifact_paths": [
+        "scripts/scc_run_lvef_c3_canary.sh"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/scc_run_lvef_c3_canary.sh::--execute"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "approved_python_launcher",
+      "phase": "tracked_launch",
+      "prerequisite": "The approved EchoPrime Python launcher resolves to the captured executable hash without writable or symlink substitution.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/capture_lvef_c3_production_environment.py::capture_environment"
+      ],
+      "consumer": [
+        "scripts/scc_run_lvef_c3_canary.sh::EXPECTED_PYTHON_SHA256",
+        "scripts/scc_run_lvef_c3_canary_stage.sh::EXPECTED_PYTHON_SHA256"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_production_environment.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "canonical_execution_state",
+      "phase": "canonical_gates",
+      "prerequisite": "The closed canonical execution-state file validates and preserves the immutable attempt invariants.",
+      "artifact_paths": [
+        "configs/lvef_c3_execution_state_v1.yaml",
+        "scripts/lvef_c3_execution_state.py"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::execute_authorized_canary",
+        "scripts/lvef_c3_canary_execution_authority.py::EXECUTION_STATE_PATH"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_execution_state.py",
+        "tests/test_lvef_c3_canary_execute_gate.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "execute_scope_transition",
+      "phase": "canonical_gates",
+      "prerequisite": "Canonical state must express and permit execute_exact_five_canary before any private discovery or dispatch.",
+      "artifact_paths": [
+        "configs/lvef_c3_execution_state_v1.yaml",
+        "scripts/lvef_c3_execution_state.py"
+      ],
+      "producer": [
+        "MISSING::tracked_no-clobber execution-state transition producer at audit baseline"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::CANARY_EXECUTION_SCOPE"
+      ],
+      "producer_exists": false,
+      "tracked": false,
+      "exercised_by_tests": false,
+      "test_evidence": [],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "git_authority_and_clean_worktree",
+      "phase": "canonical_gates",
+      "prerequisite": "Branch, local HEAD, origin, required ancestry, and tracked-worktree cleanliness all pass.",
+      "artifact_paths": [],
+      "producer": [
+        "git::branch_origin_and_worktree_state"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_installation"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "manifest_schema_and_validator",
+      "phase": "canonical_gates",
+      "prerequisite": "The exact-five private manifest has a closed tracked schema and validator.",
+      "artifact_paths": [
+        "configs/lvef_c3_canary_manifest_schema_v1.json",
+        "scripts/lvef_c3_canary_manifest.py"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_installation",
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_manifest.py",
+        "tests/test_lvef_c3_canary_integration.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "scheduler_template_and_validator",
+      "phase": "canonical_gates",
+      "prerequisite": "The tracked five-stage scheduler template is closed, hash-bound, and validates its fixed DAG.",
+      "artifact_paths": [
+        "configs/lvef_c3_canary_scheduler_plan_v1.json",
+        "scripts/lvef_c3_canary_scheduler_plan.py"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_installation",
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_scheduler_plan.py",
+        "tests/test_lvef_c3_canary_integration.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "execution_authority_schema_and_loader",
+      "phase": "canonical_gates",
+      "prerequisite": "The owner execution packet has a closed tracked schema and fail-closed semantic loader.",
+      "artifact_paths": [
+        "configs/lvef_c3_canary_execution_authority_schema_v1.json",
+        "scripts/lvef_c3_canary_execution_authority.py"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::load_and_validate_execution_authority"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_execute_gate.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "production_contract_and_callables",
+      "phase": "canonical_gates",
+      "prerequisite": "The tracked production contract and all production-reused canary callables validate at the governing commit.",
+      "artifact_paths": [
+        "configs/lvef_c3_orchestration_v2.yaml",
+        "scripts/lvef_c3_orchestration_core.py",
+        "scripts/lvef_c3_production_stages.py",
+        "scripts/preserve_lvef_c3_production_batch.py",
+        "scripts/finalize_lvef_c3_production.py"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::PRODUCTION_FUNCTIONS",
+        "scripts/lvef_c3_canary_execution_authority.py::PRODUCTION_CONTRACT_PATH"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_integration.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py",
+        "tests/test_lvef_c3_preservation_semantics.py"
+      ],
+      "authority_packet_roles": [
+        "production_contract"
+      ]
+    },
+    {
+      "dependency_id": "immutable_attempt_capacity_and_preparation",
+      "phase": "inherited_private_authority",
+      "prerequisite": "Attempts 001-004, both capacity seals, and the preserved preparation validate without creating attempt 005 or production attempt 006.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/scc_prepare_lvef_c3_phase1ef_environment.sh::verify_identity",
+        "scripts/scc_capture_lvef_c3_post_reallocation_capacity.sh::capture_lvef_c3_post_reallocation_capacity.py"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py",
+        "tests/test_lvef_c3_phase1ef_d3_recovery.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "current_environment_receipt",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The owner-private current-environment receipt has the approved exact byte count and SHA-256 and binds the runtime.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/capture_lvef_c3_production_environment.py::capture_environment"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority",
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py",
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_production_environment.py"
+      ],
+      "authority_packet_roles": [
+        "environment_receipt"
+      ]
+    },
+    {
+      "dependency_id": "prior_production_authority_packet",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The sealed prior production authority packet validates and supplies the preserved source, checkpoint, and tool bindings.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/build_lvef_c3_production_authority_packet.py::main"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py",
+        "tests/test_lvef_c3_production_authority_packet.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "echoprime_checkpoint",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The approved EchoPrime checkpoint is regular, immutable for the run, and bound by its exact SHA-256.",
+      "artifact_paths": [],
+      "producer": [
+        "owner_private::approved_echoprime_checkpoint"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority",
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::run_canary_stage"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py",
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_integration.py"
+      ],
+      "authority_packet_roles": [
+        "checkpoint"
+      ]
+    },
+    {
+      "dependency_id": "selected_study_authority",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The preserved one-study-per-subject selected-cohort authority is present for train-only candidate derivation.",
+      "artifact_paths": [],
+      "producer": [
+        "owner_private::preserved_selected_study_manifest"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "selected_source_object_authority",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The preserved selected-source object membership and locators are present and hash-bound.",
+      "artifact_paths": [],
+      "producer": [
+        "owner_private::preserved_selected_source_manifest"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "source_metadata_authority",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The selected-source metadata receipt provides object size, generation, and available checksum authority.",
+      "artifact_paths": [],
+      "producer": [
+        "owner_private::preserved_source_metadata_receipt"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "split_map_authority",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The preserved subject split map is hash-bound and available for strict train-only selection.",
+      "artifact_paths": [],
+      "producer": [
+        "owner_private::preserved_split_map"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "gcloud_and_cloudsdk_authority",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The gcloud executable, resolution receipt, owner-private Cloud SDK directory, and ADC metadata validate without a token request.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/resolve_lvef_scc_gcloud.sh::record_json",
+        "owner_private::approved_cloudsdk_adc_metadata"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority",
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::run_canary_stage"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py",
+        "tests/test_lvef_c3_canary_execution_authority.py"
+      ],
+      "authority_packet_roles": [
+        "gcloud"
+      ]
+    },
+    {
+      "dependency_id": "requester_pays_authority",
+      "phase": "inherited_private_authority",
+      "prerequisite": "A private nonempty requester-pays billing project is bound only to the fixed billing environment variable.",
+      "artifact_paths": [],
+      "producer": [
+        "owner_private::phase1eg_preparation_billing_authority"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary.py::validate_scc_private_authority",
+        "scripts/lvef_c3_canary_execution_authority.py::requester_pays",
+        "scripts/lvef_c3_canary_stage_worker.py::billing_environment_variable"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_private_authority.py",
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_stage_worker.py"
+      ],
+      "authority_packet_roles": [
+        "requester_pays"
+      ]
+    },
+    {
+      "dependency_id": "conflicting_process_and_scheduler_absence",
+      "phase": "inherited_private_authority",
+      "prerequisite": "No conflicting canary process or scheduler job exists before private materialization or dispatch.",
+      "artifact_paths": [],
+      "producer": [
+        "MISSING::tracked read-only conflict inspection at audit baseline"
+      ],
+      "consumer": [
+        "MISSING::current execute path has no process or scheduler conflict gate"
+      ],
+      "producer_exists": false,
+      "tracked": false,
+      "exercised_by_tests": false,
+      "test_evidence": [],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "live_byte_and_file_quota_gate",
+      "phase": "inherited_private_authority",
+      "prerequisite": "The sealed capacity authorities and a current no-body probe prove sufficient byte and file-slot headroom before materialization.",
+      "artifact_paths": [],
+      "producer": [
+        "MISSING::tracked current byte and file quota gate at audit baseline"
+      ],
+      "consumer": [
+        "MISSING::current execute path has no current byte and file quota gate"
+      ],
+      "producer_exists": false,
+      "tracked": false,
+      "exercised_by_tests": false,
+      "test_evidence": [],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "owner_private_directory_layout",
+      "phase": "live_materialization",
+      "prerequisite": "The fixed owner-private exact-five root and canary-runs parent already exist with current ownership, mode 0700, and no symlink ancestor.",
+      "artifact_paths": [],
+      "producer": [
+        "MISSING::tracked no-clobber owner-private directory materializer at audit baseline"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::_require_private_directory",
+        "scripts/lvef_c3_canary_dispatch.py::dispatch_authorized_canary"
+      ],
+      "producer_exists": false,
+      "tracked": false,
+      "exercised_by_tests": false,
+      "test_evidence": [],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "restricted_candidate_inventory",
+      "phase": "live_materialization",
+      "prerequisite": "A closed source-only candidate inventory joins selected studies, train split, no-cine exclusions, prior-smoke exclusions, and object aggregates without labels.",
+      "artifact_paths": [],
+      "producer": [
+        "MISSING::tracked restricted-row candidate projection command at audit baseline"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_manifest.py::select_exact_five"
+      ],
+      "producer_exists": false,
+      "tracked": false,
+      "exercised_by_tests": false,
+      "test_evidence": [],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "sealed_exact_five_manifest",
+      "phase": "live_materialization",
+      "prerequisite": "One mode-0600 no-clobber manifest seals exactly five train studies, full object membership, source hashes, and hard limits.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/lvef_c3_canary_manifest.py::build_sealed_manifest",
+        "scripts/lvef_c3_canary_manifest.py::write_private_manifest_no_clobber"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_manifest.py",
+        "tests/test_lvef_c3_canary_integration.py",
+        "tests/test_lvef_c3_canary_execution_authority.py"
+      ],
+      "authority_packet_roles": [
+        "manifest"
+      ]
+    },
+    {
+      "dependency_id": "exact_five_batch_plan",
+      "phase": "live_materialization",
+      "prerequisite": "The production immutable batch-plan builder projects the sealed manifest into exactly one five-study batch and its canonical SHA-256.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/lvef_c3_canary.py::build_canary_batch_plan",
+        "scripts/lvef_c3_orchestration_core.py::atomic_write_json_no_clobber"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_integration.py",
+        "tests/test_lvef_c3_canary_execution_authority.py"
+      ],
+      "authority_packet_roles": [
+        "batch_plan"
+      ]
+    },
+    {
+      "dependency_id": "bound_five_stage_scheduler_plan",
+      "phase": "live_materialization",
+      "prerequisite": "The frozen tracked scheduler template is bound to the sealed manifest and persisted with its exact and canonical hashes.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/lvef_c3_canary_scheduler_plan.py::bind_scheduler_plan",
+        "scripts/lvef_c3_orchestration_core.py::atomic_write_json_no_clobber"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context",
+        "scripts/lvef_c3_canary_dispatch.py::initialize_dispatch_ledger"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_scheduler_plan.py",
+        "tests/test_lvef_c3_canary_integration.py",
+        "tests/test_lvef_c3_canary_execution_authority.py"
+      ],
+      "authority_packet_roles": [
+        "scheduler_plan"
+      ]
+    },
+    {
+      "dependency_id": "runtime_authority",
+      "phase": "live_materialization",
+      "prerequisite": "Runtime authority is independently derived from the actual manifest, plan, contract, environment, checkpoint, source, gcloud, and CRC32C files.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/lvef_c3_canary.py::live_plan_authority_from_manifest",
+        "scripts/lvef_c3_orchestration_core.py::validate_runtime_authority"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_stage_worker.py"
+      ],
+      "authority_packet_roles": [
+        "runtime_authority"
+      ]
+    },
+    {
+      "dependency_id": "launch_authority",
+      "phase": "live_materialization",
+      "prerequisite": "One owner-private launch-authority semantic SHA-256 binds body and scientific-stage grants to the same run.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/build_lvef_c3_production_launch_authority.py::build"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::launch_authority_sha256",
+        "scripts/lvef_c3_canary_stage_worker.py::launch_authority_sha256"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py"
+      ],
+      "authority_packet_roles": [
+        "preselection_authority",
+        "launch_authority_sha256"
+      ]
+    },
+    {
+      "dependency_id": "body_transfer_and_download_grant",
+      "phase": "live_materialization",
+      "prerequisite": "A current owner body-transfer receipt authorizes only the declared batch and request budget and is also the exact DOWNLOAD grant file.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/build_lvef_c3_owner_authorization_receipt.py::build_body"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::validate_body_transfer_authorization",
+        "scripts/lvef_c3_canary_stage_worker.py::run_canary_stage"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_stage_worker.py",
+        "tests/test_lvef_c3_orchestration_core.py"
+      ],
+      "authority_packet_roles": [
+        "body_transfer_authorization",
+        "stage_authorizations"
+      ]
+    },
+    {
+      "dependency_id": "dicom_extraction_grant",
+      "phase": "live_materialization",
+      "prerequisite": "A sealed DICOM-extraction stage receipt binds the exact attempt, contract, batch plan, and launch authority.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/build_lvef_c3_owner_authorization_receipt.py::build_stage"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::validate_stage_authorization_value",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py"
+      ],
+      "authority_packet_roles": [
+        "stage_authorizations"
+      ]
+    },
+    {
+      "dependency_id": "echoprime_embedding_grant",
+      "phase": "live_materialization",
+      "prerequisite": "A sealed EchoPrime-embedding stage receipt binds the exact attempt, contract, batch plan, and launch authority.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/build_lvef_c3_owner_authorization_receipt.py::build_stage"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::validate_stage_authorization_value",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py"
+      ],
+      "authority_packet_roles": [
+        "stage_authorizations"
+      ]
+    },
+    {
+      "dependency_id": "batch_preservation_grant",
+      "phase": "live_materialization",
+      "prerequisite": "A sealed batch-preservation stage receipt binds the exact attempt, contract, batch plan, and launch authority.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/build_lvef_c3_owner_authorization_receipt.py::build_stage"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::validate_stage_authorization_value",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py"
+      ],
+      "authority_packet_roles": [
+        "stage_authorizations"
+      ]
+    },
+    {
+      "dependency_id": "canary_finalization_grant",
+      "phase": "live_materialization",
+      "prerequisite": "A sealed preservation-finalization receipt binds all_batches for the exact canary attempt.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/build_lvef_c3_owner_authorization_receipt.py::build_stage"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::validate_stage_authorization_value",
+        "scripts/lvef_c3_canary_stage_worker.py::_validate_context"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py"
+      ],
+      "authority_packet_roles": [
+        "stage_authorizations"
+      ]
+    },
+    {
+      "dependency_id": "execution_authorization_packet",
+      "phase": "live_materialization",
+      "prerequisite": "One canonical mode-0600 owner packet at /restricted/projectnb/mimicecho/lvef_multitask_c3_v2/owner_private/exact_five_canary/execution_authorization_v1.json closes all identities, scopes, exact file seals, tool bindings, grants, and self-seal for the run.",
+      "artifact_paths": [],
+      "producer": [
+        "MISSING::tracked complete execution-packet builder and no-clobber writer at audit baseline"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority",
+        "scripts/lvef_c3_canary_stage_worker.py::main"
+      ],
+      "producer_exists": false,
+      "tracked": false,
+      "exercised_by_tests": false,
+      "test_evidence": [],
+      "authority_packet_roles": [
+        "schema_version",
+        "artifact_type",
+        "status",
+        "created_at_utc",
+        "governing_commit",
+        "branch",
+        "run_id",
+        "attempt_id",
+        "hard_scope",
+        "scheduler",
+        "owner_authorized",
+        "authorization_scopes",
+        "authorization_sha256"
+      ]
+    },
+    {
+      "dependency_id": "qsub_executable_binding",
+      "phase": "live_materialization",
+      "prerequisite": "A regular executable qsub path is exact-hash bound in the owner packet; PATH resolution is not used.",
+      "artifact_paths": [],
+      "producer": [
+        "scc_runtime::installed_qsub_executable"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::_public_binding",
+        "scripts/lvef_c3_canary_dispatch.py::build_qsub_command"
+      ],
+      "producer_exists": true,
+      "tracked": false,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_dispatch.py"
+      ],
+      "authority_packet_roles": [
+        "qsub"
+      ]
+    },
+    {
+      "dependency_id": "crc32c_runtime_bindings",
+      "phase": "live_materialization",
+      "prerequisite": "The CRC32C Python executable, worker, and distribution identity are independently hash-bound.",
+      "artifact_paths": [
+        "scripts/lvef_c3_crc32c_worker.py"
+      ],
+      "producer": [
+        "scripts/capture_lvef_c3_production_environment.py::capture_environment"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::crc32c",
+        "scripts/lvef_c3_canary_stage_worker.py::digest_worker_factory"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_stage_worker.py",
+        "tests/test_lvef_c3_crc32c_worker.py"
+      ],
+      "authority_packet_roles": [
+        "crc32c"
+      ]
+    },
+    {
+      "dependency_id": "stage_worker_and_launcher_bindings",
+      "phase": "live_materialization",
+      "prerequisite": "The tracked stage worker and privileged launcher are fixed-path and exact-hash bound in the owner packet, revalidated before every qsub, carried in the immutable qsub command, and checked again by the queued launcher together with the governing tracked tree before Python imports project modules.",
+      "artifact_paths": [
+        "scripts/lvef_c3_canary_stage_worker.py",
+        "scripts/scc_run_lvef_c3_canary_stage.sh"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_execution_authority.py::_public_binding",
+        "scripts/lvef_c3_canary_dispatch.py::build_qsub_command"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_dispatch.py",
+        "tests/test_lvef_c3_canary_stage_worker.py"
+      ],
+      "authority_packet_roles": [
+        "stage_worker",
+        "stage_launcher"
+      ]
+    },
+    {
+      "dependency_id": "unused_output_root",
+      "phase": "live_materialization",
+      "prerequisite": "The packet output root is lexically bound to its run ID under canary-runs and is absent before dispatch.",
+      "artifact_paths": [],
+      "producer": [
+        "scripts/lvef_c3_canary_execution_authority.py::load_and_validate_execution_authority"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_dispatch.py::dispatch_authorized_canary"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_execution_authority.py",
+        "tests/test_lvef_c3_canary_dispatch.py"
+      ],
+      "authority_packet_roles": [
+        "output_root"
+      ]
+    },
+    {
+      "dependency_id": "durable_dispatch_claims",
+      "phase": "dispatch_and_stages",
+      "prerequisite": "The dispatcher can create the private run root and O_EXCL ledger snapshots before each of the five no-retry submissions.",
+      "artifact_paths": [
+        "scripts/lvef_c3_canary_dispatch.py"
+      ],
+      "producer": [
+        "scripts/lvef_c3_canary_dispatch.py::dispatch_authorized_canary"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_stage_worker.py::_load_latest_dispatch_ledger"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_dispatch.py",
+        "tests/test_lvef_c3_canary_stage_worker.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "predecessor_pass_receipts",
+      "phase": "dispatch_and_stages",
+      "prerequisite": "Every noninitial stage requires the exact predecessor's bound PASS result before claiming scientific execution.",
+      "artifact_paths": [
+        "scripts/lvef_c3_canary_stage_worker.py"
+      ],
+      "producer": [
+        "scripts/lvef_c3_canary_stage_worker.py::_write_stage_result"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_stage_worker.py::_load_predecessor_stage_result"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_stage_worker.py",
+        "tests/test_lvef_c3_canary_integration.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "production_scientific_stage_implementations",
+      "phase": "dispatch_and_stages",
+      "prerequisite": "Download, verification, DICOM decode/extraction, EchoPrime encoder inference, vector validation, and mean pooling call the production implementations.",
+      "artifact_paths": [
+        "scripts/lvef_c3_orchestration_core.py",
+        "scripts/lvef_c3_production_stages.py",
+        "scripts/lvef_reconstruction_smoke.py",
+        "scripts/preserve_lvef_c3_production_batch.py"
+      ],
+      "producer": [
+        "git::approved_commit"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_stage_worker.py::CanaryStageDependencies",
+        "scripts/lvef_c3_canary.py::PRODUCTION_FUNCTIONS"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_integration.py",
+        "tests/test_lvef_c3_canary_stage_worker.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py"
+      ],
+      "authority_packet_roles": []
+    },
+    {
+      "dependency_id": "restricted_preservation_and_aggregate_finalization",
+      "phase": "dispatch_and_stages",
+      "prerequisite": "Production preservation and canary finalization emit restricted evidence and only aggregate-safe terminal summaries with no production continuation.",
+      "artifact_paths": [
+        "scripts/preserve_lvef_c3_production_batch.py",
+        "scripts/finalize_lvef_c3_production.py"
+      ],
+      "producer": [
+        "scripts/preserve_lvef_c3_production_batch.py::preserve_batch",
+        "scripts/finalize_lvef_c3_production.py::finalize_canary_preservation_receipt"
+      ],
+      "consumer": [
+        "scripts/lvef_c3_canary_stage_worker.py::run_canary_stage"
+      ],
+      "producer_exists": true,
+      "tracked": true,
+      "exercised_by_tests": true,
+      "test_evidence": [
+        "tests/test_lvef_c3_canary_integration.py",
+        "tests/test_lvef_c3_preservation_semantics.py",
+        "tests/test_lvef_c3_production_stages_and_finalizer.py"
+      ],
+      "authority_packet_roles": []
+    }
+  ]
+}

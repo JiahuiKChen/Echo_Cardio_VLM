@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "lvef_c3_canary_state_snapshot_schema_v1.json",
+  "title": "LVEF C3 owner-private canary lifecycle snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "governing_commit",
+    "run_id",
+    "tracked_execution_state_sha256",
+    "current_state",
+    "transition_count",
+    "previous_snapshot_sha256",
+    "created_at_utc",
+    "updated_at_utc",
+    "history"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "artifact_type": {"const": "lvef_c3_canary_lifecycle_state_v1"},
+    "governing_commit": {"$ref": "#/$defs/commit"},
+    "run_id": {
+      "type": "string",
+      "pattern": "^lvef_c3_exact_five_canary_[a-z0-9]{8}$"
+    },
+    "tracked_execution_state_sha256": {"$ref": "#/$defs/sha256"},
+    "current_state": {"$ref": "#/$defs/state"},
+    "transition_count": {"type": "integer", "minimum": 0, "maximum": 4},
+    "previous_snapshot_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/sha256"}
+      ]
+    },
+    "created_at_utc": {"$ref": "#/$defs/timestamp"},
+    "updated_at_utc": {"$ref": "#/$defs/timestamp"},
+    "history": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/transition"}
+    }
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?\\+00:00$"
+    },
+    "state": {
+      "enum": [
+        "PRECANARY_READY",
+        "CANARY_AUTHORITY_PREPARED",
+        "CANARY_MANIFEST_SEALED",
+        "CANARY_EXECUTING",
+        "CANARY_TERMINAL_PASS",
+        "CANARY_TERMINAL_FAIL"
+      ]
+    },
+    "bindings": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]{0,63}$"},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "expected_current",
+        "target_state",
+        "reason_code",
+        "bindings",
+        "transitioned_at_utc"
+      ],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 4},
+        "expected_current": {"$ref": "#/$defs/state"},
+        "target_state": {"$ref": "#/$defs/state"},
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,95}$"
+        },
+        "bindings": {"$ref": "#/$defs/bindings"},
+        "transitioned_at_utc": {"$ref": "#/$defs/timestamp"}
+      }
+    }
+  }
+}

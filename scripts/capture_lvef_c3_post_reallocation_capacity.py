@@ -71,9 +71,44 @@ EXPECTED_RESTRICTED_PATHS = {
 }
 EXPECTED_NATIVE_QUOTA_FILE = Path("/usr/local/etc/quota/project.quota")
 EXPECTED_PQUOTA_EXECUTABLE = Path("/usr/local/etc/quota/pquota")
+EXPECTED_FINDMNT_EXECUTABLE = Path("/usr/bin/findmnt")
+EXPECTED_DF_EXECUTABLE = Path("/usr/bin/df")
 EXPECTED_PQUOTA_SIZE_BYTES = 5_840
 EXPECTED_PQUOTA_SHA256 = (
     "d0aacf79af95e8a558e2b27f81b685210427fe773a3aff93b4f1b1ba5ba339ab"
+)
+# Exact-five canary current-headroom policy.  The overhead is the tracked
+# ``storage.manifest_and_metadata_reserve_bytes`` value in
+# configs/lvef_c3_resource_policy.yaml; it is frozen here so a current probe
+# cannot silently reinterpret that tracked contract.
+CANARY_MAXIMUM_EXPECTED_OBJECT_BYTES = 5_000_000_000
+CANARY_FROZEN_MANIFEST_AND_METADATA_OVERHEAD_BYTES = 5_000_000_000
+CANARY_REQUIRED_REMAINING_PROJECT_BYTES = (
+    CANARY_MAXIMUM_EXPECTED_OBJECT_BYTES
+    + CANARY_FROZEN_MANIFEST_AND_METADATA_OVERHEAD_BYTES
+)
+CANARY_REQUIRED_REMAINING_FILE_SLOTS = 2_048
+CANARY_HEADROOM_STATUS = "PASS_READ_ONLY_CURRENT_CANARY_HEADROOM"
+CANARY_HEADROOM_KEYS = frozenset(
+    {
+        "status",
+        "project_quota_remaining_bytes",
+        "required_object_bytes",
+        "frozen_overhead_bytes",
+        "required_remaining_project_bytes",
+        "project_file_slots_remaining",
+        "required_remaining_file_slots",
+        "physical_filesystem_available_bytes",
+        "required_physical_available_bytes",
+        "project_byte_headroom_passed",
+        "project_file_slot_headroom_passed",
+        "physical_byte_headroom_passed",
+        "native_quota_authority_read_only",
+        "pquota_display_crosscheck",
+        "cloud_requests",
+        "scheduler_jobs_submitted",
+        "writes_performed",
+    }
 )
 PRIOR_CAPACITY_AUTHORITIES = {
     "phase1ee_parent_capacity": (
@@ -243,6 +278,28 @@ class PostReallocationCapacityError(RuntimeError):
         self.code = code
         self.gate_evaluation_status = gate_evaluation_status
         self.pquota_display_crosscheck = pquota_display_crosscheck
+
+
+@dataclass(frozen=True)
+class CurrentCanaryHeadroomAuthority:
+    """Closed file/path authority for one current read-only headroom probe."""
+
+    native_quota_path: Path
+    pquota_path: Path
+    findmnt_path: Path
+    df_path: Path
+    research_path: Path
+    backed_path: Path
+
+
+DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY = CurrentCanaryHeadroomAuthority(
+    native_quota_path=EXPECTED_NATIVE_QUOTA_FILE,
+    pquota_path=EXPECTED_PQUOTA_EXECUTABLE,
+    findmnt_path=EXPECTED_FINDMNT_EXECUTABLE,
+    df_path=EXPECTED_DF_EXECUTABLE,
+    research_path=EXPECTED_RESTRICTED_PATHS["research"],
+    backed_path=EXPECTED_RESTRICTED_PATHS["backed"],
+)
 
 
 @dataclass(frozen=True)
@@ -580,16 +637,20 @@ def _serialize_command_record(
 def _run(
     specification: CapacityCommandSpec,
     argv: Sequence[str],
+    *,
+    process_runner: Callable[..., Any] | None = None,
+    permitted_owner_uids: frozenset[int] = frozenset({0}),
 ) -> Mapping[str, Any]:
     executable = Path(argv[0]).resolve(strict=True)
     before = executable.stat()
     if (
         not stat.S_ISREG(before.st_mode)
-        or before.st_uid != 0
+        or before.st_uid not in permitted_owner_uids
         or stat.S_IMODE(before.st_mode) & 0o022
     ):
         raise PostReallocationCapacityError("READ_ONLY_TOOL_NOT_ROOT_CONTROLLED")
-    result = subprocess.run(
+    runner = process_runner or subprocess.run
+    result = runner(
         list(argv), capture_output=True, env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"},
         check=False,
     )
@@ -1037,6 +1098,467 @@ def _parse_df(text: str, mount: Mapping[str, Any]) -> Mapping[str, int]:
     if min(total, used, available) < 0 or used + available > total:
         raise PostReallocationCapacityError("DF_BYTES_DO_NOT_RECONCILE")
     return {"total": total, "used": used, "available": available}
+
+
+def validate_current_canary_headroom(value: Any) -> dict[str, Any]:
+    """Validate the closed aggregate-safe result of the public probe."""
+
+    if not isinstance(value, Mapping) or set(value) != CANARY_HEADROOM_KEYS:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_SCHEMA_NOT_CLOSED"
+        )
+    integer_fields = (
+        "project_quota_remaining_bytes",
+        "required_object_bytes",
+        "frozen_overhead_bytes",
+        "required_remaining_project_bytes",
+        "project_file_slots_remaining",
+        "required_remaining_file_slots",
+        "physical_filesystem_available_bytes",
+        "required_physical_available_bytes",
+        "cloud_requests",
+        "scheduler_jobs_submitted",
+        "writes_performed",
+    )
+    if any(
+        isinstance(value.get(field), bool)
+        or not isinstance(value.get(field), int)
+        or int(value[field]) < 0
+        for field in integer_fields
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_VALUE_INVALID"
+        )
+    if (
+        value.get("status") != CANARY_HEADROOM_STATUS
+        or value.get("required_object_bytes")
+        != CANARY_MAXIMUM_EXPECTED_OBJECT_BYTES
+        or value.get("frozen_overhead_bytes")
+        != CANARY_FROZEN_MANIFEST_AND_METADATA_OVERHEAD_BYTES
+        or value.get("required_remaining_project_bytes")
+        != CANARY_REQUIRED_REMAINING_PROJECT_BYTES
+        or value.get("required_physical_available_bytes")
+        != CANARY_REQUIRED_REMAINING_PROJECT_BYTES
+        or value.get("required_remaining_file_slots")
+        != CANARY_REQUIRED_REMAINING_FILE_SLOTS
+        or value.get("project_byte_headroom_passed") is not True
+        or value.get("project_file_slot_headroom_passed") is not True
+        or value.get("physical_byte_headroom_passed") is not True
+        or value.get("native_quota_authority_read_only") is not True
+        or value.get("pquota_display_crosscheck")
+        not in {DISPLAY_CROSSCHECK_PASS, DISPLAY_CROSSCHECK_UNAVAILABLE}
+        or value.get("cloud_requests") != 0
+        or value.get("scheduler_jobs_submitted") != 0
+        or value.get("writes_performed") != 0
+        or value["project_quota_remaining_bytes"]
+        < CANARY_REQUIRED_REMAINING_PROJECT_BYTES
+        or value["project_file_slots_remaining"]
+        < CANARY_REQUIRED_REMAINING_FILE_SLOTS
+        or value["physical_filesystem_available_bytes"]
+        < CANARY_REQUIRED_REMAINING_PROJECT_BYTES
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_INVARIANT_INVALID"
+        )
+    return dict(value)
+
+
+def _validate_current_canary_headroom_authority(
+    authority: CurrentCanaryHeadroomAuthority,
+) -> bool:
+    """Validate the closed path bundle; return whether it is production."""
+
+    if type(authority) is not CurrentCanaryHeadroomAuthority:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_AUTHORITY_INVALID"
+        )
+    production = authority == DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
+    paths = (
+        authority.native_quota_path,
+        authority.pquota_path,
+        authority.findmnt_path,
+        authority.df_path,
+        authority.research_path,
+        authority.backed_path,
+    )
+    if any(
+        not isinstance(path, Path)
+        or not path.is_absolute()
+        or Path(os.path.abspath(path)) != path
+        for path in paths
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_AUTHORITY_INVALID"
+        )
+    production_file_authorities = (
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY.native_quota_path,
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY.pquota_path,
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY.findmnt_path,
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY.df_path,
+    )
+    supplied_file_authorities = (
+        authority.native_quota_path,
+        authority.pquota_path,
+        authority.findmnt_path,
+        authority.df_path,
+    )
+    if not production and any(
+        supplied == frozen
+        for supplied, frozen in zip(
+            supplied_file_authorities,
+            production_file_authorities,
+            strict=True,
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_AUTHORITY_MIXED"
+        )
+    tools_by_role = {
+        "pquota": authority.pquota_path,
+        "findmnt": authority.findmnt_path,
+        "df": authority.df_path,
+    }
+    if (
+        len(set(tools_by_role.values())) != len(tools_by_role)
+        or any(path.name != role for role, path in tools_by_role.items())
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_TOOL_ROLE_INVALID"
+        )
+    permitted_uids = {0} if production else {0, os.geteuid()}
+    for path in (
+        authority.native_quota_path,
+        authority.pquota_path,
+        authority.findmnt_path,
+        authority.df_path,
+    ):
+        _no_symlink_ancestors(path, "CURRENT_CANARY_HEADROOM_AUTHORITY")
+        try:
+            metadata = os.lstat(path)
+        except OSError as exc:
+            raise PostReallocationCapacityError(
+                "CURRENT_CANARY_HEADROOM_AUTHORITY_INVALID"
+            ) from exc
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid not in permitted_uids
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise PostReallocationCapacityError(
+                "CURRENT_CANARY_HEADROOM_AUTHORITY_INVALID"
+            )
+    for path in (
+        authority.pquota_path,
+        authority.findmnt_path,
+        authority.df_path,
+    ):
+        if not stat.S_IMODE(os.lstat(path).st_mode) & 0o111:
+            raise PostReallocationCapacityError(
+                "CURRENT_CANARY_HEADROOM_TOOL_NOT_EXECUTABLE"
+            )
+    _path_identity(authority.research_path)
+    _path_identity(authority.backed_path)
+    if production and (
+        os.lstat(authority.pquota_path).st_size != EXPECTED_PQUOTA_SIZE_BYTES
+        or _sha(_read_regular(authority.pquota_path, maximum=256_000_000))
+        != EXPECTED_PQUOTA_SHA256
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_PQUOTA_AUTHORITY_MISMATCH"
+        )
+    return production
+
+
+def _current_canary_command_argv(
+    specification: CapacityCommandSpec,
+    authority: CurrentCanaryHeadroomAuthority,
+) -> list[str]:
+    executables = {
+        "pquota": authority.pquota_path,
+        "findmnt": authority.findmnt_path,
+        "df": authority.df_path,
+    }
+    targets = {
+        "research_findmnt": authority.research_path,
+        "backed_findmnt": authority.backed_path,
+        "research_df": authority.research_path,
+        "backed_df": authority.backed_path,
+    }
+    if specification.logical_role == "pquota":
+        tail = ("-u", EXPECTED_QUOTA_PRINCIPAL)
+    elif specification.command_kind == "findmnt":
+        tail = (
+            "--json",
+            "--target",
+            str(targets[specification.logical_role]),
+            "--output",
+            "SOURCE,TARGET,FSTYPE,OPTIONS,FSROOT",
+        )
+    elif specification.command_kind == "df":
+        tail = (
+            "-B1",
+            "--output=source,size,used,avail,target",
+            str(targets[specification.logical_role]),
+        )
+    else:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_COMMAND_INVALID"
+        )
+    return [str(executables[specification.command_kind]), *tail]
+
+
+def _run_current_canary_pquota(
+    specification: CapacityCommandSpec,
+    argv: Sequence[str],
+    *,
+    process_runner: Callable[..., Any] | None,
+) -> Mapping[str, Any]:
+    """Run the mandatory tool while keeping its display nonblocking."""
+
+    executable = Path(argv[0])
+    before = executable.stat()
+    runner = process_runner or subprocess.run
+    result = runner(
+        list(argv),
+        capture_output=True,
+        env={
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "LANG": "C",
+            "LC_ALL": "C",
+        },
+        check=False,
+    )
+    after = executable.stat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise PostReallocationCapacityError("TOOL_CHANGED_DURING_CAPTURE")
+    availability, reason = "AVAILABLE", "AVAILABLE"
+    if result.returncode:
+        availability, reason = (
+            "UNAVAILABLE_NONBLOCKING",
+            "COMMAND_NONZERO_EXIT",
+        )
+    elif result.stderr:
+        availability, reason = (
+            "UNAVAILABLE_NONBLOCKING",
+            "COMMAND_STDERR_PRESENT",
+        )
+    elif len(result.stdout) > 2_000_000:
+        availability, reason = (
+            "UNAVAILABLE_NONBLOCKING",
+            "COMMAND_OUTPUT_OVERSIZED",
+        )
+    try:
+        stdout = (
+            result.stdout
+            if len(result.stdout) <= 2_000_000
+            else b""
+        )
+        stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        availability, reason, stdout = (
+            "UNAVAILABLE_NONBLOCKING",
+            "COMMAND_OUTPUT_NOT_UTF8",
+            b"",
+        )
+    record = _serialize_command_record(
+        specification,
+        argv,
+        executable_sha256=_sha(
+            _read_regular(executable, maximum=256_000_000)
+        ),
+        executable_size_bytes=before.st_size,
+        exit_status=result.returncode,
+        stdout=stdout,
+        stderr=result.stderr,
+    )
+    record.update(
+        {
+            "availability_status": availability,
+            "availability_reason": reason,
+        }
+    )
+    return record
+
+
+def probe_current_canary_headroom(
+    authority: CurrentCanaryHeadroomAuthority = (
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
+    ),
+    *,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Read and validate contemporaneous exact-five canary headroom.
+
+    The probe is deliberately read-only: it executes only the canonical
+    pquota/findmnt/df registry and reads the fixed native quota authority.  It
+    requires exact remaining project quota for the 5,000,000,000-byte object
+    ceiling plus the tracked 5,000,000,000-byte manifest/metadata reserve,
+    2,048 project file slots, and the same 10,000,000,000 physical bytes from
+    ``df -B1``.  The closed path bundle defaults to the frozen SCC authority;
+    a sandbox bundle and subprocess runner may be injected for synthetic tests.
+    """
+
+    production = _validate_current_canary_headroom_authority(authority)
+    permitted_owner_uids = (
+        frozenset({0}) if production else frozenset({0, os.geteuid()})
+    )
+    commands: dict[str, Mapping[str, Any]] = {}
+    for specification in CAPACITY_COMMAND_SPECS:
+        argv = _current_canary_command_argv(specification, authority)
+        if specification.logical_role == "pquota":
+            record = dict(
+                _run_current_canary_pquota(
+                    specification,
+                    argv,
+                    process_runner=process_runner,
+                )
+            )
+        else:
+            record = dict(
+                _run(
+                    specification,
+                    argv,
+                    process_runner=process_runner,
+                    permitted_owner_uids=permitted_owner_uids,
+                )
+            )
+        commands[specification.logical_role] = record
+    if set(commands) != CAPACITY_COMMAND_ROLES:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_COMMAND_INVALID"
+        )
+    native_payload = _read_regular(
+        authority.native_quota_path, maximum=64_000_000
+    )
+    native = _parse_native_quota(native_payload)
+    if any(
+        int(native[role][field]) < 0
+        for role in ("research", "backed")
+        for field in ("usage_kib", "quota_kib", "files_used", "file_quota")
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_NATIVE_USAGE_INVALID"
+        )
+    paths = {
+        "research": _path_identity(authority.research_path),
+        "backed": _path_identity(authority.backed_path),
+    }
+    mounts = {
+        "research": _parse_findmnt(
+            commands[CAPACITY_COMMAND_CONSUMER_ROLES["research_mount"]][
+                "stdout_text"
+            ],
+            authority.research_path,
+        ),
+        "backed": _parse_findmnt(
+            commands[CAPACITY_COMMAND_CONSUMER_ROLES["backed_mount"]][
+                "stdout_text"
+            ],
+            authority.backed_path,
+        ),
+    }
+    if production:
+        _validate_pquota_restricted_mount_reconciliation(
+            native=native, paths=paths, mounts=mounts
+        )
+    elif any(
+        paths[role]["is_symlink"] is not False
+        or mounts[role]["bind"] is not False
+        or mounts[role]["fsroot"] != "/"
+        or native[role]["native_name_sha256"]
+        != _sha(EXPECTED_NATIVE_ROWS[role].encode())
+        for role in ("research", "backed")
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_MOUNT_RECONCILIATION_FAILED"
+        )
+    research_df = _parse_df(
+        commands[CAPACITY_COMMAND_CONSUMER_ROLES["research_df"]][
+            "stdout_text"
+        ],
+        mounts["research"],
+    )
+    # Parse the backed result as well: the exact canonical command registry is
+    # all-or-nothing even though this canary writes only to the research tier.
+    _parse_df(
+        commands[CAPACITY_COMMAND_CONSUMER_ROLES["backed_df"]][
+            "stdout_text"
+        ],
+        mounts["backed"],
+    )
+    display_command = commands[
+        CAPACITY_COMMAND_CONSUMER_ROLES["pquota_display"]
+    ]
+    display = _parse_pquota(
+        display_command["stdout_text"],
+        native,
+        command_available=(
+            display_command.get("availability_status") == "AVAILABLE"
+        ),
+    )
+    if display["status"] == DISPLAY_CROSSCHECK_FAIL:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_HEADROOM_PQUOTA_CONTRADICTION"
+        )
+
+    quota_remaining = max(
+        int(native["research"]["quota_kib"])
+        - int(native["research"]["usage_kib"]),
+        0,
+    ) * 1024
+    file_slots_remaining = max(
+        int(native["research"]["file_quota"])
+        - int(native["research"]["files_used"]),
+        0,
+    )
+    physical_available = int(research_df["available"])
+    if quota_remaining < CANARY_REQUIRED_REMAINING_PROJECT_BYTES:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_PROJECT_BYTE_HEADROOM_INSUFFICIENT"
+        )
+    if file_slots_remaining < CANARY_REQUIRED_REMAINING_FILE_SLOTS:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_FILE_SLOT_HEADROOM_INSUFFICIENT"
+        )
+    if physical_available < CANARY_REQUIRED_REMAINING_PROJECT_BYTES:
+        raise PostReallocationCapacityError(
+            "CURRENT_CANARY_PHYSICAL_BYTE_HEADROOM_INSUFFICIENT"
+        )
+    return validate_current_canary_headroom(
+        {
+            "status": CANARY_HEADROOM_STATUS,
+            "project_quota_remaining_bytes": quota_remaining,
+            "required_object_bytes": CANARY_MAXIMUM_EXPECTED_OBJECT_BYTES,
+            "frozen_overhead_bytes": (
+                CANARY_FROZEN_MANIFEST_AND_METADATA_OVERHEAD_BYTES
+            ),
+            "required_remaining_project_bytes": (
+                CANARY_REQUIRED_REMAINING_PROJECT_BYTES
+            ),
+            "project_file_slots_remaining": file_slots_remaining,
+            "required_remaining_file_slots": (
+                CANARY_REQUIRED_REMAINING_FILE_SLOTS
+            ),
+            "physical_filesystem_available_bytes": physical_available,
+            "required_physical_available_bytes": (
+                CANARY_REQUIRED_REMAINING_PROJECT_BYTES
+            ),
+            "project_byte_headroom_passed": True,
+            "project_file_slot_headroom_passed": True,
+            "physical_byte_headroom_passed": True,
+            "native_quota_authority_read_only": True,
+            "pquota_display_crosscheck": str(display["status"]),
+            "cloud_requests": 0,
+            "scheduler_jobs_submitted": 0,
+            "writes_performed": 0,
+        }
+    )
 
 
 def _validate_prior(

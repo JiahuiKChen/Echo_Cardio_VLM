@@ -1,4 +1,4 @@
-# Phase 1H-R1 exact-five canary mode
+# Phase 1H-R1/R2 exact-five canary mode
 
 ## Authority boundary
 
@@ -6,8 +6,17 @@ The tracked execution-state authority is
 `configs/lvef_c3_execution_state_v1.yaml`. It remains the sole authority for
 the governing branch and commit, logical execution attempt, preparation
 sequence, next-unused attempt, production-attempt absence, and permitted
-execution scopes. A no-body preflight does not create or consume an execution
-attempt.
+execution scopes. R2 embeds the closed canary lifecycle definition in that
+same file; it does not create a competing tracked state. A no-body preflight,
+private authority preparation, or lifecycle transition does not create or
+consume execution attempt 005 or production attempt 006.
+
+One owner-private lifecycle snapshot is derived from and hash-bound to the
+exact tracked state bytes. It binds the governing Git commit and canary
+`run_id` as separate fields; neither may be inferred from the preparation
+sequence identifier or treated as an execution-attempt identity. Snapshot
+mutation is expected-current, forward-only, no-clobber, and atomic. It never
+edits the tracked YAML.
 
 The canary cohort is a separate owner-private authority. The closed contract in
 `scripts/lvef_c3_canary_manifest.py` and
@@ -36,21 +45,65 @@ permission is also required; neither authority can substitute for the other.
 
 The sole tracked top-level canary entrypoint is
 `scripts/scc_run_lvef_c3_canary.sh`. It accepts exactly one argument and only
-one of these three modes:
+one of these four modes:
 
 - `--validate-installation` validates tracked state, local/origin Git equality,
   the production release, the frozen scheduler plan and its entrypoint hashes,
-  and required production callables.
-- `--preflight-only` repeats installation validation and then validates a
-  synthetic exact-five manifest, its bound scheduler plan, and the production
-  immutable batch-plan projection. It accesses zero restricted cohort rows and
-  invokes no live effect.
-- `--execute` is a future-operable, double-gated mode. It first requires the
-  absent canonical-state scope `execute_exact_five_canary`, then validates the
-  SCC private authorities and fixed owner packet before reaching the durable
-  dispatcher. The current driver therefore fails at the first gate with
-  `REAL_CANARY_CANONICAL_STATE_AUTHORIZATION_REQUIRED`; it has not been invoked
-  for a canary.
+  lifecycle and materializer producers, and required production callables.
+- `--preflight-only` repeats installation validation and then uses a disposable
+  synthetic private root to exercise materialization, both preparation-state
+  transitions, packet revalidation, the execute gate, and the five-dispatch
+  control path. Its injected submitter records five adapter calls but submits
+  zero real qsub jobs. It accesses zero restricted cohort rows and invokes no
+  live effect.
+- `--prepare-live-authority` is a future owner-authorized metadata preparation
+  mode. It validates the SCC private authorities, writes the closed
+  identifier-free preselection authority before opening row-bearing inputs,
+  materializes and validates the exact-five private artifacts, and advances
+  the private lifecycle atomically to `CANARY_MANIFEST_SEALED`. It performs no
+  object-body request, qsub, DICOM processing, or GPU work.
+- `--execute` is the future live scientific boundary. It requires the private
+  lifecycle snapshot already at `CANARY_MANIFEST_SEALED`, with matching
+  governing commit and `run_id`, and independently validates the fixed owner
+  packet before recording `CANARY_EXECUTING` and reaching the durable
+  dispatcher. The tracked base scopes do not, by themselves, permit dispatch.
+
+## R2 lifecycle and private materialization
+
+The tracked lifecycle has exactly these forward edges:
+
+```text
+PRECANARY_READY
+  -> CANARY_AUTHORITY_PREPARED
+  -> CANARY_MANIFEST_SEALED
+  -> CANARY_EXECUTING
+  -> CANARY_TERMINAL_PASS | CANARY_TERMINAL_FAIL
+```
+
+`CANARY_TERMINAL_FAIL` is reachable only from `CANARY_EXECUTING`; a failure
+before scientific execution begins leaves the prior nonterminal state
+unchanged. The materializer applies the first two edges as one atomic
+transaction while retaining both edges and their bindings in snapshot history.
+A failed lifecycle transaction leaves the prior snapshot byte-identical;
+private publication is no-clobber, so a partial preparation cannot be treated
+as permission to retry or continue.
+
+Before reading any restricted row-bearing inventory, the materializer writes
+`preselection_scope.restricted.json`, a closed-schema, mode-`0600`, no-clobber
+authority receipt. It contains the governing commit, run identity, exact-five
+hard ceilings, five-stage scheduler scope, allowed and forbidden operation
+classes, timestamp, the exact qsub/qstat path, SHA-256, size, device and inode,
+and a semantic seal. The scheduler identities are revalidated before qstat and
+again by the execution-packet loader before qsub can be reached. The same
+pre-row gate uses the bounded native-quota/pquota/findmnt/df probe to require at
+least 10,000,000,000 bytes of current project and physical headroom plus 2,048
+project file slots. It contains no subject identifier,
+study identifier, source-object key, source path, label, prediction, or
+clinical row. The subsequent owner-private materializer may read only the
+already-authorized metadata inventories and publishes the selected manifest,
+batch and scheduler plans, body-transfer and per-stage grants, and execution
+packet inside the fixed private tree. Those row-bearing artifacts and their
+paths are never printed or committed.
 
 ## Deterministic selection contract
 
@@ -102,9 +155,22 @@ new mode-`0700` run root and immutable mode-`0600` snapshots before each qsub.
 It submits only the five declared commands with scheduler restart disabled
 (`-r n`) and an exact predecessor hold chain. A qsub failure is terminal. The
 single-stage worker in `scripts/lvef_c3_canary_stage_worker.py` writes an
-`O_EXCL` execution claim before any stage effect and requires a bound
-predecessor PASS result before a successor can act. A claimed or failed stage
-cannot be retried by this envelope.
+`O_EXCL` execution claim before any stage effect. Because an SGE job can start
+before the dispatcher has published that stage's `SUBMITTED` snapshot, the
+worker first performs only a bounded read-only wait for the exact bound
+complete five-job `DISPATCHED_FROZEN_DAG` ledger. Timeout or a conflicting
+ledger fails closed before the claim or any stage effect. The worker binds its
+actual numeric SGE `JOB_ID` to that stage's immutable submission row and a
+successor also requires its bound immediate predecessor PASS result. A claimed
+or failed stage cannot be retried by this envelope. Every launched worker
+additionally requires the private lifecycle at `CANARY_EXECUTING`. The
+validated finalization result advances the lifecycle to
+`CANARY_TERMINAL_PASS`; the authenticated launcher's failure trap and the
+Python worker both use the same state API to advance controlled bootstrap or
+stage failures once to `CANARY_TERMINAL_FAIL`. An untrappable node/process loss
+cannot satisfy a successor's PASS-receipt gate and therefore remains
+scientifically fail-closed, but is not mislabeled as receipt-validated terminal
+PASS and requires aggregate-safe operator reconciliation.
 
 “Zero retries” at the scheduler level means zero repeat qsub submissions and
 zero whole-stage retries. It does not silently rewrite the production
@@ -114,18 +180,19 @@ five per declared object). Those internal transport attempts do not add a
 scheduler submission, cannot expand object membership, and do not permit a
 failed stage to be resubmitted.
 
-## Phase 1H-R1 no-body boundary
+## Phase 1H-R2 current no-live boundary and future sequence
 
-This phase implements and validates the future execution envelope but does not
-authorize it. The tracked manifest module performs deterministic selection,
-sealing, and validation without cloud, scheduler, DICOM, GPU, modeling,
-prediction, or performance access. The execute-only dispatcher is imported
-only after the absent canonical scope, tracked installation, and SCC private-
-authority gates; it receives the fully validated owner packet before dispatch.
-Each submitted stage launcher independently reloads and validates that packet
-before importing or running a stage effect. The top-level installation and
-preflight modes never reach these paths and sanitize environment variables that
-could expose cloud credentials or a GPU.
+This phase prepares the tracked future control envelope but does not authorize
+a real SCC invocation. The tracked manifest module performs deterministic
+selection, sealing, and validation without cloud, scheduler, DICOM, GPU,
+modeling, prediction, or performance access. The execute-only dispatcher is
+reached only after tracked installation, lifecycle, SCC private-authority, and
+sealed-packet gates. Each submitted stage launcher independently reloads and
+revalidates its packet-sealed launcher/worker hashes, governing commit, and
+clean tracked tree before Python imports project modules; the worker then
+reloads and validates the packet before running a stage effect. The
+top-level installation and preflight modes never reach a real effect path and
+sanitize environment variables that could expose cloud credentials or a GPU.
 
 Accordingly, installation validation and synthetic/zero-identifier preflight
 may validate tracked hashes, closed schemas, state invariants, authority
@@ -133,5 +200,43 @@ binding, DAG order, receipt dependencies, and hard ceilings. They must not read
 a real cohort manifest, request object bodies, submit qsub jobs, transfer or
 decode DICOM, use a GPU, create embeddings, retire cache, fit a model, generate
 predictions, access confirmatory performance, or continue into production.
-This document records the implemented design; it does not claim a live SCC
-installation validation, preflight, or canary execution succeeded.
+
+`--prepare-live-authority` is distinct from those zero-restricted-row modes:
+after separate owner authorization it may read restricted metadata and write
+owner-private authority artifacts, but it still cannot request object bodies,
+submit qsub, decode DICOM, or use a GPU. `--execute` is the sole tracked live
+scientific boundary. Neither mode is authorized or run by this R2
+documentation task.
+
+After separate owner authorization, and only after the governing commit is
+validated equal in the local, origin, and SCC checkouts, the exact future
+tracked top-level sequence is:
+
+```console
+./scripts/scc_run_lvef_c3_canary.sh --validate-installation
+./scripts/scc_run_lvef_c3_canary.sh --preflight-only
+./scripts/scc_run_lvef_c3_canary.sh --prepare-live-authority
+./scripts/scc_run_lvef_c3_canary.sh --execute
+```
+
+Every command must pass before the next begins. Preparation and execution are
+one-shot, no-clobber operations and must not be retried. The final lifecycle
+state may be recorded only from the validated run receipts: terminal PASS for
+the bound aggregate-safe finalization PASS, otherwise terminal FAIL only after
+execution began.
+
+Evidence status for this R2 change is intentionally explicit:
+
+- local decisive live-path synthetic acceptance: **PASS (1/1)**;
+- local focused control-plane and production-reuse validation: **PASS
+  (77/77 and 134/134)**;
+- local complete dependency-light suite: **PASS (804/804)**;
+- local/origin equality and ending commit: **PENDING**;
+- SCC fast-forward and commit equality: **PENDING**;
+- SCC `--validate-installation`: **PENDING / NOT RUN**;
+- SCC `--preflight-only`: **PENDING / NOT RUN**;
+- live authority preparation and exact-five execution: **NOT RUN**.
+
+This document records the locally validated tracked contract. It does not
+claim SCC synchronization, SCC installation validation, SCC preflight
+success, live owner-private materialization, or canary execution.
