@@ -570,6 +570,157 @@ def test_current_canary_headroom_pquota_contradiction_and_path_drift() -> None:
         )
 
 
+def test_current_full_headroom_probe_is_closed_read_only_and_exact() -> None:
+    """The full launch probe uses the native quota and physical authorities."""
+
+    research_usage = 147_117_696 * 1024
+    physical_required = (
+        max(capacity.PROJECTED_PEAK_BYTES - research_usage, 0)
+        + capacity.REQUIRED_FREE_HEADROOM_BYTES
+        + capacity.PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        authority, tools = _canary_probe_fixture(
+            Path(temporary), native_payload=_native()
+        )
+        before = {
+            path: (path.stat().st_mode, path.read_bytes())
+            for path in [*tools, authority.native_quota_path]
+        }
+        calls: list[tuple[str, ...]] = []
+        result = capacity.probe_current_full_headroom(
+            authority,
+            process_runner=_canary_process_runner(
+                authority,
+                research_available=physical_required,
+                calls=calls,
+            ),
+        )
+
+        assert capacity.validate_current_full_headroom(result) == result
+        assert set(result) == capacity.FULL_HEADROOM_KEYS
+        assert result["status"] == capacity.FULL_HEADROOM_STATUS
+        assert result["selected_source_bytes"] == 1_216_569_133_322
+        assert result["projected_peak_bytes"] == 1_611_642_076_332
+        assert result["required_free_headroom_bytes"] == 200_000_000_000
+        assert result["research_physical_required_available_bytes"] == (
+            physical_required
+        )
+        assert result["research_physical_slack_bytes"] == 0
+        assert result["research_margin_beyond_200gb_reserve_bytes"] > 0
+        assert result["research_additional_file_demand"] == 3_500_000
+        assert result["backed_control_burden_bytes"] == 10_000_000_000
+        assert result["backed_additional_file_demand"] == 100_000
+        assert result["research_file_quota"] == 33_554_432
+        assert result["research_files_used"] == 106_407
+        assert result["backed_quota_bytes"] == 52_428_800 * 1024
+        assert result["backed_usage_bytes"] == 10_690_224 * 1024
+        assert result["backed_file_quota"] == 1_638_400
+        assert result["backed_files_used"] == 47_379
+        assert result["cloud_requests"] == 0
+        assert result["scheduler_jobs_submitted"] == 0
+        assert result["writes_performed"] == 0
+        assert [Path(call[0]).name for call in calls] == [
+            "pquota", "findmnt", "findmnt", "df", "df"
+        ]
+        assert {
+            path: (path.stat().st_mode, path.read_bytes())
+            for path in before
+        } == before
+
+
+def test_current_full_headroom_threshold_and_schema_fail_closed() -> None:
+    research_usage = 147_117_696 * 1024
+    physical_required = (
+        max(capacity.PROJECTED_PEAK_BYTES - research_usage, 0)
+        + capacity.REQUIRED_FREE_HEADROOM_BYTES
+        + capacity.PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        authority, _ = _canary_probe_fixture(
+            Path(temporary), native_payload=_native()
+        )
+        _expect(
+            "CURRENT_FULL_HEADROOM_INSUFFICIENT",
+            lambda: capacity.probe_current_full_headroom(
+                authority,
+                process_runner=_canary_process_runner(
+                    authority,
+                    research_available=physical_required - 1,
+                ),
+            ),
+        )
+        result = capacity.probe_current_full_headroom(
+            authority,
+            process_runner=_canary_process_runner(
+                authority, research_available=physical_required
+            ),
+        )
+
+    changed = dict(result)
+    changed["cloud_requests"] = 1
+    _expect(
+        "CURRENT_FULL_HEADROOM_INVALID",
+        lambda: capacity.validate_current_full_headroom(changed),
+    )
+    changed = dict(result)
+    changed["unexpected"] = 0
+    _expect(
+        "CURRENT_FULL_HEADROOM_SCHEMA_INVALID",
+        lambda: capacity.validate_current_full_headroom(changed),
+    )
+    changed = dict(result)
+    changed["research_quota_gate_passed"] = 1
+    _expect(
+        "CURRENT_FULL_HEADROOM_INVALID",
+        lambda: capacity.validate_current_full_headroom(changed),
+    )
+    for field in (
+        "research_quota_bytes",
+        "research_usage_bytes",
+        "research_quota_remaining_bytes",
+        "research_file_quota",
+        "research_files_used",
+        "research_file_slots_remaining",
+        "research_filesystem_available_bytes",
+        "backed_quota_bytes",
+        "backed_usage_bytes",
+        "backed_quota_remaining_bytes",
+        "backed_file_quota",
+        "backed_files_used",
+        "backed_file_slots_remaining",
+        "research_physical_required_available_bytes",
+        "research_quota_slack_after_projected_peak_bytes",
+        "research_margin_beyond_200gb_reserve_bytes",
+        "research_physical_slack_bytes",
+    ):
+        changed = dict(result)
+        changed[field] = int(changed[field]) + 1
+        _expect(
+            "CURRENT_FULL_HEADROOM_INVALID",
+            lambda changed=changed: capacity.validate_current_full_headroom(
+                changed
+            ),
+        )
+    for field in (
+        "research_quota_gate_passed",
+        "physical_filesystem_capacity_gate_passed",
+        "projected_200gb_reserve_gate_passed",
+        "research_file_quota_gate_passed",
+        "backed_control_tier_byte_gate_passed",
+        "backed_control_tier_file_gate_passed",
+        "backed_control_tier_gate_passed",
+    ):
+        changed = dict(result)
+        changed[field] = False
+        _expect(
+            "CURRENT_FULL_HEADROOM_INVALID",
+            lambda changed=changed: capacity.validate_current_full_headroom(
+                changed
+            ),
+        )
+
+
 def test_native_quota_rejects_duplicate_missing_or_changed_allocation() -> None:
     _expect("NATIVE_QUOTA_ROW_NOT_UNIQUE", lambda: capacity._parse_native_quota(_native() + _native().splitlines()[0] + b"\n"))
     _expect("NATIVE_QUOTA_ROWS_MISSING", lambda: capacity._parse_native_quota(_native().splitlines()[0] + b"\n"))
@@ -582,6 +733,35 @@ def test_native_quota_rejects_duplicate_missing_or_changed_allocation() -> None:
     )
     extra = b"snapshot_mimicecho root FILESET 0 1 0 0 none | 0 1 0 0 none\n"
     _expect("NATIVE_QUOTA_ADDITIONAL_PRINCIPAL_ROW", lambda: capacity._parse_native_quota(_native() + extra))
+
+
+def test_native_quota_rejects_negative_or_over_limit_usage() -> None:
+    _expect(
+        "NATIVE_QUOTA_USAGE_INVALID",
+        lambda: capacity._parse_native_quota(
+            _native().replace(b"147117696 2044723200", b"-1 2044723200")
+        ),
+    )
+    _expect(
+        "NATIVE_QUOTA_USAGE_EXCEEDS_ALLOCATION",
+        lambda: capacity._parse_native_quota(
+            _native().replace(
+                b"147117696 2044723200", b"2044723201 2044723200"
+            )
+        ),
+    )
+    _expect(
+        "NATIVE_QUOTA_USAGE_INVALID",
+        lambda: capacity._parse_native_quota(
+            _native().replace(b"106407 33554432", b"-1 33554432")
+        ),
+    )
+    _expect(
+        "NATIVE_QUOTA_USAGE_EXCEEDS_ALLOCATION",
+        lambda: capacity._parse_native_quota(
+            _native().replace(b"106407 33554432", b"33554433 33554432")
+        ),
+    )
 
 
 def test_observed_pquota_display_schema_passes_as_secondary_crosscheck() -> None:

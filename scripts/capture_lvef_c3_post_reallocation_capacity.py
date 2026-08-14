@@ -110,6 +110,47 @@ CANARY_HEADROOM_KEYS = frozenset(
         "writes_performed",
     }
 )
+FULL_HEADROOM_STATUS = "PASS_READ_ONLY_CURRENT_FULL_C3_HEADROOM"
+FULL_HEADROOM_KEYS = frozenset(
+    {
+        "status",
+        "research_quota_bytes",
+        "research_usage_bytes",
+        "research_quota_remaining_bytes",
+        "research_file_quota",
+        "research_files_used",
+        "research_file_slots_remaining",
+        "research_filesystem_available_bytes",
+        "backed_quota_bytes",
+        "backed_usage_bytes",
+        "backed_quota_remaining_bytes",
+        "backed_file_quota",
+        "backed_files_used",
+        "backed_file_slots_remaining",
+        "selected_source_bytes",
+        "projected_peak_bytes",
+        "required_free_headroom_bytes",
+        "research_physical_required_available_bytes",
+        "research_quota_slack_after_projected_peak_bytes",
+        "research_margin_beyond_200gb_reserve_bytes",
+        "research_physical_slack_bytes",
+        "research_additional_file_demand",
+        "backed_control_burden_bytes",
+        "backed_additional_file_demand",
+        "research_quota_gate_passed",
+        "physical_filesystem_capacity_gate_passed",
+        "projected_200gb_reserve_gate_passed",
+        "research_file_quota_gate_passed",
+        "backed_control_tier_byte_gate_passed",
+        "backed_control_tier_file_gate_passed",
+        "backed_control_tier_gate_passed",
+        "native_quota_authority_read_only",
+        "pquota_display_crosscheck",
+        "cloud_requests",
+        "scheduler_jobs_submitted",
+        "writes_performed",
+    }
+)
 PRIOR_CAPACITY_AUTHORITIES = {
     "phase1ee_parent_capacity": (
         2_257,
@@ -876,6 +917,22 @@ def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]
         raise PostReallocationCapacityError("NATIVE_QUOTA_ROWS_MISSING")
     if principal_fileset_rows != 2:
         raise PostReallocationCapacityError("NATIVE_QUOTA_ADDITIONAL_PRINCIPAL_ROW")
+    if any(
+        int(observed[role][field]) < 0
+        for role in ("research", "backed")
+        for field in ("usage_kib", "quota_kib", "files_used", "file_quota")
+    ):
+        raise PostReallocationCapacityError("NATIVE_QUOTA_USAGE_INVALID")
+    if any(
+        int(observed[role]["usage_kib"])
+        > int(observed[role]["quota_kib"])
+        or int(observed[role]["files_used"])
+        > int(observed[role]["file_quota"])
+        for role in ("research", "backed")
+    ):
+        raise PostReallocationCapacityError(
+            "NATIVE_QUOTA_USAGE_EXCEEDS_ALLOCATION"
+        )
     if (
         observed["research"]["quota_kib"] != EXPECTED_RESEARCH_QUOTA_KIB
         or observed["backed"]["quota_kib"] != EXPECTED_BACKED_QUOTA_KIB
@@ -1552,6 +1609,311 @@ def probe_current_canary_headroom(
             "project_byte_headroom_passed": True,
             "project_file_slot_headroom_passed": True,
             "physical_byte_headroom_passed": True,
+            "native_quota_authority_read_only": True,
+            "pquota_display_crosscheck": str(display["status"]),
+            "cloud_requests": 0,
+            "scheduler_jobs_submitted": 0,
+            "writes_performed": 0,
+        }
+    )
+
+
+def validate_current_full_headroom(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the closed aggregate-safe result of the full C3 probe."""
+
+    if set(value) != FULL_HEADROOM_KEYS:
+        raise PostReallocationCapacityError("CURRENT_FULL_HEADROOM_SCHEMA_INVALID")
+    integer_fields = FULL_HEADROOM_KEYS - {
+        "status",
+        "pquota_display_crosscheck",
+        "native_quota_authority_read_only",
+        "research_quota_gate_passed",
+        "physical_filesystem_capacity_gate_passed",
+        "projected_200gb_reserve_gate_passed",
+        "research_file_quota_gate_passed",
+        "backed_control_tier_byte_gate_passed",
+        "backed_control_tier_file_gate_passed",
+        "backed_control_tier_gate_passed",
+    }
+    boolean_fields = FULL_HEADROOM_KEYS - integer_fields - {
+        "status", "pquota_display_crosscheck"
+    }
+    if (
+        value.get("status") != FULL_HEADROOM_STATUS
+        or value.get("pquota_display_crosscheck") not in {
+            DISPLAY_CROSSCHECK_PASS,
+            DISPLAY_CROSSCHECK_UNAVAILABLE,
+        }
+        or any(
+            not isinstance(value.get(name), int)
+            or isinstance(value.get(name), bool)
+            or int(value[name]) < 0
+            for name in integer_fields
+        )
+        or any(value.get(name) is not True for name in boolean_fields)
+        or value.get("selected_source_bytes") != SELECTED_SOURCE_BYTES
+        or value.get("projected_peak_bytes") != PROJECTED_PEAK_BYTES
+        or value.get("required_free_headroom_bytes")
+        != REQUIRED_FREE_HEADROOM_BYTES
+        or value.get("research_additional_file_demand")
+        != RESEARCH_ADDITIONAL_FILE_DEMAND
+        or value.get("backed_control_burden_bytes")
+        != PRESPECIFIED_CONTROL_BURDEN_BYTES
+        or value.get("backed_additional_file_demand")
+        != CONTROL_ADDITIONAL_FILE_DEMAND
+        or value.get("cloud_requests") != 0
+        or value.get("scheduler_jobs_submitted") != 0
+        or value.get("writes_performed") != 0
+    ):
+        raise PostReallocationCapacityError("CURRENT_FULL_HEADROOM_INVALID")
+
+    research_quota = int(value["research_quota_bytes"])
+    research_usage = int(value["research_usage_bytes"])
+    research_file_quota = int(value["research_file_quota"])
+    research_files_used = int(value["research_files_used"])
+    research_available = int(value["research_filesystem_available_bytes"])
+    backed_quota = int(value["backed_quota_bytes"])
+    backed_usage = int(value["backed_usage_bytes"])
+    backed_file_quota = int(value["backed_file_quota"])
+    backed_files_used = int(value["backed_files_used"])
+    if (
+        research_quota != EXPECTED_RESEARCH_QUOTA_KIB * 1024
+        or backed_quota != EXPECTED_BACKED_QUOTA_KIB * 1024
+        or research_file_quota != EXPECTED_RESEARCH_FILE_QUOTA
+        or backed_file_quota != EXPECTED_BACKED_FILE_QUOTA
+        or research_usage > research_quota
+        or backed_usage > backed_quota
+        or research_files_used > research_file_quota
+        or backed_files_used > backed_file_quota
+    ):
+        raise PostReallocationCapacityError("CURRENT_FULL_HEADROOM_INVALID")
+
+    remaining_write = max(PROJECTED_PEAK_BYTES - research_usage, 0)
+    physical_required = (
+        remaining_write
+        + REQUIRED_FREE_HEADROOM_BYTES
+        + PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES
+    )
+    quota_slack = research_quota - PROJECTED_PEAK_BYTES
+    reserve_margin = quota_slack - REQUIRED_FREE_HEADROOM_BYTES
+    derived: dict[str, int | bool] = {
+        "research_quota_remaining_bytes": research_quota - research_usage,
+        "research_file_slots_remaining": (
+            research_file_quota - research_files_used
+        ),
+        "backed_quota_remaining_bytes": backed_quota - backed_usage,
+        "backed_file_slots_remaining": backed_file_quota - backed_files_used,
+        "research_physical_required_available_bytes": physical_required,
+        "research_quota_slack_after_projected_peak_bytes": quota_slack,
+        "research_margin_beyond_200gb_reserve_bytes": reserve_margin,
+        "research_physical_slack_bytes": research_available - physical_required,
+        "research_quota_gate_passed": (
+            research_quota >= MINIMUM_EFFECTIVE_QUOTA_BYTES
+        ),
+        "physical_filesystem_capacity_gate_passed": (
+            research_available >= physical_required
+        ),
+        "projected_200gb_reserve_gate_passed": (
+            quota_slack >= REQUIRED_FREE_HEADROOM_BYTES
+        ),
+        "research_file_quota_gate_passed": (
+            research_file_quota - research_files_used
+            >= RESEARCH_ADDITIONAL_FILE_DEMAND
+        ),
+        "backed_control_tier_byte_gate_passed": (
+            backed_quota - backed_usage
+            >= PRESPECIFIED_CONTROL_BURDEN_BYTES
+        ),
+        "backed_control_tier_file_gate_passed": (
+            backed_file_quota - backed_files_used
+            >= CONTROL_ADDITIONAL_FILE_DEMAND
+        ),
+    }
+    derived["backed_control_tier_gate_passed"] = bool(
+        derived["backed_control_tier_byte_gate_passed"]
+        and derived["backed_control_tier_file_gate_passed"]
+    )
+    if any(value.get(name) != expected for name, expected in derived.items()):
+        raise PostReallocationCapacityError("CURRENT_FULL_HEADROOM_INVALID")
+    return dict(value)
+
+
+def probe_current_full_headroom(
+    authority: CurrentCanaryHeadroomAuthority = (
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
+    ),
+    *,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Capture current full-cohort quota, physical, and file headroom read-only.
+
+    This uses the same fixed native quota file and root-controlled
+    ``pquota``/``findmnt``/``df`` command registry as the exact-five probe.  It
+    writes no receipt itself; the full launch claim may persist the returned
+    closed mapping exactly once after all no-body gates pass.
+    """
+
+    production = _validate_current_canary_headroom_authority(authority)
+    permitted_owner_uids = (
+        frozenset({0}) if production else frozenset({0, os.geteuid()})
+    )
+    commands: dict[str, Mapping[str, Any]] = {}
+    for specification in CAPACITY_COMMAND_SPECS:
+        argv = _current_canary_command_argv(specification, authority)
+        if specification.logical_role == "pquota":
+            record = _run_current_canary_pquota(
+                specification, argv, process_runner=process_runner
+            )
+        else:
+            record = _run(
+                specification,
+                argv,
+                process_runner=process_runner,
+                permitted_owner_uids=permitted_owner_uids,
+            )
+        commands[specification.logical_role] = dict(record)
+    if set(commands) != CAPACITY_COMMAND_ROLES:
+        raise PostReallocationCapacityError("CURRENT_FULL_HEADROOM_COMMAND_INVALID")
+
+    native = _parse_native_quota(
+        _read_regular(authority.native_quota_path, maximum=64_000_000)
+    )
+    paths = {
+        "research": _path_identity(authority.research_path),
+        "backed": _path_identity(authority.backed_path),
+    }
+    mounts = {
+        "research": _parse_findmnt(
+            commands[CAPACITY_COMMAND_CONSUMER_ROLES["research_mount"]][
+                "stdout_text"
+            ],
+            authority.research_path,
+        ),
+        "backed": _parse_findmnt(
+            commands[CAPACITY_COMMAND_CONSUMER_ROLES["backed_mount"]][
+                "stdout_text"
+            ],
+            authority.backed_path,
+        ),
+    }
+    if production:
+        _validate_pquota_restricted_mount_reconciliation(
+            native=native, paths=paths, mounts=mounts
+        )
+    elif any(
+        paths[role]["is_symlink"] is not False
+        or mounts[role]["bind"] is not False
+        or mounts[role]["fsroot"] != "/"
+        or native[role]["native_name_sha256"]
+        != _sha(EXPECTED_NATIVE_ROWS[role].encode())
+        for role in ("research", "backed")
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_FULL_HEADROOM_MOUNT_RECONCILIATION_FAILED"
+        )
+    dfs = {
+        role: _parse_df(
+            commands[
+                CAPACITY_COMMAND_CONSUMER_ROLES[f"{role}_df"]
+            ]["stdout_text"],
+            mounts[role],
+        )
+        for role in ("research", "backed")
+    }
+    display_record = commands[
+        CAPACITY_COMMAND_CONSUMER_ROLES["pquota_display"]
+    ]
+    display = _parse_pquota(
+        display_record["stdout_text"],
+        native,
+        command_available=(display_record.get("availability_status") == "AVAILABLE"),
+    )
+    if display["status"] == DISPLAY_CROSSCHECK_FAIL:
+        raise PostReallocationCapacityError(
+            "CURRENT_FULL_HEADROOM_PQUOTA_CONTRADICTION"
+        )
+
+    research_quota = int(native["research"]["quota_kib"]) * 1024
+    research_usage = int(native["research"]["usage_kib"]) * 1024
+    research_remaining = max(research_quota - research_usage, 0)
+    research_slots = max(
+        int(native["research"]["file_quota"])
+        - int(native["research"]["files_used"]),
+        0,
+    )
+    backed_quota = int(native["backed"]["quota_kib"]) * 1024
+    backed_usage = int(native["backed"]["usage_kib"]) * 1024
+    backed_remaining = max(backed_quota - backed_usage, 0)
+    backed_slots = max(
+        int(native["backed"]["file_quota"])
+        - int(native["backed"]["files_used"]),
+        0,
+    )
+    remaining_write = max(PROJECTED_PEAK_BYTES - research_usage, 0)
+    physical_required = (
+        remaining_write
+        + REQUIRED_FREE_HEADROOM_BYTES
+        + PRETRANSFER_RESEARCH_WRITE_BOUND_BYTES
+    )
+    quota_slack = max(research_quota - PROJECTED_PEAK_BYTES, 0)
+    reserve_margin = max(quota_slack - REQUIRED_FREE_HEADROOM_BYTES, 0)
+    physical_available = int(dfs["research"]["available"])
+    gates = {
+        "research_quota_gate_passed": (
+            research_quota >= MINIMUM_EFFECTIVE_QUOTA_BYTES
+        ),
+        "physical_filesystem_capacity_gate_passed": (
+            physical_available >= physical_required
+        ),
+        "projected_200gb_reserve_gate_passed": (
+            research_quota - PROJECTED_PEAK_BYTES
+            >= REQUIRED_FREE_HEADROOM_BYTES
+        ),
+        "research_file_quota_gate_passed": (
+            research_slots >= RESEARCH_ADDITIONAL_FILE_DEMAND
+        ),
+        "backed_control_tier_byte_gate_passed": (
+            backed_remaining >= PRESPECIFIED_CONTROL_BURDEN_BYTES
+        ),
+        "backed_control_tier_file_gate_passed": (
+            backed_slots >= CONTROL_ADDITIONAL_FILE_DEMAND
+        ),
+    }
+    gates["backed_control_tier_gate_passed"] = (
+        gates["backed_control_tier_byte_gate_passed"]
+        and gates["backed_control_tier_file_gate_passed"]
+    )
+    if not all(gates.values()):
+        raise PostReallocationCapacityError("CURRENT_FULL_HEADROOM_INSUFFICIENT")
+    return validate_current_full_headroom(
+        {
+            "status": FULL_HEADROOM_STATUS,
+            "research_quota_bytes": research_quota,
+            "research_usage_bytes": research_usage,
+            "research_quota_remaining_bytes": research_remaining,
+            "research_file_quota": int(native["research"]["file_quota"]),
+            "research_files_used": int(native["research"]["files_used"]),
+            "research_file_slots_remaining": research_slots,
+            "research_filesystem_available_bytes": physical_available,
+            "backed_quota_bytes": backed_quota,
+            "backed_usage_bytes": backed_usage,
+            "backed_quota_remaining_bytes": backed_remaining,
+            "backed_file_quota": int(native["backed"]["file_quota"]),
+            "backed_files_used": int(native["backed"]["files_used"]),
+            "backed_file_slots_remaining": backed_slots,
+            "selected_source_bytes": SELECTED_SOURCE_BYTES,
+            "projected_peak_bytes": PROJECTED_PEAK_BYTES,
+            "required_free_headroom_bytes": REQUIRED_FREE_HEADROOM_BYTES,
+            "research_physical_required_available_bytes": physical_required,
+            "research_quota_slack_after_projected_peak_bytes": quota_slack,
+            "research_margin_beyond_200gb_reserve_bytes": reserve_margin,
+            "research_physical_slack_bytes": max(
+                physical_available - physical_required, 0
+            ),
+            "research_additional_file_demand": RESEARCH_ADDITIONAL_FILE_DEMAND,
+            "backed_control_burden_bytes": PRESPECIFIED_CONTROL_BURDEN_BYTES,
+            "backed_additional_file_demand": CONTROL_ADDITIONAL_FILE_DEMAND,
+            **gates,
             "native_quota_authority_read_only": True,
             "pquota_display_crosscheck": str(display["status"]),
             "cloud_requests": 0,

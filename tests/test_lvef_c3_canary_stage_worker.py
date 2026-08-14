@@ -565,17 +565,25 @@ def test_download_uses_only_packet_billing_binding_and_restores_environment() ->
         del os.environ[context.billing_environment_variable]
 
 
-def test_scoped_download_root_is_exact_five_only_and_default_is_unchanged() -> None:
+def test_scoped_download_roots_are_closed_and_default_is_unchanged() -> None:
     import lvef_c3_orchestration_core as core
 
     source = (ROOT / "scripts" / "lvef_c3_orchestration_core.py").read_text()
     assert "scoped_production_root" in inspect.signature(
         core.execute_exact_batch_download
     ).parameters
+    assert "direct_full_authority" in inspect.signature(
+        core.execute_exact_batch_download
+    ).parameters
+    assert "test_only_synthetic_full_scope" in inspect.signature(
+        core.execute_exact_batch_download
+    ).parameters
     assert "SCOPED_DOWNLOAD_ROOT_AUTHORITY_INVALID" in source
-    assert '!= "lvef_multitask_c3_exact_five_canary_v1"' in source
-    assert "requirements.normalized_source_objects > 750" in source
-    assert "requirements.selected_source_bytes > 5_000_000_000" in source
+    assert '== "lvef_multitask_c3_exact_five_canary_v1"' in source
+    assert "5 <= requirements.normalized_source_objects <= 750" in source
+    assert "1 <= requirements.selected_source_bytes <= 5_000_000_000" in source
+    assert "DIRECT_FULL_PRODUCTION_ROOT_INVALID" in source
+    assert "DIRECT_FULL_TEST_BOUNDARY_INVALID" in source
 
 
 def test_live_worker_stage_paths_match_production_producers() -> None:

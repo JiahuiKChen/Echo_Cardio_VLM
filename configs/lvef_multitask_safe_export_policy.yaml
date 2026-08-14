@@ -1543,6 +1543,20 @@ export_profiles:
       - nonfinite_embeddings
       - wrong_dimension_embeddings
       - batch_receipt_set_sha256
+      - canonical_clip_index_sha256
+      - canonical_clip_index_size_bytes
+      - canonical_clip_index_rows
+      - canonical_study_embeddings_sha256
+      - canonical_study_embeddings_size_bytes
+      - canonical_study_manifest_sha256
+      - canonical_study_manifest_size_bytes
+      - canonical_study_store_receipt_sha256
+      - canonical_study_store_receipt_size_bytes
+      - cohort_preservation_receipt_sha256
+      - cohort_preservation_receipt_size_bytes
+      - cohort_preserved_artifacts
+      - cohort_preservation_second_pass_replay_passed
+      - cohort_preservation_passed
       - all_batches_finalized
       - all_authority_bindings_identical
       - all_source_receipts_passed
@@ -1558,4 +1572,7 @@ export_profiles:
       - scientific_inconsistency_repair_performed
       - identifiers_emitted
       - restricted_paths_emitted
+      - model_fitting_count
+      - endpoint_prediction_count
+      - confirmatory_performance_access_count
     allowed_top_level_keys: *lvef_c3_finalization_keys

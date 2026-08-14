@@ -20,12 +20,19 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lvef_c3_orchestration_core as core
+import finalize_lvef_c3_production as finalizer
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 BATCH_RE = re.compile(r"^c3_batch_(?:00[0-9]|01[0-8])$")
 ATTEMPT_RE = re.compile(r"^lvef_c3_[a-z0-9][a-z0-9_-]{7,95}$")
+PRODUCTION_ROOT_PREFIX = Path("/restricted/projectnb")
+LIVE_PRODUCTION_ROOT = Path(
+    "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2"
+)
+MAX_AUTHORITY_JSON_BYTES = 8 * 1024 * 1024
+_SYNTHETIC_TEST_ROOT_CAPABILITY = object()
 AUTH_KEYS = {
     "schema_version", "artifact_type", "status", "authorization_scope",
     "owner_authorized", "owner_authorization_date_utc",
@@ -61,26 +68,87 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def load_json(path: Path, code: str) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise CacheRetirementError(f"{code}_NOT_REGULAR")
+def _stable_regular_bytes(
+    path: Path, code: str, *, max_bytes: int | None = None,
+    owner_private: bool = False,
+) -> bytes:
+    """Read one stable regular-file inode without following its final link."""
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_pairs)
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise CacheRetirementError(f"{code}_NOT_REGULAR") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise CacheRetirementError(f"{code}_NOT_REGULAR")
+        if owner_private and (
+            before.st_uid != os.getuid() or stat.S_IMODE(before.st_mode) != 0o600
+        ):
+            raise CacheRetirementError(f"{code}_NOT_OWNER_PRIVATE")
+        if max_bytes is not None and before.st_size > max_bytes:
+            raise CacheRetirementError(f"{code}_TOO_LARGE")
+        chunks: list[bytes] = []
+        observed = 0
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            observed += len(block)
+            if max_bytes is not None and observed > max_bytes:
+                raise CacheRetirementError(f"{code}_TOO_LARGE")
+            chunks.append(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        current = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise CacheRetirementError(f"{code}_CHANGED_DURING_READ") from exc
+    identity = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    if path.is_symlink() or identity(before) != identity(after) or identity(after) != identity(current):
+        raise CacheRetirementError(f"{code}_CHANGED_DURING_READ")
+    return b"".join(chunks)
+
+
+def load_json_and_sha256(
+    path: Path, code: str, *, owner_private: bool = False,
+    max_bytes: int = MAX_AUTHORITY_JSON_BYTES,
+) -> tuple[dict[str, Any], str]:
+    body = _stable_regular_bytes(
+        path,
+        code,
+        max_bytes=max_bytes,
+        owner_private=owner_private,
+    )
+    try:
+        value = json.loads(body.decode("utf-8"), object_pairs_hook=_pairs)
     except CacheRetirementError:
         raise
     except Exception as exc:
         raise CacheRetirementError(f"{code}_INVALID_JSON") from exc
     if not isinstance(value, dict):
         raise CacheRetirementError(f"{code}_NOT_OBJECT")
-    return value
+    return value, hashlib.sha256(body).hexdigest()
+
+
+def load_json(path: Path, code: str) -> dict[str, Any]:
+    return load_json_and_sha256(path, code)[0]
 
 
 def require_owner_private(path: Path, code: str) -> None:
-    if path.is_symlink() or not path.is_file():
-        raise CacheRetirementError(f"{code}_NOT_REGULAR")
-    metadata = path.stat(follow_symlinks=False)
-    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
-        raise CacheRetirementError(f"{code}_NOT_OWNER_PRIVATE")
+    _stable_regular_bytes(path, code, max_bytes=MAX_AUTHORITY_JSON_BYTES, owner_private=True)
 
 
 def require_no_symlink_ancestors(path: Path, root: Path) -> None:
@@ -98,12 +166,41 @@ def require_no_symlink_ancestors(path: Path, root: Path) -> None:
 
 
 def sha256_file(path: Path) -> str:
-    if path.is_symlink() or not path.is_file():
-        raise CacheRetirementError("HASH_INPUT_NOT_REGULAR")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise CacheRetirementError("HASH_INPUT_NOT_REGULAR") from exc
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise CacheRetirementError("HASH_INPUT_NOT_REGULAR")
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
             digest.update(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        current = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise CacheRetirementError("HASH_INPUT_CHANGED_DURING_READ") from exc
+    identity = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    if path.is_symlink() or identity(before) != identity(after) or identity(after) != identity(current):
+        raise CacheRetirementError("HASH_INPUT_CHANGED_DURING_READ")
     return digest.hexdigest()
 
 
@@ -168,6 +265,285 @@ def validate_preservation_coverage(
                     raise CacheRetirementError("PRESERVATION_TREE_COVERAGE_MISMATCH")
 
 
+def _validate_production_root(
+    production_root: Path, *, allowed_production_prefix: Path,
+    synthetic_test_capability: object | None,
+) -> None:
+    """Enforce the fixed live root; a private capability permits test roots."""
+
+    if production_root.is_symlink() or not production_root.is_dir():
+        raise CacheRetirementError("PRODUCTION_ROOT_INVALID")
+    resolved = production_root.resolve()
+    if resolved == LIVE_PRODUCTION_ROOT:
+        return
+    if synthetic_test_capability is not _SYNTHETIC_TEST_ROOT_CAPABILITY:
+        raise CacheRetirementError("PRODUCTION_ROOT_AUTHORITY_MISMATCH")
+    try:
+        resolved.relative_to(allowed_production_prefix.resolve())
+    except ValueError as exc:
+        raise CacheRetirementError("SYNTHETIC_PRODUCTION_ROOT_OUTSIDE_TEST_SCOPE") from exc
+
+
+def derive_current_runtime_authority(
+    *, plan: Mapping[str, Any],
+    effective_requirements: core.PlanRequirements, contract: Mapping[str, Any],
+    contract_path: Path, governing_commit: str, environment_receipt: Path,
+    synthetic_test_capability: object | None = None,
+) -> dict[str, str]:
+    """Derive authority from current inputs, with one explicit miniature seam."""
+
+    environment_sha = sha256_file(environment_receipt)
+    if synthetic_test_capability is not _SYNTHETIC_TEST_ROOT_CAPABILITY:
+        return core.derive_expected_runtime_authority(
+            plan,
+            requirements=effective_requirements,
+            contract=contract,
+            contract_path=contract_path,
+            governing_commit=governing_commit,
+            environment_receipt_sha256=environment_sha,
+        )
+    # The exact-two-batch test uses synthetic cohort hashes that deliberately do
+    # not equal the frozen live contract.  Still derive every runtime field from
+    # the current plan/files; never accept the caller-supplied authority as truth.
+    plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+    plan_authority = core.validate_runtime_authority(
+        {**plan["authority"], "batch_plan_sha256": plan_sha}
+    )
+    try:
+        contract_state_sha = str(contract["authority"]["state_machine_schema_sha256"])
+        contract_resume_sha = str(contract["authority"]["resume_ledger_schema_sha256"])
+    except (KeyError, TypeError) as exc:
+        raise core.OrchestrationError("SYNTHETIC_CONTRACT_AUTHORITY_INVALID") from exc
+    if (
+        plan_authority["orchestration_contract_sha256"] != sha256_file(contract_path)
+        or plan_authority["state_machine_schema_sha256"] != contract_state_sha
+        or plan_authority["resume_ledger_schema_sha256"] != contract_resume_sha
+        or plan_authority["git_commit"] != governing_commit
+        or plan_authority["environment_receipt_sha256"] != environment_sha
+    ):
+        raise core.OrchestrationError("SYNTHETIC_CURRENT_RUNTIME_AUTHORITY_MISMATCH")
+    return plan_authority
+
+
+def _derive_and_validate_ledger_authority(
+    *, ledger: Mapping[str, Any], plan: Mapping[str, Any],
+    effective_requirements: core.PlanRequirements, contract: Mapping[str, Any],
+    contract_path: Path, governing_commit: str, environment_receipt: Path,
+    supplied_runtime_authority: Mapping[str, Any] | None, attempt_id: str,
+    batch_id: str, expected_object_keys: set[str],
+    synthetic_test_capability: object | None = None,
+) -> dict[str, str]:
+    """Never trust an injected runtime authority without independent derivation."""
+
+    try:
+        derived = derive_current_runtime_authority(
+            plan=plan,
+            effective_requirements=effective_requirements,
+            contract=contract,
+            contract_path=contract_path,
+            governing_commit=governing_commit,
+            environment_receipt=environment_receipt,
+            synthetic_test_capability=synthetic_test_capability,
+        )
+        if supplied_runtime_authority is not None and (
+            core.validate_runtime_authority(supplied_runtime_authority) != derived
+        ):
+            raise CacheRetirementError("SUPPLIED_RUNTIME_AUTHORITY_MISMATCH")
+        core.validate_resume_authority(
+            ledger,
+            expected_authority=derived,
+            attempt_id=attempt_id,
+            expected_object_keys={batch_id: expected_object_keys},
+        )
+    except CacheRetirementError:
+        raise
+    except core.OrchestrationError as exc:
+        raise CacheRetirementError("CURRENT_RUNTIME_OR_LEDGER_AUTHORITY_INVALID") from exc
+    return derived
+
+
+def _validate_raw_retention(
+    raw_root: Path, *, planned_batch: Mapping[str, Any],
+) -> None:
+    if raw_root.is_symlink() or not raw_root.is_dir():
+        raise CacheRetirementError("RAW_RETENTION_ROOT_INVALID")
+    try:
+        expected = {
+            f"{row['source_object_key']}.dcm": int(row["size_bytes"])
+            for row in planned_batch["objects"]
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CacheRetirementError("RAW_RETENTION_PLAN_INVALID") from exc
+    observed: dict[str, int] = {}
+    for entry in os.scandir(raw_root):
+        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+            raise CacheRetirementError("RAW_RETENTION_ENTRY_INVALID")
+        metadata = entry.stat(follow_symlinks=False)
+        observed[entry.name] = metadata.st_size
+    if observed != expected:
+        raise CacheRetirementError("RAW_RETENTION_MEMBERSHIP_MISMATCH")
+
+
+def validate_preservation_eligibility_receipt(
+    receipt: Mapping[str, Any], *, planned_batch: Mapping[str, Any],
+    governing_commit: str, attempt_id: str, batch_id: str,
+    plan_sha256: str, expected_authority: Mapping[str, str],
+    contract: Mapping[str, Any], contract_path: Path,
+    environment_receipt: Path, production_root: Path,
+    preservation_manifest: Path,
+) -> None:
+    """Closed validation of every destructive eligibility assertion."""
+
+    environment, environment_sha = load_json_and_sha256(
+        environment_receipt, "PRESERVATION_ENVIRONMENT_RECEIPT"
+    )
+    expected_keys = finalizer.PRESERVATION_ELIGIBILITY_RECEIPT_KEYS
+    if set(receipt) != expected_keys:
+        raise CacheRetirementError("PRESERVATION_RECEIPT_SCHEMA_MISMATCH")
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("artifact_type")
+        != "lvef_c3_batch_preservation_eligibility_receipt_v2"
+        or receipt.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE"
+        or receipt.get("attempt_id") != attempt_id
+        or receipt.get("batch_id") != batch_id
+        or receipt.get("governing_commit") != governing_commit
+        or receipt.get("source_commit") != governing_commit
+        or receipt.get("batch_plan_sha256") != plan_sha256
+        or receipt.get("orchestration_contract_sha256") != sha256_file(contract_path)
+        or receipt.get("environment_receipt_sha256")
+        != environment_sha
+        or receipt.get("package_inventory_sha256")
+        != environment.get("package_inventory_sha256")
+        or receipt.get("checkpoint_sha256") != expected_authority["checkpoint_sha256"]
+        or receipt.get("checkpoint_checksum") != receipt.get("checkpoint_sha256")
+        or receipt.get("cohort_version") != str(contract["cohort"]["release"])
+        or receipt.get("split_version")
+        != f"split_map_sha256:{contract['cohort']['split_map_sha256']}"
+        or receipt.get("execution_contract_version")
+        != int(contract["authority"]["execution_contract_version"])
+        or finalizer.TIMESTAMP_RE.fullmatch(str(receipt.get("run_timestamp_utc")))
+        is None
+        or receipt.get("aggregate_safety_gate_result") != "PASS"
+        or receipt.get("extracted_cache_retired") is not False
+    ):
+        raise CacheRetirementError("PRESERVATION_AUTHORITY_INVALID")
+    for key in (
+        "python_version", "pytorch_version", "torchvision_version",
+        "cuda_version", "cudnn_version",
+    ):
+        if not isinstance(receipt.get(key), str) or not receipt[key]:
+            raise CacheRetirementError("PRESERVATION_RUNTIME_VERSION_INVALID")
+    if re.fullmatch(
+        r"[A-Za-z0-9_.:-]{1,80}", str(receipt.get("scheduler_job_identity"))
+    ) is None:
+        raise CacheRetirementError("PRESERVATION_SCHEDULER_IDENTITY_INVALID")
+    for key in finalizer.HASH_KEYS - finalizer.RETIREMENT_RECEIPT_KEYS:
+        if SHA_RE.fullmatch(str(receipt.get(key))) is None:
+            raise CacheRetirementError("PRESERVATION_HASH_INVALID")
+    for key in finalizer.COUNT_KEYS:
+        value = receipt.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CacheRetirementError("PRESERVATION_COUNT_INVALID")
+    for key in finalizer.TRUE_GATE_KEYS:
+        if receipt.get(key) is not True:
+            raise CacheRetirementError("PRESERVATION_GATE_FAILED")
+    for key in finalizer.ZERO_KEYS:
+        if receipt[key] != 0:
+            raise CacheRetirementError("PRESERVATION_SCIENTIFIC_INCONSISTENCY")
+    if (
+        receipt["n_selected_studies"] != planned_batch["n_studies"]
+        or receipt["n_selected_subjects"] != planned_batch["n_subjects"]
+        or receipt["n_expected_objects"] != planned_batch["n_objects"]
+        or receipt["expected_source_bytes"] != planned_batch["source_bytes"]
+        or receipt["n_download_verified"] != receipt["n_expected_objects"]
+        or receipt["n_dicom_readable"] + receipt["n_dicom_unreadable"]
+        != receipt["n_expected_objects"]
+        or receipt["n_multiframe_cines"] + receipt["n_single_frame_objects"]
+        != receipt["n_dicom_readable"]
+        or not (
+            receipt["n_multiframe_cines"]
+            == receipt["n_extracted_clips"]
+            == receipt["n_unique_clip_keys"]
+            == receipt["n_clip_embeddings"]
+        )
+        or receipt["n_pooled_studies"] + receipt["n_no_cine_studies"]
+        != receipt["n_selected_studies"]
+        or (
+            receipt["n_no_cine_studies"] == 0
+            and receipt.get("no_cine_disposition") != "NONE"
+        )
+        or (
+            receipt["n_no_cine_studies"] > 0
+            and receipt.get("no_cine_disposition")
+            != "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
+        )
+    ):
+        raise CacheRetirementError("PRESERVATION_COUNT_OR_DISPOSITION_MISMATCH")
+
+    batch_root = production_root / "attempts" / attempt_id / "batches" / batch_id
+    extraction_root = (
+        production_root
+        / "attempts"
+        / attempt_id
+        / "extracted_cache"
+        / batch_id
+        / "dicom_extraction"
+    )
+    artifact_paths = {
+        "state_input_ledger_sha256": batch_root / "pooling_resume_ledger.restricted.json",
+        "source_receipt_sha256": batch_root / "download_resume_ledger.restricted.json",
+        "dicom_audit_sha256": extraction_root / "dicom_audit.restricted.csv",
+        "extraction_manifest_sha256": extraction_root / "extraction_manifest.restricted.csv",
+        "clip_manifest_sha256": batch_root / "echoprime" / "clip_manifest.restricted.csv",
+        "clip_embeddings_sha256": batch_root / "echoprime" / "clip_embeddings.restricted.npz",
+        "study_manifest_sha256": batch_root / "echoprime" / "study_manifest.restricted.csv",
+        "study_embeddings_sha256": batch_root / "echoprime" / "study_embeddings.restricted.npz",
+        "preservation_manifest_sha256": preservation_manifest,
+        "production_stage_wrapper_sha256": (
+            Path(__file__).resolve().parent / "lvef_c3_production_stages.py"
+        ),
+        "batch_preservation_script_sha256": (
+            Path(__file__).resolve().parent / "preserve_lvef_c3_production_batch.py"
+        ),
+        "scheduler_runner_sha256": (
+            Path(__file__).resolve().parent / "scc_run_lvef_c3_full_sequential.sh"
+        ),
+    }
+    for key, path in artifact_paths.items():
+        if sha256_file(path) != receipt[key]:
+            raise CacheRetirementError("PRESERVATION_REFERENCED_HASH_MISMATCH")
+    expected_command_checksum = core.canonical_json_sha256(
+        {
+            key: receipt[key]
+            for key in (
+                "production_stage_wrapper_sha256",
+                "batch_preservation_script_sha256",
+                "scheduler_runner_sha256",
+            )
+        }
+    )
+    expected_config_checksum = core.canonical_json_sha256(
+        {
+            "orchestration_contract_sha256": receipt[
+                "orchestration_contract_sha256"
+            ],
+            "batch_plan_sha256": plan_sha256,
+            "state_machine_schema_sha256": expected_authority[
+                "state_machine_schema_sha256"
+            ],
+            "resume_ledger_schema_sha256": expected_authority[
+                "resume_ledger_schema_sha256"
+            ],
+        }
+    )
+    if (
+        receipt["command_checksum"] != expected_command_checksum
+        or receipt["config_checksum"] != expected_config_checksum
+    ):
+        raise CacheRetirementError("PRESERVATION_DERIVED_HASH_MISMATCH")
+
+
 def validate_gate(
     *, contract_path: Path, plan_path: Path, environment_receipt: Path,
     production_root: Path, attempt_id: str, batch_id: str,
@@ -175,20 +551,23 @@ def validate_gate(
     preservation_receipt_path: Path, authorization_receipt_path: Path,
     launch_authority_sha256: str,
     require_authorization: bool,
+    requirements: core.PlanRequirements | None = None,
+    expected_runtime_authority: Mapping[str, Any] | None = None,
+    allowed_production_prefix: Path = PRODUCTION_ROOT_PREFIX,
+    _synthetic_test_capability: object | None = None,
 ) -> dict[str, Any]:
     if (
         not ATTEMPT_RE.fullmatch(attempt_id)
         or not BATCH_RE.fullmatch(batch_id)
         or not COMMIT_RE.fullmatch(governing_commit)
+        or SHA_RE.fullmatch(launch_authority_sha256) is None
     ):
         raise CacheRetirementError("IDENTITY_ARGUMENT_INVALID")
-    expected_prefix = Path("/restricted/projectnb")
-    if production_root.is_symlink() or not production_root.is_dir():
-        raise CacheRetirementError("PRODUCTION_ROOT_INVALID")
-    try:
-        production_root.resolve().relative_to(expected_prefix)
-    except ValueError as exc:
-        raise CacheRetirementError("PRODUCTION_ROOT_OUTSIDE_PROJECTNB") from exc
+    _validate_production_root(
+        production_root,
+        allowed_production_prefix=allowed_production_prefix,
+        synthetic_test_capability=_synthetic_test_capability,
+    )
     # Only extracted NPZ clip derivatives are owner-retirable.  DICOM audit,
     # extraction manifests, summaries, and transition receipts remain in the
     # parent directory as permanent provenance.
@@ -197,64 +576,104 @@ def validate_gate(
         batch_id / "dicom_extraction" / "clips"
     )
     raw_root = production_root / "attempts" / attempt_id / "raw" / batch_id / "objects"
+    batch_root = production_root / "attempts" / attempt_id / "batches" / batch_id
+    expected_preservation_receipt = (
+        batch_root / "preservation" / "batch_preservation_receipt.restricted.json"
+    )
+    expected_eligibility_ledger = (
+        batch_root / "cache_retirement_eligible_resume_ledger.restricted.json"
+    )
+    expected_plan_path = (
+        production_root / "attempts" / attempt_id / "full_batch_plan.restricted.json"
+    )
+    if (
+        preservation_receipt_path != expected_preservation_receipt
+        or final_ledger_path != expected_eligibility_ledger
+        or plan_path != expected_plan_path
+    ):
+        raise CacheRetirementError("RETIREMENT_AUTHORITY_PATH_MISMATCH")
     require_no_symlink_ancestors(cache_root, production_root)
     require_no_symlink_ancestors(raw_root, production_root)
+    require_no_symlink_ancestors(preservation_receipt_path, production_root)
+    require_no_symlink_ancestors(final_ledger_path, production_root)
+    require_no_symlink_ancestors(plan_path, production_root)
     if cache_root == raw_root or "raw" in cache_root.parts[-5:]:
         raise CacheRetirementError("RAW_TARGET_PROHIBITED")
     contract = core.load_orchestration_contract(contract_path)
-    plan = core.load_strict_json(plan_path)
-    requirements = core.production_requirements(contract)
-    plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+    plan = load_json_and_sha256(
+        plan_path, "BATCH_PLAN", max_bytes=512 * 1024 * 1024
+    )[0]
+    effective_requirements = requirements or core.production_requirements(contract)
+    plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
     planned = next((row for row in plan["batches"] if row["batch_id"] == batch_id), None)
     if planned is None:
         raise CacheRetirementError("BATCH_NOT_PLANNED")
-    ledger = core.load_strict_json(final_ledger_path)
-    expected_authority = core.validate_ledger_against_current_runtime(
-        ledger,
+    ledger = load_json_and_sha256(
+        final_ledger_path, "ELIGIBILITY_LEDGER", max_bytes=128 * 1024 * 1024
+    )[0]
+    expected_object_keys = {
+        str(row["source_object_key"]) for row in planned["objects"]
+    }
+    expected_authority = _derive_and_validate_ledger_authority(
+        ledger=ledger,
         plan=plan,
-        requirements=requirements,
+        effective_requirements=effective_requirements,
         contract=contract,
         contract_path=contract_path,
         governing_commit=governing_commit,
-        environment_receipt_sha256=sha256_file(environment_receipt),
+        environment_receipt=environment_receipt,
+        supplied_runtime_authority=expected_runtime_authority,
+        attempt_id=attempt_id,
         batch_id=batch_id,
+        expected_object_keys=expected_object_keys,
+        synthetic_test_capability=_synthetic_test_capability,
     )
     if (
         ledger.get("attempt_id") != attempt_id
         or ledger["batches"][batch_id]["state"] != "CACHE_RETIREMENT_ELIGIBLE"
     ):
         raise CacheRetirementError("BATCH_NOT_CACHE_RETIREMENT_ELIGIBLE")
-    preservation = load_json(preservation_receipt_path, "PRESERVATION_RECEIPT")
-    if (
-        preservation.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE"
-        or preservation.get("artifact_type")
-        != "lvef_c3_batch_preservation_eligibility_receipt_v2"
-        or preservation.get("attempt_id") != attempt_id
-        or preservation.get("batch_id") != batch_id
-        or preservation.get("preservation_gate_passed") is not True
-        or preservation.get("raw_dicoms_retained") is not True
-        or preservation.get("extracted_cache_retired") is not False
-        or preservation.get("batch_plan_sha256") != plan_sha
-        or preservation.get("governing_commit") != governing_commit
-    ):
-        raise CacheRetirementError("PRESERVATION_AUTHORITY_INVALID")
-    if raw_root.is_symlink() or not raw_root.is_dir():
-        raise CacheRetirementError("RAW_RETENTION_ROOT_INVALID")
-    raw_files = [path for path in raw_root.iterdir() if path.is_file() and not path.is_symlink()]
-    if len(raw_files) != planned["n_objects"]:
-        raise CacheRetirementError("RAW_RETENTION_COUNT_MISMATCH")
+    preservation, preservation_sha = load_json_and_sha256(
+        preservation_receipt_path, "PRESERVATION_RECEIPT"
+    )
     preservation_manifest = preservation_receipt_path.parent / "batch_preservation_manifest.restricted.tsv"
-    if sha256_file(preservation_manifest) != preservation.get("preservation_manifest_sha256"):
-        raise CacheRetirementError("PRESERVATION_MANIFEST_HASH_MISMATCH")
+    validate_preservation_eligibility_receipt(
+        preservation,
+        planned_batch=planned,
+        governing_commit=governing_commit,
+        attempt_id=attempt_id,
+        batch_id=batch_id,
+        plan_sha256=plan_sha,
+        expected_authority=expected_authority,
+        contract=contract,
+        contract_path=contract_path,
+        environment_receipt=environment_receipt,
+        production_root=production_root,
+        preservation_manifest=preservation_manifest,
+    )
+    _validate_raw_retention(raw_root, planned_batch=planned)
     authorization = None
     intent_path = preservation_receipt_path.parent / "cache_retirement_intent.restricted.json"
     staged_path = preservation_receipt_path.parent / "cache_atomically_staged.restricted.json"
     retirement_staging = None
     intent = None
+    intent_sha: str | None = None
     if require_authorization:
-        require_owner_private(authorization_receipt_path, "CACHE_AUTHORIZATION")
-        authorization = load_json(authorization_receipt_path, "CACHE_AUTHORIZATION")
-        authorization_sha = sha256_file(authorization_receipt_path)
+        expected_authorization_path = (
+            production_root
+            / "attempts"
+            / attempt_id
+            / "cache_retirement_authorizations"
+            / f"{batch_id}.authorization.json"
+        )
+        if authorization_receipt_path != expected_authorization_path:
+            raise CacheRetirementError("CACHE_AUTHORIZATION_PATH_MISMATCH")
+        require_no_symlink_ancestors(authorization_receipt_path, production_root)
+        authorization, authorization_sha = load_json_and_sha256(
+            authorization_receipt_path,
+            "CACHE_AUTHORIZATION",
+            owner_private=True,
+        )
         retirement_staging = (
             production_root
             / "attempts"
@@ -264,7 +683,9 @@ def validate_gate(
         )
         require_no_symlink_ancestors(retirement_staging, production_root)
         if intent_path.exists() or intent_path.is_symlink():
-            intent = load_json(intent_path, "CACHE_RETIREMENT_INTENT")
+            intent, intent_sha = load_json_and_sha256(
+                intent_path, "CACHE_RETIREMENT_INTENT"
+            )
             if set(intent) != INTENT_KEYS:
                 raise CacheRetirementError("CACHE_RETIREMENT_INTENT_SCHEMA_MISMATCH")
             tree_sha = str(intent.get("cache_tree_sha256"))
@@ -294,13 +715,15 @@ def validate_gate(
             "batch_id": batch_id,
             "attempt_id": attempt_id,
             "authority_sha256": core.canonical_json_sha256(ledger["authority"]),
-            "preservation_receipt_sha256": sha256_file(preservation_receipt_path),
+            "preservation_receipt_sha256": preservation_sha,
             "cache_inventory_sha256": tree_sha,
             "launch_authority_sha256": launch_authority_sha256,
         }
         if set(authorization) != AUTH_KEYS or any(
             authorization.get(key) != value for key, value in expected.items()
-        ):
+        ) or finalizer.TIMESTAMP_RE.fullmatch(
+            str(authorization.get("owner_authorization_date_utc"))
+        ) is None:
             raise CacheRetirementError("CACHE_AUTHORIZATION_MISMATCH")
         retirement_gate = core.evaluate_cache_retirement(
             ledger,
@@ -319,7 +742,7 @@ def validate_gate(
             "batch_id": batch_id,
             "attempt_id": attempt_id,
             "governing_commit": governing_commit,
-            "preservation_receipt_sha256": sha256_file(preservation_receipt_path),
+            "preservation_receipt_sha256": preservation_sha,
             "authorization_receipt_sha256": authorization_sha,
             "cache_tree_sha256": tree_sha,
             "raw_dicom_deletion_permitted": False,
@@ -333,14 +756,17 @@ def validate_gate(
             "batch_id": batch_id,
             "attempt_id": attempt_id,
             "governing_commit": governing_commit,
-            "intent_receipt_sha256": sha256_file(intent_path) if intent is not None else None,
+            "intent_receipt_sha256": intent_sha,
             "cache_tree_sha256": tree_sha,
             "atomic_same_filesystem_rename_completed": True,
             "raw_dicom_deletion_permitted": False,
         }
         staged = None
+        staged_sha: str | None = None
         if staged_path.exists() or staged_path.is_symlink():
-            staged = load_json(staged_path, "CACHE_ATOMICALLY_STAGED_RECEIPT")
+            staged, staged_sha = load_json_and_sha256(
+                staged_path, "CACHE_ATOMICALLY_STAGED_RECEIPT"
+            )
             if set(staged) != STAGED_KEYS or staged != expected_staged:
                 raise CacheRetirementError("CACHE_ATOMICALLY_STAGED_RECEIPT_MISMATCH")
         cache_exists = cache_root.exists() or cache_root.is_symlink()
@@ -366,12 +792,19 @@ def validate_gate(
         "retirement_staging": retirement_staging,
         "intent_path": intent_path,
         "intent": intent,
+        "intent_sha256": intent_sha,
         "expected_intent": expected_intent if require_authorization else None,
         "staged_path": staged_path,
         "staged": staged if require_authorization else None,
+        "staged_sha256": staged_sha if require_authorization else None,
         "expected_staged": expected_staged if require_authorization else None,
         "ledger": ledger,
+        "planned_batch": planned,
         "preservation": preservation,
+        "preservation_receipt_sha256": preservation_sha,
+        "authorization_receipt_sha256": (
+            authorization_sha if require_authorization else None
+        ),
         "authorization": authorization if require_authorization else None,
     }
 
@@ -434,7 +867,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    requirements: core.PlanRequirements | None = None,
+    expected_runtime_authority: Mapping[str, Any] | None = None,
+    allowed_production_prefix: Path = PRODUCTION_ROOT_PREFIX,
+    _synthetic_test_capability: object | None = None,
+) -> int:
     args = build_parser().parse_args(argv)
     if args.validate_only == args.execute:
         raise CacheRetirementError("EXACTLY_ONE_MODE_REQUIRED")
@@ -451,6 +891,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         authorization_receipt_path=args.authorization_receipt,
         launch_authority_sha256=args.launch_authority_sha256,
         require_authorization=args.execute,
+        requirements=requirements,
+        expected_runtime_authority=expected_runtime_authority,
+        allowed_production_prefix=allowed_production_prefix,
+        _synthetic_test_capability=_synthetic_test_capability,
     )
     if args.execute:
         cache_root = context["cache_root"]
@@ -463,6 +907,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 intent_path, expected_intent, attempt_id=args.attempt_id
             )
         elif context["intent"] != expected_intent:
+            raise CacheRetirementError("CACHE_RETIREMENT_INTENT_MISMATCH")
+        observed_intent, intent_sha = load_json_and_sha256(
+            intent_path, "CACHE_RETIREMENT_INTENT"
+        )
+        if observed_intent != expected_intent:
             raise CacheRetirementError("CACHE_RETIREMENT_INTENT_MISMATCH")
         cache_exists = cache_root.exists() or cache_root.is_symlink()
         staging_exists = staging.exists() or staging.is_symlink()
@@ -481,7 +930,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             os.rename(cache_root, staging)
             staging_exists = True
         expected_staged = dict(context["expected_staged"])
-        expected_staged["intent_receipt_sha256"] = sha256_file(intent_path)
+        expected_staged["intent_receipt_sha256"] = intent_sha
         staged_path = context["staged_path"]
         if context["staged"] is None:
             if not staging_exists or cache_tree_sha256(staging) != context["cache_tree_sha256"]:
@@ -491,27 +940,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif context["staged"] != expected_staged:
             raise CacheRetirementError("CACHE_ATOMICALLY_STAGED_RECEIPT_MISMATCH")
+        observed_staged, staged_sha = load_json_and_sha256(
+            staged_path, "CACHE_ATOMICALLY_STAGED_RECEIPT"
+        )
+        if observed_staged != expected_staged:
+            raise CacheRetirementError("CACHE_ATOMICALLY_STAGED_RECEIPT_MISMATCH")
         if staging_exists:
             if staging.is_symlink() or not staging.is_dir():
                 raise CacheRetirementError("RETIREMENT_STAGING_INVALID")
             _delete_cache_tree(staging)
         if cache_root.exists() or cache_root.is_symlink() or staging.exists() or staging.is_symlink():
             raise CacheRetirementError("CACHE_RETIREMENT_POSTCONDITION_FAILED")
-        if not raw_root.is_dir() or raw_root.is_symlink():
-            raise CacheRetirementError("RAW_RETENTION_POSTCONDITION_FAILED")
+        try:
+            _validate_raw_retention(
+                raw_root, planned_batch=context["planned_batch"]
+            )
+            validate_preservation_coverage(
+                args.preservation_receipt.parent
+                / "batch_preservation_manifest.restricted.tsv",
+                production_root=args.production_root,
+                required_roots=((raw_root, raw_root),),
+            )
+        except CacheRetirementError:
+            raise
+        except Exception as exc:
+            raise CacheRetirementError("RAW_RETENTION_POSTCONDITION_FAILED") from exc
         preservation = dict(context["preservation"])
         final_receipt = {
             **preservation,
             "artifact_type": "lvef_c3_batch_finalization_receipt_v2",
             "status": "PASS_BATCH_FINALIZED",
             "extracted_cache_retired": True,
-            "cache_retirement_authorization_sha256": sha256_file(
-                args.authorization_receipt
-            ),
+            "cache_retirement_authorization_sha256": context[
+                "authorization_receipt_sha256"
+            ],
             "cache_tree_sha256": context["cache_tree_sha256"],
-            "cache_atomically_staged_receipt_sha256": sha256_file(
-                context["staged_path"]
-            ),
+            "cache_atomically_staged_receipt_sha256": staged_sha,
             "cache_retirement_script_sha256": sha256_file(Path(__file__).resolve()),
         }
         final_receipt_path = (

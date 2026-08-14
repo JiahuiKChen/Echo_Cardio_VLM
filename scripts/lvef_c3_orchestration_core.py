@@ -28,6 +28,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
@@ -65,6 +66,15 @@ EXPECTED_SELECTED_SOURCE_MANIFEST_SHA256 = (
 EXPECTED_CHECKPOINT_SHA256 = (
     "7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b"
 )
+EXPECTED_FULL_CONTRACT_ID = "lvef_multitask_c3_production_orchestration_v2"
+EXPECTED_FULL_PRODUCTION_ROOT = Path(
+    "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2"
+)
+EXPECTED_FULL_RAW_ROOT_TEMPLATE = (
+    "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/"
+    "attempts/{attempt_id}/raw"
+)
+TEST_ONLY_FULL_CONTRACT_ID = "synthetic_two_batch_full_sequential_v1"
 
 STATES = (
     "PLANNED",
@@ -214,6 +224,33 @@ BODY_AUTHORIZATION_KEYS = frozenset(
         "owner_authorization_recorded",
         "body_download_only",
         "scientific_actions_authorized",
+    }
+)
+DIRECT_FULL_LAUNCH_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "governing_commit",
+        "batch_plan_sha256",
+        "selected_manifest_sha256",
+        "selected_source_manifest_sha256",
+        "split_map_sha256",
+        "checkpoint_sha256",
+        "selected_studies",
+        "selected_subjects",
+        "normalized_source_objects",
+        "selected_source_bytes",
+        "batch_count",
+        "expected_no_cine_studies",
+        "maximum_scheduler_submissions",
+        "array_task_range",
+        "array_max_concurrency",
+        "raw_dicom_deletion_authorized",
+        "extracted_cache_retirement_authorized_after_preservation",
+        "model_fitting_authorized",
+        "prediction_authorized",
+        "confirmatory_performance_access_authorized",
     }
 )
 RECOVERY_RECEIPT_KEYS = frozenset(
@@ -2312,6 +2349,125 @@ def validate_direct_manifest_download_scope(
         raise OrchestrationError("DIRECT_MANIFEST_DOWNLOAD_SCOPE_INVALID")
 
 
+def validate_direct_full_download_scope(
+    *,
+    launch_authority: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    requirements: PlanRequirements,
+    batch_id: str,
+    maximum_attempts_per_object: int,
+    expected_launch_authority_sha256: str,
+    test_only_synthetic_full_scope: bool = False,
+) -> None:
+    """Validate one batch against the single full-cohort launch authority."""
+
+    _require_exact_keys(
+        launch_authority,
+        DIRECT_FULL_LAUNCH_KEYS,
+        "DIRECT_FULL_LAUNCH_AUTHORITY_SCHEMA_INVALID",
+    )
+    plan_sha = validate_batch_plan(plan, requirements=requirements)
+    planned_ids = [str(row["batch_id"]) for row in plan["batches"]]
+    if not isinstance(test_only_synthetic_full_scope, bool):
+        raise OrchestrationError("DIRECT_FULL_TEST_BOUNDARY_INVALID")
+    production_scope = (
+        requirements.release == "mimic-iv-echo/1.0"
+        and requirements.selected_studies
+        == EXPECTED_PRODUCTION["selected_studies"]
+        and requirements.selected_subjects
+        == EXPECTED_PRODUCTION["selected_subjects"]
+        and requirements.normalized_source_objects
+        == EXPECTED_PRODUCTION["normalized_source_objects"]
+        and requirements.selected_source_bytes
+        == EXPECTED_PRODUCTION["selected_source_bytes"]
+        and requirements.batch_count == EXPECTED_PRODUCTION["batch_count"]
+        and requirements.studies_per_full_batch
+        == EXPECTED_PRODUCTION["studies_per_full_batch"]
+        and requirements.final_batch_studies
+        == EXPECTED_PRODUCTION["final_batch_studies"]
+        and requirements.contract_id == EXPECTED_FULL_CONTRACT_ID
+        and plan["authority"]["selected_manifest_sha256"]
+        == EXPECTED_SELECTED_MANIFEST_SHA256
+        and plan["authority"]["selected_source_manifest_sha256"]
+        == EXPECTED_SELECTED_SOURCE_MANIFEST_SHA256
+        and plan["authority"]["split_map_sha256"]
+        == EXPECTED_SPLIT_MAP_SHA256
+        and plan["authority"]["checkpoint_sha256"]
+        == EXPECTED_CHECKPOINT_SHA256
+    )
+    # The miniature route is deliberately an explicit, exact test contract.
+    # It is not a configurable smaller production launch authority.
+    synthetic_scope = (
+        test_only_synthetic_full_scope
+        and requirements.release == "mimic-iv-echo/1.0"
+        and requirements.selected_studies == 4
+        and requirements.selected_subjects == 4
+        and requirements.normalized_source_objects == 4
+        and 1 <= requirements.selected_source_bytes <= 5_000_000_000
+        and requirements.batch_count == 2
+        and requirements.studies_per_full_batch == 2
+        and requirements.final_batch_studies == 2
+        and requirements.contract_id == TEST_ONLY_FULL_CONTRACT_ID
+    )
+    if (
+        (test_only_synthetic_full_scope and not synthetic_scope)
+        or (not test_only_synthetic_full_scope and not production_scope)
+        or launch_authority.get("schema_version") != 1
+        or launch_authority.get("artifact_type")
+        != "lvef_c3_full_selected_cohort_launch_authority_v1"
+        or launch_authority.get("status")
+        != "AUTHORIZED_FULL_SELECTED_COHORT_RECONSTRUCTION"
+        or launch_authority.get("governing_commit")
+        != plan["authority"]["git_commit"]
+        or launch_authority.get("batch_plan_sha256") != plan_sha
+        or launch_authority.get("selected_manifest_sha256")
+        != plan["authority"]["selected_manifest_sha256"]
+        or launch_authority.get("selected_source_manifest_sha256")
+        != plan["authority"]["selected_source_manifest_sha256"]
+        or launch_authority.get("split_map_sha256")
+        != plan["authority"]["split_map_sha256"]
+        or launch_authority.get("checkpoint_sha256")
+        != plan["authority"]["checkpoint_sha256"]
+        or launch_authority.get("selected_studies")
+        != requirements.selected_studies
+        or launch_authority.get("selected_subjects")
+        != requirements.selected_subjects
+        or launch_authority.get("normalized_source_objects")
+        != requirements.normalized_source_objects
+        or launch_authority.get("selected_source_bytes")
+        != requirements.selected_source_bytes
+        or launch_authority.get("batch_count") != requirements.batch_count
+        or not isinstance(launch_authority.get("expected_no_cine_studies"), int)
+        or isinstance(launch_authority.get("expected_no_cine_studies"), bool)
+        or launch_authority.get("expected_no_cine_studies")
+        != (1 if test_only_synthetic_full_scope else 5)
+        or launch_authority.get("maximum_scheduler_submissions") != 2
+        or launch_authority.get("array_task_range")
+        != f"1-{requirements.batch_count}"
+        or launch_authority.get("array_max_concurrency") != 1
+        or launch_authority.get("raw_dicom_deletion_authorized") is not False
+        or launch_authority.get(
+            "extracted_cache_retirement_authorized_after_preservation"
+        )
+        is not True
+        or launch_authority.get("model_fitting_authorized") is not False
+        or launch_authority.get("prediction_authorized") is not False
+        or launch_authority.get("confirmatory_performance_access_authorized")
+        is not False
+        or canonical_json_sha256(launch_authority)
+        != _require_sha256(
+            expected_launch_authority_sha256,
+            "EXPECTED_LAUNCH_AUTHORITY_HASH_INVALID",
+        )
+        or ledger.get("authority", {}).get("batch_plan_sha256") != plan_sha
+        or batch_id not in planned_ids
+        or batch_id not in ledger.get("batches", {})
+        or maximum_attempts_per_object != 5
+    ):
+        raise OrchestrationError("DIRECT_FULL_DOWNLOAD_SCOPE_INVALID")
+
+
 def validate_private_billing_environment(
     environment_variable: str, *, argv: Sequence[str], environ: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
@@ -3414,6 +3570,8 @@ def execute_exact_batch_download(
     digest_provider: Callable[[Path, str], Mapping[str, Any]] = _inprocess_digest_provider,
     scoped_production_root: Path | None = None,
     direct_manifest: Mapping[str, Any] | None = None,
+    direct_full_authority: Mapping[str, Any] | None = None,
+    test_only_synthetic_full_scope: bool = False,
 ) -> dict[str, Any]:
     """Execute one authorization-scoped exact batch; callers persist returned ledger."""
     plan_sha = validate_batch_plan(plan, requirements=requirements)
@@ -3425,7 +3583,14 @@ def execute_exact_batch_download(
     maximum_attempts = int(contract["downloader"]["maximum_attempts_per_object"])
     backoff_initial = int(contract["downloader"]["retry_backoff_initial_seconds"])
     backoff_maximum = int(contract["downloader"]["retry_backoff_max_seconds"])
-    if direct_manifest is None:
+    direct_modes = int(direct_manifest is not None) + int(
+        direct_full_authority is not None
+    )
+    if test_only_synthetic_full_scope and direct_full_authority is None:
+        raise OrchestrationError("DIRECT_FULL_TEST_BOUNDARY_INVALID")
+    if direct_modes > 1:
+        raise OrchestrationError("MULTIPLE_DIRECT_DOWNLOAD_AUTHORITIES_SUPPLIED")
+    if direct_modes == 0:
         if authorization_receipt is None:
             raise OrchestrationError("BODY_TRANSFER_AUTHORIZATION_MISSING")
         validate_body_transfer_authorization(
@@ -3437,7 +3602,7 @@ def execute_exact_batch_download(
             expected_launch_authority_sha256=launch_authority_sha256,
             now=now,
         )
-    else:
+    elif direct_manifest is not None:
         if authorization_receipt is not None:
             raise OrchestrationError("DIRECT_MANIFEST_AND_GRANT_BOTH_SUPPLIED")
         validate_direct_manifest_download_scope(
@@ -3448,28 +3613,79 @@ def execute_exact_batch_download(
             maximum_attempts_per_object=maximum_attempts,
             expected_launch_authority_sha256=launch_authority_sha256,
         )
+    else:
+        if authorization_receipt is not None:
+            raise OrchestrationError("DIRECT_FULL_AND_GRANT_BOTH_SUPPLIED")
+        validate_direct_full_download_scope(
+            launch_authority=direct_full_authority,
+            ledger=ledger,
+            plan=plan,
+            requirements=requirements,
+            batch_id=batch_id,
+            maximum_attempts_per_object=maximum_attempts,
+            expected_launch_authority_sha256=launch_authority_sha256,
+            test_only_synthetic_full_scope=test_only_synthetic_full_scope,
+        )
     billing_env = str(contract["downloader"]["billing_project_environment_variable"])
     validate_private_billing_environment(billing_env, argv=argv)
     billing_project = os.environ[billing_env]
-    if scoped_production_root is None:
+    if direct_full_authority is not None and not test_only_synthetic_full_scope:
+        if (
+            contract.get("contract_id") != EXPECTED_FULL_CONTRACT_ID
+            or contract.get("storage", {}).get("production_root")
+            != str(EXPECTED_FULL_PRODUCTION_ROOT)
+            or contract.get("storage", {}).get("raw_root")
+            != EXPECTED_FULL_RAW_ROOT_TEMPLATE
+            or scoped_production_root not in {None, EXPECTED_FULL_PRODUCTION_ROOT}
+        ):
+            raise OrchestrationError("DIRECT_FULL_PRODUCTION_ROOT_INVALID")
+        expected_output_root = Path(
+            EXPECTED_FULL_RAW_ROOT_TEMPLATE.format(
+                attempt_id=str(ledger["attempt_id"])
+            )
+        )
+    elif test_only_synthetic_full_scope:
+        if (
+            scoped_production_root is None
+            or not scoped_production_root.is_absolute()
+            or scoped_production_root.is_symlink()
+            or isinstance(token_provider, GcloudADCTokenProvider)
+            or isinstance(transport, GCSExactObjectBodyTransport)
+        ):
+            raise OrchestrationError("DIRECT_FULL_TEST_BOUNDARY_INVALID")
+        try:
+            scoped_production_root.resolve().relative_to(
+                Path(tempfile.gettempdir()).resolve()
+            )
+        except (OSError, ValueError) as exc:
+            raise OrchestrationError("DIRECT_FULL_TEST_BOUNDARY_INVALID") from exc
+        expected_output_root = (
+            scoped_production_root
+            / "attempts"
+            / str(ledger["attempt_id"])
+            / "raw"
+        )
+    elif scoped_production_root is None:
         expected_output_root = Path(
             str(contract["storage"]["raw_root"]).format(
                 attempt_id=str(ledger["attempt_id"])
             )
         )
     else:
+        canary_scope = (
+            direct_manifest is not None
+            and requirements.contract_id
+            == "lvef_multitask_c3_exact_five_canary_v1"
+            and requirements.selected_studies == 5
+            and requirements.selected_subjects == 5
+            and requirements.batch_count == 1
+            and requirements.studies_per_full_batch == 5
+            and requirements.final_batch_studies == 5
+            and 5 <= requirements.normalized_source_objects <= 750
+            and 1 <= requirements.selected_source_bytes <= 5_000_000_000
+        )
         if (
-            requirements.contract_id
-            != "lvef_multitask_c3_exact_five_canary_v1"
-            or requirements.selected_studies != 5
-            or requirements.selected_subjects != 5
-            or requirements.batch_count != 1
-            or requirements.studies_per_full_batch != 5
-            or requirements.final_batch_studies != 5
-            or requirements.normalized_source_objects < 5
-            or requirements.normalized_source_objects > 750
-            or requirements.selected_source_bytes < 1
-            or requirements.selected_source_bytes > 5_000_000_000
+            not canary_scope
             or not scoped_production_root.is_absolute()
             or scoped_production_root.is_symlink()
         ):
@@ -3535,7 +3751,11 @@ def execute_exact_batch_download(
             "output_manifest_sha256": canonical_json_sha256(
                 direct_manifest
                 if direct_manifest is not None
-                else authorization_receipt
+                else (
+                    direct_full_authority
+                    if direct_full_authority is not None
+                    else authorization_receipt
+                )
             ),
         }
     elif batch_ledger["state"] not in {"DOWNLOAD_IN_PROGRESS", "DOWNLOAD_VERIFIED"}:

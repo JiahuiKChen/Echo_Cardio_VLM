@@ -10,7 +10,10 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from check_lvef_git_export_safety import scan_staged_git_safety
+from check_lvef_git_export_safety import (
+    _assert_closed_control_hash_refresh,
+    scan_staged_git_safety,
+)
 from lvef_multitask_analysis_modes import (
     AUTHORIZATION_STATUS,
     DIRECT_MODE,
@@ -303,6 +306,34 @@ def test_git_gate_accepts_reviewed_pair_and_blocks_restricted_artifacts() -> Non
         except SafetyPolicyError:
             return
         raise AssertionError("Restricted binary artifact passed the Git safety gate")
+
+
+def test_git_gate_accepts_only_closed_control_entrypoint_hash_refresh() -> None:
+    root = Path(__file__).resolve().parents[1]
+    relative = "configs/lvef_c3_canary_scheduler_plan_v1.json"
+    payload = (root / relative).read_bytes()
+    assert _assert_closed_control_hash_refresh(
+        repo=root, relative_path=relative, payload=payload
+    )
+
+    changed = json.loads(payload)
+    changed["status"] = "UNAUTHORIZED_CONTROL_CHANGE"
+    try:
+        _assert_closed_control_hash_refresh(
+            repo=root,
+            relative_path=relative,
+            payload=(json.dumps(changed, sort_keys=True) + "\n").encode("utf-8"),
+        )
+    except SafetyPolicyError:
+        pass
+    else:
+        raise AssertionError("Non-hash control JSON mutation passed the Git gate")
+
+    assert not _assert_closed_control_hash_refresh(
+        repo=root,
+        relative_path="configs/unreviewed_control.json",
+        payload=b"{}\n",
+    )
 
 
 def test_git_gate_blocks_unreviewed_file_in_release_root() -> None:

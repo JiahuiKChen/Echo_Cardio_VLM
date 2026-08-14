@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Fail-closed cross-batch finalizer for prospective selected-cohort C3.
 
-The finalizer consumes restricted, checksummed batch-preservation receipts and
-emits one closed-schema aggregate summary.  It never repairs, downloads,
+The finalizer consumes restricted, checksummed batch-preservation receipts,
+independently replays study pooling, and emits one canonical restricted study
+store plus a closed-schema aggregate summary.  It never repairs, downloads,
 decodes, embeds, deletes, or follows symlinks.
 """
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -20,6 +22,7 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lvef_c3_orchestration_core as core
+import preserve_lvef_c3_production_batch as preservation
 
 
 EXPECTED_BATCH_IDS = tuple(f"c3_batch_{index:03d}" for index in range(19))
@@ -47,6 +50,67 @@ CLIP_MANIFEST_HEADER = [
     "embedding_idx", "subject_id", "study_id", "clip_key",
     "physical_source_key", "embedding_l2_norm", "embedding_sha256", "write_ok",
 ]
+STUDY_MANIFEST_HEADER = [
+    "study_idx", "subject_id", "study_id", "n_clips", "embedding_sha256",
+]
+DISPOSITION_HEADER = ["subject_id", "study_id", "disposition"]
+CANONICAL_STUDY_MANIFEST_HEADER = [
+    "study_idx", "subject_id", "study_id", "batch_id", "n_clips",
+    "embedding_sha256",
+]
+CANONICAL_STUDY_EMBEDDINGS_NAME = "canonical_study_embeddings.restricted.npz"
+CANONICAL_STUDY_MANIFEST_NAME = "canonical_study_manifest.restricted.csv"
+CANONICAL_STUDY_RECEIPT_NAME = "canonical_study_store.restricted.json"
+CANONICAL_CLIP_INDEX_NAME = "canonical_clip_index.restricted.csv"
+COHORT_PRESERVATION_RECEIPT_NAME = "cohort_preservation_receipt.restricted.json"
+CANONICAL_CLIP_INDEX_HEADER = [
+    "clip_idx", "batch_id", "batch_embedding_idx", "subject_id", "study_id",
+    "clip_key", "physical_source_key", "embedding_sha256",
+    "batch_clip_manifest_sha256", "batch_clip_embeddings_sha256",
+]
+CANONICAL_STUDY_RECEIPT_KEYS = {
+    "schema_version",
+    "artifact_type",
+    "status",
+    "governing_commit",
+    "attempt_id",
+    "batch_plan_sha256",
+    "batch_receipt_set_sha256",
+    "study_embeddings",
+    "embedding_dimension",
+    "embedding_dtype",
+    "study_embeddings_sha256",
+    "study_embeddings_size_bytes",
+    "study_manifest_sha256",
+    "study_manifest_size_bytes",
+    "pooling",
+    "exact_pooling_replay_passed",
+    "stable_plan_order",
+    "duplicate_study_keys",
+    "no_cine_studies",
+    "identifiers_emitted",
+    "restricted_paths_emitted",
+}
+COHORT_ARTIFACT_KEYS = {"role", "relative_path", "size_bytes", "sha256"}
+COHORT_PRESERVATION_RECEIPT_KEYS = {
+    "schema_version",
+    "artifact_type",
+    "status",
+    "governing_commit",
+    "attempt_id",
+    "batch_plan_sha256",
+    "batch_receipt_set_sha256",
+    "production_batches",
+    "clip_embeddings",
+    "study_embeddings",
+    "no_cine_studies",
+    "artifacts",
+    "second_pass_replay_passed",
+    "raw_dicoms_retained",
+    "extracted_cache_retired",
+    "identifiers_emitted",
+    "restricted_paths_emitted",
+}
 
 BATCH_RECEIPT_KEYS = {
     "schema_version",
@@ -194,7 +258,7 @@ COUNT_KEYS = {
     "n_no_cine_studies",
     *ZERO_KEYS,
 }
-FINAL_KEYS = {
+BASE_FINAL_KEYS = {
     "schema_version",
     "artifact_type",
     "status",
@@ -235,7 +299,27 @@ FINAL_KEYS = {
     "scientific_inconsistency_repair_performed",
     "identifiers_emitted",
     "restricted_paths_emitted",
+    "model_fitting_count",
+    "endpoint_prediction_count",
+    "confirmatory_performance_access_count",
 }
+FINAL_BINDING_KEYS = {
+    "canonical_clip_index_sha256",
+    "canonical_clip_index_size_bytes",
+    "canonical_clip_index_rows",
+    "canonical_study_embeddings_sha256",
+    "canonical_study_embeddings_size_bytes",
+    "canonical_study_manifest_sha256",
+    "canonical_study_manifest_size_bytes",
+    "canonical_study_store_receipt_sha256",
+    "canonical_study_store_receipt_size_bytes",
+    "cohort_preservation_receipt_sha256",
+    "cohort_preservation_receipt_size_bytes",
+    "cohort_preserved_artifacts",
+    "cohort_preservation_second_pass_replay_passed",
+    "cohort_preservation_passed",
+}
+FINAL_KEYS = BASE_FINAL_KEYS | FINAL_BINDING_KEYS
 CANARY_FINAL_KEYS = {
     "schema_version",
     "artifact_type",
@@ -441,7 +525,8 @@ def accumulate_global_clip_authority(
     manifest_path: Path, *, planned_batch: Mapping[str, Any],
     expected_rows: int, global_clip_keys: set[str],
     global_physical_source_keys: set[str],
-) -> None:
+    batch_clip_embeddings_sha256: str | None = None,
+) -> list[dict[str, Any]]:
     """Validate retained clip ownership and reject cross-batch collisions."""
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ProductionFinalizationError("CLIP_MANIFEST_NOT_REGULAR")
@@ -463,6 +548,13 @@ def accumulate_global_clip_authority(
     local_clips: set[str] = set()
     local_sources: set[str] = set()
     indices: set[int] = set()
+    records: list[dict[str, Any]] = []
+    manifest_sha256 = sha256_file(manifest_path)
+    if (
+        batch_clip_embeddings_sha256 is not None
+        and SHA256_RE.fullmatch(batch_clip_embeddings_sha256) is None
+    ):
+        raise ProductionFinalizationError("CLIP_EMBEDDINGS_HASH_INVALID")
     for cells in values:
         if len(cells) != len(CLIP_MANIFEST_HEADER):
             raise ProductionFinalizationError("CLIP_MANIFEST_ROW_WIDTH_MISMATCH")
@@ -476,7 +568,11 @@ def accumulate_global_clip_authority(
         indices.add(index)
         clip_key = row["clip_key"]
         source_key = row["physical_source_key"]
-        if not SHA256_RE.fullmatch(clip_key) or not SHA256_RE.fullmatch(source_key):
+        if (
+            not SHA256_RE.fullmatch(clip_key)
+            or not SHA256_RE.fullmatch(source_key)
+            or not SHA256_RE.fullmatch(row["embedding_sha256"])
+        ):
             raise ProductionFinalizationError("CLIP_OR_SOURCE_KEY_INVALID")
         if expected_ownership.get(source_key) != (row["subject_id"], row["study_id"]):
             raise ProductionFinalizationError("CLIP_MANIFEST_OWNERSHIP_MISMATCH")
@@ -488,10 +584,1060 @@ def accumulate_global_clip_authority(
             raise ProductionFinalizationError("GLOBAL_PHYSICAL_SOURCE_COLLISION")
         local_clips.add(clip_key)
         local_sources.add(source_key)
+        records.append(
+            {
+                "batch_id": str(planned_batch["batch_id"]),
+                "batch_embedding_idx": index,
+                "subject_id": row["subject_id"],
+                "study_id": row["study_id"],
+                "clip_key": clip_key,
+                "physical_source_key": source_key,
+                "embedding_sha256": row["embedding_sha256"],
+                "batch_clip_manifest_sha256": manifest_sha256,
+                "batch_clip_embeddings_sha256": batch_clip_embeddings_sha256,
+            }
+        )
     if indices != set(range(expected_rows)):
         raise ProductionFinalizationError("CLIP_MANIFEST_INDEX_INVALID")
     global_clip_keys.update(local_clips)
     global_physical_source_keys.update(local_sources)
+    records.sort(key=lambda row: int(row["batch_embedding_idx"]))
+    return records
+
+
+def _read_closed_csv(
+    path: Path, *, expected_header: Sequence[str], code: str
+) -> list[dict[str, str]]:
+    if path.is_symlink() or not path.is_file():
+        raise ProductionFinalizationError(f"{code}_NOT_REGULAR")
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.reader(handle)
+            header = next(reader)
+            if (
+                header != list(expected_header)
+                or len(header) != len(set(header))
+            ):
+                raise ProductionFinalizationError(f"{code}_SCHEMA_MISMATCH")
+            rows = []
+            for cells in reader:
+                if len(cells) != len(header):
+                    raise ProductionFinalizationError(f"{code}_ROW_WIDTH_MISMATCH")
+                rows.append(dict(zip(header, cells)))
+    except ProductionFinalizationError:
+        raise
+    except (OSError, UnicodeError, csv.Error, StopIteration) as exc:
+        raise ProductionFinalizationError(f"{code}_INVALID") from exc
+    return rows
+
+
+def _load_embedding_array(path: Path, *, code: str) -> Any:
+    import numpy as np
+
+    if path.is_symlink() or not path.is_file():
+        raise ProductionFinalizationError(f"{code}_NOT_REGULAR")
+    try:
+        with np.load(path, allow_pickle=False) as archive:
+            if set(archive.files) != {"embeddings"}:
+                raise ProductionFinalizationError(f"{code}_SCHEMA_MISMATCH")
+            values = archive["embeddings"].copy()
+    except ProductionFinalizationError:
+        raise
+    except Exception as exc:
+        raise ProductionFinalizationError(f"{code}_INVALID") from exc
+    if (
+        values.dtype != np.dtype("float32")
+        or values.ndim != 2
+        or values.shape[1] != 512
+        or not np.isfinite(values).all()
+    ):
+        raise ProductionFinalizationError(f"{code}_ARRAY_INVALID")
+    return values
+
+
+def replay_batch_study_embeddings(
+    *, clip_manifest_path: Path, clip_embeddings_path: Path,
+    study_manifest_path: Path, study_embeddings_path: Path,
+    disposition_path: Path, planned_batch: Mapping[str, Any],
+    expected_clip_embeddings: int, expected_study_embeddings: int,
+    expected_no_cine_studies: int,
+) -> list[dict[str, Any]]:
+    """Independently replay one retained batch's pooling and dispositions."""
+    import lvef_reconstruction_smoke as smoke
+    import numpy as np
+
+    clip_rows = _read_closed_csv(
+        clip_manifest_path,
+        expected_header=CLIP_MANIFEST_HEADER,
+        code="FINALIZER_CLIP_MANIFEST",
+    )
+    study_rows = _read_closed_csv(
+        study_manifest_path,
+        expected_header=STUDY_MANIFEST_HEADER,
+        code="FINALIZER_STUDY_MANIFEST",
+    )
+    disposition_rows = _read_closed_csv(
+        disposition_path,
+        expected_header=DISPOSITION_HEADER,
+        code="FINALIZER_STUDY_DISPOSITION",
+    )
+    clip_array = _load_embedding_array(
+        clip_embeddings_path, code="FINALIZER_CLIP_EMBEDDINGS"
+    )
+    study_array = _load_embedding_array(
+        study_embeddings_path, code="FINALIZER_STUDY_EMBEDDINGS"
+    )
+    if (
+        len(clip_rows) != expected_clip_embeddings
+        or len(clip_array) != expected_clip_embeddings
+        or len(study_rows) != expected_study_embeddings
+        or len(study_array) != expected_study_embeddings
+        or len(disposition_rows) != int(planned_batch.get("n_studies", -1))
+    ):
+        raise ProductionFinalizationError(
+            "FINALIZER_BATCH_EMBEDDING_COUNT_MISMATCH"
+        )
+    clip_hashes = [smoke.array_content_sha256(row) for row in clip_array]
+    study_hashes = [smoke.array_content_sha256(row) for row in study_array]
+    try:
+        preservation.validate_embedding_array_authority(
+            clip_array=clip_array,
+            study_array=study_array,
+            clip_rows=clip_rows,
+            study_rows=study_rows,
+            embedding_summary={
+                "n_clip_embeddings": expected_clip_embeddings,
+                "n_pooled_studies": expected_study_embeddings,
+                "embedding_dimension": 512,
+                "embedding_dtype": "float32",
+                "all_finite": True,
+            },
+        )
+        pooling = preservation.validate_study_pooling_records(
+            clip_rows=clip_rows,
+            study_rows=study_rows,
+            disposition_rows=disposition_rows,
+            planned_studies=planned_batch["studies"],
+            clip_vector_hashes=clip_hashes,
+            study_vector_hashes=study_hashes,
+        )
+        replayed = preservation.mean_pool_study_embeddings(
+            clip_embeddings=clip_array,
+            clip_rows=clip_rows,
+            study_rows=study_rows,
+        )
+    except preservation.BatchPreservationError as exc:
+        if exc.code.startswith("STUDY_DISPOSITION_"):
+            raise ProductionFinalizationError(
+                "FINALIZER_NO_CINE_DISPOSITION_MISMATCH"
+            ) from exc
+        raise ProductionFinalizationError(
+            "FINALIZER_BATCH_EMBEDDING_AUTHORITY_INVALID"
+        ) from exc
+    except (KeyError, TypeError) as exc:
+        raise ProductionFinalizationError(
+            "FINALIZER_BATCH_EMBEDDING_AUTHORITY_INVALID"
+        ) from exc
+    if not np.array_equal(replayed, study_array):
+        raise ProductionFinalizationError(
+            "FINALIZER_STUDY_POOLING_RECOMPUTATION_MISMATCH"
+        )
+    if (
+        pooling["eligible_studies"] != expected_study_embeddings
+        or pooling["no_cine_studies"] != expected_no_cine_studies
+        or expected_study_embeddings + expected_no_cine_studies
+        != int(planned_batch["n_studies"])
+    ):
+        raise ProductionFinalizationError(
+            "FINALIZER_NO_CINE_DISPOSITION_MISMATCH"
+        )
+    records: list[dict[str, Any]] = []
+    for row in study_rows:
+        index = int(row["study_idx"])
+        records.append(
+            {
+                "subject_id": str(row["subject_id"]),
+                "study_id": str(row["study_id"]),
+                "n_clips": int(row["n_clips"]),
+                "embedding_sha256": study_hashes[index],
+                "embedding": study_array[index].copy(),
+            }
+        )
+    return records
+
+
+def _require_private_output_root(path: Path) -> None:
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ProductionFinalizationError(
+            "CANONICAL_STUDY_OUTPUT_ROOT_INVALID"
+        ) from exc
+    if (
+        path.is_symlink()
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or not core.owner_private_directory_mode_ok(metadata.st_mode)
+    ):
+        raise ProductionFinalizationError("CANONICAL_STUDY_OUTPUT_ROOT_INVALID")
+
+
+def build_plan_ordered_canonical_study_store(
+    *, plan: Mapping[str, Any], studies_by_id: Mapping[str, Mapping[str, Any]],
+    expected_study_count: int | None = None,
+) -> tuple[list[dict[str, Any]], Any]:
+    """Order replayed study vectors by the immutable batch/study plan order."""
+    import numpy as np
+
+    expected_count = (
+        EXPECTED_IMAGING_ELIGIBLE_STUDIES
+        if expected_study_count is None
+        else expected_study_count
+    )
+    ordered_records: list[dict[str, Any]] = []
+    ordered_vectors: list[Any] = []
+    try:
+        for batch in plan["batches"]:
+            for planned_study in batch["studies"]:
+                study = str(planned_study["study_id"])
+                replayed = studies_by_id.get(study)
+                if replayed is None:
+                    continue
+                if (
+                    str(replayed["subject_id"])
+                    != str(planned_study["subject_id"])
+                    or str(replayed["batch_id"]) != str(batch["batch_id"])
+                ):
+                    raise ProductionFinalizationError(
+                        "CANONICAL_STUDY_PLAN_OWNERSHIP_MISMATCH"
+                    )
+                ordered_records.append(
+                    {
+                        "study_idx": len(ordered_records),
+                        "subject_id": str(replayed["subject_id"]),
+                        "study_id": study,
+                        "batch_id": str(replayed["batch_id"]),
+                        "n_clips": replayed["n_clips"],
+                        "embedding_sha256": replayed["embedding_sha256"],
+                    }
+                )
+                ordered_vectors.append(replayed["embedding"])
+    except (KeyError, TypeError) as exc:
+        raise ProductionFinalizationError(
+            "CANONICAL_STUDY_PLAN_AUTHORITY_INVALID"
+        ) from exc
+    if (
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < 1
+        or len(ordered_records) != expected_count
+        or len(ordered_records) != len(studies_by_id)
+    ):
+        raise ProductionFinalizationError(
+            "CANONICAL_STUDY_MEMBERSHIP_COUNT_MISMATCH"
+        )
+    try:
+        array = np.stack(ordered_vectors).astype(np.float32, copy=False)
+    except (TypeError, ValueError) as exc:
+        raise ProductionFinalizationError("CANONICAL_STUDY_ARRAY_INVALID") from exc
+    if (
+        array.shape != (expected_count, 512)
+        or not np.isfinite(array).all()
+    ):
+        raise ProductionFinalizationError("CANONICAL_STUDY_ARRAY_INVALID")
+    return ordered_records, array
+
+
+def build_plan_ordered_canonical_clip_index(
+    *, plan: Mapping[str, Any], records_by_batch: Mapping[str, Sequence[Mapping[str, Any]]],
+    expected_clip_count: int,
+) -> list[dict[str, Any]]:
+    """Return one plan-ordered index over the retained per-batch clip stores."""
+
+    if (
+        isinstance(expected_clip_count, bool)
+        or not isinstance(expected_clip_count, int)
+        or expected_clip_count < 1
+    ):
+        raise ProductionFinalizationError("CANONICAL_CLIP_COUNT_INVALID")
+    ordered: list[dict[str, Any]] = []
+    try:
+        planned_batches = list(plan["batches"])
+        planned_ids = [str(batch["batch_id"]) for batch in planned_batches]
+    except (KeyError, TypeError) as exc:
+        raise ProductionFinalizationError(
+            "CANONICAL_CLIP_PLAN_AUTHORITY_INVALID"
+        ) from exc
+    if (
+        not planned_ids
+        or len(planned_ids) != len(set(planned_ids))
+        or any(
+            re.fullmatch(r"c3_batch_[0-9]{3}", batch_id) is None
+            for batch_id in planned_ids
+        )
+        or set(records_by_batch) != set(planned_ids)
+    ):
+        raise ProductionFinalizationError("CANONICAL_CLIP_BATCH_SET_MISMATCH")
+    seen_clips: set[str] = set()
+    seen_sources: set[str] = set()
+    record_keys = set(CANONICAL_CLIP_INDEX_HEADER) - {"clip_idx"}
+    for batch, batch_id in zip(planned_batches, planned_ids, strict=True):
+        try:
+            expected_ownership = {
+                str(item["source_object_key"]): (
+                    str(item["subject_id"]), str(item["study_id"])
+                )
+                for item in batch["objects"]
+            }
+            rows = sorted(
+                records_by_batch[batch_id],
+                key=lambda row: row["batch_embedding_idx"],
+            )
+        except (KeyError, TypeError) as exc:
+            raise ProductionFinalizationError(
+                "CANONICAL_CLIP_PLAN_AUTHORITY_INVALID"
+            ) from exc
+        if any(
+            isinstance(row.get("batch_embedding_idx"), bool)
+            or not isinstance(row.get("batch_embedding_idx"), int)
+            for row in rows
+        ) or [row["batch_embedding_idx"] for row in rows] != list(range(len(rows))):
+            raise ProductionFinalizationError("CANONICAL_CLIP_INDEX_INVALID")
+        for row in rows:
+            subject = str(row.get("subject_id"))
+            study = str(row.get("study_id"))
+            clip_key = str(row.get("clip_key"))
+            source_key = str(row.get("physical_source_key"))
+            if clip_key in seen_clips:
+                raise ProductionFinalizationError("GLOBAL_CLIP_KEY_COLLISION")
+            if source_key in seen_sources:
+                raise ProductionFinalizationError("GLOBAL_PHYSICAL_SOURCE_COLLISION")
+            if (
+                set(row) != record_keys
+                or row.get("batch_id") != batch_id
+                or expected_ownership.get(source_key) != (subject, study)
+                or re.fullmatch(r"[1-9][0-9]*", subject) is None
+                or re.fullmatch(r"[1-9][0-9]*", study) is None
+                or any(
+                    SHA256_RE.fullmatch(str(row.get(key))) is None
+                    for key in (
+                        "clip_key",
+                        "physical_source_key",
+                        "embedding_sha256",
+                        "batch_clip_manifest_sha256",
+                        "batch_clip_embeddings_sha256",
+                    )
+                )
+            ):
+                raise ProductionFinalizationError(
+                    "CANONICAL_CLIP_PLAN_AUTHORITY_INVALID"
+                )
+            seen_clips.add(clip_key)
+            seen_sources.add(source_key)
+            ordered.append({"clip_idx": len(ordered), **dict(row)})
+    if len(ordered) != expected_clip_count:
+        raise ProductionFinalizationError("CANONICAL_CLIP_COUNT_INVALID")
+    return ordered
+
+
+def _canonical_clip_index_bytes(rows: Sequence[Mapping[str, Any]]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output, fieldnames=CANONICAL_CLIP_INDEX_HEADER, lineterminator="\n",
+        extrasaction="raise",
+    )
+    writer.writeheader()
+    seen_clips: set[str] = set()
+    seen_sources: set[str] = set()
+    next_batch_index: dict[str, int] = {}
+    prior_batch = ""
+    for index, row in enumerate(rows):
+        batch_id = str(row.get("batch_id"))
+        batch_embedding_idx = row.get("batch_embedding_idx")
+        subject = str(row.get("subject_id"))
+        study = str(row.get("study_id"))
+        clip_key = str(row.get("clip_key"))
+        source_key = str(row.get("physical_source_key"))
+        if (
+            set(row) != set(CANONICAL_CLIP_INDEX_HEADER)
+            or isinstance(row.get("clip_idx"), bool)
+            or row.get("clip_idx") != index
+            or re.fullmatch(r"c3_batch_[0-9]{3}", batch_id) is None
+            or (prior_batch and batch_id < prior_batch)
+            or isinstance(batch_embedding_idx, bool)
+            or not isinstance(batch_embedding_idx, int)
+            or batch_embedding_idx != next_batch_index.get(batch_id, 0)
+            or re.fullmatch(r"[1-9][0-9]*", subject) is None
+            or re.fullmatch(r"[1-9][0-9]*", study) is None
+            or clip_key in seen_clips
+            or source_key in seen_sources
+            or any(
+                SHA256_RE.fullmatch(str(row.get(key))) is None
+                for key in (
+                    "clip_key", "physical_source_key", "embedding_sha256",
+                    "batch_clip_manifest_sha256", "batch_clip_embeddings_sha256",
+                )
+            )
+        ):
+            raise ProductionFinalizationError(
+                "CANONICAL_CLIP_INDEX_AUTHORITY_INVALID"
+            )
+        prior_batch = batch_id
+        next_batch_index[batch_id] = batch_embedding_idx + 1
+        seen_clips.add(clip_key)
+        seen_sources.add(source_key)
+        writer.writerow(row)
+    return output.getvalue().encode("utf-8")
+
+
+def _cohort_artifact_path(artifact_root: Path, relative_path: str) -> Path:
+    """Resolve one inventory member without following any symlink component."""
+
+    relative = PurePosixPath(relative_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise ProductionFinalizationError("COHORT_ARTIFACT_AUTHORITY_INVALID")
+    try:
+        root_metadata = artifact_root.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ProductionFinalizationError("COHORT_ARTIFACT_ROOT_INVALID") from exc
+    if artifact_root.is_symlink() or not stat.S_ISDIR(root_metadata.st_mode):
+        raise ProductionFinalizationError("COHORT_ARTIFACT_ROOT_INVALID")
+    current = artifact_root
+    for index, part in enumerate(relative.parts):
+        current = current / part
+        try:
+            metadata = current.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ProductionFinalizationError(
+                "COHORT_ARTIFACT_NOT_REGULAR"
+            ) from exc
+        if current.is_symlink() or (
+            index < len(relative.parts) - 1
+            and not stat.S_ISDIR(metadata.st_mode)
+        ) or (
+            index == len(relative.parts) - 1
+            and not stat.S_ISREG(metadata.st_mode)
+        ):
+            raise ProductionFinalizationError("COHORT_ARTIFACT_NOT_REGULAR")
+    return current
+
+
+def _expected_cohort_artifacts(
+    *, attempt_id: str, production_batches: int, output_relative: PurePosixPath,
+) -> set[tuple[str, str]]:
+    expected: set[tuple[str, str]] = set()
+    for index in range(production_batches):
+        batch_id = f"c3_batch_{index:03d}"
+        batch_root = PurePosixPath("attempts") / attempt_id / "batches" / batch_id
+        expected.add(
+            (
+                "batch_final_receipt",
+                (batch_root / "preservation" / "batch_finalization_receipt.restricted.json").as_posix(),
+            )
+        )
+        expected.add(
+            (
+                "batch_clip_embeddings",
+                (batch_root / "echoprime" / "clip_embeddings.restricted.npz").as_posix(),
+            )
+        )
+    expected.update(
+        {
+            (
+                "canonical_clip_index",
+                (output_relative / CANONICAL_CLIP_INDEX_NAME).as_posix(),
+            ),
+            (
+                "canonical_study_embeddings",
+                (output_relative / CANONICAL_STUDY_EMBEDDINGS_NAME).as_posix(),
+            ),
+            (
+                "canonical_study_manifest",
+                (output_relative / CANONICAL_STUDY_MANIFEST_NAME).as_posix(),
+            ),
+            (
+                "canonical_study_store",
+                (output_relative / CANONICAL_STUDY_RECEIPT_NAME).as_posix(),
+            ),
+        }
+    )
+    return expected
+
+
+def _normalize_cohort_artifacts(
+    artifacts: Sequence[Mapping[str, Any]], *, attempt_id: str,
+    production_batches: int, output_relative: PurePosixPath,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    seen_pairs: set[tuple[str, str]] = set()
+    for item in artifacts:
+        if not isinstance(item, Mapping) or set(item) != COHORT_ARTIFACT_KEYS:
+            raise ProductionFinalizationError("COHORT_ARTIFACT_SCHEMA_INVALID")
+        role = str(item["role"])
+        relative = str(item["relative_path"])
+        parts = PurePosixPath(relative).parts
+        size = item["size_bytes"]
+        digest = str(item["sha256"])
+        if (
+            not parts
+            or relative.startswith("/")
+            or any(part in {"", ".", ".."} for part in parts)
+            or relative in seen_paths
+            or (role, relative) in seen_pairs
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 1
+            or SHA256_RE.fullmatch(digest) is None
+        ):
+            raise ProductionFinalizationError("COHORT_ARTIFACT_AUTHORITY_INVALID")
+        seen_paths.add(relative)
+        seen_pairs.add((role, relative))
+        normalized.append(
+            {
+                "role": role,
+                "relative_path": relative,
+                "size_bytes": size,
+                "sha256": digest,
+            }
+        )
+    if seen_pairs != _expected_cohort_artifacts(
+        attempt_id=attempt_id,
+        production_batches=production_batches,
+        output_relative=output_relative,
+    ):
+        raise ProductionFinalizationError("COHORT_ARTIFACT_SET_MISMATCH")
+    normalized.sort(key=lambda item: (item["role"], item["relative_path"]))
+    return normalized
+
+
+def _validate_cohort_receipt_fields(
+    receipt: Mapping[str, Any], *, output_relative: PurePosixPath,
+) -> list[dict[str, Any]]:
+    if set(receipt) != COHORT_PRESERVATION_RECEIPT_KEYS:
+        raise ProductionFinalizationError("COHORT_RECEIPT_SCHEMA_MISMATCH")
+    production_batches = receipt.get("production_batches")
+    clip_embeddings = receipt.get("clip_embeddings")
+    study_embeddings = receipt.get("study_embeddings")
+    no_cine_studies = receipt.get("no_cine_studies")
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("artifact_type")
+        != "lvef_c3_cohort_preservation_receipt_v1"
+        or receipt.get("status") != "PASS_COHORT_PRESERVATION"
+        or COMMIT_RE.fullmatch(str(receipt.get("governing_commit"))) is None
+        or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}",
+            str(receipt.get("attempt_id")),
+        )
+        is None
+        or SHA256_RE.fullmatch(str(receipt.get("batch_plan_sha256"))) is None
+        or SHA256_RE.fullmatch(str(receipt.get("batch_receipt_set_sha256"))) is None
+        or isinstance(production_batches, bool)
+        or not isinstance(production_batches, int)
+        or production_batches < 1
+        or production_batches > len(EXPECTED_BATCH_IDS)
+        or isinstance(clip_embeddings, bool)
+        or not isinstance(clip_embeddings, int)
+        or clip_embeddings < 1
+        or isinstance(study_embeddings, bool)
+        or not isinstance(study_embeddings, int)
+        or study_embeddings < 1
+        or isinstance(no_cine_studies, bool)
+        or not isinstance(no_cine_studies, int)
+        or no_cine_studies < 0
+        or receipt.get("second_pass_replay_passed") is not True
+        or receipt.get("raw_dicoms_retained") is not True
+        or receipt.get("extracted_cache_retired") is not True
+        or receipt.get("identifiers_emitted") is not False
+        or receipt.get("restricted_paths_emitted") is not False
+        or not isinstance(receipt.get("artifacts"), list)
+    ):
+        raise ProductionFinalizationError("COHORT_RECEIPT_AUTHORITY_INVALID")
+    expected_output = (
+        PurePosixPath("attempts")
+        / str(receipt["attempt_id"])
+        / "cohort_finalization"
+    )
+    if output_relative != expected_output:
+        raise ProductionFinalizationError("COHORT_OUTPUT_ROOT_MISMATCH")
+    return _normalize_cohort_artifacts(
+        receipt["artifacts"],
+        attempt_id=str(receipt["attempt_id"]),
+        production_batches=production_batches,
+        output_relative=output_relative,
+    )
+
+
+def _replay_cohort_artifact_inventory(
+    receipt: Mapping[str, Any], *, artifact_root: Path, output_root: Path,
+) -> dict[str, Any]:
+    """Rehash the exact inventory and replay all clip/store/study bindings."""
+
+    import lvef_reconstruction_smoke as smoke
+
+    try:
+        output_relative = PurePosixPath(output_root.relative_to(artifact_root).as_posix())
+    except ValueError as exc:
+        raise ProductionFinalizationError("COHORT_OUTPUT_ROOT_MISMATCH") from exc
+    artifacts = _validate_cohort_receipt_fields(
+        receipt, output_relative=output_relative
+    )
+    by_role_and_path = {
+        (item["role"], item["relative_path"]): item for item in artifacts
+    }
+    for item in artifacts:
+        artifact = _cohort_artifact_path(artifact_root, item["relative_path"])
+        metadata = artifact.stat(follow_symlinks=False)
+        if metadata.st_size != item["size_bytes"] or sha256_file(artifact) != item["sha256"]:
+            raise ProductionFinalizationError("COHORT_ARTIFACT_SECOND_PASS_MISMATCH")
+
+    attempt_id = str(receipt["attempt_id"])
+    production_batches = int(receipt["production_batches"])
+    output_prefix = PurePosixPath(output_relative)
+    batch_receipts: dict[str, Mapping[str, Any]] = {}
+    receipt_hashes: list[str] = []
+    for index in range(production_batches):
+        batch_id = f"c3_batch_{index:03d}"
+        batch_prefix = PurePosixPath("attempts") / attempt_id / "batches" / batch_id
+        receipt_relative = (
+            batch_prefix / "preservation" / "batch_finalization_receipt.restricted.json"
+        ).as_posix()
+        item = by_role_and_path[("batch_final_receipt", receipt_relative)]
+        batch_receipt = load_json(
+            _cohort_artifact_path(artifact_root, receipt_relative),
+            "COHORT_BATCH_RECEIPT",
+        )
+        _validate_receipt(batch_receipt)
+        if (
+            batch_receipt.get("batch_id") != batch_id
+            or batch_receipt.get("attempt_id") != attempt_id
+            or batch_receipt.get("governing_commit") != receipt["governing_commit"]
+            or batch_receipt.get("batch_plan_sha256") != receipt["batch_plan_sha256"]
+        ):
+            raise ProductionFinalizationError("COHORT_BATCH_RECEIPT_BINDING_MISMATCH")
+        batch_receipts[batch_id] = batch_receipt
+        receipt_hashes.append(str(item["sha256"]))
+    receipt_set_hash = hashlib.sha256(
+        "\n".join(sorted(receipt_hashes)).encode("ascii") + b"\n"
+    ).hexdigest()
+    if receipt_set_hash != receipt["batch_receipt_set_sha256"]:
+        raise ProductionFinalizationError("COHORT_BATCH_RECEIPT_SET_MISMATCH")
+    if (
+        sum(int(item["n_clip_embeddings"]) for item in batch_receipts.values())
+        != receipt["clip_embeddings"]
+        or sum(int(item["n_pooled_studies"]) for item in batch_receipts.values())
+        != receipt["study_embeddings"]
+        or sum(int(item["n_no_cine_studies"]) for item in batch_receipts.values())
+        != receipt["no_cine_studies"]
+    ):
+        raise ProductionFinalizationError("COHORT_BATCH_COUNT_BINDING_MISMATCH")
+
+    clip_relative = (output_prefix / CANONICAL_CLIP_INDEX_NAME).as_posix()
+    clip_path = _cohort_artifact_path(artifact_root, clip_relative)
+    clip_rows_raw = _read_closed_csv(
+        clip_path,
+        expected_header=CANONICAL_CLIP_INDEX_HEADER,
+        code="COHORT_CLIP_INDEX",
+    )
+    try:
+        clip_rows = [
+            {
+                **row,
+                "clip_idx": int(row["clip_idx"]),
+                "batch_embedding_idx": int(row["batch_embedding_idx"]),
+            }
+            for row in clip_rows_raw
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProductionFinalizationError("CANONICAL_CLIP_INDEX_AUTHORITY_INVALID") from exc
+    if (
+        len(clip_rows) != receipt["clip_embeddings"]
+        or _canonical_clip_index_bytes(clip_rows) != clip_path.read_bytes()
+    ):
+        raise ProductionFinalizationError("CANONICAL_CLIP_INDEX_AUTHORITY_INVALID")
+
+    rows_by_batch: dict[str, list[Mapping[str, Any]]] = {
+        f"c3_batch_{index:03d}": [] for index in range(production_batches)
+    }
+    for row in clip_rows:
+        batch_id = str(row["batch_id"])
+        if batch_id not in rows_by_batch:
+            raise ProductionFinalizationError("CANONICAL_CLIP_BATCH_SET_MISMATCH")
+        rows_by_batch[batch_id].append(row)
+    for batch_id, rows in rows_by_batch.items():
+        batch_prefix = PurePosixPath("attempts") / attempt_id / "batches" / batch_id
+        store_relative = (
+            batch_prefix / "echoprime" / "clip_embeddings.restricted.npz"
+        ).as_posix()
+        store_item = by_role_and_path[("batch_clip_embeddings", store_relative)]
+        batch_receipt = batch_receipts[batch_id]
+        if (
+            len(rows) != batch_receipt["n_clip_embeddings"]
+            or len(rows) != batch_receipt["n_unique_clip_keys"]
+            or store_item["sha256"] != batch_receipt["clip_embeddings_sha256"]
+            or any(
+                row["batch_clip_embeddings_sha256"] != store_item["sha256"]
+                or row["batch_clip_manifest_sha256"]
+                != batch_receipt["clip_manifest_sha256"]
+                for row in rows
+            )
+        ):
+            raise ProductionFinalizationError("COHORT_CLIP_STORE_BINDING_MISMATCH")
+        clip_array = _load_embedding_array(
+            _cohort_artifact_path(artifact_root, store_relative),
+            code="COHORT_BATCH_CLIP_EMBEDDINGS",
+        )
+        if len(clip_array) != len(rows) or any(
+            row["batch_embedding_idx"] != index
+            or row["embedding_sha256"] != smoke.array_content_sha256(clip_array[index])
+            for index, row in enumerate(rows)
+        ):
+            raise ProductionFinalizationError("COHORT_CLIP_VECTOR_BINDING_MISMATCH")
+
+    study_store_relative = (output_prefix / CANONICAL_STUDY_RECEIPT_NAME).as_posix()
+    study_embeddings_relative = (
+        output_prefix / CANONICAL_STUDY_EMBEDDINGS_NAME
+    ).as_posix()
+    study_manifest_relative = (output_prefix / CANONICAL_STUDY_MANIFEST_NAME).as_posix()
+    study_store = load_json(
+        _cohort_artifact_path(artifact_root, study_store_relative),
+        "COHORT_CANONICAL_STUDY_RECEIPT",
+    )
+    if (
+        set(study_store) != CANONICAL_STUDY_RECEIPT_KEYS
+        or study_store.get("schema_version") != 1
+        or study_store.get("artifact_type")
+        != "lvef_c3_canonical_study_embedding_store_receipt_v1"
+        or study_store.get("status") != "PASS_CANONICAL_STUDY_EMBEDDING_STORE"
+        or study_store.get("governing_commit") != receipt["governing_commit"]
+        or study_store.get("attempt_id") != attempt_id
+        or study_store.get("batch_plan_sha256") != receipt["batch_plan_sha256"]
+        or study_store.get("batch_receipt_set_sha256")
+        != receipt["batch_receipt_set_sha256"]
+        or study_store.get("study_embeddings") != receipt["study_embeddings"]
+        or study_store.get("no_cine_studies") != receipt["no_cine_studies"]
+        or study_store.get("exact_pooling_replay_passed") is not True
+        or study_store.get("stable_plan_order") is not True
+        or study_store.get("duplicate_study_keys") != 0
+        or study_store.get("identifiers_emitted") is not False
+        or study_store.get("restricted_paths_emitted") is not False
+    ):
+        raise ProductionFinalizationError("COHORT_STUDY_STORE_BINDING_MISMATCH")
+    study_embeddings_item = by_role_and_path[
+        ("canonical_study_embeddings", study_embeddings_relative)
+    ]
+    study_manifest_item = by_role_and_path[
+        ("canonical_study_manifest", study_manifest_relative)
+    ]
+    if (
+        study_store.get("study_embeddings_sha256") != study_embeddings_item["sha256"]
+        or study_store.get("study_embeddings_size_bytes")
+        != study_embeddings_item["size_bytes"]
+        or study_store.get("study_manifest_sha256") != study_manifest_item["sha256"]
+        or study_store.get("study_manifest_size_bytes")
+        != study_manifest_item["size_bytes"]
+    ):
+        raise ProductionFinalizationError("COHORT_STUDY_STORE_BINDING_MISMATCH")
+    study_array = _load_embedding_array(
+        _cohort_artifact_path(artifact_root, study_embeddings_relative),
+        code="COHORT_CANONICAL_STUDY_EMBEDDINGS",
+    )
+    study_rows = _read_closed_csv(
+        _cohort_artifact_path(artifact_root, study_manifest_relative),
+        expected_header=CANONICAL_STUDY_MANIFEST_HEADER,
+        code="COHORT_CANONICAL_STUDY_MANIFEST",
+    )
+    if (
+        len(study_array) != receipt["study_embeddings"]
+        or len(study_rows) != receipt["study_embeddings"]
+        or any(
+            row.get("study_idx") != str(index)
+            or row.get("embedding_sha256") != smoke.array_content_sha256(study_array[index])
+            for index, row in enumerate(study_rows)
+        )
+    ):
+        raise ProductionFinalizationError("COHORT_STUDY_VECTOR_BINDING_MISMATCH")
+    return {
+        "artifacts": artifacts,
+        "clip_index_rows": len(clip_rows),
+        "batch_receipt_set_sha256": receipt_set_hash,
+    }
+
+
+def replay_cohort_preservation_receipt(
+    receipt_path: Path, *, artifact_root: Path,
+) -> Mapping[str, Any]:
+    """Independently replay one already-published cohort receipt."""
+
+    receipt = load_json(receipt_path, "COHORT_PRESERVATION_RECEIPT")
+    if receipt_path.name != COHORT_PRESERVATION_RECEIPT_NAME:
+        raise ProductionFinalizationError("COHORT_RECEIPT_PATH_INVALID")
+    _replay_cohort_artifact_inventory(
+        receipt, artifact_root=artifact_root, output_root=receipt_path.parent
+    )
+    return receipt
+
+
+def write_cohort_preservation_outputs(
+    *, output_root: Path, artifact_root: Path,
+    clip_index_rows: Sequence[Mapping[str, Any]],
+    artifacts: Sequence[Mapping[str, Any]], governing_commit: str,
+    attempt_id: str, batch_plan_sha256: str, batch_receipt_set_sha256: str,
+    production_batches: int, study_embeddings: int, no_cine_studies: int,
+) -> dict[str, Any]:
+    """Publish the cohort clip index, replay it, then publish one receipt last."""
+
+    _require_private_output_root(output_root)
+    _require_private_output_root(artifact_root)
+    clip_path = output_root / CANONICAL_CLIP_INDEX_NAME
+    receipt_path = output_root / COHORT_PRESERVATION_RECEIPT_NAME
+    if any(os.path.lexists(path) for path in (clip_path, receipt_path)):
+        raise ProductionFinalizationError("COHORT_PRESERVATION_OUTPUT_EXISTS")
+    try:
+        output_relative = PurePosixPath(output_root.relative_to(artifact_root).as_posix())
+    except ValueError as exc:
+        raise ProductionFinalizationError("COHORT_OUTPUT_ROOT_MISMATCH") from exc
+    clip_body = _canonical_clip_index_bytes(clip_index_rows)
+    clip_artifact = {
+        "role": "canonical_clip_index",
+        "relative_path": (output_relative / CANONICAL_CLIP_INDEX_NAME).as_posix(),
+        "size_bytes": len(clip_body),
+        "sha256": hashlib.sha256(clip_body).hexdigest(),
+    }
+    normalized = _normalize_cohort_artifacts(
+        [*artifacts, clip_artifact],
+        attempt_id=attempt_id,
+        production_batches=production_batches,
+        output_relative=output_relative,
+    )
+    receipt = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_cohort_preservation_receipt_v1",
+        "status": "PASS_COHORT_PRESERVATION",
+        "governing_commit": governing_commit,
+        "attempt_id": attempt_id,
+        "batch_plan_sha256": batch_plan_sha256,
+        "batch_receipt_set_sha256": batch_receipt_set_sha256,
+        "production_batches": production_batches,
+        "clip_embeddings": len(clip_index_rows),
+        "study_embeddings": study_embeddings,
+        "no_cine_studies": no_cine_studies,
+        "artifacts": normalized,
+        "second_pass_replay_passed": True,
+        "raw_dicoms_retained": True,
+        "extracted_cache_retired": True,
+        "identifiers_emitted": False,
+        "restricted_paths_emitted": False,
+    }
+    _validate_cohort_receipt_fields(receipt, output_relative=output_relative)
+    for item in normalized:
+        if item["role"] == "canonical_clip_index":
+            continue
+        artifact = _cohort_artifact_path(artifact_root, item["relative_path"])
+        if (
+            artifact.stat(follow_symlinks=False).st_size != item["size_bytes"]
+            or sha256_file(artifact) != item["sha256"]
+        ):
+            raise ProductionFinalizationError("COHORT_ARTIFACT_SECOND_PASS_MISMATCH")
+
+    _write_bytes_atomic_no_clobber(
+        clip_path, clip_body, exists_code="COHORT_PRESERVATION_OUTPUT_EXISTS"
+    )
+    # The terminal receipt is deliberately absent until every retained artifact,
+    # including the newly published index and every referenced vector, replays.
+    _replay_cohort_artifact_inventory(
+        receipt, artifact_root=artifact_root, output_root=output_root
+    )
+    receipt_body = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    _write_bytes_atomic_no_clobber(
+        receipt_path,
+        receipt_body,
+        exists_code="COHORT_PRESERVATION_OUTPUT_EXISTS",
+    )
+    if replay_cohort_preservation_receipt(
+        receipt_path, artifact_root=artifact_root
+    ) != receipt:
+        raise ProductionFinalizationError("COHORT_ARTIFACT_SECOND_PASS_MISMATCH")
+    return receipt
+
+
+def _write_bytes_atomic_no_clobber(
+    path: Path, body: bytes, *,
+    exists_code: str = "CANONICAL_STUDY_OUTPUT_ALREADY_EXISTS",
+) -> None:
+    _require_private_output_root(path.parent)
+    if path.exists() or path.is_symlink():
+        raise ProductionFinalizationError(exists_code)
+    temporary = path.with_name(f".{path.name}.partial.{os.getpid()}")
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    created_temporary = False
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        created_temporary = True
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+        temporary.unlink()
+    except FileExistsError as exc:
+        if created_temporary and temporary.exists() and not temporary.is_symlink():
+            temporary.unlink()
+        raise ProductionFinalizationError(exists_code) from exc
+    except Exception:
+        if created_temporary and temporary.exists() and not temporary.is_symlink():
+            temporary.unlink()
+        raise
+
+
+def write_canonical_study_store(
+    *, output_root: Path, records: Sequence[Mapping[str, Any]],
+    embeddings: Any, governing_commit: str, attempt_id: str,
+    batch_plan_sha256: str, batch_receipt_set_sha256: str,
+    no_cine_studies: int, expected_study_count: int | None = None,
+) -> dict[str, Any]:
+    """Write one no-clobber plan-ordered canonical store and binding receipt."""
+    import lvef_reconstruction_smoke as smoke
+    import numpy as np
+
+    expected_count = (
+        EXPECTED_IMAGING_ELIGIBLE_STUDIES
+        if expected_study_count is None
+        else expected_study_count
+    )
+    _require_private_output_root(output_root)
+    targets = (
+        output_root / CANONICAL_STUDY_EMBEDDINGS_NAME,
+        output_root / CANONICAL_STUDY_MANIFEST_NAME,
+        output_root / CANONICAL_STUDY_RECEIPT_NAME,
+    )
+    if any(path.exists() or path.is_symlink() for path in targets):
+        raise ProductionFinalizationError("CANONICAL_STUDY_OUTPUT_ALREADY_EXISTS")
+    if (
+        not COMMIT_RE.fullmatch(governing_commit)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", attempt_id)
+        or not SHA256_RE.fullmatch(batch_plan_sha256)
+        or not SHA256_RE.fullmatch(batch_receipt_set_sha256)
+        or isinstance(no_cine_studies, bool)
+        or not isinstance(no_cine_studies, int)
+        or no_cine_studies < 0
+        or isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < 1
+    ):
+        raise ProductionFinalizationError(
+            "CANONICAL_STUDY_RECEIPT_AUTHORITY_INVALID"
+        )
+    if (
+        not isinstance(embeddings, np.ndarray)
+        or embeddings.dtype != np.dtype("float32")
+        or embeddings.shape != (len(records), 512)
+        or not np.isfinite(embeddings).all()
+        or len(records) != expected_count
+    ):
+        raise ProductionFinalizationError("CANONICAL_STUDY_ARRAY_INVALID")
+    seen_studies: set[str] = set()
+    seen_subjects: set[str] = set()
+    manifest_rows: list[list[Any]] = []
+    for index, (record, vector) in enumerate(zip(records, embeddings, strict=True)):
+        study = str(record.get("study_id"))
+        subject = str(record.get("subject_id"))
+        if (
+            study in seen_studies
+            or subject in seen_subjects
+            or not re.fullmatch(r"[1-9][0-9]*", study)
+            or not re.fullmatch(r"[1-9][0-9]*", subject)
+            or str(int(study)) != study
+            or str(int(subject)) != subject
+            or str(record.get("batch_id")) not in EXPECTED_BATCH_IDS
+            or record.get("study_idx") != index
+            or not str(record.get("n_clips", "")).isdigit()
+            or int(record["n_clips"]) < 1
+            or not SHA256_RE.fullmatch(str(record.get("embedding_sha256")))
+            or record["embedding_sha256"]
+            != smoke.array_content_sha256(vector)
+        ):
+            raise ProductionFinalizationError(
+                "CANONICAL_STUDY_MANIFEST_AUTHORITY_INVALID"
+            )
+        seen_studies.add(study)
+        seen_subjects.add(subject)
+        manifest_rows.append(
+            [
+                index, subject, study, str(record.get("batch_id")),
+                int(record["n_clips"]), record["embedding_sha256"],
+            ]
+        )
+    npz_buffer = io.BytesIO()
+    np.savez_compressed(npz_buffer, embeddings=embeddings)
+    manifest_buffer = io.StringIO(newline="")
+    writer = csv.writer(manifest_buffer, lineterminator="\n")
+    writer.writerow(CANONICAL_STUDY_MANIFEST_HEADER)
+    writer.writerows(manifest_rows)
+    embedding_body = npz_buffer.getvalue()
+    manifest_body = manifest_buffer.getvalue().encode("utf-8")
+    embedding_sha = hashlib.sha256(embedding_body).hexdigest()
+    manifest_sha = hashlib.sha256(manifest_body).hexdigest()
+    receipt = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_canonical_study_embedding_store_receipt_v1",
+        "status": "PASS_CANONICAL_STUDY_EMBEDDING_STORE",
+        "governing_commit": governing_commit,
+        "attempt_id": attempt_id,
+        "batch_plan_sha256": batch_plan_sha256,
+        "batch_receipt_set_sha256": batch_receipt_set_sha256,
+        "study_embeddings": len(records),
+        "embedding_dimension": 512,
+        "embedding_dtype": "float32",
+        "study_embeddings_sha256": embedding_sha,
+        "study_embeddings_size_bytes": len(embedding_body),
+        "study_manifest_sha256": manifest_sha,
+        "study_manifest_size_bytes": len(manifest_body),
+        "pooling": "stable_clip_key_order_float64_mean_then_float32",
+        "exact_pooling_replay_passed": True,
+        "stable_plan_order": True,
+        "duplicate_study_keys": 0,
+        "no_cine_studies": no_cine_studies,
+        "identifiers_emitted": False,
+        "restricted_paths_emitted": False,
+    }
+    receipt_body = (
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    _write_bytes_atomic_no_clobber(targets[0], embedding_body)
+    _write_bytes_atomic_no_clobber(targets[1], manifest_body)
+    _write_bytes_atomic_no_clobber(targets[2], receipt_body)
+    for target, expected_body in zip(
+        targets, (embedding_body, manifest_body, receipt_body), strict=True
+    ):
+        metadata = target.stat(follow_symlinks=False)
+        if (
+            target.is_symlink()
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or target.read_bytes() != expected_body
+        ):
+            raise ProductionFinalizationError(
+                "CANONICAL_STUDY_SECOND_PASS_MISMATCH"
+            )
+    with np.load(targets[0], allow_pickle=False) as archive:
+        if set(archive.files) != {"embeddings"} or not np.array_equal(
+            archive["embeddings"], embeddings
+        ):
+            raise ProductionFinalizationError(
+                "CANONICAL_STUDY_SECOND_PASS_MISMATCH"
+            )
+    if load_json(targets[2], "CANONICAL_STUDY_RECEIPT") != receipt:
+        raise ProductionFinalizationError("CANONICAL_STUDY_SECOND_PASS_MISMATCH")
+    return receipt
 
 
 def _validate_receipt(value: Mapping[str, Any]) -> None:
@@ -754,6 +1900,62 @@ def finalize_canary_preservation_receipt(
 def validate_closed_final_summary(value: Mapping[str, Any]) -> None:
     if set(value) != FINAL_KEYS:
         raise ProductionFinalizationError("FINAL_SUMMARY_SCHEMA_MISMATCH")
+    if SHA256_RE.fullmatch(str(value.get("batch_receipt_set_sha256"))) is None:
+        raise ProductionFinalizationError("FINAL_SUMMARY_BINDING_INVALID")
+    if any(
+        value.get(key) != 0
+        for key in (
+            "model_fitting_count",
+            "endpoint_prediction_count",
+            "confirmatory_performance_access_count",
+        )
+    ):
+        raise ProductionFinalizationError("FINAL_SUMMARY_SCIENTIFIC_SCOPE_INVALID")
+    if value.get("status") == "PASS_PRODUCTION_C3_FINALIZED":
+        hash_keys = {
+            "canonical_clip_index_sha256",
+            "canonical_study_embeddings_sha256",
+            "canonical_study_manifest_sha256",
+            "canonical_study_store_receipt_sha256",
+            "cohort_preservation_receipt_sha256",
+        }
+        size_keys = {
+            "canonical_clip_index_size_bytes",
+            "canonical_study_embeddings_size_bytes",
+            "canonical_study_manifest_size_bytes",
+            "canonical_study_store_receipt_size_bytes",
+            "cohort_preservation_receipt_size_bytes",
+        }
+        if (
+            any(SHA256_RE.fullmatch(str(value.get(key))) is None for key in hash_keys)
+            or any(
+                isinstance(value.get(key), bool)
+                or not isinstance(value.get(key), int)
+                or value[key] < 1
+                for key in size_keys
+            )
+            or value.get("canonical_clip_index_rows") != value.get("clip_embeddings")
+            or value.get("cohort_preserved_artifacts")
+            != 2 * int(value.get("production_batches", -1)) + 4
+            or value.get("cohort_preservation_second_pass_replay_passed") is not True
+            or value.get("cohort_preservation_passed") is not True
+        ):
+            raise ProductionFinalizationError("FINAL_SUMMARY_BINDING_INVALID")
+    elif value.get("status") == "PASS_PRODUCTION_C3_BATCH_RECEIPTS_RECONCILED":
+        if any(
+            value.get(key) is not None
+            for key in FINAL_BINDING_KEYS
+            if key.endswith("_sha256")
+        ) or any(
+            value.get(key) != 0
+            for key in FINAL_BINDING_KEYS
+            if key.endswith("_size_bytes")
+            or key in {"canonical_clip_index_rows", "cohort_preserved_artifacts"}
+        ) or value.get("cohort_preservation_second_pass_replay_passed") is not False \
+            or value.get("cohort_preservation_passed") is not False:
+            raise ProductionFinalizationError("FINAL_SUMMARY_BINDING_INVALID")
+    else:
+        raise ProductionFinalizationError("FINAL_SUMMARY_STATUS_INVALID")
 
 
 def finalize_receipts(
@@ -763,8 +1965,16 @@ def finalize_receipts(
     contract: Mapping[str, Any] | None = None, contract_path: Path | None = None,
     environment_receipt: Path | None = None,
     cache_retirement_authorization_root: Path | None = None,
+    canonical_output_root: Path | None = None,
+    expected_runtime_authority: Mapping[str, Any] | None = None,
+    expected_no_cine_studies: int | None = None,
 ) -> dict[str, Any]:
-    if len(receipt_paths) != len(EXPECTED_BATCH_IDS):
+    expected_batch_ids = (
+        tuple(f"c3_batch_{index:03d}" for index in range(requirements.batch_count))
+        if requirements is not None
+        else EXPECTED_BATCH_IDS
+    )
+    if len(receipt_paths) != len(expected_batch_ids):
         raise ProductionFinalizationError("FINAL_BATCH_SET_INCOMPLETE")
     receipts: list[dict[str, Any]] = []
     receipt_hashes: list[str] = []
@@ -778,7 +1988,7 @@ def finalize_receipts(
             raise ProductionFinalizationError("DUPLICATE_BATCH_RECEIPT")
         receipt_paths_by_batch[receipt["batch_id"]] = path
     receipts.sort(key=lambda item: str(item["batch_id"]))
-    if tuple(item["batch_id"] for item in receipts) != EXPECTED_BATCH_IDS:
+    if tuple(item["batch_id"] for item in receipts) != expected_batch_ids:
         raise ProductionFinalizationError("FINAL_BATCH_SET_MISMATCH")
     if any(item["governing_commit"] != expected_governing_commit for item in receipts):
         raise ProductionFinalizationError("GOVERNING_COMMIT_MISMATCH")
@@ -809,6 +2019,16 @@ def finalize_receipts(
     )
     if any(len({item[key] for item in receipts}) != 1 for key in authority_keys):
         raise ProductionFinalizationError("CROSS_BATCH_AUTHORITY_MISMATCH")
+    receipt_set_hash = hashlib.sha256(
+        "\n".join(sorted(receipt_hashes)).encode("ascii") + b"\n"
+    ).hexdigest()
+    canonical_store: tuple[
+        list[dict[str, Any]],
+        Any,
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        str,
+    ] | None = None
     if plan is not None:
         if (
             requirements is None
@@ -817,6 +2037,7 @@ def finalize_receipts(
             or contract_path is None
             or environment_receipt is None
             or cache_retirement_authorization_root is None
+            or canonical_output_root is None
         ):
             raise ProductionFinalizationError("FINALIZER_AUTHORITY_ARGUMENTS_INCOMPLETE")
         if (
@@ -825,13 +2046,17 @@ def finalize_receipts(
         ):
             raise ProductionFinalizationError("CACHE_AUTHORIZATION_ROOT_INVALID")
         plan_sha = core.validate_batch_plan(plan, requirements=requirements)
-        expected_runtime_authority = core.derive_expected_runtime_authority(
-            plan,
-            requirements=requirements,
-            contract=contract,
-            contract_path=contract_path,
-            governing_commit=expected_governing_commit,
-            environment_receipt_sha256=sha256_file(environment_receipt),
+        runtime_authority = (
+            core.validate_runtime_authority(expected_runtime_authority)
+            if expected_runtime_authority is not None
+            else core.derive_expected_runtime_authority(
+                plan,
+                requirements=requirements,
+                contract=contract,
+                contract_path=contract_path,
+                governing_commit=expected_governing_commit,
+                environment_receipt_sha256=sha256_file(environment_receipt),
+            )
         )
         if any(item["batch_plan_sha256"] != plan_sha for item in receipts):
             raise ProductionFinalizationError("FINALIZER_PLAN_HASH_MISMATCH")
@@ -847,6 +2072,10 @@ def finalize_receipts(
         attempt_id = next(iter(attempt_ids))
         global_clip_keys: set[str] = set()
         global_physical_source_keys: set[str] = set()
+        clip_records_by_batch: dict[str, list[dict[str, Any]]] = {}
+        cohort_artifacts: list[dict[str, Any]] = []
+        canonical_by_study: dict[str, dict[str, Any]] = {}
+        canonical_subjects: set[str] = set()
         for receipt in receipts:
             batch = planned[receipt["batch_id"]]
             if (
@@ -912,27 +2141,68 @@ def finalize_receipts(
                 batch_id=receipt["batch_id"],
                 expected_retired_cache_tree_sha256=receipt["cache_tree_sha256"],
             )
-            accumulate_global_clip_authority(
+            clip_records_by_batch[receipt["batch_id"]] = accumulate_global_clip_authority(
                 expected_artifacts["clip_manifest_sha256"],
                 planned_batch=batch,
                 expected_rows=receipt["n_clip_embeddings"],
                 global_clip_keys=global_clip_keys,
                 global_physical_source_keys=global_physical_source_keys,
+                batch_clip_embeddings_sha256=receipt["clip_embeddings_sha256"],
             )
+            for role, artifact in (
+                ("batch_final_receipt", receipt_paths_by_batch[receipt["batch_id"]]),
+                ("batch_clip_embeddings", expected_artifacts["clip_embeddings_sha256"]),
+            ):
+                cohort_artifacts.append(
+                    {
+                        "role": role,
+                        "relative_path": artifact.relative_to(
+                            production_root
+                        ).as_posix(),
+                        "size_bytes": artifact.stat(follow_symlinks=False).st_size,
+                        "sha256": sha256_file(artifact),
+                    }
+                )
+            replayed_studies = replay_batch_study_embeddings(
+                clip_manifest_path=expected_artifacts["clip_manifest_sha256"],
+                clip_embeddings_path=expected_artifacts["clip_embeddings_sha256"],
+                study_manifest_path=expected_artifacts["study_manifest_sha256"],
+                study_embeddings_path=expected_artifacts["study_embeddings_sha256"],
+                disposition_path=(
+                    batch_root / "echoprime" / "study_disposition.restricted.csv"
+                ),
+                planned_batch=batch,
+                expected_clip_embeddings=receipt["n_clip_embeddings"],
+                expected_study_embeddings=receipt["n_pooled_studies"],
+                expected_no_cine_studies=receipt["n_no_cine_studies"],
+            )
+            for replayed in replayed_studies:
+                study = str(replayed["study_id"])
+                subject = str(replayed["subject_id"])
+                if study in canonical_by_study or subject in canonical_subjects:
+                    raise ProductionFinalizationError(
+                        "GLOBAL_STUDY_OR_SUBJECT_COLLISION"
+                    )
+                canonical_subjects.add(subject)
+                canonical_by_study[study] = {
+                    **replayed,
+                    "batch_id": receipt["batch_id"],
+                }
             final_ledger = core.load_strict_json(batch_root / "final_resume_ledger.restricted.json")
-            core.validate_ledger_against_current_runtime(
-                final_ledger,
-                plan=plan,
-                requirements=requirements,
-                contract=contract,
-                contract_path=contract_path,
-                governing_commit=expected_governing_commit,
-                environment_receipt_sha256=sha256_file(environment_receipt),
-                batch_id=receipt["batch_id"],
-            )
+            if expected_runtime_authority is None:
+                core.validate_ledger_against_current_runtime(
+                    final_ledger,
+                    plan=plan,
+                    requirements=requirements,
+                    contract=contract,
+                    contract_path=contract_path,
+                    governing_commit=expected_governing_commit,
+                    environment_receipt_sha256=sha256_file(environment_receipt),
+                    batch_id=receipt["batch_id"],
+                )
             core.validate_resume_authority(
                 final_ledger,
-                expected_authority=expected_runtime_authority,
+                expected_authority=runtime_authority,
                 attempt_id=next(iter(attempt_ids)),
                 expected_object_keys={
                     receipt["batch_id"]: {
@@ -972,29 +2242,84 @@ def finalize_receipts(
             != sum(item["n_unique_clip_keys"] for item in receipts)
         ):
             raise ProductionFinalizationError("GLOBAL_CLIP_AUTHORITY_COUNT_MISMATCH")
+        scoped_no_cine = (
+            EXPECTED_NO_CINE_STUDIES
+            if expected_no_cine_studies is None
+            else expected_no_cine_studies
+        )
+        if (
+            isinstance(scoped_no_cine, bool)
+            or not isinstance(scoped_no_cine, int)
+            or scoped_no_cine < 0
+            or scoped_no_cine >= requirements.selected_studies
+        ):
+            raise ProductionFinalizationError("EXPECTED_NO_CINE_COUNT_INVALID")
+        ordered_records, canonical_array = build_plan_ordered_canonical_study_store(
+            plan=plan,
+            studies_by_id=canonical_by_study,
+            expected_study_count=requirements.selected_studies - scoped_no_cine,
+        )
+        canonical_clip_index = build_plan_ordered_canonical_clip_index(
+            plan=plan,
+            records_by_batch=clip_records_by_batch,
+            expected_clip_count=sum(item["n_clip_embeddings"] for item in receipts),
+        )
+        canonical_store = (
+            ordered_records, canonical_array, canonical_clip_index,
+            cohort_artifacts, plan_sha,
+        )
 
     def total(key: str) -> int:
         return sum(int(item[key]) for item in receipts)
 
+    expected_selected_studies = (
+        requirements.selected_studies
+        if requirements is not None
+        else EXPECTED_SELECTED_STUDIES
+    )
+    expected_selected_subjects = (
+        requirements.selected_subjects
+        if requirements is not None
+        else EXPECTED_SELECTED_SUBJECTS
+    )
+    expected_objects = (
+        requirements.normalized_source_objects
+        if requirements is not None
+        else EXPECTED_SOURCE_OBJECTS
+    )
+    expected_bytes = (
+        requirements.selected_source_bytes
+        if requirements is not None
+        else EXPECTED_SOURCE_BYTES
+    )
+    expected_no_cine = (
+        EXPECTED_NO_CINE_STUDIES
+        if expected_no_cine_studies is None
+        else expected_no_cine_studies
+    )
+    if (
+        isinstance(expected_no_cine, bool)
+        or not isinstance(expected_no_cine, int)
+        or expected_no_cine < 0
+        or expected_no_cine >= expected_selected_studies
+    ):
+        raise ProductionFinalizationError("EXPECTED_NO_CINE_COUNT_INVALID")
     expected_totals = {
-        "n_selected_studies": EXPECTED_SELECTED_STUDIES,
-        "n_selected_subjects": EXPECTED_SELECTED_SUBJECTS,
-        "n_expected_objects": EXPECTED_SOURCE_OBJECTS,
-        "expected_source_bytes": EXPECTED_SOURCE_BYTES,
-        "n_download_verified": EXPECTED_SOURCE_OBJECTS,
-        "n_pooled_studies": EXPECTED_IMAGING_ELIGIBLE_STUDIES,
-        "n_no_cine_studies": EXPECTED_NO_CINE_STUDIES,
+        "n_selected_studies": expected_selected_studies,
+        "n_selected_subjects": expected_selected_subjects,
+        "n_expected_objects": expected_objects,
+        "expected_source_bytes": expected_bytes,
+        "n_download_verified": expected_objects,
+        "n_pooled_studies": expected_selected_studies - expected_no_cine,
+        "n_no_cine_studies": expected_no_cine,
     }
     for key, expected in expected_totals.items():
         if total(key) != expected:
             raise ProductionFinalizationError("FINAL_COHORT_ACCOUNTING_MISMATCH")
-    receipt_set_hash = hashlib.sha256(
-        "\n".join(sorted(receipt_hashes)).encode("ascii") + b"\n"
-    ).hexdigest()
     result = {
         "schema_version": 1,
         "artifact_type": "lvef_c3_production_finalization_summary_v1",
-        "status": "PASS_PRODUCTION_C3_FINALIZED",
+        "status": "PASS_PRODUCTION_C3_BATCH_RECEIPTS_RECONCILED",
         "production_batches": len(receipts),
         "selected_studies": total("n_selected_studies"),
         "selected_subjects": total("n_selected_subjects"),
@@ -1032,7 +2357,113 @@ def finalize_receipts(
         "scientific_inconsistency_repair_performed": False,
         "identifiers_emitted": False,
         "restricted_paths_emitted": False,
+        "model_fitting_count": 0,
+        "endpoint_prediction_count": 0,
+        "confirmatory_performance_access_count": 0,
+        "canonical_clip_index_sha256": None,
+        "canonical_clip_index_size_bytes": 0,
+        "canonical_clip_index_rows": 0,
+        "canonical_study_embeddings_sha256": None,
+        "canonical_study_embeddings_size_bytes": 0,
+        "canonical_study_manifest_sha256": None,
+        "canonical_study_manifest_size_bytes": 0,
+        "canonical_study_store_receipt_sha256": None,
+        "canonical_study_store_receipt_size_bytes": 0,
+        "cohort_preservation_receipt_sha256": None,
+        "cohort_preservation_receipt_size_bytes": 0,
+        "cohort_preserved_artifacts": 0,
+        "cohort_preservation_second_pass_replay_passed": False,
+        "cohort_preservation_passed": False,
     }
+    if canonical_store is not None:
+        if canonical_output_root is None:
+            raise ProductionFinalizationError(
+                "FINALIZER_AUTHORITY_ARGUMENTS_INCOMPLETE"
+            )
+        records, embeddings, clip_index, cohort_artifacts, plan_sha = canonical_store
+        study_receipt = write_canonical_study_store(
+            output_root=canonical_output_root,
+            records=records,
+            embeddings=embeddings,
+            governing_commit=expected_governing_commit,
+            attempt_id=next(iter(attempt_ids)),
+            batch_plan_sha256=plan_sha,
+            batch_receipt_set_sha256=receipt_set_hash,
+            no_cine_studies=total("n_no_cine_studies"),
+            expected_study_count=expected_selected_studies - expected_no_cine,
+        )
+        for role, name in (
+            ("canonical_study_embeddings", CANONICAL_STUDY_EMBEDDINGS_NAME),
+            ("canonical_study_manifest", CANONICAL_STUDY_MANIFEST_NAME),
+            ("canonical_study_store", CANONICAL_STUDY_RECEIPT_NAME),
+        ):
+            artifact = canonical_output_root / name
+            cohort_artifacts.append(
+                {
+                    "role": role,
+                    "relative_path": artifact.relative_to(
+                        production_root
+                    ).as_posix(),
+                    "size_bytes": artifact.stat(follow_symlinks=False).st_size,
+                    "sha256": sha256_file(artifact),
+                }
+            )
+        cohort_receipt = write_cohort_preservation_outputs(
+            output_root=canonical_output_root,
+            artifact_root=production_root,
+            clip_index_rows=clip_index,
+            artifacts=cohort_artifacts,
+            governing_commit=expected_governing_commit,
+            attempt_id=next(iter(attempt_ids)),
+            batch_plan_sha256=plan_sha,
+            batch_receipt_set_sha256=receipt_set_hash,
+            production_batches=len(receipts),
+            study_embeddings=study_receipt["study_embeddings"],
+            no_cine_studies=total("n_no_cine_studies"),
+        )
+        clip_index_path = canonical_output_root / CANONICAL_CLIP_INDEX_NAME
+        study_embeddings_path = canonical_output_root / CANONICAL_STUDY_EMBEDDINGS_NAME
+        study_manifest_path = canonical_output_root / CANONICAL_STUDY_MANIFEST_NAME
+        study_receipt_path = canonical_output_root / CANONICAL_STUDY_RECEIPT_NAME
+        cohort_receipt_path = canonical_output_root / COHORT_PRESERVATION_RECEIPT_NAME
+        result.update(
+            {
+                "status": "PASS_PRODUCTION_C3_FINALIZED",
+                "canonical_clip_index_sha256": sha256_file(clip_index_path),
+                "canonical_clip_index_size_bytes": clip_index_path.stat(
+                    follow_symlinks=False
+                ).st_size,
+                "canonical_clip_index_rows": len(clip_index),
+                "canonical_study_embeddings_sha256": sha256_file(
+                    study_embeddings_path
+                ),
+                "canonical_study_embeddings_size_bytes": study_embeddings_path.stat(
+                    follow_symlinks=False
+                ).st_size,
+                "canonical_study_manifest_sha256": sha256_file(study_manifest_path),
+                "canonical_study_manifest_size_bytes": study_manifest_path.stat(
+                    follow_symlinks=False
+                ).st_size,
+                "canonical_study_store_receipt_sha256": sha256_file(
+                    study_receipt_path
+                ),
+                "canonical_study_store_receipt_size_bytes": study_receipt_path.stat(
+                    follow_symlinks=False
+                ).st_size,
+                "cohort_preservation_receipt_sha256": sha256_file(
+                    cohort_receipt_path
+                ),
+                "cohort_preservation_receipt_size_bytes": cohort_receipt_path.stat(
+                    follow_symlinks=False
+                ).st_size,
+                "cohort_preserved_artifacts": len(cohort_receipt["artifacts"]),
+                "cohort_preservation_second_pass_replay_passed": cohort_receipt[
+                    "second_pass_replay_passed"
+                ],
+                "cohort_preservation_passed": cohort_receipt["status"]
+                == "PASS_COHORT_PRESERVATION",
+            }
+        )
     validate_closed_final_summary(result)
     return result
 
@@ -1084,6 +2515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         contract=contract, contract_path=args.contract,
         environment_receipt=args.environment_receipt,
         cache_retirement_authorization_root=args.cache_retirement_authorization_root,
+        canonical_output_root=args.output.parent,
     )
     write_json_atomic(args.output, summary)
     print(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import hashlib
 import importlib.util
 import json
@@ -15,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 from types import ModuleType, SimpleNamespace
+from typing import Mapping
 from unittest import mock
 
 
@@ -852,6 +854,9 @@ def test_production_finalizer_reconciles_exact_cohort_and_five_no_cine() -> None
         assert summary["no_cine_studies"] == 5
         assert summary["raw_dicoms_retained"] is True
         assert summary["extracted_cache_retired"] is True
+        assert summary["model_fitting_count"] == 0
+        assert summary["endpoint_prediction_count"] == 0
+        assert summary["confirmatory_performance_access_count"] == 0
         policy, _ = analysis_modes.load_policy(
             ROOT / "configs" / "lvef_multitask_safe_export_policy.yaml"
         )
@@ -862,6 +867,14 @@ def test_production_finalizer_reconciles_exact_cohort_and_five_no_cine() -> None
             policy=policy,
         )
         assert result["status"] == "PASS"
+
+        changed = {**summary, "endpoint_prediction_count": 1}
+        try:
+            finalizer.validate_closed_final_summary(changed)
+        except finalizer.ProductionFinalizationError as exc:
+            assert exc.code == "FINAL_SUMMARY_SCIENTIFIC_SCOPE_INVALID"
+        else:
+            raise AssertionError("nonzero prediction count was accepted")
 
 
 def test_production_finalizer_fails_on_missing_batch_or_scientific_inconsistency() -> None:
@@ -882,6 +895,640 @@ def test_production_finalizer_fails_on_missing_batch_or_scientific_inconsistency
                 paths, expected_governing_commit="a" * 40
             ),
         )
+
+
+def _write_embedding_replay_fixture(root: Path) -> tuple[dict[str, Path], dict[str, object]]:
+    import lvef_reconstruction_smoke as smoke
+    import numpy as np
+
+    root.mkdir(parents=True, exist_ok=True)
+    planned: dict[str, object] = {
+        "batch_id": "c3_batch_000",
+        "n_studies": 3,
+        "studies": [
+            {"subject_id": "101", "study_id": "1001", "split": "train"},
+            {"subject_id": "102", "study_id": "1002", "split": "train"},
+            {"subject_id": "103", "study_id": "1003", "split": "train"},
+        ],
+    }
+    clip_array = np.stack(
+        [
+            np.linspace(0.0, 1.0, 512, dtype=np.float32),
+            np.linspace(1.0, 2.0, 512, dtype=np.float32),
+            np.linspace(2.0, 3.0, 512, dtype=np.float32),
+        ]
+    )
+    clip_rows: list[dict[str, object]] = []
+    for index, (subject, study) in enumerate(
+        (("101", "1001"), ("101", "1001"), ("102", "1002"))
+    ):
+        vector = clip_array[index]
+        clip_rows.append(
+            {
+                "embedding_idx": index,
+                "subject_id": subject,
+                "study_id": study,
+                "clip_key": hashlib.sha256(f"clip-{index}".encode()).hexdigest(),
+                "physical_source_key": hashlib.sha256(
+                    f"source-{index}".encode()
+                ).hexdigest(),
+                "embedding_l2_norm": float(
+                    np.linalg.norm(vector.astype(np.float64))
+                ),
+                "embedding_sha256": smoke.array_content_sha256(vector),
+                "write_ok": True,
+            }
+        )
+    study_rows: list[dict[str, object]] = [
+        {"study_idx": 0, "subject_id": "101", "study_id": "1001", "n_clips": 2},
+        {"study_idx": 1, "subject_id": "102", "study_id": "1002", "n_clips": 1},
+    ]
+    study_array = finalizer.preservation.mean_pool_study_embeddings(
+        clip_embeddings=clip_array,
+        clip_rows=clip_rows,
+        study_rows=study_rows,
+    )
+    for row, vector in zip(study_rows, study_array, strict=True):
+        row["embedding_sha256"] = smoke.array_content_sha256(vector)
+    dispositions = [
+        {"subject_id": "101", "study_id": "1001", "disposition": "IMAGING_ELIGIBLE"},
+        {"subject_id": "102", "study_id": "1002", "disposition": "IMAGING_ELIGIBLE"},
+        {
+            "subject_id": "103",
+            "study_id": "1003",
+            "disposition": "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE",
+        },
+    ]
+    paths = {
+        "clip_manifest": root / "clip_manifest.restricted.csv",
+        "clip_embeddings": root / "clip_embeddings.restricted.npz",
+        "study_manifest": root / "study_manifest.restricted.csv",
+        "study_embeddings": root / "study_embeddings.restricted.npz",
+        "disposition": root / "study_disposition.restricted.csv",
+    }
+
+    def write_rows(path: Path, header: list[str], rows: list[dict[str, object]]) -> None:
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=header, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+
+    write_rows(paths["clip_manifest"], finalizer.CLIP_MANIFEST_HEADER, clip_rows)
+    write_rows(paths["study_manifest"], finalizer.STUDY_MANIFEST_HEADER, study_rows)
+    write_rows(paths["disposition"], finalizer.DISPOSITION_HEADER, dispositions)
+    np.savez_compressed(paths["clip_embeddings"], embeddings=clip_array)
+    np.savez_compressed(paths["study_embeddings"], embeddings=study_array)
+    return paths, planned
+
+
+def _replay_fixture(paths: dict[str, Path], planned: dict[str, object]):
+    return finalizer.replay_batch_study_embeddings(
+        clip_manifest_path=paths["clip_manifest"],
+        clip_embeddings_path=paths["clip_embeddings"],
+        study_manifest_path=paths["study_manifest"],
+        study_embeddings_path=paths["study_embeddings"],
+        disposition_path=paths["disposition"],
+        planned_batch=planned,
+        expected_clip_embeddings=3,
+        expected_study_embeddings=2,
+        expected_no_cine_studies=1,
+    )
+
+
+def test_finalizer_independently_replays_exact_batch_pooling_and_dispositions() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        paths, planned = _write_embedding_replay_fixture(Path(directory))
+        with mock.patch.object(
+            finalizer.preservation,
+            "mean_pool_study_embeddings",
+            wraps=finalizer.preservation.mean_pool_study_embeddings,
+        ) as replay:
+            records = _replay_fixture(paths, planned)
+        assert replay.call_count == 1
+        assert [(row["subject_id"], row["study_id"]) for row in records] == [
+            ("101", "1001"),
+            ("102", "1002"),
+        ]
+        assert all(row["embedding"].dtype.name == "float32" for row in records)
+
+
+def test_finalizer_rejects_pooling_mutation_and_no_cine_mismatch() -> None:
+    import lvef_reconstruction_smoke as smoke
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as directory:
+        paths, planned = _write_embedding_replay_fixture(Path(directory))
+        with np.load(paths["study_embeddings"], allow_pickle=False) as archive:
+            mutated = archive["embeddings"].copy()
+        mutated[0, 0] = np.nextafter(mutated[0, 0], np.float32("inf"))
+        np.savez_compressed(paths["study_embeddings"], embeddings=mutated)
+        with paths["study_manifest"].open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        rows[0]["embedding_sha256"] = smoke.array_content_sha256(mutated[0])
+        with paths["study_manifest"].open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle, fieldnames=finalizer.STUDY_MANIFEST_HEADER, lineterminator="\n"
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        expect_code(
+            "FINALIZER_STUDY_POOLING_RECOMPUTATION_MISMATCH",
+            lambda: _replay_fixture(paths, planned),
+        )
+
+        paths, planned = _write_embedding_replay_fixture(Path(directory) / "disposition")
+        with paths["disposition"].open(newline="", encoding="utf-8") as handle:
+            dispositions = list(csv.DictReader(handle))
+        dispositions[-1]["disposition"] = "IMAGING_ELIGIBLE"
+        with paths["disposition"].open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle, fieldnames=finalizer.DISPOSITION_HEADER, lineterminator="\n"
+            )
+            writer.writeheader()
+            writer.writerows(dispositions)
+        expect_code(
+            "FINALIZER_NO_CINE_DISPOSITION_MISMATCH",
+            lambda: _replay_fixture(paths, planned),
+        )
+
+
+def test_finalizer_writes_plan_ordered_canonical_store_no_clobber() -> None:
+    import lvef_reconstruction_smoke as smoke
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        root.chmod(0o700)
+        embeddings = np.stack(
+            [np.full(512, 2.0, dtype=np.float32), np.full(512, 1.0, dtype=np.float32)]
+        )
+        with mock.patch.object(finalizer, "EXPECTED_IMAGING_ELIGIBLE_STUDIES", 2):
+            records, embeddings = finalizer.build_plan_ordered_canonical_study_store(
+                plan={
+                    "batches": [
+                        {
+                            "batch_id": "c3_batch_000",
+                            "studies": [{"subject_id": "20", "study_id": "200"}],
+                        },
+                        {
+                            "batch_id": "c3_batch_001",
+                            "studies": [{"subject_id": "10", "study_id": "100"}],
+                        },
+                    ]
+                },
+                studies_by_id={
+                    "100": {
+                        "subject_id": "10", "batch_id": "c3_batch_001",
+                        "n_clips": 1,
+                        "embedding_sha256": smoke.array_content_sha256(embeddings[1]),
+                        "embedding": embeddings[1],
+                    },
+                    "200": {
+                        "subject_id": "20", "batch_id": "c3_batch_000",
+                        "n_clips": 1,
+                        "embedding_sha256": smoke.array_content_sha256(embeddings[0]),
+                        "embedding": embeddings[0],
+                    },
+                },
+            )
+            assert [row["study_id"] for row in records] == ["200", "100"]
+            receipt = finalizer.write_canonical_study_store(
+                output_root=root,
+                records=records,
+                embeddings=embeddings,
+                governing_commit="a" * 40,
+                attempt_id="lvef_c3_attempt_shared",
+                batch_plan_sha256="b" * 64,
+                batch_receipt_set_sha256="c" * 64,
+                no_cine_studies=1,
+            )
+            assert receipt["status"] == "PASS_CANONICAL_STUDY_EMBEDDING_STORE"
+            with np.load(
+                root / finalizer.CANONICAL_STUDY_EMBEDDINGS_NAME,
+                allow_pickle=False,
+            ) as archive:
+                assert np.array_equal(archive["embeddings"], embeddings)
+            with (root / finalizer.CANONICAL_STUDY_MANIFEST_NAME).open(
+                newline="", encoding="utf-8"
+            ) as handle:
+                manifest = list(csv.DictReader(handle))
+            assert [row["study_id"] for row in manifest] == ["200", "100"]
+            expect_code(
+                "CANONICAL_STUDY_OUTPUT_ALREADY_EXISTS",
+                lambda: finalizer.write_canonical_study_store(
+                    output_root=root,
+                    records=records,
+                    embeddings=embeddings,
+                    governing_commit="a" * 40,
+                    attempt_id="lvef_c3_attempt_shared",
+                    batch_plan_sha256="b" * 64,
+                    batch_receipt_set_sha256="c" * 64,
+                    no_cine_studies=1,
+                ),
+            )
+
+
+def test_finalizer_rejects_duplicate_canonical_study_keys() -> None:
+    import lvef_reconstruction_smoke as smoke
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        root.chmod(0o700)
+        embeddings = np.stack(
+            [np.zeros(512, dtype=np.float32), np.ones(512, dtype=np.float32)]
+        )
+        records = [
+            {
+                "study_idx": index,
+                "subject_id": str(10 + index),
+                "study_id": "100",
+                "batch_id": f"c3_batch_{index:03d}",
+                "n_clips": 1,
+                "embedding_sha256": smoke.array_content_sha256(embeddings[index]),
+            }
+            for index in range(2)
+        ]
+        with mock.patch.object(finalizer, "EXPECTED_IMAGING_ELIGIBLE_STUDIES", 2):
+            expect_code(
+                "CANONICAL_STUDY_MANIFEST_AUTHORITY_INVALID",
+                lambda: finalizer.write_canonical_study_store(
+                    output_root=root,
+                    records=records,
+                    embeddings=embeddings,
+                    governing_commit="a" * 40,
+                    attempt_id="lvef_c3_attempt_shared",
+                    batch_plan_sha256="b" * 64,
+                    batch_receipt_set_sha256="c" * 64,
+                    no_cine_studies=1,
+                ),
+            )
+        assert list(root.iterdir()) == []
+
+
+def _cohort_preservation_fixture(root: Path) -> dict[str, object]:
+    import lvef_reconstruction_smoke as smoke
+    import numpy as np
+
+    production_root = root / "production"
+    attempt_id = "lvef_c3_full_synthetic_001"
+    output_root = (
+        production_root / "attempts" / attempt_id / "cohort_finalization"
+    )
+    output_root.mkdir(parents=True, mode=0o700)
+    production_root.chmod(0o700)
+    output_root.chmod(0o700)
+    governing_commit = "a" * 40
+    plan_sha = "b" * 64
+    vectors = [
+        np.full(512, 1.0, dtype=np.float32),
+        np.full(512, 2.0, dtype=np.float32),
+    ]
+    plan_batches: list[dict[str, object]] = []
+    records_by_batch: dict[str, list[dict[str, object]]] = {}
+    receipt_paths: list[Path] = []
+    store_paths: list[Path] = []
+    for index, vector in enumerate(vectors):
+        batch_id = f"c3_batch_{index:03d}"
+        subject_id = str(101 + index)
+        study_id = str(1001 + index)
+        source_key = hashlib.sha256(f"source-{index}".encode()).hexdigest()
+        batch_root = (
+            production_root / "attempts" / attempt_id / "batches" / batch_id
+        )
+        store_path = batch_root / "echoprime" / "clip_embeddings.restricted.npz"
+        store_path.parent.mkdir(parents=True)
+        np.savez_compressed(store_path, embeddings=np.stack([vector]))
+        store_path.chmod(0o600)
+        store_sha = finalizer.sha256_file(store_path)
+        manifest_sha = hashlib.sha256(f"manifest-{index}".encode()).hexdigest()
+        receipt = _batch_receipt(index)
+        receipt.update(
+            {
+                "batch_id": batch_id,
+                "attempt_id": attempt_id,
+                "governing_commit": governing_commit,
+                "source_commit": governing_commit,
+                "batch_plan_sha256": plan_sha,
+                "n_selected_studies": 1,
+                "n_selected_subjects": 1,
+                "n_expected_objects": 1,
+                "expected_source_bytes": 100 + index,
+                "n_download_verified": 1,
+                "n_dicom_readable": 1,
+                "n_dicom_unreadable": 0,
+                "n_multiframe_cines": 1,
+                "n_single_frame_objects": 0,
+                "n_extracted_clips": 1,
+                "n_unique_clip_keys": 1,
+                "n_clip_embeddings": 1,
+                "n_pooled_studies": 1,
+                "n_no_cine_studies": 0,
+                "no_cine_disposition": "NONE",
+                "clip_manifest_sha256": manifest_sha,
+                "clip_embeddings_sha256": store_sha,
+            }
+        )
+        receipt_path = (
+            batch_root
+            / "preservation"
+            / "batch_finalization_receipt.restricted.json"
+        )
+        receipt_path.parent.mkdir(parents=True)
+        receipt_path.write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        receipt_path.chmod(0o600)
+        receipt_paths.append(receipt_path)
+        store_paths.append(store_path)
+        plan_batches.append(
+            {
+                "batch_id": batch_id,
+                "objects": [
+                    {
+                        "subject_id": subject_id,
+                        "study_id": study_id,
+                        "source_object_key": source_key,
+                    }
+                ],
+            }
+        )
+        records_by_batch[batch_id] = [
+            {
+                "batch_id": batch_id,
+                "batch_embedding_idx": 0,
+                "subject_id": subject_id,
+                "study_id": study_id,
+                "clip_key": hashlib.sha256(f"clip-{index}".encode()).hexdigest(),
+                "physical_source_key": source_key,
+                "embedding_sha256": smoke.array_content_sha256(vector),
+                "batch_clip_manifest_sha256": manifest_sha,
+                "batch_clip_embeddings_sha256": store_sha,
+            }
+        ]
+    receipt_set_sha = hashlib.sha256(
+        "\n".join(sorted(finalizer.sha256_file(path) for path in receipt_paths)).encode(
+            "ascii"
+        )
+        + b"\n"
+    ).hexdigest()
+    study_records = [
+        {
+            "study_idx": index,
+            "subject_id": str(101 + index),
+            "study_id": str(1001 + index),
+            "batch_id": f"c3_batch_{index:03d}",
+            "n_clips": 1,
+            "embedding_sha256": smoke.array_content_sha256(vector),
+        }
+        for index, vector in enumerate(vectors)
+    ]
+    finalizer.write_canonical_study_store(
+        output_root=output_root,
+        records=study_records,
+        embeddings=np.stack(vectors),
+        governing_commit=governing_commit,
+        attempt_id=attempt_id,
+        batch_plan_sha256=plan_sha,
+        batch_receipt_set_sha256=receipt_set_sha,
+        no_cine_studies=0,
+        expected_study_count=2,
+    )
+    artifacts: list[dict[str, object]] = []
+    for role, paths in (
+        ("batch_final_receipt", receipt_paths),
+        ("batch_clip_embeddings", store_paths),
+        (
+            "canonical_study_embeddings",
+            [output_root / finalizer.CANONICAL_STUDY_EMBEDDINGS_NAME],
+        ),
+        (
+            "canonical_study_manifest",
+            [output_root / finalizer.CANONICAL_STUDY_MANIFEST_NAME],
+        ),
+        (
+            "canonical_study_store",
+            [output_root / finalizer.CANONICAL_STUDY_RECEIPT_NAME],
+        ),
+    ):
+        for path in paths:
+            artifacts.append(
+                {
+                    "role": role,
+                    "relative_path": path.relative_to(production_root).as_posix(),
+                    "size_bytes": path.stat(follow_symlinks=False).st_size,
+                    "sha256": finalizer.sha256_file(path),
+                }
+            )
+    plan = {"batches": plan_batches}
+    clip_rows = finalizer.build_plan_ordered_canonical_clip_index(
+        plan=plan,
+        records_by_batch={
+            "c3_batch_001": records_by_batch["c3_batch_001"],
+            "c3_batch_000": records_by_batch["c3_batch_000"],
+        },
+        expected_clip_count=2,
+    )
+    return {
+        "production_root": production_root,
+        "output_root": output_root,
+        "attempt_id": attempt_id,
+        "governing_commit": governing_commit,
+        "plan_sha": plan_sha,
+        "receipt_set_sha": receipt_set_sha,
+        "plan": plan,
+        "records_by_batch": records_by_batch,
+        "clip_rows": clip_rows,
+        "artifacts": artifacts,
+        "receipt_paths": receipt_paths,
+        "store_paths": store_paths,
+    }
+
+
+def _write_cohort_fixture(fixture: Mapping[str, object]) -> Mapping[str, object]:
+    return finalizer.write_cohort_preservation_outputs(
+        output_root=fixture["output_root"],
+        artifact_root=fixture["production_root"],
+        clip_index_rows=fixture["clip_rows"],
+        artifacts=fixture["artifacts"],
+        governing_commit=fixture["governing_commit"],
+        attempt_id=fixture["attempt_id"],
+        batch_plan_sha256=fixture["plan_sha"],
+        batch_receipt_set_sha256=fixture["receipt_set_sha"],
+        production_batches=2,
+        study_embeddings=fixture.get("study_embeddings", 2),
+        no_cine_studies=fixture.get("no_cine_studies", 0),
+    )
+
+
+def test_cohort_clip_index_is_plan_ordered_and_binds_exact_batch_stores() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        assert [row["batch_id"] for row in fixture["clip_rows"]] == [
+            "c3_batch_000",
+            "c3_batch_001",
+        ]
+        receipt = _write_cohort_fixture(fixture)
+        assert receipt["status"] == "PASS_COHORT_PRESERVATION"
+        assert len(receipt["artifacts"]) == 8
+        clip_path = fixture["output_root"] / finalizer.CANONICAL_CLIP_INDEX_NAME
+        with clip_path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        assert [int(row["clip_idx"]) for row in rows] == [0, 1]
+        assert [int(row["batch_embedding_idx"]) for row in rows] == [0, 0]
+        assert [row["batch_id"] for row in rows] == [
+            "c3_batch_000",
+            "c3_batch_001",
+        ]
+        store_hashes = {
+            finalizer.sha256_file(path) for path in fixture["store_paths"]
+        }
+        assert {row["batch_clip_embeddings_sha256"] for row in rows} == store_hashes
+        receipt_path = (
+            fixture["output_root"] / finalizer.COHORT_PRESERVATION_RECEIPT_NAME
+        )
+        assert finalizer.replay_cohort_preservation_receipt(
+            receipt_path, artifact_root=fixture["production_root"]
+        ) == receipt
+
+
+def test_cohort_clip_index_rejects_duplicate_clip_or_physical_source() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        records = copy.deepcopy(fixture["records_by_batch"])
+        records["c3_batch_001"][0]["clip_key"] = records["c3_batch_000"][0][
+            "clip_key"
+        ]
+        expect_code(
+            "GLOBAL_CLIP_KEY_COLLISION",
+            lambda: finalizer.build_plan_ordered_canonical_clip_index(
+                plan=fixture["plan"],
+                records_by_batch=records,
+                expected_clip_count=2,
+            ),
+        )
+        records = copy.deepcopy(fixture["records_by_batch"])
+        duplicate_source = records["c3_batch_000"][0]["physical_source_key"]
+        records["c3_batch_001"][0]["physical_source_key"] = duplicate_source
+        fixture["plan"]["batches"][1]["objects"][0][
+            "source_object_key"
+        ] = duplicate_source
+        expect_code(
+            "GLOBAL_PHYSICAL_SOURCE_COLLISION",
+            lambda: finalizer.build_plan_ordered_canonical_clip_index(
+                plan=fixture["plan"],
+                records_by_batch=records,
+                expected_clip_count=2,
+            ),
+        )
+
+
+def test_cohort_preservation_requires_exact_inventory_and_receipt_set() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        incomplete = {**fixture, "artifacts": fixture["artifacts"][:-1]}
+        expect_code("COHORT_ARTIFACT_SET_MISMATCH", lambda: _write_cohort_fixture(incomplete))
+        assert not (
+            fixture["output_root"] / finalizer.CANONICAL_CLIP_INDEX_NAME
+        ).exists()
+
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        wrong_set = {**fixture, "receipt_set_sha": "f" * 64}
+        expect_code("COHORT_BATCH_RECEIPT_SET_MISMATCH", lambda: _write_cohort_fixture(wrong_set))
+        assert not (
+            fixture["output_root"] / finalizer.COHORT_PRESERVATION_RECEIPT_NAME
+        ).exists()
+
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        wrong_count = {**fixture, "study_embeddings": 1}
+        expect_code(
+            "COHORT_BATCH_COUNT_BINDING_MISMATCH",
+            lambda: _write_cohort_fixture(wrong_count),
+        )
+
+
+def test_cohort_preservation_rejects_vector_mutation_before_terminal_receipt() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        fixture["clip_rows"][0]["embedding_sha256"] = "f" * 64
+        expect_code("COHORT_CLIP_VECTOR_BINDING_MISMATCH", lambda: _write_cohort_fixture(fixture))
+        assert not (
+            fixture["output_root"] / finalizer.COHORT_PRESERVATION_RECEIPT_NAME
+        ).exists()
+
+
+def test_cohort_preservation_rejects_store_and_index_binding_mutations() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        fixture["clip_rows"][0]["batch_clip_embeddings_sha256"] = "f" * 64
+        expect_code("COHORT_CLIP_STORE_BINDING_MISMATCH", lambda: _write_cohort_fixture(fixture))
+
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        fixture["clip_rows"][1]["batch_embedding_idx"] = 1
+        expect_code(
+            "CANONICAL_CLIP_INDEX_AUTHORITY_INVALID",
+            lambda: _write_cohort_fixture(fixture),
+        )
+
+
+def test_cohort_preservation_receipt_is_published_only_after_replay() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        receipt_path = (
+            fixture["output_root"] / finalizer.COHORT_PRESERVATION_RECEIPT_NAME
+        )
+
+        def reject_replay(*_args, **_kwargs):
+            assert not receipt_path.exists()
+            raise finalizer.ProductionFinalizationError("SYNTHETIC_REPLAY_FAILURE")
+
+        with mock.patch.object(
+            finalizer, "_replay_cohort_artifact_inventory", reject_replay
+        ):
+            expect_code("SYNTHETIC_REPLAY_FAILURE", lambda: _write_cohort_fixture(fixture))
+        assert not receipt_path.exists()
+
+
+def test_cohort_preservation_second_pass_and_no_clobber_are_fail_closed() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        _write_cohort_fixture(fixture)
+        output_root = fixture["output_root"]
+        clip_path = output_root / finalizer.CANONICAL_CLIP_INDEX_NAME
+        receipt_path = output_root / finalizer.COHORT_PRESERVATION_RECEIPT_NAME
+        original_clip = clip_path.read_bytes()
+        original_receipt = receipt_path.read_bytes()
+        expect_code("COHORT_PRESERVATION_OUTPUT_EXISTS", lambda: _write_cohort_fixture(fixture))
+        assert clip_path.read_bytes() == original_clip
+        assert receipt_path.read_bytes() == original_receipt
+
+        manifest = output_root / finalizer.CANONICAL_STUDY_MANIFEST_NAME
+        manifest.write_bytes(manifest.read_bytes() + b"\n")
+        expect_code(
+            "COHORT_ARTIFACT_SECOND_PASS_MISMATCH",
+            lambda: finalizer.replay_cohort_preservation_receipt(
+                receipt_path, artifact_root=fixture["production_root"]
+            ),
+        )
+
+
+def test_cohort_preservation_rejects_symlinked_inventory_member() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _cohort_preservation_fixture(Path(directory))
+        store = fixture["store_paths"][0]
+        outside = Path(directory) / "outside.npz"
+        outside.write_bytes(store.read_bytes())
+        store.unlink()
+        store.symlink_to(outside)
+        expect_code("COHORT_ARTIFACT_NOT_REGULAR", lambda: _write_cohort_fixture(fixture))
+        assert outside.exists()
+        assert not (
+            fixture["output_root"] / finalizer.COHORT_PRESERVATION_RECEIPT_NAME
+        ).exists()
 
 
 def test_canary_finalizer_binds_exact_five_retained_cache_receipt() -> None:
@@ -1012,6 +1659,7 @@ def test_finalizer_rejects_cross_batch_clip_key_collision() -> None:
         finalizer.accumulate_global_clip_authority(
             write_manifest("first.csv", clip, first_source, "1", "10"),
             planned_batch={
+                "batch_id": "c3_batch_000",
                 "objects": [{"source_object_key": first_source, "subject_id": "1", "study_id": "10"}]
             },
             expected_rows=1,
@@ -1023,6 +1671,7 @@ def test_finalizer_rejects_cross_batch_clip_key_collision() -> None:
             lambda: finalizer.accumulate_global_clip_authority(
                 write_manifest("second.csv", clip, second_source, "2", "20"),
                 planned_batch={
+                    "batch_id": "c3_batch_001",
                     "objects": [{"source_object_key": second_source, "subject_id": "2", "study_id": "20"}]
                 },
                 expected_rows=1,
@@ -1781,3 +2430,492 @@ def test_cache_retirement_delete_is_exact_no_follow_and_resumable() -> None:
         (root / "bad").symlink_to(outside)
         expect_code("CACHE_TREE_SYMLINK", lambda: retirement._delete_cache_tree(root))
         assert (outside / "keep").read_text(encoding="utf-8") == "keep"
+
+
+def _retirement_eligibility_fixture() -> tuple[
+    dict[str, object], dict[str, object], dict[str, str], dict[str, object],
+    dict[str, str],
+]:
+    receipt = _canary_eligibility_receipt()
+    authority = {
+        key: hashlib.sha256(f"retirement-{key}".encode()).hexdigest()
+        for key in finalizer.core.RUNTIME_AUTHORITY_KEYS
+    }
+    authority["git_commit"] = "a" * 40
+    authority.update(
+        {
+            "checkpoint_sha256": str(receipt["checkpoint_sha256"]),
+            "state_machine_schema_sha256": "e" * 64,
+            "resume_ledger_schema_sha256": "f" * 64,
+        }
+    )
+    contract = {
+        "cohort": {
+            "release": "mimic-iv-echo/1.0",
+            "split_map_sha256": "d" * 64,
+        },
+        "authority": {
+            "execution_contract_version": 2,
+            "state_machine_schema_sha256": authority[
+                "state_machine_schema_sha256"
+            ],
+            "resume_ledger_schema_sha256": authority[
+                "resume_ledger_schema_sha256"
+            ],
+        },
+    }
+    planned = {
+        "n_studies": 5,
+        "n_subjects": 5,
+        "n_objects": 6,
+        "source_bytes": 60_000,
+        "objects": [],
+    }
+    receipt["command_checksum"] = finalizer.core.canonical_json_sha256(
+        {
+            key: receipt[key]
+            for key in (
+                "production_stage_wrapper_sha256",
+                "batch_preservation_script_sha256",
+                "scheduler_runner_sha256",
+            )
+        }
+    )
+    receipt["config_checksum"] = finalizer.core.canonical_json_sha256(
+        {
+            "orchestration_contract_sha256": receipt[
+                "orchestration_contract_sha256"
+            ],
+            "batch_plan_sha256": receipt["batch_plan_sha256"],
+            "state_machine_schema_sha256": authority[
+                "state_machine_schema_sha256"
+            ],
+            "resume_ledger_schema_sha256": authority[
+                "resume_ledger_schema_sha256"
+            ],
+        }
+    )
+    hash_by_name = {
+        "contract.yaml": str(receipt["orchestration_contract_sha256"]),
+        "environment.json": str(receipt["environment_receipt_sha256"]),
+        "pooling_resume_ledger.restricted.json": str(
+            receipt["state_input_ledger_sha256"]
+        ),
+        "download_resume_ledger.restricted.json": str(
+            receipt["source_receipt_sha256"]
+        ),
+        "dicom_audit.restricted.csv": str(receipt["dicom_audit_sha256"]),
+        "extraction_manifest.restricted.csv": str(
+            receipt["extraction_manifest_sha256"]
+        ),
+        "clip_manifest.restricted.csv": str(receipt["clip_manifest_sha256"]),
+        "clip_embeddings.restricted.npz": str(receipt["clip_embeddings_sha256"]),
+        "study_manifest.restricted.csv": str(receipt["study_manifest_sha256"]),
+        "study_embeddings.restricted.npz": str(receipt["study_embeddings_sha256"]),
+        "batch_preservation_manifest.restricted.tsv": str(
+            receipt["preservation_manifest_sha256"]
+        ),
+        "lvef_c3_production_stages.py": str(
+            receipt["production_stage_wrapper_sha256"]
+        ),
+        "preserve_lvef_c3_production_batch.py": str(
+            receipt["batch_preservation_script_sha256"]
+        ),
+        "scc_run_lvef_c3_full_sequential.sh": str(
+            receipt["scheduler_runner_sha256"]
+        ),
+    }
+    return receipt, planned, authority, contract, hash_by_name
+
+
+def test_retirement_closed_validates_every_eligibility_invariant() -> None:
+    receipt, planned, authority, contract, hash_by_name = (
+        _retirement_eligibility_fixture()
+    )
+
+    def validate(candidate: dict[str, object]) -> None:
+        with mock.patch.object(
+            retirement,
+            "sha256_file",
+            side_effect=lambda path: hash_by_name[Path(path).name],
+        ), mock.patch.object(
+            retirement,
+            "load_json_and_sha256",
+            return_value=(
+                {"package_inventory_sha256": receipt["package_inventory_sha256"]},
+                receipt["environment_receipt_sha256"],
+            ),
+        ):
+            retirement.validate_preservation_eligibility_receipt(
+                candidate,
+                planned_batch=planned,
+                governing_commit="a" * 40,
+                attempt_id="lvef_c3_canary_synthetic",
+                batch_id="canary_batch_000",
+                plan_sha256="c" * 64,
+                expected_authority=authority,
+                contract=contract,
+                contract_path=Path("contract.yaml"),
+                environment_receipt=Path("environment.json"),
+                production_root=Path("/synthetic/production"),
+                preservation_manifest=Path(
+                    "batch_preservation_manifest.restricted.tsv"
+                ),
+            )
+
+    validate(receipt)
+    mutations = (
+        ("PRESERVATION_RECEIPT_SCHEMA_MISMATCH", lambda value: value.update(extra=True)),
+        ("PRESERVATION_GATE_FAILED", lambda value: value.update(pooling_gate_passed=False)),
+        (
+            "PRESERVATION_SCIENTIFIC_INCONSISTENCY",
+            lambda value: value.update(n_duplicate_physical_sources=1),
+        ),
+        (
+            "PRESERVATION_COUNT_OR_DISPOSITION_MISMATCH",
+            lambda value: value.update(n_download_verified=5),
+        ),
+        (
+            "PRESERVATION_COUNT_OR_DISPOSITION_MISMATCH",
+            lambda value: value.update(no_cine_disposition="INVALID"),
+        ),
+        (
+            "PRESERVATION_AUTHORITY_INVALID",
+            lambda value: value.update(package_inventory_sha256="0" * 64),
+        ),
+        ("PRESERVATION_HASH_INVALID", lambda value: value.update(clip_manifest_sha256="bad")),
+    )
+    for code, mutate in mutations:
+        candidate = copy.deepcopy(receipt)
+        mutate(candidate)
+        expect_code(code, lambda candidate=candidate: validate(candidate))
+
+    mismatched = copy.deepcopy(receipt)
+    bad_hashes = dict(hash_by_name)
+    bad_hashes["clip_embeddings.restricted.npz"] = "f" * 64
+    with mock.patch.object(
+        retirement,
+        "sha256_file",
+        side_effect=lambda path: bad_hashes[Path(path).name],
+    ), mock.patch.object(
+        retirement,
+        "load_json_and_sha256",
+        return_value=(
+            {"package_inventory_sha256": receipt["package_inventory_sha256"]},
+            receipt["environment_receipt_sha256"],
+        ),
+    ):
+        expect_code(
+            "PRESERVATION_REFERENCED_HASH_MISMATCH",
+            lambda: retirement.validate_preservation_eligibility_receipt(
+                mismatched,
+                planned_batch=planned,
+                governing_commit="a" * 40,
+                attempt_id="lvef_c3_canary_synthetic",
+                batch_id="canary_batch_000",
+                plan_sha256="c" * 64,
+                expected_authority=authority,
+                contract=contract,
+                contract_path=Path("contract.yaml"),
+                environment_receipt=Path("environment.json"),
+                production_root=Path("/synthetic/production"),
+                preservation_manifest=Path(
+                    "batch_preservation_manifest.restricted.tsv"
+                ),
+            ),
+        )
+
+
+def test_retirement_derives_before_comparing_and_validates_exact_object_scope() -> None:
+    derived = {
+        key: hashlib.sha256(f"runtime-{key}".encode()).hexdigest()
+        for key in finalizer.core.RUNTIME_AUTHORITY_KEYS
+    }
+    derived["git_commit"] = "a" * 40
+    ledger = {"authority": derived}
+    calls: list[str] = []
+
+    def derive(**_kwargs):
+        calls.append("derive")
+        return derived
+
+    def validate_resume(value, **kwargs):
+        calls.append("resume")
+        assert value is ledger
+        assert kwargs["expected_authority"] == derived
+        assert kwargs["attempt_id"] == "lvef_c3_synthetic_001"
+        assert kwargs["expected_object_keys"] == {
+            "c3_batch_000": {"1" * 64, "2" * 64}
+        }
+
+    with mock.patch.object(
+        retirement, "derive_current_runtime_authority", side_effect=derive
+    ), mock.patch.object(
+        retirement.core, "validate_resume_authority", side_effect=validate_resume
+    ):
+        observed = retirement._derive_and_validate_ledger_authority(
+            ledger=ledger,
+            plan={},
+            effective_requirements=object(),
+            contract={},
+            contract_path=Path("contract"),
+            governing_commit="a" * 40,
+            environment_receipt=Path("environment"),
+            supplied_runtime_authority=derived,
+            attempt_id="lvef_c3_synthetic_001",
+            batch_id="c3_batch_000",
+            expected_object_keys={"1" * 64, "2" * 64},
+        )
+        assert observed == derived
+        assert calls == ["derive", "resume"]
+
+        drifted = dict(derived)
+        drifted["batch_plan_sha256"] = "f" * 64
+        expect_code(
+            "SUPPLIED_RUNTIME_AUTHORITY_MISMATCH",
+            lambda: retirement._derive_and_validate_ledger_authority(
+                ledger=ledger,
+                plan={},
+                effective_requirements=object(),
+                contract={},
+                contract_path=Path("contract"),
+                governing_commit="a" * 40,
+                environment_receipt=Path("environment"),
+                supplied_runtime_authority=drifted,
+                attempt_id="lvef_c3_synthetic_001",
+                batch_id="c3_batch_000",
+                expected_object_keys={"1" * 64, "2" * 64},
+            ),
+        )
+        assert calls == ["derive", "resume", "derive"]
+
+
+def test_retirement_arbitrary_root_override_requires_private_test_capability() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        expect_code(
+            "PRODUCTION_ROOT_AUTHORITY_MISMATCH",
+            lambda: retirement._validate_production_root(
+                root,
+                allowed_production_prefix=root,
+                synthetic_test_capability=None,
+            ),
+        )
+        retirement._validate_production_root(
+            root,
+            allowed_production_prefix=root,
+            synthetic_test_capability=retirement._SYNTHETIC_TEST_ROOT_CAPABILITY,
+        )
+
+
+def test_invalid_retirement_gate_cannot_reach_rename_or_delete() -> None:
+    argv = [
+        "--execute", "--contract", "contract", "--plan", "plan",
+        "--environment-receipt", "environment", "--production-root", "production",
+        "--attempt-id", "lvef_c3_synthetic_001", "--batch-id", "c3_batch_000",
+        "--governing-commit", "a" * 40, "--final-ledger", "ledger",
+        "--preservation-receipt", "preservation", "--authorization-receipt",
+        "authorization", "--launch-authority-sha256", "b" * 64,
+    ]
+    with mock.patch.object(
+        retirement,
+        "validate_gate",
+        side_effect=retirement.CacheRetirementError("PRESERVATION_GATE_FAILED"),
+    ), mock.patch.object(retirement.os, "rename") as rename, mock.patch.object(
+        retirement, "_delete_cache_tree"
+    ) as delete:
+        expect_code("PRESERVATION_GATE_FAILED", lambda: retirement.main(argv))
+        rename.assert_not_called()
+        delete.assert_not_called()
+
+
+def _terminal_transition_fixture() -> tuple[dict[str, object], dict[str, object], dict[str, str]]:
+    authority = {
+        key: hashlib.sha256(f"terminal-{key}".encode()).hexdigest()
+        for key in finalizer.core.RUNTIME_AUTHORITY_KEYS
+    }
+    authority["git_commit"] = "a" * 40
+    predecessor = "1" * 64
+    transition: dict[str, object] = {
+        "schema_version": 2,
+        "receipt_type": "lvef_c3_state_transition_v2",
+        "attempt_id": "lvef_c3_synthetic_001",
+        "batch_id": "c3_batch_000",
+        "from_state": "CACHE_RETIREMENT_ELIGIBLE",
+        "to_state": "FINALIZED",
+        "status": "PASS",
+        "authority": authority,
+        "input_receipt_sha256": [predecessor],
+        "output_manifest_sha256": "2" * 64,
+    }
+    ledger = {
+        "batches": {
+            "c3_batch_000": {
+                "events": [
+                    {
+                        "from_state": "PRESERVATION_COMPLETE",
+                        "to_state": "CACHE_RETIREMENT_ELIGIBLE",
+                        "receipt_sha256": predecessor,
+                    },
+                    {
+                        "from_state": "CACHE_RETIREMENT_ELIGIBLE",
+                        "to_state": "FINALIZED",
+                        "receipt_sha256": finalizer.core.canonical_json_sha256(
+                            transition
+                        ),
+                    },
+                ]
+            }
+        }
+    }
+    return transition, ledger, authority
+
+
+def test_prior_terminal_transition_is_closed_and_exactly_predecessor_bound() -> None:
+    transition, ledger, authority = _terminal_transition_fixture()
+
+    def validate(candidate: dict[str, object]) -> None:
+        candidate_ledger = copy.deepcopy(ledger)
+        candidate_ledger["batches"]["c3_batch_000"]["events"][-1][
+            "receipt_sha256"
+        ] = finalizer.core.canonical_json_sha256(candidate)
+        prior_batch_gate.validate_terminal_transition(
+            candidate,
+            ledger=candidate_ledger,
+            expected_authority=authority,
+            attempt_id="lvef_c3_synthetic_001",
+            batch_id="c3_batch_000",
+            final_receipt_sha256="2" * 64,
+        )
+
+    validate(transition)
+    mutations = (
+        lambda value: value.update(extra=True),
+        lambda value: value.update(input_receipt_sha256=["1" * 64, "3" * 64]),
+        lambda value: value.update(output_manifest_sha256="4" * 64),
+        lambda value: value.update(status="FAIL"),
+        lambda value: value["authority"].update(batch_plan_sha256="5" * 64),
+    )
+    for mutate in mutations:
+        candidate = copy.deepcopy(transition)
+        mutate(candidate)
+        expect_code(
+            "PRIOR_FINALIZATION_TRANSITION_INVALID",
+            lambda candidate=candidate: validate(candidate),
+        )
+
+
+def test_prior_gate_derives_before_supplied_comparison_and_exact_scope() -> None:
+    authority = {
+        key: hashlib.sha256(f"prior-{key}".encode()).hexdigest()
+        for key in finalizer.core.RUNTIME_AUTHORITY_KEYS
+    }
+    authority["git_commit"] = "a" * 40
+    source = "1" * 64
+    attempt = "lvef_c3_synthetic_001"
+    root = Path("/synthetic/attempt")
+    plan_path = root / "full_batch_plan.restricted.json"
+    prior_root = root / "batches" / "c3_batch_000"
+    receipt_path = (
+        prior_root / "preservation" / "batch_finalization_receipt.restricted.json"
+    )
+    ledger_path = prior_root / "final_resume_ledger.restricted.json"
+    transition_path = (
+        prior_root / "preservation" / "cache_retirement_finalized.restricted.json"
+    )
+    plan = {
+        "batches": [
+            {
+                "batch_id": "c3_batch_000",
+                "objects": [{"source_object_key": source}],
+            },
+            {"batch_id": "c3_batch_001", "objects": []},
+        ]
+    }
+    receipt = {
+        "batch_id": "c3_batch_000",
+        "attempt_id": attempt,
+        "governing_commit": "a" * 40,
+        "batch_plan_sha256": "b" * 64,
+        "raw_dicoms_retained": True,
+        "extracted_cache_retired": True,
+    }
+    ledger = {
+        "status": "COMPLETE",
+        "batches": {"c3_batch_000": {"state": "FINALIZED"}},
+    }
+    transition: dict[str, object] = {}
+    calls: list[str] = []
+
+    def load(_path: Path, code: str, **_kwargs):
+        return {
+            "PRIOR_BATCH_PLAN": (plan, "2" * 64),
+            "PRIOR_FINAL_RECEIPT": (receipt, "3" * 64),
+            "PRIOR_FINAL_LEDGER": (ledger, "4" * 64),
+            "PRIOR_FINALIZATION_TRANSITION": (transition, "5" * 64),
+        }[code]
+
+    def derive(**_kwargs):
+        calls.append("derive")
+        return authority
+
+    def resume(value, **kwargs):
+        calls.append("resume")
+        assert value is ledger
+        assert kwargs["expected_authority"] == authority
+        assert kwargs["attempt_id"] == attempt
+        assert kwargs["expected_object_keys"] == {"c3_batch_000": {source}}
+
+    def terminal(*_args, **_kwargs):
+        calls.append("terminal")
+
+    patches = (
+        mock.patch.object(prior_batch_gate.core, "load_orchestration_contract", return_value={}),
+        mock.patch.object(prior_batch_gate.retirement, "load_json_and_sha256", side_effect=load),
+        mock.patch.object(prior_batch_gate.core, "validate_batch_plan", return_value="b" * 64),
+        mock.patch.object(prior_batch_gate.finalizer, "_validate_receipt"),
+        mock.patch.object(
+            prior_batch_gate.retirement,
+            "derive_current_runtime_authority",
+            side_effect=derive,
+        ),
+        mock.patch.object(prior_batch_gate.core, "validate_resume_authority", side_effect=resume),
+        mock.patch.object(prior_batch_gate, "validate_terminal_transition", side_effect=terminal),
+    )
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        prior_batch_gate.validate_prior_batch(
+            current_batch_id="c3_batch_001",
+            attempt_id=attempt,
+            governing_commit="a" * 40,
+            contract_path=Path("contract.yaml"),
+            plan_path=plan_path,
+            environment_receipt=Path("environment.json"),
+            final_receipt_path=receipt_path,
+            final_ledger_path=ledger_path,
+            transition_path=transition_path,
+            requirements=object(),
+            expected_runtime_authority=authority,
+        )
+    assert calls == ["derive", "resume", "terminal"]
+
+    calls.clear()
+    drifted = dict(authority)
+    drifted["batch_plan_sha256"] = "f" * 64
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        expect_code(
+            "SUPPLIED_RUNTIME_AUTHORITY_MISMATCH",
+            lambda: prior_batch_gate.validate_prior_batch(
+                current_batch_id="c3_batch_001",
+                attempt_id=attempt,
+                governing_commit="a" * 40,
+                contract_path=Path("contract.yaml"),
+                plan_path=plan_path,
+                environment_receipt=Path("environment.json"),
+                final_receipt_path=receipt_path,
+                final_ledger_path=ledger_path,
+                transition_path=transition_path,
+                requirements=object(),
+                expected_runtime_authority=drifted,
+            ),
+        )
+    assert calls == ["derive"]

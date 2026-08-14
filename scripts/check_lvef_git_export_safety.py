@@ -178,6 +178,9 @@ CLOUD_CREDENTIAL_JSON_KEY_RE = re.compile(
     r"[\"']\s*[:=]"
 )
 HARD_BLOCKED_TEXT_SUFFIXES = (".jsonl", ".ndjson", ".log", ".out", ".err")
+CONTROL_HASH_REFRESH_JSON_PATHS = frozenset(
+    {"configs/lvef_c3_canary_scheduler_plan_v1.json"}
+)
 
 
 def _assert_high_confidence_text_safety(
@@ -202,6 +205,56 @@ def _assert_high_confidence_text_safety(
         raise SafetyPolicyError("Staged text contains high-confidence cloud credential material")
     if PurePosixPath(relative_path).suffix.lower() == ".json" and CLOUD_CREDENTIAL_JSON_KEY_RE.search(text):
         raise SafetyPolicyError("Staged JSON contains cloud credential state")
+
+
+def _assert_closed_control_hash_refresh(
+    *, repo: Path, relative_path: str, payload: bytes
+) -> bool:
+    """Allow only an exact current-entrypoint hash refresh in one control JSON."""
+
+    if relative_path not in CONTROL_HASH_REFRESH_JSON_PATHS:
+        return False
+    try:
+        before = _strict_json_loads(
+            _git(repo, ["show", f"HEAD:{relative_path}"])
+        )
+        after = _strict_json_loads(payload)
+        before_stages = before["stages"]
+        after_stages = after["stages"]
+        if (
+            not isinstance(before_stages, list)
+            or not isinstance(after_stages, list)
+            or len(before_stages) != len(after_stages)
+        ):
+            raise SafetyPolicyError("Control JSON stage topology changed")
+        normalized_before = json.loads(json.dumps(before))
+        for old_stage, new_stage, normalized_stage in zip(
+            before_stages,
+            after_stages,
+            normalized_before["stages"],
+            strict=True,
+        ):
+            old_entrypoint = old_stage["entrypoint"]
+            new_entrypoint = new_stage["entrypoint"]
+            normalized_entrypoint = normalized_stage["entrypoint"]
+            if (
+                old_stage.get("stage_id") != new_stage.get("stage_id")
+                or old_entrypoint.get("path") != new_entrypoint.get("path")
+                or old_entrypoint.get("callable")
+                != new_entrypoint.get("callable")
+            ):
+                raise SafetyPolicyError("Control JSON entrypoint identity changed")
+            normalized_entrypoint["sha256"] = new_entrypoint.get("sha256")
+        if normalized_before != after:
+            raise SafetyPolicyError("Control JSON changed beyond entrypoint hashes")
+        from lvef_c3_canary_scheduler_plan import validate_scheduler_plan
+
+        validate_scheduler_plan(after, repository_root=repo)
+    except SafetyPolicyError:
+        raise
+    except Exception as exc:
+        raise SafetyPolicyError("Control JSON hash refresh is invalid") from exc
+    return True
 
 
 def _validate_release_pair(
@@ -308,7 +361,9 @@ def scan_staged_git_safety(
         suffix = PurePosixPath(relative_path).suffix.lower()
         if suffix in {".csv", ".tsv", ".tab"}:
             _assert_global_table_safety(payload, suffix, policy)
-        elif suffix == ".json":
+        elif suffix == ".json" and not _assert_closed_control_hash_refresh(
+            repo=root, relative_path=relative_path, payload=payload
+        ):
             _assert_global_json_safety(payload, policy)
         if _under_release_root(relative_path, policy):
             if relative_path.endswith(receipt_suffix):
