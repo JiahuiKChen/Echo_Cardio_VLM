@@ -71,6 +71,14 @@ SCIENCE_MARKERS: Final = {
     "--claim-submission": "FULL_C3_SUBMISSION_CLAIM=READY",
     "--validate-claimed-submission": "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS",
 }
+SCIENCE_CONTROL_FAILURE_MAXIMUM_BYTES: Final = 512
+SCIENCE_CONTROL_FAILURE_CODE_RE: Final = re.compile(r"[A-Z][A-Z0-9_]{1,127}")
+SCIENCE_CONTROL_ZERO_EFFECT_LINES: Final = (
+    "CLOUD_REQUESTS=0",
+    "QSUB_SUBMISSIONS=0",
+    "DICOM_BODY_READS=0",
+    "GPU_EXECUTIONS=0",
+)
 SUBMISSION_RECEIPT_KEYS: Final = frozenset(
     {
         "schema_version", "artifact_type", "status", "attempt_id",
@@ -328,6 +336,38 @@ def science_command(mode: str) -> list[str]:
     ]
 
 
+def parse_science_control_failure(
+    completed: subprocess.CompletedProcess[bytes],
+) -> str:
+    """Return only the safe code from one exact five-line child failure."""
+
+    stdout, stderr = bytes(completed.stdout), bytes(completed.stderr)
+    if (
+        completed.returncode != 78
+        or stderr
+        or not stdout
+        or len(stdout) > SCIENCE_CONTROL_FAILURE_MAXIMUM_BYTES
+        or not stdout.isascii()
+        or b"\x00" in stdout
+        or b"\r" in stdout
+        or not stdout.endswith(b"\n")
+    ):
+        _fail("SCIENCE_CONTROL_COMMAND_FAILED")
+    lines = stdout[:-1].decode("ascii").split("\n")
+    prefix = "FULL_C3_STATUS=BLOCKED_"
+    if (
+        len(lines) != 5
+        or any(not line for line in lines)
+        or not lines[0].startswith(prefix)
+        or tuple(lines[1:]) != SCIENCE_CONTROL_ZERO_EFFECT_LINES
+    ):
+        _fail("SCIENCE_CONTROL_COMMAND_FAILED")
+    code = lines[0][len(prefix):]
+    if SCIENCE_CONTROL_FAILURE_CODE_RE.fullmatch(code) is None:
+        _fail("SCIENCE_CONTROL_COMMAND_FAILED")
+    return code
+
+
 def run_science_mode(
     mode: str,
     *,
@@ -346,13 +386,15 @@ def run_science_mode(
             "LC_ALL": "C",
         },
     )
-    if (
-        completed.returncode != 0
-        or completed.stderr
-        or len(completed.stdout) > 512
-    ):
+    if completed.returncode != 0:
+        if completed.returncode != 78:
+            _fail("SCIENCE_CONTROL_COMMAND_FAILED")
+        raise FullSchedulerError(parse_science_control_failure(completed))
+    if completed.stderr or len(completed.stdout) > 512:
         _fail("SCIENCE_CONTROL_COMMAND_FAILED")
     raw_stdout = bytes(completed.stdout)
+    if raw_stdout.startswith(b"FULL_C3_STATUS=BLOCKED_"):
+        _fail("SCIENCE_CONTROL_COMMAND_FAILED")
     if raw_stdout.endswith(b"\n"):
         raw_stdout = raw_stdout[:-1]
     if b"\n" in raw_stdout or b"\r" in raw_stdout:

@@ -29,6 +29,21 @@ def completed(
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
 
+def science_failure_surface(code: str) -> bytes:
+    return (
+        "\n".join(
+            (
+                f"FULL_C3_STATUS=BLOCKED_{code}",
+                "CLOUD_REQUESTS=0",
+                "QSUB_SUBMISSIONS=0",
+                "DICOM_BODY_READS=0",
+                "GPU_EXECUTIONS=0",
+            )
+        )
+        + "\n"
+    ).encode("ascii")
+
+
 def topology() -> object:
     return scheduler.build_topology(head=HEAD, attempt_id=ATTEMPT)
 
@@ -270,6 +285,279 @@ def test_science_control_stdout_is_exactly_one_line() -> None:
     assert scheduler.SCIENCE_MARKERS["--validate-claimed-submission"] == (
         "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS"
     )
+
+
+def test_exact_science_control_failures_propagate_through_outer_guard() -> None:
+    codes = (
+        "AA",
+        "A" * 128,
+        "FULL_SEQUENTIAL_BATCH_PLAN_SIZE_MISMATCH",
+        "FULL_SEQUENTIAL_BATCH_PLAN_SHA256_MISMATCH",
+        "FULL_SEQUENTIAL_BATCH_PLAN_JSON_INVALID",
+        "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID",
+        "FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH",
+        "UNEXPECTED_SANITIZED_EXCEPTION",
+    )
+    for code in codes:
+        captured = _assert_scheduler_error(
+            scheduler.run_science_mode,
+            "--validate-claimed-submission",
+            runner=lambda *_args, _code=code, **_kwargs: completed(
+                stdout=science_failure_surface(_code), returncode=78
+            ),
+        )
+        assert captured.code == code
+        assert str(captured) == code
+
+        with (
+            mock.patch.object(
+                scheduler, "submit", side_effect=scheduler.FullSchedulerError(code)
+            ),
+            mock.patch("builtins.print") as printer,
+        ):
+            assert scheduler.guarded_main(["--submit"]) == 78
+        assert printer.call_args_list == [
+            mock.call(f"FULL_C3_SCHEDULER=BLOCKED_{code}")
+        ]
+
+
+def test_malformed_science_control_failures_collapse_to_generic_code() -> None:
+    code = "FULL_SEQUENTIAL_BATCH_PLAN_SIZE_MISMATCH"
+    lines = science_failure_surface(code).splitlines()
+    non_ascii = completed(
+        stdout=science_failure_surface(code).replace(b"PLAN", b"PL\xffN"),
+        returncode=78,
+    )
+    malformed = (
+        completed(stdout=b"\n".join(lines[:-1]) + b"\n", returncode=78),
+        completed(
+            stdout=science_failure_surface(code) + b"EXTRA_SAFE_FIELD=0\n",
+            returncode=78,
+        ),
+        completed(
+            stdout=b"\n".join((lines[0], lines[2], lines[1], *lines[3:]))
+            + b"\n",
+            returncode=78,
+        ),
+        completed(
+            stdout=b"\n".join((lines[0], lines[1], lines[1], *lines[3:]))
+            + b"\n",
+            returncode=78,
+        ),
+        completed(
+            stdout=science_failure_surface(code),
+            stderr=b"safe failure\n",
+            returncode=78,
+        ),
+        completed(stdout=science_failure_surface(code), returncode=77),
+        completed(stdout=science_failure_surface(code), returncode=79),
+        non_ascii,
+        completed(
+            stdout=science_failure_surface(code).replace(b"PLAN", b"PL\x00N"),
+            returncode=78,
+        ),
+        completed(
+            stdout=science_failure_surface(code).replace(b"\n", b"\r\n"),
+            returncode=78,
+        ),
+        completed(
+            stdout=science_failure_surface(code)
+            + b"A" * scheduler.SCIENCE_CONTROL_FAILURE_MAXIMUM_BYTES,
+            returncode=78,
+        ),
+        completed(
+            stdout=science_failure_surface("FULL sequential unsafe"),
+            returncode=78,
+        ),
+        completed(stdout=science_failure_surface("A"), returncode=78),
+        completed(stdout=science_failure_surface("A" * 129), returncode=78),
+        completed(stdout=science_failure_surface(" LEADING"), returncode=78),
+        completed(stdout=science_failure_surface("TRAILING "), returncode=78),
+        completed(stdout=science_failure_surface("TAB\tCODE"), returncode=78),
+        completed(
+            stdout=science_failure_surface(code).replace(
+                b"CLOUD_REQUESTS=0", b"CLOUD_REQUESTS =0"
+            ),
+            returncode=78,
+        ),
+        completed(
+            stdout=(
+                b"FULL_C3_STATUS=BLOCKED_/restricted/private/path\n"
+                + b"\n".join(lines[1:])
+                + b"\n"
+            ),
+            returncode=78,
+        ),
+        completed(
+            stdout=(scheduler.SCIENCE_MARKERS["--preflight-only"] + "\n").encode(
+                "ascii"
+            ),
+            returncode=78,
+        ),
+        completed(stdout=science_failure_surface(code)[:-1], returncode=78),
+    )
+    for result in malformed:
+        captured = _assert_scheduler_error(
+            scheduler.run_science_mode,
+            "--validate-claimed-submission",
+            runner=lambda *_args, _result=result, **_kwargs: _result,
+        )
+        assert captured.code == "SCIENCE_CONTROL_COMMAND_FAILED"
+        assert "/restricted/" not in str(captured)
+
+    captured = _assert_scheduler_error(
+        scheduler.run_science_mode,
+        "--validate-claimed-submission",
+        runner=lambda *_args, **_kwargs: non_ascii,
+    )
+    assert captured.__cause__ is None
+    assert captured.__context__ is None
+
+    captured = _assert_scheduler_error(
+        scheduler.run_science_mode,
+        "--validate-claimed-submission",
+        runner=lambda *_args, **_kwargs: completed(
+            stdout=science_failure_surface(code), returncode=0
+        ),
+    )
+    assert captured.code == "SCIENCE_CONTROL_COMMAND_FAILED"
+
+
+def test_installation_and_preflight_exact_failures_leave_claim_unreachable() -> None:
+    code = "FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH"
+    qsub = mock.Mock(return_value=completed(stdout=b"8123456\n"))
+    with (
+        mock.patch.object(scheduler, "validate_scheduler_tools"),
+        mock.patch.object(
+            scheduler,
+            "build_qsub_environment",
+            return_value=({"USER": "owner"}, "CANONICAL"),
+        ),
+        mock.patch.object(scheduler, "validate_no_active_jobs") as qstat,
+    ):
+        captured = _assert_scheduler_error(
+            scheduler.submit,
+            science_runner=lambda *_args, **_kwargs: completed(
+                stdout=science_failure_surface(code), returncode=78
+            ),
+            qsub_runner=qsub,
+        )
+    assert captured.code == code
+    qstat.assert_not_called()
+    qsub.assert_not_called()
+
+    with tempfile.TemporaryDirectory() as directory:
+        value = topology()
+        attempt_root = Path(directory) / "attempts" / ATTEMPT
+        test_topology = scheduler.SchedulerTopology(
+            head=value.head,
+            attempt_id=value.attempt_id,
+            scheduler_root=attempt_root / "scheduler",
+            array_job_name=value.array_job_name,
+            finalizer_job_name=value.finalizer_job_name,
+        )
+        qsub.reset_mock()
+        with (
+            mock.patch.object(
+                scheduler,
+                "validate_installation",
+                return_value=(test_topology, {"USER": "owner"}, "CANONICAL"),
+            ),
+            mock.patch.object(scheduler, "validate_no_active_jobs") as qstat,
+        ):
+            captured = _assert_scheduler_error(
+                scheduler.submit,
+                science_runner=lambda *_args, **_kwargs: completed(
+                    stdout=science_failure_surface(code), returncode=78
+                ),
+                qsub_runner=qsub,
+            )
+        assert captured.code == code
+        assert not attempt_root.exists()
+        qstat.assert_not_called()
+        qsub.assert_not_called()
+
+
+def test_claim_and_readback_exact_failures_preserve_claim_and_skip_qsub() -> None:
+    cases = (
+        ("--claim-submission", "FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH"),
+        (
+            "--validate-claimed-submission",
+            "FULL_SEQUENTIAL_BATCH_PLAN_SIZE_MISMATCH",
+        ),
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        value = topology()
+        for index, (failure_mode, code) in enumerate(cases):
+            attempt_root = Path(directory) / str(index) / "attempts" / ATTEMPT
+            test_topology = scheduler.SchedulerTopology(
+                head=value.head,
+                attempt_id=value.attempt_id,
+                scheduler_root=attempt_root / "scheduler",
+                array_job_name=value.array_job_name,
+                finalizer_job_name=value.finalizer_job_name,
+            )
+            claim_evidence = attempt_root / "claim-evidence.restricted"
+            science_calls: list[str] = []
+
+            def science_runner(
+                command: list[str], **_: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                mode = command[-1]
+                science_calls.append(mode)
+                if mode == "--preflight-only":
+                    return completed(
+                        stdout=(scheduler.SCIENCE_MARKERS[mode] + "\n").encode(
+                            "ascii"
+                        )
+                    )
+                if mode == "--claim-submission":
+                    attempt_root.mkdir(mode=0o700, parents=True)
+                    claim_evidence.write_bytes(b"preserved no-clobber evidence\n")
+                    os.chmod(claim_evidence, 0o600)
+                if mode == failure_mode:
+                    return completed(
+                        stdout=science_failure_surface(code), returncode=78
+                    )
+                return completed(
+                    stdout=(scheduler.SCIENCE_MARKERS[mode] + "\n").encode(
+                        "ascii"
+                    )
+                )
+
+            qsub = mock.Mock(return_value=completed(stdout=b"8123456\n"))
+            with (
+                mock.patch.object(
+                    scheduler,
+                    "validate_installation",
+                    return_value=(
+                        test_topology,
+                        {"USER": "owner"},
+                        "CANONICAL",
+                    ),
+                ),
+                mock.patch.object(
+                    scheduler, "validate_no_active_jobs"
+                ) as qstat,
+            ):
+                captured = _assert_scheduler_error(
+                    scheduler.submit,
+                    science_runner=science_runner,
+                    qsub_runner=qsub,
+                )
+            assert captured.code == code
+            assert claim_evidence.read_bytes() == b"preserved no-clobber evidence\n"
+            assert not test_topology.scheduler_root.exists()
+            assert not (
+                test_topology.scheduler_root
+                / "submission_receipt.restricted.json"
+            ).exists()
+            assert qstat.call_count == 1
+            qsub.assert_not_called()
+            expected_calls = ["--preflight-only", "--claim-submission"]
+            if failure_mode == "--validate-claimed-submission":
+                expected_calls.append("--validate-claimed-submission")
+            assert science_calls == expected_calls
 
 
 def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
