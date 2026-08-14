@@ -50,6 +50,7 @@ JOB_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ATTEMPT_RE = re.compile(r"^lvef_c3_full_[0-9a-f]{16}_[0-9a-f]{8}$")
+GENERIC_PRIVATE_FILE_MAXIMUM_BYTES = 16_000_000
 
 COMPLETED_CANARY_RUN_ID = "lvef_c3_minimal_5907a1ac53b05036_e5ca24c4"
 COMPLETED_CANARY_PRIVATE_TOPOLOGY = (
@@ -530,9 +531,32 @@ def _require_nonsymlink_components(path: Path) -> None:
 
 
 def _read_owner_private_regular(
-    path: Path, *, maximum_bytes: int = 16_000_000
+    path: Path,
+    *,
+    maximum_bytes: int = GENERIC_PRIVATE_FILE_MAXIMUM_BYTES,
+    exact_bytes: int | None = None,
+    size_mismatch_code: str = "FULL_SEQUENTIAL_PRIVATE_FILE_INVALID",
 ) -> bytes:
     """Read one bounded owner-private file through a stable no-follow fd."""
+
+    if (
+        not isinstance(maximum_bytes, int)
+        or isinstance(maximum_bytes, bool)
+        or maximum_bytes < 1
+        or (
+            exact_bytes is not None
+            and (
+                not isinstance(exact_bytes, int)
+                or isinstance(exact_bytes, bool)
+                or exact_bytes < 1
+                or exact_bytes > maximum_bytes
+                or not re.fullmatch(
+                    r"[A-Z][A-Z0-9_]{1,127}", size_mismatch_code
+                )
+            )
+        )
+    ):
+        _fail("FULL_SEQUENTIAL_PRIVATE_READ_CONTRACT_INVALID")
 
     _require_nonsymlink_components(path)
     try:
@@ -558,9 +582,14 @@ def _read_owner_private_regular(
             or stat.S_IMODE(before.st_mode) != 0o600
             or stat.S_IMODE(opened.st_mode) != 0o600
             or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-            or before.st_size < 1
-            or before.st_size > maximum_bytes
+            or (before.st_size, before.st_mtime_ns)
+            != (opened.st_size, opened.st_mtime_ns)
         ):
+            _fail("FULL_SEQUENTIAL_PRIVATE_FILE_INVALID")
+        if exact_bytes is not None:
+            if before.st_size != exact_bytes:
+                _fail(size_mismatch_code)
+        elif before.st_size < 1 or before.st_size > maximum_bytes:
             _fail("FULL_SEQUENTIAL_PRIVATE_FILE_INVALID")
         blocks: list[bytes] = []
         remaining = before.st_size
@@ -604,6 +633,85 @@ def _load_owner_private_json(path: Path) -> tuple[Mapping[str, Any], bytes]:
     if not isinstance(value, Mapping):
         _fail("FULL_SEQUENTIAL_PRIVATE_JSON_INVALID")
     return value, payload
+
+
+def _derive_full_batch_plan_read_contract(run: FullRun) -> tuple[int, str]:
+    """Derive the one exact materialized-plan bound from canonical bytes."""
+
+    canonical_payload = core.canonical_json_bytes(run.plan)
+    try:
+        expected_bytes = len(canonical_payload)
+        expected_sha256 = hashlib.sha256(canonical_payload).hexdigest()
+    finally:
+        # Do not retain the 100+ MB producer serialization while reading and
+        # parsing the independent on-disk consumer copy.
+        del canonical_payload
+    if (
+        expected_bytes < 1
+        or SHA_RE.fullmatch(expected_sha256) is None
+        or expected_sha256 != run.plan_sha256
+    ):
+        _fail("FULL_SEQUENTIAL_RUN_AUTHORITY_INVALID")
+    return expected_bytes, expected_sha256
+
+
+def _load_full_batch_plan_payload(
+    path: Path, *, expected_bytes: int, expected_sha256: str
+) -> Mapping[str, Any]:
+    """Read and parse one plan under an already-derived exact contract."""
+
+    if (
+        not isinstance(expected_bytes, int)
+        or isinstance(expected_bytes, bool)
+        or expected_bytes < 1
+        or SHA_RE.fullmatch(expected_sha256) is None
+    ):
+        _fail("FULL_SEQUENTIAL_RUN_AUTHORITY_INVALID")
+    try:
+        payload = _read_owner_private_regular(
+            path,
+            maximum_bytes=expected_bytes,
+            exact_bytes=expected_bytes,
+            size_mismatch_code="FULL_SEQUENTIAL_BATCH_PLAN_SIZE_MISMATCH",
+        )
+    except FullSequentialError as exc:
+        if exc.code == "FULL_SEQUENTIAL_BATCH_PLAN_SIZE_MISMATCH":
+            raise
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+        ) from exc
+
+    observed_sha256 = hashlib.sha256(payload).hexdigest()
+    if observed_sha256 != expected_sha256:
+        del payload
+        _fail("FULL_SEQUENTIAL_BATCH_PLAN_SHA256_MISMATCH")
+    try:
+        value = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_strict_json_pairs
+        )
+    except (FullSequentialError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_BATCH_PLAN_JSON_INVALID"
+        ) from exc
+    finally:
+        del payload
+    if not isinstance(value, Mapping):
+        _fail("FULL_SEQUENTIAL_BATCH_PLAN_JSON_INVALID")
+    return value
+
+
+def _load_full_batch_plan(run: FullRun) -> Mapping[str, Any]:
+    """Read FULL_BATCH_PLAN under its dynamic canonical-size/SHA contract."""
+
+    expected_bytes, expected_sha256 = _derive_full_batch_plan_read_contract(run)
+    value = _load_full_batch_plan_payload(
+        run.plan_path,
+        expected_bytes=expected_bytes,
+        expected_sha256=expected_sha256,
+    )
+    if value != run.plan:
+        _fail("FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH")
+    return value
 
 
 def _validate_completed_canary_evidence() -> Mapping[str, str]:
@@ -1518,14 +1626,12 @@ def _adopt_claimed_run(*, scheduler_job_identity: str) -> FullRun:
     _validate_private_directory(run.attempt_root)
     _validate_completed_canary_evidence()
     _validate_full_run(run)
-    plan, plan_payload = _load_owner_private_json(run.plan_path)
+    _load_full_batch_plan(run)
     launch, launch_payload = _load_owner_private_json(
         run.attempt_root / "full_launch_authority.restricted.json"
     )
     if (
-        plan != run.plan
-        or hashlib.sha256(plan_payload).hexdigest() != run.plan_sha256
-        or launch != run.launch_authority
+        launch != run.launch_authority
         or hashlib.sha256(launch_payload).hexdigest()
         != run.launch_authority_sha256
     ):
@@ -1615,6 +1721,7 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--preflight-only", action="store_true")
     modes.add_argument("--preflight-report", action="store_true")
     modes.add_argument("--claim-submission", action="store_true")
+    modes.add_argument("--validate-claimed-submission", action="store_true")
     modes.add_argument("--print-fixed-identity", action="store_true")
     modes.add_argument("--run-array-task", action="store_true")
     modes.add_argument("--run-cohort-finalizer", action="store_true")
@@ -1636,6 +1743,11 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
         elif args.claim_submission:
             claim_submission()
             print("FULL_C3_SUBMISSION_CLAIM=READY")
+        elif args.validate_claimed_submission:
+            _adopt_claimed_run(
+                scheduler_job_identity="MATERIALIZED_CLAIM_READBACK"
+            )
+            print("FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS")
         elif args.print_fixed_identity:
             print(f"FULL_C3_ATTEMPT_ID={build_full_run().attempt_id}")
         elif args.run_array_task:

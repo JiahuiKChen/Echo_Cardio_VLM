@@ -69,6 +69,7 @@ SCIENCE_MARKERS: Final = {
     "--validate-installation": "FULL_C3_INSTALLATION=PASS",
     "--preflight-only": "FULL_C3_NO_BODY_PREFLIGHT=PASS",
     "--claim-submission": "FULL_C3_SUBMISSION_CLAIM=READY",
+    "--validate-claimed-submission": "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS",
 }
 SUBMISSION_RECEIPT_KEYS: Final = frozenset(
     {
@@ -759,11 +760,15 @@ def submit(
         science_runner=science_runner,
         git_runner=git_runner,
     )
+    run_science_mode("--preflight-only", runner=science_runner)
     validate_no_active_jobs(topology, environment, runner=qstat_runner)
-    # The fixed claim performs the complete no-body preflight exactly once and
-    # persists that same fresh capacity receipt.  Do not probe a second time
-    # between readiness and the no-clobber claim.
+    # Materialize the no-clobber claim only after the explicit no-body gate.
+    # Do not insert another scheduler or cloud effect between these commands.
     run_science_mode("--claim-submission", runner=science_runner)
+    # Re-open the materialized claim through the production reader before any
+    # scheduler effect.  This command must emit its sole exact PASS marker;
+    # every failure leaves qsub and scheduler-receipt creation unreachable.
+    run_science_mode("--validate-claimed-submission", runner=science_runner)
     validate_no_active_jobs(topology, environment, runner=qstat_runner)
     evidence_root = _require_attempt_root(topology)
     array_command = topology.array_command()

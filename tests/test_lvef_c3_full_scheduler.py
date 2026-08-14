@@ -243,19 +243,33 @@ def test_active_job_gate_is_owner_scoped_and_rejects_other_commit_names() -> Non
 
 
 def test_science_control_stdout_is_exactly_one_line() -> None:
-    marker = scheduler.SCIENCE_MARKERS["--preflight-only"].encode("ascii")
-    for stdout in (marker, marker + b"\n"):
-        assert scheduler.run_science_mode(
-            "--preflight-only",
-            runner=lambda *_args, _stdout=stdout, **_kwargs: completed(stdout=_stdout),
-        ) == marker.decode("ascii")
-    for stdout in (marker + b"\n\n", marker + b"\r\n", marker + b"\nextra"):
-        captured = _assert_scheduler_error(
-            scheduler.run_science_mode,
-            "--preflight-only",
-            runner=lambda *_args, _stdout=stdout, **_kwargs: completed(stdout=_stdout),
-        )
-        assert captured.code == "SCIENCE_CONTROL_OUTPUT_INVALID"
+    for mode in ("--preflight-only", "--validate-claimed-submission"):
+        marker = scheduler.SCIENCE_MARKERS[mode].encode("ascii")
+        for stdout in (marker, marker + b"\n"):
+            assert scheduler.run_science_mode(
+                mode,
+                runner=lambda *_args, _stdout=stdout, **_kwargs: completed(
+                    stdout=_stdout
+                ),
+            ) == marker.decode("ascii")
+        for stdout in (
+            marker + b"\n\n",
+            marker + b"\r\n",
+            marker + b"\nextra",
+            marker + b" ",
+        ):
+            captured = _assert_scheduler_error(
+                scheduler.run_science_mode,
+                mode,
+                runner=lambda *_args, _stdout=stdout, **_kwargs: completed(
+                    stdout=_stdout
+                ),
+            )
+            assert captured.code == "SCIENCE_CONTROL_OUTPUT_INVALID"
+
+    assert scheduler.SCIENCE_MARKERS["--validate-claimed-submission"] == (
+        "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS"
+    )
 
 
 def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
@@ -272,15 +286,27 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
             finalizer_job_name=value.finalizer_job_name,
         )
         science_calls: list[str] = []
+        events: list[str] = []
 
         def science(mode: str, **_: object) -> str:
             science_calls.append(mode)
+            events.append(f"science:{mode}")
             return scheduler.SCIENCE_MARKERS.get(mode, ATTEMPT)
+
+        def qstat(*_args: object, **_kwargs: object) -> None:
+            events.append("qstat")
+
+        def installation(**_: object) -> tuple[object, dict[str, str], str]:
+            events.append("installation-validation")
+            return test_topology, {"USER": "owner"}, "CANONICAL"
 
         qsub_commands: list[list[str]] = []
 
         def qsub(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
             qsub_commands.append(command)
+            events.append(
+                "qsub:array" if len(qsub_commands) == 1 else "qsub:finalizer"
+            )
             job_id = (
                 b"8123456.1-19:1\n"
                 if len(qsub_commands) == 1
@@ -292,18 +318,34 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
             mock.patch.object(
                 scheduler,
                 "validate_installation",
-                return_value=(test_topology, {"USER": "owner"}, "CANONICAL"),
+                side_effect=installation,
             ),
             mock.patch.object(scheduler, "run_science_mode", side_effect=science),
-            mock.patch.object(scheduler, "validate_no_active_jobs") as qstat,
+            mock.patch.object(
+                scheduler, "validate_no_active_jobs", side_effect=qstat
+            ) as qstat_gate,
         ):
             array_id, finalizer_id = scheduler.submit(qsub_runner=qsub)
 
         assert (array_id, finalizer_id) == ("8123456", "8123457")
         assert len(qsub_commands) == 2
         assert qsub_commands[1][qsub_commands[1].index("-hold_jid") + 1] == array_id
-        assert science_calls == ["--claim-submission"]
-        assert qstat.call_count == 2
+        assert science_calls == [
+            "--preflight-only",
+            "--claim-submission",
+            "--validate-claimed-submission",
+        ]
+        assert events == [
+            "installation-validation",
+            "science:--preflight-only",
+            "qstat",
+            "science:--claim-submission",
+            "science:--validate-claimed-submission",
+            "qstat",
+            "qsub:array",
+            "qsub:finalizer",
+        ]
+        assert qstat_gate.call_count == 2
         receipt = test_topology.scheduler_root / "submission_receipt.restricted.json"
         assert receipt.is_file()
         scheduler.validate_submission_receipt(
@@ -324,6 +366,212 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
             ),
         )
         assert captured.code == "SUBMISSION_RECEIPT_ENVIRONMENT_INVALID"
+
+
+def test_submit_preflight_failure_has_zero_qsub_no_claim_or_receipt() -> None:
+    failures = (
+        (completed(returncode=78), "SCIENCE_CONTROL_COMMAND_FAILED"),
+        (completed(stdout=b"WRONG_MARKER=PASS\n"), "SCIENCE_CONTROL_OUTPUT_INVALID"),
+    )
+    value = topology()
+    with tempfile.TemporaryDirectory() as directory:
+        for index, (failure, expected_code) in enumerate(failures):
+            attempt_root = Path(directory) / str(index) / "attempts" / ATTEMPT
+            test_topology = scheduler.SchedulerTopology(
+                head=value.head,
+                attempt_id=value.attempt_id,
+                scheduler_root=attempt_root / "scheduler",
+                array_job_name=value.array_job_name,
+                finalizer_job_name=value.finalizer_job_name,
+            )
+            science_calls: list[str] = []
+
+            def science_runner(
+                command: list[str], **_: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                mode = command[-1]
+                science_calls.append(mode)
+                assert mode == "--preflight-only"
+                return failure
+
+            qsub = mock.Mock(return_value=completed(stdout=b"8123456\n"))
+            with (
+                mock.patch.object(
+                    scheduler,
+                    "validate_installation",
+                    return_value=(
+                        test_topology,
+                        {"USER": "owner"},
+                        "CANONICAL",
+                    ),
+                ),
+                mock.patch.object(
+                    scheduler, "validate_no_active_jobs"
+                ) as qstat,
+            ):
+                captured = _assert_scheduler_error(
+                    scheduler.submit,
+                    science_runner=science_runner,
+                    qsub_runner=qsub,
+                )
+            assert captured.code == expected_code
+            assert science_calls == ["--preflight-only"]
+            qstat.assert_not_called()
+            qsub.assert_not_called()
+            assert not attempt_root.exists()
+            assert not (
+                test_topology.scheduler_root
+                / "submission_receipt.restricted.json"
+            ).exists()
+
+
+def test_claim_readback_failure_has_zero_qsub_no_receipt_and_no_retry() -> None:
+    marker = scheduler.SCIENCE_MARKERS[
+        "--validate-claimed-submission"
+    ].encode("ascii")
+    failures = (
+        (completed(returncode=78), "SCIENCE_CONTROL_COMMAND_FAILED"),
+        (
+            completed(stdout=marker + b"\n", stderr=b"safe failure\n"),
+            "SCIENCE_CONTROL_COMMAND_FAILED",
+        ),
+        (completed(stdout=b"WRONG_MARKER=PASS\n"), "SCIENCE_CONTROL_OUTPUT_INVALID"),
+        (
+            completed(stdout=marker + b"\nextra\n"),
+            "SCIENCE_CONTROL_OUTPUT_INVALID",
+        ),
+    )
+    value = topology()
+    with tempfile.TemporaryDirectory() as directory:
+        for index, (failure, expected_code) in enumerate(failures):
+            attempt_root = Path(directory) / str(index) / "attempts" / ATTEMPT
+            test_topology = scheduler.SchedulerTopology(
+                head=value.head,
+                attempt_id=value.attempt_id,
+                scheduler_root=attempt_root / "scheduler",
+                array_job_name=value.array_job_name,
+                finalizer_job_name=value.finalizer_job_name,
+            )
+            science_calls: list[str] = []
+
+            def science_runner(
+                command: list[str], **_: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                mode = command[-1]
+                science_calls.append(mode)
+                if mode == "--preflight-only":
+                    return completed(
+                        stdout=(
+                            scheduler.SCIENCE_MARKERS[mode] + "\n"
+                        ).encode("ascii")
+                    )
+                if mode == "--claim-submission":
+                    attempt_root.mkdir(mode=0o700, parents=True)
+                    return completed(
+                        stdout=(
+                            scheduler.SCIENCE_MARKERS[mode] + "\n"
+                        ).encode("ascii")
+                    )
+                assert mode == "--validate-claimed-submission"
+                return failure
+
+            qsub = mock.Mock(return_value=completed(stdout=b"8123456\n"))
+            with (
+                mock.patch.object(
+                    scheduler,
+                    "validate_installation",
+                    return_value=(
+                        test_topology,
+                        {"USER": "owner"},
+                        "CANONICAL",
+                    ),
+                ),
+                mock.patch.object(
+                    scheduler, "validate_no_active_jobs"
+                ) as qstat,
+            ):
+                captured = _assert_scheduler_error(
+                    scheduler.submit,
+                    science_runner=science_runner,
+                    qsub_runner=qsub,
+                )
+            assert captured.code == expected_code
+            assert science_calls == [
+                "--preflight-only",
+                "--claim-submission",
+                "--validate-claimed-submission",
+            ]
+            qstat.assert_called_once()
+            qsub.assert_not_called()
+            assert attempt_root.is_dir()
+            assert not test_topology.scheduler_root.exists()
+            assert not (
+                test_topology.scheduler_root
+                / "submission_receipt.restricted.json"
+            ).exists()
+
+
+def test_ambiguous_array_stdout_stops_after_exactly_one_qsub() -> None:
+    malformed_outputs = (
+        b"",
+        b"8123456.1-18:1\n",
+        b"8123456.1-19:2\n",
+        b"8123456\n8123457\n",
+        b" 8123456.1-19:1\n",
+    )
+    value = topology()
+    with tempfile.TemporaryDirectory() as directory:
+        for index, stdout in enumerate(malformed_outputs):
+            attempt_root = Path(directory) / str(index) / "attempts" / ATTEMPT
+            attempt_root.mkdir(mode=0o700, parents=True)
+            test_topology = scheduler.SchedulerTopology(
+                head=value.head,
+                attempt_id=value.attempt_id,
+                scheduler_root=attempt_root / "scheduler",
+                array_job_name=value.array_job_name,
+                finalizer_job_name=value.finalizer_job_name,
+            )
+            qsub_commands: list[list[str]] = []
+
+            def qsub(
+                command: list[str], **_: object
+            ) -> subprocess.CompletedProcess[bytes]:
+                qsub_commands.append(command)
+                return completed(stdout=stdout)
+
+            with (
+                mock.patch.object(
+                    scheduler,
+                    "validate_installation",
+                    return_value=(
+                        test_topology,
+                        {"USER": "owner"},
+                        "CANONICAL",
+                    ),
+                ),
+                mock.patch.object(scheduler, "run_science_mode"),
+                mock.patch.object(scheduler, "validate_no_active_jobs"),
+            ):
+                captured = _assert_scheduler_error(
+                    scheduler.submit,
+                    qsub_runner=qsub,
+                )
+            assert captured.code == "SCHEDULER_ARRAY_QSUB_OUTPUT_AMBIGUOUS"
+            assert len(qsub_commands) == 1
+            assert "-t" in qsub_commands[0]
+            assert "-hold_jid" not in qsub_commands[0]
+            assert (
+                test_topology.scheduler_root
+                / "array.qsub.stdout.restricted"
+            ).read_bytes() == stdout
+            assert not (
+                test_topology.scheduler_root
+                / "finalizer.qsub.stdout.restricted"
+            ).exists()
+            assert not (
+                test_topology.scheduler_root
+                / "submission_receipt.restricted.json"
+            ).exists()
 
 
 def test_active_job_gate_rejects_non_qstat_xml_and_qsub_stderr() -> None:

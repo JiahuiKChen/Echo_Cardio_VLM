@@ -9,7 +9,9 @@ import inspect
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 from types import SimpleNamespace
 from typing import Any, Mapping
 from unittest import mock
@@ -49,7 +51,7 @@ import preserve_lvef_c3_production_batch as preservation
 
 
 def two_batch_plan() -> tuple[dict[str, Any], core.PlanRequirements]:
-    """Return a valid, exact 2x2 miniature of the frozen production plan."""
+    """Return the scientific-path fixture, not a production-scale file test."""
 
     selected = [
         {"subject_id": str(100_000 + index), "study_id": str(200_000 + index)}
@@ -112,6 +114,72 @@ def two_batch_plan() -> tuple[dict[str, Any], core.PlanRequirements]:
         authority=authority,
     )
     return plan, requirements
+
+
+def _schema_faithful_scale_plan(
+    *, object_count: int = 52_000
+) -> tuple[dict[str, Any], core.PlanRequirements]:
+    """Build real plan object rows whose canonical form exceeds 16 MB."""
+
+    subject_id = "100001"
+    study_id = "200001"
+    selected = [{"subject_id": subject_id, "study_id": study_id}]
+    split = [{"subject_id": subject_id, "split": "train"}]
+    sources: list[dict[str, Any]] = []
+    for ordinal in range(object_count):
+        relative = (
+            f"files/p00/p{subject_id}/s{study_id}/"
+            f"cine_{ordinal:06d}.dcm"
+        )
+        sources.append(
+            {
+                "subject_id": subject_id,
+                "study_id": study_id,
+                "split": "train",
+                "production_batch": "c3_batch_000",
+                "source_relative_path": relative,
+                "source_object_key": hashlib.sha256(
+                    f"mimic-iv-echo/1.0\0{relative}".encode("utf-8")
+                ).hexdigest(),
+                "size_bytes": 1,
+                "generation": str(ordinal + 1),
+                "md5_base64": "AAAAAAAAAAAAAAAAAAAAAA==",
+                "crc32c_base64": "AAAAAA==",
+            }
+        )
+    requirements = core.PlanRequirements(
+        release="mimic-iv-echo/1.0",
+        selected_studies=1,
+        selected_subjects=1,
+        normalized_source_objects=object_count,
+        selected_source_bytes=object_count,
+        batch_count=1,
+        studies_per_full_batch=1,
+        final_batch_studies=1,
+        contract_id="schema_faithful_full_plan_scale_v1",
+    )
+    authority = {
+        key: (
+            "a" * 40
+            if key == "git_commit"
+            else hashlib.sha256(key.encode("ascii")).hexdigest()
+        )
+        for key in core.PLAN_AUTHORITY_KEYS
+    }
+    plan = core.build_immutable_batch_plan(
+        selected,
+        sources,
+        split,
+        requirements=requirements,
+        authority=authority,
+    )
+    assert core.validate_batch_plan(plan, requirements=requirements)
+    return plan, requirements
+
+
+def _write_private_payload(path: Path, payload: bytes) -> None:
+    path.write_bytes(payload)
+    os.chmod(path, 0o600)
 
 
 def _error_code(exc: BaseException) -> str:
@@ -571,6 +639,354 @@ def test_private_authority_reader_rejects_leaf_and_ancestor_symlinks(
         sequential._read_owner_private_regular(alias / authority.name)
     assert caught.value.code == "FULL_SEQUENTIAL_PATH_SYMLINK"
 
+
+def test_full_batch_plan_scale_contract_and_role_failures() -> None:
+    """Exercise the dynamic bound with actual plan objects above 16 MB."""
+
+    assert 335_984 * 64 == 21_502_976
+    assert 21_502_976 > sequential.GENERIC_PRIVATE_FILE_MAXIMUM_BYTES
+    plan, requirements = _schema_faithful_scale_plan()
+    assert requirements.normalized_source_objects == 52_000
+    payload = core.canonical_json_bytes(plan)
+    assert len(payload) > sequential.GENERIC_PRIVATE_FILE_MAXIMUM_BYTES
+    expected_sha256 = hashlib.sha256(payload).hexdigest()
+
+    with tempfile.TemporaryDirectory() as raw_root:
+        root = Path(raw_root).resolve()
+        path = root / "full_batch_plan.restricted.json"
+        _write_private_payload(path, payload)
+        run = SimpleNamespace(
+            plan=plan,
+            plan_path=path,
+            plan_sha256=expected_sha256,
+        )
+        observed = sequential._load_full_batch_plan(run)
+        assert observed["cohort"]["normalized_source_objects"] == 52_000
+        del observed
+
+        for changed in (payload + b"x", payload[:-1]):
+            _write_private_payload(path, changed)
+            with pytest.raises(sequential.FullSequentialError) as caught:
+                sequential._load_full_batch_plan(run)
+            assert (
+                caught.value.code
+                == "FULL_SEQUENTIAL_BATCH_PLAN_SIZE_MISMATCH"
+            )
+
+        # The altered first byte is also invalid JSON. Digest authority has
+        # deliberate precedence for any exact-size content mismatch.
+        changed = b"!" + payload[1:]
+        _write_private_payload(path, changed)
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            sequential._load_full_batch_plan(run)
+        assert (
+            caught.value.code
+            == "FULL_SEQUENTIAL_BATCH_PLAN_SHA256_MISMATCH"
+        )
+
+
+def test_full_batch_plan_json_semantics_and_file_authority_failures() -> None:
+    """Map strict JSON and every stable owner-private file predicate."""
+
+    with tempfile.TemporaryDirectory() as raw_root:
+        root = Path(raw_root).resolve()
+        for ordinal, payload in enumerate(
+            (b"\xff", b"{", b'{"duplicate":1,"duplicate":2}', b"[]")
+        ):
+            path = root / f"invalid-{ordinal}.json"
+            _write_private_payload(path, payload)
+            with pytest.raises(sequential.FullSequentialError) as caught:
+                sequential._load_full_batch_plan_payload(
+                    path,
+                    expected_bytes=len(payload),
+                    expected_sha256=hashlib.sha256(payload).hexdigest(),
+                )
+            assert (
+                caught.value.code
+                == "FULL_SEQUENTIAL_BATCH_PLAN_JSON_INVALID"
+            )
+
+        valid = core.canonical_json_bytes({"valid": True})
+
+        def read(path: Path) -> Mapping[str, Any]:
+            return sequential._load_full_batch_plan_payload(
+                path,
+                expected_bytes=len(valid),
+                expected_sha256=hashlib.sha256(valid).hexdigest(),
+            )
+
+        target = root / "target.json"
+        _write_private_payload(target, valid)
+        symlink = root / "symlink.json"
+        symlink.symlink_to(target)
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            read(symlink)
+        assert caught.value.code == "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+
+        wrong_mode = root / "wrong-mode.json"
+        _write_private_payload(wrong_mode, valid)
+        os.chmod(wrong_mode, 0o640)
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            read(wrong_mode)
+        assert caught.value.code == "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+
+        nonregular = root / "directory.json"
+        nonregular.mkdir(mode=0o700)
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            read(nonregular)
+        assert caught.value.code == "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+
+        wrong_owner = root / "wrong-owner.json"
+        _write_private_payload(wrong_owner, valid)
+        with (
+            mock.patch.object(
+                sequential.os, "geteuid", return_value=os.geteuid() + 1
+            ),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            read(wrong_owner)
+        assert caught.value.code == "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+
+        unstable = root / "unstable.json"
+        _write_private_payload(unstable, valid)
+        observed = os.stat(unstable, follow_symlinks=False)
+        wrong_identity = SimpleNamespace(
+            st_mode=observed.st_mode,
+            st_uid=observed.st_uid,
+            st_dev=observed.st_dev,
+            st_ino=observed.st_ino + 1,
+            st_size=observed.st_size,
+            st_mtime_ns=observed.st_mtime_ns,
+        )
+        with (
+            mock.patch.object(
+                sequential.os, "fstat", return_value=wrong_identity
+            ),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            read(unstable)
+        assert caught.value.code == "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+
+        truncated = root / "truncated.json"
+        _write_private_payload(truncated, valid)
+        with (
+            mock.patch.object(sequential.os, "read", return_value=b""),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            read(truncated)
+        assert caught.value.code == "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+
+        mutated = root / "post-read-mutation.json"
+        _write_private_payload(mutated, valid)
+        before = os.stat(mutated, follow_symlinks=False)
+        after = SimpleNamespace(
+            st_mode=before.st_mode,
+            st_uid=before.st_uid,
+            st_dev=before.st_dev,
+            st_ino=before.st_ino,
+            st_size=before.st_size,
+            st_mtime_ns=before.st_mtime_ns + 1,
+        )
+        with (
+            mock.patch.object(
+                sequential.os, "fstat", side_effect=(before, after)
+            ),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            read(mutated)
+        assert caught.value.code == "FULL_SEQUENTIAL_BATCH_PLAN_FILE_INVALID"
+
+        plan, _ = two_batch_plan()
+        plan_payload = core.canonical_json_bytes(plan)
+        altered = json.loads(plan_payload.decode("ascii"))
+        altered["contract_id"] = "semantic_drift_same_reader_contract"
+        altered_payload = core.canonical_json_bytes(altered)
+        semantic_path = root / "semantic-drift.json"
+        _write_private_payload(semantic_path, altered_payload)
+        run = SimpleNamespace(
+            plan=plan,
+            plan_path=semantic_path,
+            plan_sha256=core.canonical_json_sha256(plan),
+        )
+        with (
+            mock.patch.object(
+                sequential,
+                "_derive_full_batch_plan_read_contract",
+                return_value=(
+                    len(altered_payload),
+                    hashlib.sha256(altered_payload).hexdigest(),
+                ),
+            ),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential._load_full_batch_plan(run)
+        assert (
+            caught.value.code
+            == "FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH"
+        )
+
+
+def test_small_private_authorities_retain_generic_ceiling() -> None:
+    assert sequential.GENERIC_PRIVATE_FILE_MAXIMUM_BYTES == 16_000_000
+    with tempfile.TemporaryDirectory() as raw_root:
+        root = Path(raw_root).resolve()
+        for role in ("launch", "capacity", "claim"):
+            path = root / f"{role}.restricted.json"
+            with path.open("wb") as handle:
+                handle.truncate(
+                    sequential.GENERIC_PRIVATE_FILE_MAXIMUM_BYTES + 1
+                )
+            os.chmod(path, 0o600)
+            with pytest.raises(sequential.FullSequentialError) as caught:
+                sequential._load_owner_private_json(path)
+            assert caught.value.code == "FULL_SEQUENTIAL_PRIVATE_FILE_INVALID"
+
+
+def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
+    with tempfile.TemporaryDirectory() as raw_root:
+        root = Path(raw_root).resolve()
+        plan, requirements = two_batch_plan()
+        initial = _scoped_run(root, plan, requirements)
+        launch = {"status": "SYNTHETIC_CLOSED_LAUNCH"}
+        run = replace(
+            initial,
+            launch_authority=launch,
+            launch_authority_sha256=core.canonical_json_sha256(launch),
+        )
+        # The producer's no-clobber precondition begins with no attempt. The
+        # helper was used only to build the deterministic in-memory run.
+        shutil.rmtree(run.attempt_root)
+        os.chmod(run.production_root / "attempts", 0o700)
+        capacity_value = {"status": "SYNTHETIC_CAPACITY_PASS"}
+        with (
+            mock.patch.object(sequential, "build_full_run", return_value=run),
+            mock.patch.object(
+                sequential,
+                "preflight_full",
+                return_value={"capacity": capacity_value},
+            ),
+        ):
+            produced = sequential.claim_submission()
+        assert produced["status"] == "READY"
+        files = tuple(
+            run.attempt_root / name
+            for name in (
+                "full_batch_plan.restricted.json",
+                "full_launch_authority.restricted.json",
+                "full_capacity_receipt.restricted.json",
+                "full_submission_claim.restricted.json",
+            )
+        )
+
+        def snapshot(path: Path) -> tuple[int, int, int, str]:
+            item = path.stat(follow_symlinks=False)
+            return (
+                item.st_ino,
+                item.st_size,
+                item.st_mtime_ns,
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+
+        before = tuple(snapshot(path) for path in files)
+        forbidden = (
+            "_write_private_json",
+            "_provider_and_transport",
+            "run_batch_task",
+            "run_cross_batch_finalizer",
+        )
+        patches = [mock.patch.object(sequential, name) for name in forbidden]
+        with (
+            mock.patch.object(sequential, "build_full_run", return_value=run),
+            mock.patch.object(
+                sequential,
+                "_validate_completed_canary_evidence",
+                return_value={"status": "PASS"},
+            ),
+            mock.patch.object(
+                sequential.capacity,
+                "validate_current_full_headroom",
+                side_effect=lambda value: dict(value),
+            ) as capacity_gate,
+            mock.patch.object(sequential.subprocess, "run") as process,
+            mock.patch.object(stages, "run_production_dicom_extraction") as dicom,
+            mock.patch.object(stages, "run_production_echoprime") as gpu,
+            mock.patch.object(core, "execute_exact_batch_download") as cloud,
+            mock.patch("builtins.print") as printer,
+            patches[0] as writer,
+            patches[1] as provider,
+            patches[2] as science,
+            patches[3] as cohort,
+        ):
+            assert sequential.guarded_main(
+                ["--validate-claimed-submission"]
+            ) == 0
+        assert [call.args[0] for call in printer.call_args_list] == [
+            "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS"
+        ]
+        capacity_gate.assert_called_once_with(capacity_value)
+        for boundary in (
+            process, dicom, gpu, cloud, writer, provider, science, cohort
+        ):
+            boundary.assert_not_called()
+        assert tuple(snapshot(path) for path in files) == before
+
+
+def test_each_materialized_claim_file_tamper_fails_before_effects() -> None:
+    for role in ("plan", "launch", "capacity", "claim"):
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root).resolve()
+            run, _, claim_path = _claimed_run_fixture(root)
+            if role == "plan":
+                payload = run.plan_path.read_bytes()
+                _write_private_payload(run.plan_path, b"!" + payload[1:])
+                expected = "FULL_SEQUENTIAL_BATCH_PLAN_SHA256_MISMATCH"
+            elif role == "launch":
+                launch_path = (
+                    run.attempt_root
+                    / "full_launch_authority.restricted.json"
+                )
+                _replace_private_json(launch_path, {"status": "ALTERED"})
+                expected = "FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH"
+            elif role == "capacity":
+                capacity_path = (
+                    run.attempt_root
+                    / "full_capacity_receipt.restricted.json"
+                )
+                _replace_private_json(capacity_path, {"status": "ALTERED"})
+                expected = "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+            else:
+                claim = json.loads(claim_path.read_text(encoding="utf-8"))
+                _replace_private_json(claim_path, {**claim, "unexpected": 1})
+                expected = "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+
+            with (
+                mock.patch.object(
+                    sequential, "build_full_run", return_value=run
+                ),
+                mock.patch.object(
+                    sequential,
+                    "_validate_completed_canary_evidence",
+                    return_value={"status": "PASS"},
+                ),
+                mock.patch.object(
+                    sequential.capacity,
+                    "validate_current_full_headroom",
+                    return_value={},
+                ),
+                mock.patch.object(sequential, "_provider_and_transport") as provider,
+                mock.patch.object(sequential, "run_batch_task") as science,
+                mock.patch.object(sequential.subprocess, "run") as process,
+                mock.patch("builtins.print") as printer,
+            ):
+                assert sequential.guarded_main(
+                    ["--validate-claimed-submission"]
+                ) == 78
+            assert printer.call_args_list[0].args[0] == (
+                f"FULL_C3_STATUS=BLOCKED_{expected}"
+            )
+            provider.assert_not_called()
+            science.assert_not_called()
+            process.assert_not_called()
 
 def test_canary_evidence_drift_stops_preflight_before_runtime_or_capacity(
     tmp_path: Path,

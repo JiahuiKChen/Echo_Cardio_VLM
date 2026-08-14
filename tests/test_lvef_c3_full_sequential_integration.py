@@ -638,7 +638,7 @@ def test_changed_runtime_authority_fails_before_transport(
 def test_full_wrapper_two_batch_science_acceptance(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Run the thin wrapper twice; only body transport and compute are mocked."""
+    """Run the two-batch scientific path; this is not the scale-authority test."""
 
     canary = _fixture_module(
         "test_lvef_c3_canary_integration.py", "full_sequential_science_fixture"
