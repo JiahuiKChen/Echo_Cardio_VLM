@@ -43,8 +43,10 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+BOUND_QSUB_ENVIRONMENT_SHA256 = "9" * 64
 
 import lvef_c3_full_sequential as sequential
+import lvef_c3_full_scheduler as scheduler
 import lvef_c3_orchestration_core as core
 import lvef_c3_production_stages as stages
 import preserve_lvef_c3_production_batch as preservation
@@ -438,7 +440,11 @@ def test_direct_full_launch_scope_is_plan_exact_and_scientifically_closed() -> N
         assert _error_code(caught.value) == "DIRECT_FULL_DOWNLOAD_SCOPE_INVALID"
 
 
-def _claimed_run_fixture(root: Path) -> tuple[
+def _claimed_run_fixture(
+    root: Path,
+    *,
+    qsub_environment_sha256: str = BOUND_QSUB_ENVIRONMENT_SHA256,
+) -> tuple[
     sequential.FullRun, dict[str, Any], Path
 ]:
     plan, requirements = two_batch_plan()
@@ -460,7 +466,9 @@ def _claimed_run_fixture(root: Path) -> tuple[
         capacity_path, capacity_value, attempt_id=run.attempt_id
     )
     claim = sequential._expected_submission_claim(
-        run, capacity_receipt_sha256=core.sha256_file(capacity_path)
+        run,
+        capacity_receipt_sha256=core.sha256_file(capacity_path),
+        qsub_environment_sha256=qsub_environment_sha256,
     )
     claim_path = run.attempt_root / "full_submission_claim.restricted.json"
     sequential._write_private_json(
@@ -472,6 +480,126 @@ def _claimed_run_fixture(root: Path) -> tuple[
 def _replace_private_json(path: Path, value: Mapping[str, Any]) -> None:
     path.write_bytes(core.canonical_json_bytes(value))
     os.chmod(path, 0o600)
+
+
+def _submission_receipt_fixture(
+    root: Path,
+    *,
+    qsub_environment_sha256: str = BOUND_QSUB_ENVIRONMENT_SHA256,
+) -> tuple[
+    sequential.FullRun,
+    scheduler.SchedulerTopology,
+    Path,
+    dict[str, Any],
+]:
+    run, _, _ = _claimed_run_fixture(
+        root, qsub_environment_sha256=qsub_environment_sha256
+    )
+    scheduler_root = run.attempt_root / "scheduler"
+    scheduler_root.mkdir(mode=0o700)
+    os.chmod(scheduler_root, 0o700)
+    topology = scheduler.SchedulerTopology(
+        head=run.authority.governing_commit,
+        attempt_id=run.attempt_id,
+        scheduler_root=scheduler_root,
+        array_job_name=(
+            f"lvef_c3_full_seq_{run.authority.governing_commit[:8]}"
+        ),
+        finalizer_job_name=(
+            f"lvef_c3_full_fin_{run.authority.governing_commit[:8]}"
+        ),
+    )
+    evidence = {
+        "array_stdout": b"8123456.1-19:1\n",
+        "array_stderr": b"",
+        "array_exit_status": b"0\n",
+        "finalizer_stdout": b"8123457\n",
+        "finalizer_stderr": b"",
+        "finalizer_exit_status": b"0\n",
+    }
+    for label in ("array", "finalizer"):
+        for kind in ("stdout", "stderr", "exit_status"):
+            _write_private_payload(
+                scheduler_root / f"{label}.qsub.{kind}.restricted",
+                evidence[f"{label}_{kind}"],
+            )
+    array_command = topology.array_command()
+    finalizer_command = topology.finalizer_command("8123456")
+    receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_full_two_submission_receipt_v1",
+        "status": "PASS_EXACT_TWO_QSUB_SUBMISSIONS",
+        "attempt_id": run.attempt_id,
+        "governing_commit": run.authority.governing_commit,
+        "array_job_name": topology.array_job_name,
+        "finalizer_job_name": topology.finalizer_job_name,
+        "array_job_id": "8123456",
+        "finalizer_job_id": "8123457",
+        "array_qsub_argv_sha256": hashlib.sha256(
+            scheduler._canonical_json({"argv": array_command})
+        ).hexdigest(),
+        "finalizer_qsub_argv_sha256": hashlib.sha256(
+            scheduler._canonical_json({"argv": finalizer_command})
+        ).hexdigest(),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "array_qsub_stdout_bytes": len(evidence["array_stdout"]),
+        "array_qsub_stdout_sha256": hashlib.sha256(
+            evidence["array_stdout"]
+        ).hexdigest(),
+        "array_qsub_stderr_bytes": len(evidence["array_stderr"]),
+        "array_qsub_stderr_sha256": hashlib.sha256(
+            evidence["array_stderr"]
+        ).hexdigest(),
+        "array_qsub_exit_status": 0,
+        "finalizer_qsub_stdout_bytes": len(evidence["finalizer_stdout"]),
+        "finalizer_qsub_stdout_sha256": hashlib.sha256(
+            evidence["finalizer_stdout"]
+        ).hexdigest(),
+        "finalizer_qsub_stderr_bytes": len(evidence["finalizer_stderr"]),
+        "finalizer_qsub_stderr_sha256": hashlib.sha256(
+            evidence["finalizer_stderr"]
+        ).hexdigest(),
+        "finalizer_qsub_exit_status": 0,
+        "scheduler_submission_count": 2,
+        "scheduler_submission_maximum": 2,
+        "array_task_range": "1-19",
+        "array_max_concurrency": 1,
+        "finalizer_held_on_array": True,
+        "whole_batch_retry_authorized": False,
+        "third_scheduler_submission_reachable": False,
+        "cloud_requests": 0,
+        "dicom_body_reads_by_submitter": 0,
+        "gpu_executions_by_submitter": 0,
+    }
+    receipt_path = scheduler_root / "submission_receipt.restricted.json"
+    _write_private_payload(receipt_path, scheduler._canonical_json(receipt))
+    return run, topology, receipt_path, receipt
+
+
+def _validate_submission_receipt_fixture(
+    run: sequential.FullRun,
+    topology: scheduler.SchedulerTopology,
+    *,
+    role: str = "array",
+    current_job_id: str = "8123456",
+) -> Mapping[str, Any]:
+    with (
+        mock.patch.object(
+            scheduler, "build_topology", return_value=topology
+        ),
+        mock.patch.object(
+            sequential.capacity,
+            "validate_current_full_headroom",
+            return_value={},
+        ),
+    ):
+        return sequential._wait_for_submission_receipt(
+            run,
+            current_job_id=current_job_id,
+            role=role,
+            monotonic_clock=lambda: 0.0,
+            sleeper=lambda _seconds: None,
+        )
 
 
 def test_adopted_claim_is_closed_and_binds_capacity_plan_and_runtime(
@@ -547,6 +675,433 @@ def test_claim_tampering_fails_before_array_worker_effects(tmp_path: Path) -> No
         ):
             assert sequential.guarded_main(["--run-array-task"]) == 78
         worker.assert_not_called()
+
+
+def test_claim_bound_environment_digest_ignores_execution_environment() -> None:
+    submission_environment = {
+        "SGE_ROOT": "/validated/submission/root",
+        "SGE_CELL": "submission-cell",
+    }
+    binding = scheduler.qsub_environment_sha256(submission_environment)
+    with tempfile.TemporaryDirectory() as raw_root:
+        run, topology, _, receipt = _submission_receipt_fixture(
+            Path(raw_root).resolve(), qsub_environment_sha256=binding
+        )
+        assert receipt["qsub_environment_sha256"] == binding
+        forbidden = (
+            mock.patch.object(
+                scheduler,
+                "build_qsub_environment",
+                side_effect=AssertionError(
+                    "execution environment must not rebuild client authority"
+                ),
+            ),
+            mock.patch.object(core, "execute_exact_batch_download"),
+            mock.patch.object(stages, "run_production_dicom_extraction"),
+            mock.patch.object(stages, "run_production_echoprime"),
+        )
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"SGE_CELL": "different-execution-cell"},
+                clear=True,
+            ),
+            forbidden[0] as environment_rebuilder,
+            forbidden[1] as cloud,
+            forbidden[2] as dicom,
+            forbidden[3] as gpu,
+        ):
+            assert _validate_submission_receipt_fixture(
+                run, topology
+            )["status"] == "PASS_EXACT_TWO_QSUB_SUBMISSIONS"
+        for boundary in (environment_rebuilder, cloud, dicom, gpu):
+            boundary.assert_not_called()
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"SGE_QMASTER_PORT": "6543"},
+                clear=True,
+            ),
+            mock.patch.object(
+                scheduler,
+                "build_qsub_environment",
+                side_effect=AssertionError("must remain unreachable"),
+            ) as environment_rebuilder,
+        ):
+            assert _validate_submission_receipt_fixture(
+                run,
+                topology,
+                role="finalizer",
+                current_job_id="8123457",
+            )["status"] == "PASS_EXACT_TWO_QSUB_SUBMISSIONS"
+        environment_rebuilder.assert_not_called()
+
+    wait_source = inspect.getsource(sequential._wait_for_submission_receipt)
+    assert "build_qsub_environment" not in wait_source
+    assert "os.environ" not in wait_source
+
+
+def test_claim_binding_missing_malformed_or_changed_fails_closed() -> None:
+    mutations = {
+        "missing": lambda value: {
+            key: item
+            for key, item in value.items()
+            if key != "qsub_environment_sha256"
+        },
+        "malformed": lambda value: {
+            **value, "qsub_environment_sha256": "A" * 64
+        },
+        "changed": lambda value: {
+            **value, "qsub_environment_sha256": "8" * 64
+        },
+    }
+    for label, mutate in mutations.items():
+        with tempfile.TemporaryDirectory() as raw_root:
+            run, _, claim_path = _claimed_run_fixture(
+                Path(raw_root).resolve()
+            )
+            claim = json.loads(claim_path.read_text(encoding="utf-8"))
+            _replace_private_json(claim_path, mutate(claim))
+            with (
+                mock.patch.object(
+                    sequential, "build_full_run", return_value=run
+                ),
+                mock.patch.object(
+                    sequential,
+                    "_validate_completed_canary_evidence",
+                    return_value={"status": "PASS"},
+                ),
+                mock.patch.object(
+                    sequential.capacity,
+                    "validate_current_full_headroom",
+                    return_value={},
+                ),
+                pytest.raises(sequential.FullSequentialError) as caught,
+            ):
+                sequential._adopt_claimed_run(
+                    scheduler_job_identity="MATERIALIZED_CLAIM_READBACK",
+                    expected_qsub_environment_sha256=(
+                        BOUND_QSUB_ENVIRONMENT_SHA256
+                    ),
+                )
+            assert caught.value.code == "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+            assert label in mutations
+
+    with tempfile.TemporaryDirectory() as raw_root:
+        run, _, claim_path = _claimed_run_fixture(Path(raw_root).resolve())
+        payload = claim_path.read_bytes()
+        duplicate = (
+            b'{"qsub_environment_sha256":"'
+            + BOUND_QSUB_ENVIRONMENT_SHA256.encode("ascii")
+            + b'",'
+            + payload[1:]
+        )
+        _write_private_payload(claim_path, duplicate)
+        with (
+            mock.patch.object(
+                sequential, "build_full_run", return_value=run
+            ),
+            mock.patch.object(
+                sequential,
+                "_validate_completed_canary_evidence",
+                return_value={"status": "PASS"},
+            ),
+            mock.patch.object(
+                sequential.capacity,
+                "validate_current_full_headroom",
+                return_value={},
+            ),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential._adopt_claimed_run(
+                scheduler_job_identity="MATERIALIZED_CLAIM_READBACK",
+                expected_qsub_environment_sha256=(
+                    BOUND_QSUB_ENVIRONMENT_SHA256
+                ),
+            )
+        assert caught.value.code == "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+
+
+def test_control_environment_binding_is_required_and_scope_closed() -> None:
+    for invalid in (None, "", "9" * 63, "A" * 64, 9):
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            sequential._require_qsub_environment_sha256(invalid)
+        assert (
+            caught.value.code
+            == "FULL_SEQUENTIAL_QSUB_ENVIRONMENT_BINDING_INVALID"
+        )
+
+    with (
+        mock.patch.dict(os.environ, {}, clear=True),
+        mock.patch.object(sequential, "preflight_full") as preflight,
+        mock.patch.object(sequential, "build_full_run") as builder,
+        mock.patch("builtins.print") as printer,
+    ):
+        assert sequential.guarded_main(["--claim-submission"]) == 78
+    preflight.assert_not_called()
+    builder.assert_not_called()
+    assert printer.call_args_list[0].args[0] == (
+        "FULL_C3_STATUS=BLOCKED_"
+        "FULL_SEQUENTIAL_QSUB_ENVIRONMENT_BINDING_INVALID"
+    )
+
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                sequential.QSUB_ENVIRONMENT_SHA256_NAME:
+                BOUND_QSUB_ENVIRONMENT_SHA256,
+            },
+            clear=True,
+        ),
+        mock.patch.object(sequential, "preflight_full") as preflight,
+        mock.patch("builtins.print") as printer,
+    ):
+        assert sequential.guarded_main(["--preflight-only"]) == 78
+    preflight.assert_not_called()
+    assert printer.call_args_list[0].args[0] == (
+        "FULL_C3_STATUS=BLOCKED_"
+        "FULL_SEQUENTIAL_QSUB_ENVIRONMENT_BINDING_INVALID"
+    )
+
+
+def test_submission_receipt_role_codes_are_exact_and_closed() -> None:
+    cases = (
+        (
+            "schema",
+            lambda _root, receipt_path, receipt: _replace_private_json(
+                receipt_path, {**receipt, "unexpected": 1}
+            ),
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_SCHEMA_INVALID",
+            "array",
+            "8123456",
+        ),
+        (
+            "authority",
+            lambda _root, receipt_path, receipt: _replace_private_json(
+                receipt_path,
+                {**receipt, "array_qsub_argv_sha256": "0" * 64},
+            ),
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_AUTHORITY_INVALID",
+            "array",
+            "8123456",
+        ),
+        (
+            "environment",
+            lambda _root, receipt_path, receipt: _replace_private_json(
+                receipt_path,
+                {**receipt, "qsub_environment_sha256": "0" * 64},
+            ),
+            (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_"
+                "ENVIRONMENT_BINDING_MISMATCH"
+            ),
+            "array",
+            "8123456",
+        ),
+        (
+            "malformed_environment",
+            lambda _root, receipt_path, receipt: _replace_private_json(
+                receipt_path,
+                {**receipt, "qsub_environment_sha256": "invalid"},
+            ),
+            (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_"
+                "ENVIRONMENT_BINDING_MISMATCH"
+            ),
+            "array",
+            "8123456",
+        ),
+        (
+            "missing_environment",
+            lambda _root, receipt_path, receipt: _replace_private_json(
+                receipt_path,
+                {
+                    key: item
+                    for key, item in receipt.items()
+                    if key != "qsub_environment_sha256"
+                },
+            ),
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_SCHEMA_INVALID",
+            "array",
+            "8123456",
+        ),
+        (
+            "array_job",
+            lambda _root, receipt_path, receipt: _replace_private_json(
+                receipt_path, {**receipt, "array_job_id": "8123466"}
+            ),
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JOB_ID_MISMATCH",
+            "array",
+            "8123456",
+        ),
+        (
+            "finalizer_job",
+            lambda _root, receipt_path, receipt: _replace_private_json(
+                receipt_path, {**receipt, "finalizer_job_id": "8123467"}
+            ),
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JOB_ID_MISMATCH",
+            "finalizer",
+            "8123457",
+        ),
+    )
+    for label, mutate, expected, role, job_id in cases:
+        with tempfile.TemporaryDirectory() as raw_root:
+            run, topology, receipt_path, receipt = (
+                _submission_receipt_fixture(Path(raw_root).resolve())
+            )
+            mutate(topology.scheduler_root, receipt_path, receipt)
+            with pytest.raises(sequential.FullSequentialError) as caught:
+                _validate_submission_receipt_fixture(
+                    run,
+                    topology,
+                    role=role,
+                    current_job_id=job_id,
+                )
+            assert caught.value.code == expected, label
+
+    with tempfile.TemporaryDirectory() as raw_root:
+        run, topology, _, _ = _submission_receipt_fixture(
+            Path(raw_root).resolve()
+        )
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            _validate_submission_receipt_fixture(
+                run, topology, role="unknown", current_job_id="8123456"
+            )
+        assert (
+            caught.value.code
+            == "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_AUTHORITY_INVALID"
+        )
+
+
+def test_submission_receipt_evidence_drift_maps_exactly() -> None:
+    mutations = (
+        ("array", "stdout", b"9123456.1-19:1\n"),
+        ("array", "stderr", b"scheduler failure\n"),
+        ("array", "exit_status", b"1\n"),
+        ("finalizer", "stdout", b"9123457\n"),
+        ("finalizer", "stderr", b"scheduler failure\n"),
+        ("finalizer", "exit_status", b"1\n"),
+    )
+    for label, kind, payload in mutations:
+        with tempfile.TemporaryDirectory() as raw_root:
+            run, topology, _, _ = _submission_receipt_fixture(
+                Path(raw_root).resolve()
+            )
+            evidence_path = (
+                topology.scheduler_root
+                / f"{label}.qsub.{kind}.restricted"
+            )
+            _write_private_payload(evidence_path, payload)
+            with pytest.raises(sequential.FullSequentialError) as caught:
+                _validate_submission_receipt_fixture(run, topology)
+            assert (
+                caught.value.code
+                == "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_EVIDENCE_INVALID"
+            )
+
+
+def test_submission_receipt_file_and_json_failures_are_role_specific() -> None:
+    json_payloads = (
+        b"{",
+        b'{"value":NaN}\n',
+        b'{"value":1,"value":2}\n',
+        b"[]\n",
+        b"\xff",
+    )
+    for payload in json_payloads:
+        with tempfile.TemporaryDirectory() as raw_root:
+            _, _, receipt_path, _ = _submission_receipt_fixture(
+                Path(raw_root).resolve()
+            )
+            _write_private_payload(receipt_path, payload)
+            with pytest.raises(sequential.FullSequentialError) as caught:
+                sequential._load_submission_receipt(receipt_path)
+            assert (
+                caught.value.code
+                == "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JSON_INVALID"
+            )
+
+    for failure in ("mode", "symlink", "owner"):
+        with tempfile.TemporaryDirectory() as raw_root:
+            _, _, receipt_path, _ = _submission_receipt_fixture(
+                Path(raw_root).resolve()
+            )
+            context = mock.patch.object(
+                sequential.os,
+                "geteuid",
+                return_value=os.geteuid() + 1,
+            )
+            if failure == "mode":
+                os.chmod(receipt_path, 0o640)
+                context = mock.patch.object(
+                    sequential.os, "geteuid", wraps=os.geteuid
+                )
+            elif failure == "symlink":
+                target = receipt_path.with_name("receipt-target.json")
+                target.write_bytes(receipt_path.read_bytes())
+                os.chmod(target, 0o600)
+                receipt_path.unlink()
+                receipt_path.symlink_to(target)
+                context = mock.patch.object(
+                    sequential.os, "geteuid", wraps=os.geteuid
+                )
+            with (
+                context,
+                pytest.raises(sequential.FullSequentialError) as caught,
+            ):
+                sequential._load_submission_receipt(receipt_path)
+            assert (
+                caught.value.code
+                == "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_FILE_INVALID"
+            ), failure
+
+
+def test_changed_claim_hash_is_detected_against_unchanged_receipt() -> None:
+    with tempfile.TemporaryDirectory() as raw_root:
+        run, topology, _, _ = _submission_receipt_fixture(
+            Path(raw_root).resolve()
+        )
+        claim_path = (
+            run.attempt_root / "full_submission_claim.restricted.json"
+        )
+        claim = json.loads(claim_path.read_text(encoding="utf-8"))
+        _replace_private_json(
+            claim_path, {**claim, "qsub_environment_sha256": "8" * 64}
+        )
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            _validate_submission_receipt_fixture(run, topology)
+        assert caught.value.code == (
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_"
+            "ENVIRONMENT_BINDING_MISMATCH"
+        )
+
+
+def test_claim_and_receipt_no_clobber_writers_preserve_existing_bytes() -> None:
+    with tempfile.TemporaryDirectory() as raw_root:
+        run, _, receipt_path, _ = _submission_receipt_fixture(
+            Path(raw_root).resolve()
+        )
+        claim_path = (
+            run.attempt_root / "full_submission_claim.restricted.json"
+        )
+        claim_before = claim_path.read_bytes()
+        receipt_before = receipt_path.read_bytes()
+        with pytest.raises(core.OrchestrationError) as claim_error:
+            sequential._write_private_json(
+                claim_path,
+                {"qsub_environment_sha256": "8" * 64},
+                attempt_id=run.attempt_id,
+            )
+        assert _error_code(claim_error.value) == (
+            "OUTPUT_ALREADY_EXISTS_NO_CLOBBER"
+        )
+        with pytest.raises(scheduler.FullSchedulerError) as caught:
+            scheduler._write_new(receipt_path, b'{"altered":true}\n')
+        assert caught.value.code == "SCHEDULER_EVIDENCE_NO_CLOBBER"
+        assert claim_path.read_bytes() == claim_before
+        assert receipt_path.read_bytes() == receipt_before
 
 
 def _synthetic_completed_canary_evidence(
@@ -866,7 +1421,9 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
                 return_value={"capacity": capacity_value},
             ),
         ):
-            produced = sequential.claim_submission()
+            produced = sequential.claim_submission(
+                qsub_environment_sha256=BOUND_QSUB_ENVIRONMENT_SHA256
+            )
         assert produced["status"] == "READY"
         files = tuple(
             run.attempt_root / name
@@ -912,6 +1469,14 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
             mock.patch.object(stages, "run_production_echoprime") as gpu,
             mock.patch.object(core, "execute_exact_batch_download") as cloud,
             mock.patch("builtins.print") as printer,
+            mock.patch.dict(
+                os.environ,
+                {
+                    sequential.QSUB_ENVIRONMENT_SHA256_NAME:
+                    BOUND_QSUB_ENVIRONMENT_SHA256,
+                },
+                clear=False,
+            ),
             patches[0] as writer,
             patches[1] as provider,
             patches[2] as science,
@@ -977,6 +1542,14 @@ def test_each_materialized_claim_file_tamper_fails_before_effects() -> None:
                 mock.patch.object(sequential, "run_batch_task") as science,
                 mock.patch.object(sequential.subprocess, "run") as process,
                 mock.patch("builtins.print") as printer,
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        sequential.QSUB_ENVIRONMENT_SHA256_NAME:
+                        BOUND_QSUB_ENVIRONMENT_SHA256,
+                    },
+                    clear=False,
+                ),
             ):
                 assert sequential.guarded_main(
                     ["--validate-claimed-submission"]

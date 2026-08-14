@@ -51,6 +51,8 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ATTEMPT_RE = re.compile(r"^lvef_c3_full_[0-9a-f]{16}_[0-9a-f]{8}$")
 GENERIC_PRIVATE_FILE_MAXIMUM_BYTES = 16_000_000
+SUBMISSION_RECEIPT_MAXIMUM_BYTES = 4 * 1024 * 1024
+QSUB_ENVIRONMENT_SHA256_NAME = "LVEF_C3_QSUB_ENVIRONMENT_SHA256"
 
 COMPLETED_CANARY_RUN_ID = "lvef_c3_minimal_5907a1ac53b05036_e5ca24c4"
 COMPLETED_CANARY_PRIVATE_TOPOLOGY = (
@@ -114,7 +116,8 @@ FULL_SUBMISSION_CLAIM_KEYS = frozenset(
         "schema_version", "artifact_type", "status", "governing_commit",
         "attempt_id", "batch_plan_sha256", "plan_authority_sha256",
         "runtime_authority_sha256", "launch_authority_sha256",
-        "capacity_receipt_sha256", "maximum_qsub_submissions", "array_tasks",
+        "capacity_receipt_sha256", "qsub_environment_sha256",
+        "maximum_qsub_submissions", "array_tasks",
         "array_max_concurrency", "automatic_resubmission",
         "whole_batch_retry_authorized", "third_scheduler_submission_reachable",
         "raw_dicom_deletion_authorized", "bucket_listing_requests_before_claim",
@@ -841,51 +844,126 @@ def _wait_for_submission_receipt(
     monotonic_clock: Callable[[], float],
     sleeper: Callable[[float], None],
 ) -> Mapping[str, Any]:
+    if role not in {"array", "finalizer"}:
+        _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_AUTHORITY_INVALID")
+    if (
+        not isinstance(current_job_id, str)
+        or JOB_RE.fullmatch(current_job_id) is None
+    ):
+        _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JOB_ID_MISMATCH")
     path = run.attempt_root / "scheduler/submission_receipt.restricted.json"
     deadline = monotonic_clock() + 60.0
     while not os.path.lexists(path):
         if monotonic_clock() >= deadline:
             _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_TIMEOUT")
         sleeper(0.25)
-    try:
-        item = os.lstat(path)
-        receipt = core.load_strict_json(path)
-    except Exception as exc:
-        raise FullSequentialError(
-            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_INVALID"
-        ) from exc
+
+    receipt = _load_submission_receipt(path)
     import lvef_c3_full_scheduler as scheduler
 
-    topology = scheduler.build_topology(
-        head=run.authority.governing_commit, attempt_id=run.attempt_id
+    if set(receipt) != scheduler.SUBMISSION_RECEIPT_KEYS:
+        _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_SCHEMA_INVALID")
+    expected_job = receipt.get(
+        "array_job_id" if role == "array" else "finalizer_job_id"
     )
+    if (
+        not isinstance(expected_job, str)
+        or JOB_RE.fullmatch(expected_job) is None
+        or expected_job != current_job_id
+    ):
+        _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JOB_ID_MISMATCH")
+    for key in ("array_job_id", "finalizer_job_id"):
+        value = receipt.get(key)
+        if not isinstance(value, str) or JOB_RE.fullmatch(value) is None:
+            _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JOB_ID_MISMATCH")
+    bound_environment_sha256 = _load_bound_submission_environment_sha256(run)
     try:
-        qsub_environment, _ = scheduler.build_qsub_environment(os.environ)
+        topology = scheduler.build_topology(
+            head=run.authority.governing_commit, attempt_id=run.attempt_id
+        )
         scheduler.validate_submission_receipt(
             receipt,
             topology=topology,
-            expected_qsub_environment_sha256=(
-                scheduler.qsub_environment_sha256(qsub_environment)
-            ),
+            expected_qsub_environment_sha256=bound_environment_sha256,
         )
     except scheduler.FullSchedulerError as exc:
+        mapping = {
+            "SUBMISSION_RECEIPT_SCHEMA_INVALID": (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_SCHEMA_INVALID"
+            ),
+            "SUBMISSION_RECEIPT_AUTHORITY_INVALID": (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_AUTHORITY_INVALID"
+            ),
+            "SUBMISSION_RECEIPT_EVIDENCE_INVALID": (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_EVIDENCE_INVALID"
+            ),
+            "SCHEDULER_QSUB_OUTPUT_AMBIGUOUS": (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_EVIDENCE_INVALID"
+            ),
+            "SCHEDULER_ARRAY_QSUB_OUTPUT_AMBIGUOUS": (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_EVIDENCE_INVALID"
+            ),
+            "SUBMISSION_RECEIPT_ENVIRONMENT_INVALID": (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_ENVIRONMENT_BINDING_MISMATCH"
+            ),
+            "SCHEDULER_JOB_ID_INVALID": (
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JOB_ID_MISMATCH"
+            ),
+        }
         raise FullSequentialError(
-            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_INVALID"
+            mapping.get(
+                exc.code,
+                "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_AUTHORITY_INVALID",
+            )
         ) from exc
-    expected_job = (
-        receipt.get("array_job_id")
-        if role == "array"
-        else receipt.get("finalizer_job_id")
-    )
-    if (
-        not stat.S_ISREG(item.st_mode)
-        or stat.S_ISLNK(item.st_mode)
-        or item.st_uid != os.geteuid()
-        or stat.S_IMODE(item.st_mode) != 0o600
-        or expected_job != current_job_id
-    ):
-        _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_INVALID")
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_AUTHORITY_INVALID"
+        ) from exc
     return receipt
+
+
+def _submission_receipt_json_pairs(
+    pairs: Sequence[tuple[str, Any]],
+) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JSON_INVALID")
+        value[key] = item
+    return value
+
+
+def _reject_submission_receipt_json_constant(_value: str) -> Any:
+    _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JSON_INVALID")
+
+
+def _load_submission_receipt(path: Path) -> Mapping[str, Any]:
+    """Load one bounded owner-private receipt through a stable no-follow fd."""
+
+    try:
+        payload = _read_owner_private_regular(
+            path, maximum_bytes=SUBMISSION_RECEIPT_MAXIMUM_BYTES
+        )
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_FILE_INVALID"
+        ) from exc
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_submission_receipt_json_pairs,
+            parse_constant=_reject_submission_receipt_json_constant,
+        )
+    except FullSequentialError:
+        raise
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JSON_INVALID"
+        ) from exc
+    if not isinstance(value, Mapping):
+        _fail("FULL_SEQUENTIAL_SUBMISSION_RECEIPT_JSON_INVALID")
+    return value
 
 
 @contextmanager
@@ -1532,11 +1610,23 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def _require_qsub_environment_sha256(value: object) -> str:
+    if not isinstance(value, str) or SHA_RE.fullmatch(value) is None:
+        _fail("FULL_SEQUENTIAL_QSUB_ENVIRONMENT_BINDING_INVALID")
+    return value
+
+
 def _expected_submission_claim(
-    run: FullRun, *, capacity_receipt_sha256: str
+    run: FullRun,
+    *,
+    capacity_receipt_sha256: str,
+    qsub_environment_sha256: str,
 ) -> dict[str, Any]:
     if SHA_RE.fullmatch(capacity_receipt_sha256) is None:
         _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+    qsub_environment_sha256 = _require_qsub_environment_sha256(
+        qsub_environment_sha256
+    )
     value = {
         "schema_version": 1,
         "artifact_type": "lvef_c3_full_submission_claim_v1",
@@ -1552,6 +1642,7 @@ def _expected_submission_claim(
         ),
         "launch_authority_sha256": run.launch_authority_sha256,
         "capacity_receipt_sha256": capacity_receipt_sha256,
+        "qsub_environment_sha256": qsub_environment_sha256,
         "maximum_qsub_submissions": 2,
         "array_tasks": 19,
         "array_max_concurrency": 1,
@@ -1573,7 +1664,65 @@ def _expected_submission_claim(
     return value
 
 
-def claim_submission() -> Mapping[str, Any]:
+def _load_bound_submission_environment_sha256(
+    run: FullRun,
+    *,
+    expected_qsub_environment_sha256: str | None = None,
+) -> str:
+    """Revalidate the no-clobber claim and return its client-env binding."""
+
+    capacity_path = (
+        run.attempt_root / "full_capacity_receipt.restricted.json"
+    )
+    try:
+        capacity_value, capacity_payload = _load_owner_private_json(
+            capacity_path
+        )
+        capacity.validate_current_full_headroom(capacity_value)
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID"
+        ) from exc
+    try:
+        claim, _ = _load_owner_private_json(
+            run.attempt_root / "full_submission_claim.restricted.json"
+        )
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+        ) from exc
+    if set(claim) != FULL_SUBMISSION_CLAIM_KEYS:
+        _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+    observed = claim.get("qsub_environment_sha256")
+    if not isinstance(observed, str) or SHA_RE.fullmatch(observed) is None:
+        _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+    if expected_qsub_environment_sha256 is not None:
+        try:
+            expected_binding = _require_qsub_environment_sha256(
+                expected_qsub_environment_sha256
+            )
+        except FullSequentialError as exc:
+            raise FullSequentialError(
+                "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+            ) from exc
+        if observed != expected_binding:
+            _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+    expected_claim = _expected_submission_claim(
+        run,
+        capacity_receipt_sha256=hashlib.sha256(capacity_payload).hexdigest(),
+        qsub_environment_sha256=observed,
+    )
+    if claim != expected_claim:
+        _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+    return observed
+
+
+def claim_submission(
+    *, qsub_environment_sha256: str
+) -> Mapping[str, Any]:
+    qsub_environment_sha256 = _require_qsub_environment_sha256(
+        qsub_environment_sha256
+    )
     preflight = preflight_full()
     run = build_full_run()
     if os.path.lexists(run.attempt_root):
@@ -1598,6 +1747,7 @@ def claim_submission() -> Mapping[str, Any]:
             capacity_receipt_sha256=core.sha256_file(
                 run.attempt_root / "full_capacity_receipt.restricted.json"
             ),
+            qsub_environment_sha256=qsub_environment_sha256,
         )
         _write_private_json(
             run.attempt_root / "full_submission_claim.restricted.json",
@@ -1619,7 +1769,11 @@ def claim_submission() -> Mapping[str, Any]:
     }
 
 
-def _adopt_claimed_run(*, scheduler_job_identity: str) -> FullRun:
+def _adopt_claimed_run(
+    *,
+    scheduler_job_identity: str,
+    expected_qsub_environment_sha256: str | None = None,
+) -> FullRun:
     run = build_full_run(scheduler_job_identity=scheduler_job_identity)
     if run.attempt_root.is_symlink() or not run.attempt_root.is_dir():
         _fail("FULL_SEQUENTIAL_PREPARED_ATTEMPT_MISSING")
@@ -1636,23 +1790,12 @@ def _adopt_claimed_run(*, scheduler_job_identity: str) -> FullRun:
         != run.launch_authority_sha256
     ):
         _fail("FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH")
-    capacity_value, capacity_payload = _load_owner_private_json(
-        run.attempt_root / "full_capacity_receipt.restricted.json"
+    _load_bound_submission_environment_sha256(
+        run,
+        expected_qsub_environment_sha256=(
+            expected_qsub_environment_sha256
+        ),
     )
-    try:
-        capacity.validate_current_full_headroom(capacity_value)
-    except Exception as exc:
-        raise FullSequentialError(
-            "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID"
-        ) from exc
-    capacity_sha256 = hashlib.sha256(capacity_payload).hexdigest()
-    claim, _ = _load_owner_private_json(
-        run.attempt_root / "full_submission_claim.restricted.json"
-    )
-    if claim != _expected_submission_claim(
-        run, capacity_receipt_sha256=capacity_sha256
-    ):
-        _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
     return run
 
 
@@ -1732,6 +1875,17 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     live_mode = args.run_array_task or args.run_cohort_finalizer
     try:
+        bound_control_mode = (
+            args.claim_submission or args.validate_claimed_submission
+        )
+        if bound_control_mode:
+            qsub_environment_sha256 = _require_qsub_environment_sha256(
+                os.environ.pop(QSUB_ENVIRONMENT_SHA256_NAME, None)
+            )
+        else:
+            qsub_environment_sha256 = None
+            if QSUB_ENVIRONMENT_SHA256_NAME in os.environ:
+                _fail("FULL_SEQUENTIAL_QSUB_ENVIRONMENT_BINDING_INVALID")
         if args.validate_installation:
             validate_installation()
             print("FULL_C3_INSTALLATION=PASS")
@@ -1741,11 +1895,16 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
         elif args.preflight_report:
             print("\n".join(format_preflight_report(preflight_full())))
         elif args.claim_submission:
-            claim_submission()
+            claim_submission(
+                qsub_environment_sha256=qsub_environment_sha256
+            )
             print("FULL_C3_SUBMISSION_CLAIM=READY")
         elif args.validate_claimed_submission:
             _adopt_claimed_run(
-                scheduler_job_identity="MATERIALIZED_CLAIM_READBACK"
+                scheduler_job_identity="MATERIALIZED_CLAIM_READBACK",
+                expected_qsub_environment_sha256=(
+                    qsub_environment_sha256
+                ),
             )
             print("FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS")
         elif args.print_fixed_identity:

@@ -50,6 +50,7 @@ ATTEMPT_RE: Final = re.compile(
     r"^lvef_c3_full_([0-9a-f]{16})_([0-9a-f]{8})$"
 )
 COMMIT_RE: Final = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 JOB_ID_BYTES_RE: Final = re.compile(rb"[1-9][0-9]{0,19}(?:\n)?")
 ARRAY_JOB_ID_BYTES_RE: Final = re.compile(
     rb"([1-9][0-9]{0,19})(?:\.1-19:1)?(?:\n)?"
@@ -71,6 +72,10 @@ SCIENCE_MARKERS: Final = {
     "--claim-submission": "FULL_C3_SUBMISSION_CLAIM=READY",
     "--validate-claimed-submission": "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS",
 }
+QSUB_ENVIRONMENT_SHA256_NAME: Final = "LVEF_C3_QSUB_ENVIRONMENT_SHA256"
+QSUB_ENVIRONMENT_BOUND_SCIENCE_MODES: Final = frozenset(
+    {"--claim-submission", "--validate-claimed-submission"}
+)
 SCIENCE_CONTROL_FAILURE_MAXIMUM_BYTES: Final = 512
 SCIENCE_CONTROL_FAILURE_CODE_RE: Final = re.compile(r"[A-Z][A-Z0-9_]{1,127}")
 SCIENCE_CONTROL_ZERO_EFFECT_LINES: Final = (
@@ -371,20 +376,31 @@ def parse_science_control_failure(
 def run_science_mode(
     mode: str,
     *,
+    qsub_environment_sha256: str | None = None,
     runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> str:
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONNOUSERSITE": "1",
+        "LC_ALL": "C",
+    }
+    if mode in QSUB_ENVIRONMENT_BOUND_SCIENCE_MODES:
+        if (
+            not isinstance(qsub_environment_sha256, str)
+            or SHA256_RE.fullmatch(qsub_environment_sha256) is None
+        ):
+            _fail("SCIENCE_QSUB_ENVIRONMENT_BINDING_INVALID")
+        environment[QSUB_ENVIRONMENT_SHA256_NAME] = qsub_environment_sha256
+    elif qsub_environment_sha256 is not None:
+        _fail("SCIENCE_QSUB_ENVIRONMENT_BINDING_INVALID")
     completed = runner(
         science_command(mode),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONNOUSERSITE": "1",
-            "LC_ALL": "C",
-        },
+        env=environment,
     )
     if completed.returncode != 0:
         if completed.returncode != 78:
@@ -802,15 +818,24 @@ def submit(
         science_runner=science_runner,
         git_runner=git_runner,
     )
+    environment_sha256 = qsub_environment_sha256(environment)
     run_science_mode("--preflight-only", runner=science_runner)
     validate_no_active_jobs(topology, environment, runner=qstat_runner)
     # Materialize the no-clobber claim only after the explicit no-body gate.
     # Do not insert another scheduler or cloud effect between these commands.
-    run_science_mode("--claim-submission", runner=science_runner)
+    run_science_mode(
+        "--claim-submission",
+        qsub_environment_sha256=environment_sha256,
+        runner=science_runner,
+    )
     # Re-open the materialized claim through the production reader before any
     # scheduler effect.  This command must emit its sole exact PASS marker;
     # every failure leaves qsub and scheduler-receipt creation unreachable.
-    run_science_mode("--validate-claimed-submission", runner=science_runner)
+    run_science_mode(
+        "--validate-claimed-submission",
+        qsub_environment_sha256=environment_sha256,
+        runner=science_runner,
+    )
     validate_no_active_jobs(topology, environment, runner=qstat_runner)
     evidence_root = _require_attempt_root(topology)
     array_command = topology.array_command()
@@ -849,7 +874,7 @@ def submit(
         "finalizer_qsub_argv_sha256": hashlib.sha256(
             _canonical_json({"argv": finalizer_command})
         ).hexdigest(),
-        "qsub_environment_sha256": qsub_environment_sha256(environment),
+        "qsub_environment_sha256": environment_sha256,
         "array_qsub_stdout_bytes": (
             evidence_root / "array.qsub.stdout.restricted"
         ).stat(follow_symlinks=False).st_size,
@@ -890,7 +915,7 @@ def submit(
     validate_submission_receipt(
         receipt,
         topology=topology,
-        expected_qsub_environment_sha256=qsub_environment_sha256(environment),
+        expected_qsub_environment_sha256=environment_sha256,
     )
     _write_new(evidence_root / "submission_receipt.restricted.json", _canonical_json(receipt))
     return array_id, finalizer_id

@@ -21,6 +21,13 @@ SPEC.loader.exec_module(scheduler)
 
 HEAD = "a" * 40
 ATTEMPT = f"lvef_c3_full_{'b' * 16}_{HEAD[:8]}"
+QSUB_ENVIRONMENT_SHA256 = "6" * 64
+
+
+def science_binding(mode: str) -> dict[str, str]:
+    if mode in scheduler.QSUB_ENVIRONMENT_BOUND_SCIENCE_MODES:
+        return {"qsub_environment_sha256": QSUB_ENVIRONMENT_SHA256}
+    return {}
 
 
 def completed(
@@ -263,6 +270,7 @@ def test_science_control_stdout_is_exactly_one_line() -> None:
         for stdout in (marker, marker + b"\n"):
             assert scheduler.run_science_mode(
                 mode,
+                **science_binding(mode),
                 runner=lambda *_args, _stdout=stdout, **_kwargs: completed(
                     stdout=_stdout
                 ),
@@ -276,6 +284,7 @@ def test_science_control_stdout_is_exactly_one_line() -> None:
             captured = _assert_scheduler_error(
                 scheduler.run_science_mode,
                 mode,
+                **science_binding(mode),
                 runner=lambda *_args, _stdout=stdout, **_kwargs: completed(
                     stdout=_stdout
                 ),
@@ -285,6 +294,96 @@ def test_science_control_stdout_is_exactly_one_line() -> None:
     assert scheduler.SCIENCE_MARKERS["--validate-claimed-submission"] == (
         "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS"
     )
+
+
+def test_qsub_environment_binding_is_exact_and_science_control_only() -> None:
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def runner(
+        command: list[str], *, env: dict[str, str], **_: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append((command, env))
+        mode = command[-1]
+        return completed(
+            stdout=(scheduler.SCIENCE_MARKERS[mode] + "\n").encode("ascii")
+        )
+
+    for mode in (
+        "--preflight-only",
+        "--claim-submission",
+        "--validate-claimed-submission",
+    ):
+        scheduler.run_science_mode(mode, **science_binding(mode), runner=runner)
+    assert [command[-1] for command, _ in calls] == [
+        "--preflight-only",
+        "--claim-submission",
+        "--validate-claimed-submission",
+    ]
+    assert scheduler.QSUB_ENVIRONMENT_SHA256_NAME not in calls[0][1]
+    for command, environment in calls[1:]:
+        assert environment[scheduler.QSUB_ENVIRONMENT_SHA256_NAME] == (
+            QSUB_ENVIRONMENT_SHA256
+        )
+        assert QSUB_ENVIRONMENT_SHA256 not in command
+        assert "-V" not in command and "-v" not in command
+
+    for mode, binding in (
+        ("--claim-submission", None),
+        ("--validate-claimed-submission", ""),
+        ("--claim-submission", "6" * 63),
+        ("--claim-submission", "6" * 65),
+        ("--claim-submission", "A" * 64),
+        ("--claim-submission", "6" * 63 + "\n"),
+        ("--preflight-only", QSUB_ENVIRONMENT_SHA256),
+    ):
+        forbidden = mock.Mock()
+        captured = _assert_scheduler_error(
+            scheduler.run_science_mode,
+            mode,
+            qsub_environment_sha256=binding,
+            runner=forbidden,
+        )
+        assert captured.code == "SCIENCE_QSUB_ENVIRONMENT_BINDING_INVALID"
+        forbidden.assert_not_called()
+
+
+def test_invalid_submitter_environment_digest_stops_before_claim_and_qsub() -> None:
+    value = topology()
+    qsub = mock.Mock(return_value=completed(stdout=b"8123456.1-19:1\n"))
+    science_calls: list[str] = []
+
+    def science_runner(
+        command: list[str], **_: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        mode = command[-1]
+        science_calls.append(mode)
+        return completed(
+            stdout=(scheduler.SCIENCE_MARKERS[mode] + "\n").encode("ascii")
+        )
+
+    for malformed in (None, "", "6" * 63, "A" * 64):
+        science_calls.clear()
+        qsub.reset_mock()
+        with (
+            mock.patch.object(
+                scheduler,
+                "validate_installation",
+                return_value=(value, {"USER": "owner"}, "CANONICAL"),
+            ),
+            mock.patch.object(
+                scheduler, "qsub_environment_sha256", return_value=malformed
+            ),
+            mock.patch.object(scheduler, "validate_no_active_jobs") as qstat,
+        ):
+            captured = _assert_scheduler_error(
+                scheduler.submit,
+                science_runner=science_runner,
+                qsub_runner=qsub,
+            )
+        assert captured.code == "SCIENCE_QSUB_ENVIRONMENT_BINDING_INVALID"
+        assert science_calls == ["--preflight-only"]
+        qstat.assert_called_once()
+        qsub.assert_not_called()
 
 
 def test_exact_science_control_failures_propagate_through_outer_guard() -> None:
@@ -302,6 +401,7 @@ def test_exact_science_control_failures_propagate_through_outer_guard() -> None:
         captured = _assert_scheduler_error(
             scheduler.run_science_mode,
             "--validate-claimed-submission",
+            qsub_environment_sha256=QSUB_ENVIRONMENT_SHA256,
             runner=lambda *_args, _code=code, **_kwargs: completed(
                 stdout=science_failure_surface(_code), returncode=78
             ),
@@ -400,6 +500,7 @@ def test_malformed_science_control_failures_collapse_to_generic_code() -> None:
         captured = _assert_scheduler_error(
             scheduler.run_science_mode,
             "--validate-claimed-submission",
+            qsub_environment_sha256=QSUB_ENVIRONMENT_SHA256,
             runner=lambda *_args, _result=result, **_kwargs: _result,
         )
         assert captured.code == "SCIENCE_CONTROL_COMMAND_FAILED"
@@ -408,6 +509,7 @@ def test_malformed_science_control_failures_collapse_to_generic_code() -> None:
     captured = _assert_scheduler_error(
         scheduler.run_science_mode,
         "--validate-claimed-submission",
+        qsub_environment_sha256=QSUB_ENVIRONMENT_SHA256,
         runner=lambda *_args, **_kwargs: non_ascii,
     )
     assert captured.__cause__ is None
@@ -416,6 +518,7 @@ def test_malformed_science_control_failures_collapse_to_generic_code() -> None:
     captured = _assert_scheduler_error(
         scheduler.run_science_mode,
         "--validate-claimed-submission",
+        qsub_environment_sha256=QSUB_ENVIRONMENT_SHA256,
         runner=lambda *_args, **_kwargs: completed(
             stdout=science_failure_surface(code), returncode=0
         ),
@@ -573,15 +676,26 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
             array_job_name=value.array_job_name,
             finalizer_job_name=value.finalizer_job_name,
         )
-        science_calls: list[str] = []
+        expected_environment_sha256 = scheduler.qsub_environment_sha256(
+            {"USER": "owner"}
+        )
+        science_calls: list[tuple[str, str | None]] = []
         events: list[str] = []
 
-        def science(mode: str, **_: object) -> str:
-            science_calls.append(mode)
+        def science(
+            mode: str,
+            *,
+            qsub_environment_sha256: str | None = None,
+            **_: object,
+        ) -> str:
+            science_calls.append((mode, qsub_environment_sha256))
             events.append(f"science:{mode}")
             return scheduler.SCIENCE_MARKERS.get(mode, ATTEMPT)
 
-        def qstat(*_args: object, **_kwargs: object) -> None:
+        def qstat(
+            _topology: object, environment: dict[str, str], **_kwargs: object
+        ) -> None:
+            assert scheduler.QSUB_ENVIRONMENT_SHA256_NAME not in environment
             events.append("qstat")
 
         def installation(**_: object) -> tuple[object, dict[str, str], str]:
@@ -589,9 +703,13 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
             return test_topology, {"USER": "owner"}, "CANONICAL"
 
         qsub_commands: list[list[str]] = []
+        qsub_environments: list[dict[str, str]] = []
 
-        def qsub(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        def qsub(
+            command: list[str], *, env: dict[str, str], **_: object
+        ) -> subprocess.CompletedProcess[bytes]:
             qsub_commands.append(command)
+            qsub_environments.append(env)
             events.append(
                 "qsub:array" if len(qsub_commands) == 1 else "qsub:finalizer"
             )
@@ -612,6 +730,11 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
             mock.patch.object(
                 scheduler, "validate_no_active_jobs", side_effect=qstat
             ) as qstat_gate,
+            mock.patch.object(
+                scheduler,
+                "qsub_environment_sha256",
+                wraps=scheduler.qsub_environment_sha256,
+            ) as environment_digest,
         ):
             array_id, finalizer_id = scheduler.submit(qsub_runner=qsub)
 
@@ -619,10 +742,20 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
         assert len(qsub_commands) == 2
         assert qsub_commands[1][qsub_commands[1].index("-hold_jid") + 1] == array_id
         assert science_calls == [
-            "--preflight-only",
-            "--claim-submission",
-            "--validate-claimed-submission",
+            ("--preflight-only", None),
+            ("--claim-submission", expected_environment_sha256),
+            ("--validate-claimed-submission", expected_environment_sha256),
         ]
+        assert environment_digest.call_count == 1
+        assert qsub_environments == [{"USER": "owner"}, {"USER": "owner"}]
+        assert all(
+            scheduler.QSUB_ENVIRONMENT_SHA256_NAME not in environment
+            for environment in qsub_environments
+        )
+        assert all(
+            "-V" not in command and "-v" not in command
+            for command in qsub_commands
+        )
         assert events == [
             "installation-validation",
             "science:--preflight-only",
@@ -639,9 +772,7 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
         scheduler.validate_submission_receipt(
             scheduler.json.loads(receipt.read_text()),
             topology=test_topology,
-            expected_qsub_environment_sha256=(
-                scheduler.qsub_environment_sha256({"USER": "owner"})
-            ),
+            expected_qsub_environment_sha256=expected_environment_sha256,
         )
         changed = scheduler.json.loads(receipt.read_text())
         changed["qsub_environment_sha256"] = "0" * 64
@@ -649,9 +780,7 @@ def test_submit_calls_qsub_exactly_twice_and_second_is_held_on_first() -> None:
             scheduler.validate_submission_receipt,
             changed,
             topology=test_topology,
-            expected_qsub_environment_sha256=(
-                scheduler.qsub_environment_sha256({"USER": "owner"})
-            ),
+            expected_qsub_environment_sha256=expected_environment_sha256,
         )
         assert captured.code == "SUBMISSION_RECEIPT_ENVIRONMENT_INVALID"
 
