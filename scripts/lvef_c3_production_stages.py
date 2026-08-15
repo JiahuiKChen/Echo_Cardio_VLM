@@ -33,6 +33,41 @@ CHECKPOINT_SHA256 = (
 )
 EXPECTED_EMBEDDING_DIMENSION = 512
 EXPECTED_EXTRACTED_SHAPE = (32, 224, 224, 3)
+ORDINARY_TEMPORAL_SAMPLING_POLICY = (
+    "historical_compatible_linspace_or_tail_repeat_v1"
+)
+FALLBACK_TEMPORAL_SAMPLING_POLICY = "stride2_signal_coverage_pair_repeat_v1"
+ORDINARY_PREPROCESSING_PATH = (
+    "ORDINARY_CENTER_CROP_RESIZE_HISTORICAL_TEMPORAL_V1"
+)
+SPATIAL_FALLBACK_PREPROCESSING_PATH = (
+    "SECTOR_BOUND_SQUARE_PAD_SPATIAL_FALLBACK_V1"
+)
+TEMPORAL_FALLBACK_PREPROCESSING_PATH = (
+    "STRIDE2_SIGNAL_COVERAGE_TEMPORAL_FALLBACK_V1"
+)
+SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH = (
+    "SECTOR_BOUND_SQUARE_PAD_AND_STRIDE2_SIGNAL_COVERAGE_FALLBACK_V1"
+)
+ALLOWED_PREPROCESSING_PATHS = {
+    ORDINARY_PREPROCESSING_PATH,
+    SPATIAL_FALLBACK_PREPROCESSING_PATH,
+    TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+    SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+}
+FALLBACK_NOT_ATTEMPTED = "NOT_ATTEMPTED"
+FALLBACK_PATH_PASS = "FALLBACK_PATH_PASS"
+FALLBACK_PATH_FAILED = "FALLBACK_PATH_FAILED"
+ALLOWED_FAILURE_SUBSTAGES = {
+    "DECODE_OR_COLOR_CONVERSION_FAILURE",
+    "SOURCE_SIGNAL_QUALITY_FAILURE",
+    "SPATIAL_CROP_RESIZE_FAILURE",
+    "POST_CROP_SIGNAL_QUALITY_FAILURE",
+    "TEMPORAL_SAMPLING_FAILURE",
+    "SAMPLED_NONZERO_SIGNAL_FAILURE",
+    "SAMPLED_TEMPORAL_VARIATION_FAILURE",
+    "OUTPUT_WRITE_FAILURE",
+}
 PROJECTNB_PREFIX = Path("/restricted/projectnb")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -460,6 +495,42 @@ def validate_production_extraction_rows(
         "mask_status",
         "temporal_sampling_policy",
         "pixel_decode_ok",
+        "decode_color_status",
+        "photometric_interpretation",
+        "transfer_syntax_uid",
+        "decoder_backend",
+        "decoder_color_behavior",
+        "color_transform",
+        "canonical_color_space",
+        "source_sector_pixel_count",
+        "source_sector_nonempty_gate_passed",
+        "source_nonzero_retained_pixel_count",
+        "source_nonzero_retained_pixel_gate_passed",
+        "source_temporal_variation_pixel_count",
+        "source_temporal_variation_gate_passed",
+        "ordinary_post_crop_nonzero_retained_pixel_count",
+        "ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+        "ordinary_post_crop_temporal_variation_pixel_count",
+        "ordinary_post_crop_temporal_variation_gate_passed",
+        "post_crop_nonzero_retained_pixel_count",
+        "post_crop_nonzero_retained_pixel_gate_passed",
+        "post_crop_temporal_variation_pixel_count",
+        "post_crop_temporal_variation_gate_passed",
+        "ordinary_sampled_nonzero_retained_pixel_count",
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed",
+        "ordinary_sampled_temporal_variation_pixel_count",
+        "ordinary_sampled_temporal_variation_gate_passed",
+        "sampled_nonzero_retained_pixel_count",
+        "sampled_nonzero_retained_pixel_gate_passed",
+        "sampled_temporal_variation_pixel_count",
+        "sampled_temporal_variation_gate_passed",
+        "encoder_visible_nonzero_retained_pixel_count",
+        "encoder_visible_nonzero_retained_pixel_gate_passed",
+        "encoder_visible_temporal_variation_pixel_count",
+        "encoder_visible_temporal_variation_gate_passed",
+        "selected_preprocessing_path",
+        "fallback_status",
+        "failure_substage",
         "npz_sha256",
     }
     if len(rows) != expected_cines:
@@ -467,6 +538,68 @@ def validate_production_extraction_rows(
     clip_keys: set[str] = set()
     source_keys: set[str] = set()
     studies: set[Any] = set()
+    path_counts = {value: 0 for value in ALLOWED_PREPROCESSING_PATHS}
+    fallback_passes = 0
+    count_fields = (
+        "source_sector_pixel_count",
+        "source_nonzero_retained_pixel_count",
+        "source_temporal_variation_pixel_count",
+        "ordinary_post_crop_nonzero_retained_pixel_count",
+        "ordinary_post_crop_temporal_variation_pixel_count",
+        "post_crop_nonzero_retained_pixel_count",
+        "post_crop_temporal_variation_pixel_count",
+        "ordinary_sampled_nonzero_retained_pixel_count",
+        "ordinary_sampled_temporal_variation_pixel_count",
+        "sampled_nonzero_retained_pixel_count",
+        "sampled_temporal_variation_pixel_count",
+        "encoder_visible_nonzero_retained_pixel_count",
+        "encoder_visible_temporal_variation_pixel_count",
+    )
+    count_gate_pairs = (
+        ("source_sector_pixel_count", "source_sector_nonempty_gate_passed"),
+        ("source_nonzero_retained_pixel_count", "source_nonzero_retained_pixel_gate_passed"),
+        ("source_temporal_variation_pixel_count", "source_temporal_variation_gate_passed"),
+        ("ordinary_post_crop_nonzero_retained_pixel_count", "ordinary_post_crop_nonzero_retained_pixel_gate_passed"),
+        ("ordinary_post_crop_temporal_variation_pixel_count", "ordinary_post_crop_temporal_variation_gate_passed"),
+        ("post_crop_nonzero_retained_pixel_count", "post_crop_nonzero_retained_pixel_gate_passed"),
+        ("post_crop_temporal_variation_pixel_count", "post_crop_temporal_variation_gate_passed"),
+        ("ordinary_sampled_nonzero_retained_pixel_count", "ordinary_sampled_nonzero_retained_pixel_gate_passed"),
+        ("ordinary_sampled_temporal_variation_pixel_count", "ordinary_sampled_temporal_variation_gate_passed"),
+        ("sampled_nonzero_retained_pixel_count", "sampled_nonzero_retained_pixel_gate_passed"),
+        ("sampled_temporal_variation_pixel_count", "sampled_temporal_variation_gate_passed"),
+        ("encoder_visible_nonzero_retained_pixel_count", "encoder_visible_nonzero_retained_pixel_gate_passed"),
+        ("encoder_visible_temporal_variation_pixel_count", "encoder_visible_temporal_variation_gate_passed"),
+    )
+    source_gate_fields = (
+        "source_sector_nonempty_gate_passed",
+        "source_nonzero_retained_pixel_gate_passed",
+        "source_temporal_variation_gate_passed",
+    )
+    selected_gate_fields = (
+        "post_crop_nonzero_retained_pixel_gate_passed",
+        "post_crop_temporal_variation_gate_passed",
+        "sampled_nonzero_retained_pixel_gate_passed",
+        "sampled_temporal_variation_gate_passed",
+    )
+    encoder_visible_gate_fields = (
+        "encoder_visible_nonzero_retained_pixel_gate_passed",
+        "encoder_visible_temporal_variation_gate_passed",
+    )
+    ordinary_post_crop_gate_fields = (
+        "ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+        "ordinary_post_crop_temporal_variation_gate_passed",
+    )
+    ordinary_sampled_gate_fields = (
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed",
+        "ordinary_sampled_temporal_variation_gate_passed",
+    )
+    expected_color_transforms = {
+        "MONOCHROME1": "MONOCHROME1_INVERT_REPLICATE_TO_RGB",
+        "MONOCHROME2": "MONOCHROME2_REPLICATE_TO_RGB",
+        "RGB": "NONE_RGB",
+        "YBR_FULL": "EXPLICIT_YBR_FULL_TO_RGB",
+        "YBR_FULL_422": "EXPLICIT_YBR_FULL_422_TO_RGB",
+    }
     for row in rows:
         if not required.issubset(row):
             raise ProductionStageError("EXTRACTION_ROW_SCHEMA_MISMATCH")
@@ -479,16 +612,117 @@ def validate_production_extraction_rows(
         clip_keys.add(clip_key)
         source_keys.add(source_key)
         studies.add(row["study_id"])
-        if row["write_ok"] is not True or row["pixel_decode_ok"] is not True:
-            raise ProductionStageError("INCOMPLETE_EXTRACTION_ROW")
+        if row["write_ok"] is not True:
+            failure_substage = row["failure_substage"]
+            if failure_substage not in ALLOWED_FAILURE_SUBSTAGES:
+                raise ProductionStageError("EXTRACTION_FAILURE_SUBSTAGE_INVALID")
+            if row["fallback_status"] not in {
+                FALLBACK_NOT_ATTEMPTED,
+                FALLBACK_PATH_FAILED,
+            }:
+                raise ProductionStageError("EXTRACTION_FALLBACK_STATUS_INVALID")
+            raise ProductionStageError(f"EXTRACTION_{failure_substage}")
+        if row["pixel_decode_ok"] is not True:
+            raise ProductionStageError("EXTRACTION_DECODE_COLOR_AUTHORITY_INVALID")
+        if row["decode_color_status"] != "PASS":
+            raise ProductionStageError("EXTRACTION_DECODE_COLOR_AUTHORITY_INVALID")
+        if (
+            row["decoder_color_behavior"] != "STORED_COLOR_RAW"
+            or row["canonical_color_space"] != "RGB"
+            or row["photometric_interpretation"] not in expected_color_transforms
+            or row["color_transform"]
+            != expected_color_transforms[row["photometric_interpretation"]]
+            or not isinstance(row["decoder_backend"], str)
+            or re.fullmatch(
+                r"pydicom_pixels_raw:[A-Za-z0-9_.+-]{1,80}",
+                row["decoder_backend"],
+            )
+            is None
+            or not isinstance(row["transfer_syntax_uid"], str)
+            or re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", row["transfer_syntax_uid"])
+            is None
+        ):
+            raise ProductionStageError("EXTRACTION_DECODE_COLOR_AUTHORITY_INVALID")
         if row["frames_shape"] != "32x224x224x3" or row["frames_dtype"] != "uint8":
             raise ProductionStageError("EXTRACTION_SHAPE_OR_DTYPE_MISMATCH")
         if row["mask_status"] != "APPLIED":
             raise ProductionStageError("EXTRACTION_MASK_GATE_FAILED")
-        if row["temporal_sampling_policy"] != (
-            "historical_compatible_linspace_or_tail_repeat_v1"
-        ):
+        path = row["selected_preprocessing_path"]
+        if path not in ALLOWED_PREPROCESSING_PATHS:
+            raise ProductionStageError("EXTRACTION_PREPROCESSING_PATH_INVALID")
+        path_counts[str(path)] += 1
+        expected_policy = (
+            FALLBACK_TEMPORAL_SAMPLING_POLICY
+            if path
+            in {
+                TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+                SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+            }
+            else ORDINARY_TEMPORAL_SAMPLING_POLICY
+        )
+        if row["temporal_sampling_policy"] != expected_policy:
             raise ProductionStageError("EXTRACTION_SAMPLING_POLICY_MISMATCH")
+        expected_fallback = (
+            FALLBACK_NOT_ATTEMPTED
+            if path == ORDINARY_PREPROCESSING_PATH
+            else FALLBACK_PATH_PASS
+        )
+        if row["fallback_status"] != expected_fallback:
+            raise ProductionStageError("EXTRACTION_FALLBACK_STATUS_INVALID")
+        fallback_passes += int(expected_fallback == FALLBACK_PATH_PASS)
+        if row["failure_substage"] != "NONE":
+            raise ProductionStageError("EXTRACTION_FAILURE_SUBSTAGE_INVALID")
+        numeric_counts: dict[str, int] = {}
+        for field in count_fields:
+            value = row[field]
+            if isinstance(value, bool):
+                raise ProductionStageError("EXTRACTION_PROVENANCE_COUNT_INVALID")
+            if isinstance(value, float):
+                if not math.isfinite(value) or value < 0 or not value.is_integer():
+                    raise ProductionStageError(
+                        "EXTRACTION_PROVENANCE_COUNT_INVALID"
+                    )
+                numeric_counts[field] = int(value)
+            elif re.fullmatch(r"0|[1-9][0-9]*", str(value)) is not None:
+                numeric_counts[field] = int(value)
+            else:
+                raise ProductionStageError("EXTRACTION_PROVENANCE_COUNT_INVALID")
+        if any(
+            row[gate_field] is not (numeric_counts[count_field] > 0)
+            for count_field, gate_field in count_gate_pairs
+        ):
+            raise ProductionStageError("EXTRACTION_PROVENANCE_GATE_CONTRADICTION")
+        if not all(row[field] is True for field in source_gate_fields):
+            raise ProductionStageError("EXTRACTION_SOURCE_SIGNAL_GATE_FAILED")
+        if not all(row[field] is True for field in selected_gate_fields):
+            raise ProductionStageError("EXTRACTION_SELECTED_SIGNAL_GATE_FAILED")
+        if path != ORDINARY_PREPROCESSING_PATH and not all(
+            row[field] is True for field in encoder_visible_gate_fields
+        ):
+            raise ProductionStageError(
+                "EXTRACTION_FALLBACK_ENCODER_VISIBLE_SIGNAL_GATE_FAILED"
+            )
+        if path == ORDINARY_PREPROCESSING_PATH and not all(
+            row[field] is True
+            for field in (
+                *ordinary_post_crop_gate_fields,
+                *ordinary_sampled_gate_fields,
+            )
+        ):
+            raise ProductionStageError("EXTRACTION_ORDINARY_PATH_CONTRADICTION")
+        if path != ORDINARY_PREPROCESSING_PATH and all(
+            row[field] is True for field in ordinary_sampled_gate_fields
+        ):
+            raise ProductionStageError("EXTRACTION_FALLBACK_TRIGGER_INVALID")
+        if path in {
+            SPATIAL_FALLBACK_PREPROCESSING_PATH,
+            SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+        } and all(row[field] is True for field in ordinary_post_crop_gate_fields):
+            raise ProductionStageError("EXTRACTION_SPATIAL_FALLBACK_TRIGGER_INVALID")
+        if path == TEMPORAL_FALLBACK_PREPROCESSING_PATH and not all(
+            row[field] is True for field in ordinary_post_crop_gate_fields
+        ):
+            raise ProductionStageError("EXTRACTION_TEMPORAL_FALLBACK_TRIGGER_INVALID")
         _validate_hash(row["npz_sha256"], "INVALID_EXTRACTION_HASH")
     return {
         "n_extracted_clips": len(rows),
@@ -497,6 +731,25 @@ def validate_production_extraction_rows(
         "physical_source_keys_unique": True,
         "all_shapes_and_dtypes_valid": True,
         "all_pixel_decodes_passed": True,
+        "n_ordinary_preprocessing_path": path_counts[
+            ORDINARY_PREPROCESSING_PATH
+        ],
+        "n_spatial_fallback_preprocessing_path": path_counts[
+            SPATIAL_FALLBACK_PREPROCESSING_PATH
+        ],
+        "n_temporal_fallback_preprocessing_path": path_counts[
+            TEMPORAL_FALLBACK_PREPROCESSING_PATH
+        ],
+        "n_spatial_temporal_fallback_preprocessing_path": path_counts[
+            SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH
+        ],
+        "n_fallback_path_pass": fallback_passes,
+        "n_fallback_path_failed": 0,
+        "all_source_signal_gates_passed": True,
+        "all_post_crop_signal_gates_passed": True,
+        "all_sampled_signal_gates_passed": True,
+        "all_fallback_encoder_visible_signal_gates_passed": True,
+        "all_failure_substages_none": True,
     }
 
 
@@ -1039,35 +1292,64 @@ def run_production_dicom_extraction(
         extracted["physical_source_key"] = physical_by_path[
             extracted["source_relative_path"]
         ]
-        extracted["pixel_decode_ok"] = extracted["write_ok"] is True
+        extracted["pixel_decode_ok"] = extracted.get("decode_color_status") == "PASS"
     extraction_rows.sort(key=lambda row: str(row["source_relative_path"]))
     decode_by_path = {
         row["source_relative_path"]: row["pixel_decode_ok"] for row in extraction_rows
     }
-    header["pixel_decode_ok"] = header["source_relative_path"].map(decode_by_path).fillna(False)
+    header["pixel_decode_ok"] = header["source_relative_path"].map(
+        lambda value: decode_by_path.get(value, False)
+    )
     smoke.write_csv_atomic(partial / "dicom_audit.restricted.csv", header)
     extraction = pd.DataFrame(extraction_rows)
     smoke.write_csv_atomic(partial / "extraction_manifest.restricted.csv", extraction)
+    extraction_provenance = (
+        smoke.summarize_extraction(extraction) if extraction_rows else None
+    )
     dicom_summary = validate_production_dicom_rows(
         header.to_dict(orient="records"),
         expected_objects=len(records),
         expected_studies=int(frame["study_id"].nunique()),
     )
     if dicom_summary["n_unreadable"] or dicom_summary["n_pixel_decode_failures"]:
+        failure_summary = {
+            "status": "FAIL_DICOM_OR_PIXEL_DECODE_GATE",
+            **dicom_summary,
+            "identifiers_emitted": False,
+            "paths_emitted": False,
+        }
+        if extraction_provenance is not None:
+            failure_summary.update(
+                {
+                    "schema_version": 2,
+                    "artifact_type": (
+                        "lvef_c3_batch_dicom_or_extraction_failure_summary_v2"
+                    ),
+                    "extraction_provenance": extraction_provenance,
+                }
+            )
         smoke.write_json_atomic(
             partial / "failure.summary.json",
-            {"status": "FAIL_DICOM_OR_PIXEL_DECODE_GATE", **dicom_summary, "identifiers_emitted": False, "paths_emitted": False},
+            failure_summary,
         )
         raise ProductionStageError("DICOM_OR_PIXEL_DECODE_GATE_FAILED")
     try:
         extraction_summary = validate_production_extraction_rows(
-            extraction.to_dict(orient="records"),
+            extraction_rows,
             expected_cines=dicom_summary["n_multiframe_candidates"],
         )
     except ProductionStageError as exc:
         smoke.write_json_atomic(
             partial / "failure.summary.json",
-            {"status": "FAIL_EXTRACTION_GATE", "error_code": exc.code, "identifiers_emitted": False, "paths_emitted": False},
+            {
+                "schema_version": 2,
+                "artifact_type": "lvef_c3_batch_extraction_failure_summary_v2",
+                "status": "FAIL_EXTRACTION_GATE",
+                "error_code": exc.code,
+                "extraction_provenance": extraction_provenance,
+                "identifiers_emitted": False,
+                "paths_emitted": False,
+            },
         )
         raise
     summary = {

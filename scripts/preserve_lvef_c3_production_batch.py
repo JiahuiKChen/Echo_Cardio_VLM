@@ -64,10 +64,30 @@ EXTRACTION_MANIFEST_HEADER = (
     "source_nonzero_retained_pixel_gate_passed",
     "source_temporal_variation_pixel_count",
     "source_temporal_variation_gate_passed",
+    "ordinary_post_crop_nonzero_retained_pixel_count",
+    "ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+    "ordinary_post_crop_temporal_variation_pixel_count",
+    "ordinary_post_crop_temporal_variation_gate_passed",
+    "post_crop_nonzero_retained_pixel_count",
+    "post_crop_nonzero_retained_pixel_gate_passed",
+    "post_crop_temporal_variation_pixel_count",
+    "post_crop_temporal_variation_gate_passed",
+    "ordinary_sampled_nonzero_retained_pixel_count",
+    "ordinary_sampled_nonzero_retained_pixel_gate_passed",
+    "ordinary_sampled_temporal_variation_pixel_count",
+    "ordinary_sampled_temporal_variation_gate_passed",
     "sampled_nonzero_retained_pixel_count",
     "sampled_nonzero_retained_pixel_gate_passed",
     "sampled_temporal_variation_pixel_count",
     "sampled_temporal_variation_gate_passed",
+    "encoder_visible_nonzero_retained_pixel_count",
+    "encoder_visible_nonzero_retained_pixel_gate_passed",
+    "encoder_visible_temporal_variation_pixel_count",
+    "encoder_visible_temporal_variation_gate_passed",
+    "selected_preprocessing_path",
+    "fallback_status",
+    "failure_substage",
+    "decode_color_status",
     "temporal_sampling_policy",
     "frames_shape",
     "frames_dtype",
@@ -115,6 +135,17 @@ EXTRACTION_RECOMPUTED_SUMMARY_KEYS = (
     "physical_source_keys_unique",
     "all_shapes_and_dtypes_valid",
     "all_pixel_decodes_passed",
+    "n_ordinary_preprocessing_path",
+    "n_spatial_fallback_preprocessing_path",
+    "n_temporal_fallback_preprocessing_path",
+    "n_spatial_temporal_fallback_preprocessing_path",
+    "n_fallback_path_pass",
+    "n_fallback_path_failed",
+    "all_source_signal_gates_passed",
+    "all_post_crop_signal_gates_passed",
+    "all_sampled_signal_gates_passed",
+    "all_fallback_encoder_visible_signal_gates_passed",
+    "all_failure_substages_none",
 )
 CLIP_L2_NORM_REL_TOL = 1e-12
 CLIP_L2_NORM_ABS_TOL = 1e-12
@@ -247,7 +278,23 @@ def validate_stage_csv_authority(
     typed_extraction_rows: list[dict[str, Any]] = []
     for row in extraction_rows:
         typed = dict(row)
-        for field in ("write_ok", "pixel_decode_ok"):
+        for field in (
+            "write_ok",
+            "pixel_decode_ok",
+            "source_sector_nonempty_gate_passed",
+            "source_nonzero_retained_pixel_gate_passed",
+            "source_temporal_variation_gate_passed",
+            "ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+            "ordinary_post_crop_temporal_variation_gate_passed",
+            "post_crop_nonzero_retained_pixel_gate_passed",
+            "post_crop_temporal_variation_gate_passed",
+            "ordinary_sampled_nonzero_retained_pixel_gate_passed",
+            "ordinary_sampled_temporal_variation_gate_passed",
+            "sampled_nonzero_retained_pixel_gate_passed",
+            "sampled_temporal_variation_gate_passed",
+            "encoder_visible_nonzero_retained_pixel_gate_passed",
+            "encoder_visible_temporal_variation_gate_passed",
+        ):
             typed[field] = _strict_csv_bool(
                 row[field], code="EXTRACTION_MANIFEST_BOOLEAN_INVALID"
             )

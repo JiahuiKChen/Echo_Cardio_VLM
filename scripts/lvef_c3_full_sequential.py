@@ -53,6 +53,130 @@ ATTEMPT_RE = re.compile(r"^lvef_c3_full_[0-9a-f]{16}_[0-9a-f]{8}$")
 GENERIC_PRIVATE_FILE_MAXIMUM_BYTES = 16_000_000
 SUBMISSION_RECEIPT_MAXIMUM_BYTES = 4 * 1024 * 1024
 QSUB_ENVIRONMENT_SHA256_NAME = "LVEF_C3_QSUB_ENVIRONMENT_SHA256"
+TERMINAL_PARTIAL_MAXIMUM_ENTRIES = 50_000
+
+TERMINAL_DOWNLOAD_FAILURE_SUMMARY_KEYS = frozenset(
+    {"status", "identifiers_emitted", "paths_emitted"}
+)
+TERMINAL_DOWNLOAD_FAILURE_STATUSES = frozenset(
+    {"FAIL_DOWNLOAD_FILE_NOT_REGULAR", "FAIL_POSTDOWNLOAD_HASH_MISMATCH"}
+)
+TERMINAL_DICOM_FAILURE_SUMMARY_KEYS = frozenset(
+    {
+        "status",
+        "n_objects",
+        "n_studies",
+        "n_readable",
+        "n_unreadable",
+        "n_multiframe_candidates",
+        "n_single_frame",
+        "n_pixel_decode_failures",
+        "physical_source_keys_unique",
+        "identifiers_emitted",
+        "paths_emitted",
+    }
+)
+TERMINAL_EXTRACTION_FAILURE_SUMMARY_KEYS = frozenset(
+    {"status", "error_code", "identifiers_emitted", "paths_emitted"}
+)
+TERMINAL_EXTRACTION_FAILURE_SUMMARY_V2_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "error_code",
+        "extraction_provenance",
+        "identifiers_emitted",
+        "paths_emitted",
+    }
+)
+TERMINAL_DICOM_FAILURE_SUMMARY_V2_KEYS = frozenset(
+    {*TERMINAL_DICOM_FAILURE_SUMMARY_KEYS, "schema_version", "artifact_type",
+     "extraction_provenance"}
+)
+EXTRACTION_PROVENANCE_INTEGER_KEYS = frozenset(
+    {
+        "n_requested_cines",
+        "n_extracted_cines",
+        "n_failed_cines",
+        "n_unique_clip_keys",
+        "n_duplicate_clip_key_rows",
+        "n_studies_with_extracted_cine",
+        "n_source_nonempty_sector_gate_passed",
+        "n_source_nonzero_retained_pixel_gate_passed",
+        "n_source_temporal_variation_gate_passed",
+        "n_ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+        "n_ordinary_post_crop_temporal_variation_gate_passed",
+        "n_post_crop_nonzero_retained_pixel_gate_passed",
+        "n_post_crop_temporal_variation_gate_passed",
+        "n_ordinary_sampled_nonzero_retained_pixel_gate_passed",
+        "n_ordinary_sampled_temporal_variation_gate_passed",
+        "n_sampled_nonzero_retained_pixel_gate_passed",
+        "n_sampled_temporal_variation_gate_passed",
+        "n_encoder_visible_nonzero_retained_pixel_gate_passed",
+        "n_encoder_visible_temporal_variation_gate_passed",
+    }
+)
+EXTRACTION_PROVENANCE_BOOLEAN_KEYS = frozenset(
+    {
+        "all_shapes_32x224x224x3_uint8",
+        "all_masks_explicitly_applied",
+        "all_preprocessing_signal_gates_passed",
+        "all_successful_gate_counts_mechanically_consistent",
+        "all_fallback_encoder_visible_signal_gates_passed",
+        "selected_preprocessing_paths_valid",
+        "preprocessing_path_trigger_consistent",
+        "temporal_sampling_policy_locked_for_all_extracted_cines",
+        "all_decoders_stored_color_raw_to_canonical_rgb",
+        "row_values_emitted",
+        "paths_emitted",
+    }
+)
+EXTRACTION_PROVENANCE_COUNT_MAP_KEYS = frozenset(
+    {
+        "selected_preprocessing_path_counts",
+        "fallback_status_counts",
+        "failure_substage_counts",
+        "decode_color_status_counts",
+        "temporal_sampling_policy_counts",
+        "photometric_interpretation_counts",
+        "transfer_syntax_uid_counts",
+        "decoder_backend_counts",
+        "decoder_color_behavior_counts",
+        "color_transform_counts",
+    }
+)
+EXTRACTION_PROVENANCE_GATE_STATE_KEYS = frozenset(
+    {
+        "source_sector_nonempty_gate_passed",
+        "source_nonzero_retained_pixel_gate_passed",
+        "source_temporal_variation_gate_passed",
+        "ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+        "ordinary_post_crop_temporal_variation_gate_passed",
+        "post_crop_nonzero_retained_pixel_gate_passed",
+        "post_crop_temporal_variation_gate_passed",
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed",
+        "ordinary_sampled_temporal_variation_gate_passed",
+        "sampled_nonzero_retained_pixel_gate_passed",
+        "sampled_temporal_variation_gate_passed",
+        "encoder_visible_nonzero_retained_pixel_gate_passed",
+        "encoder_visible_temporal_variation_gate_passed",
+    }
+)
+EXTRACTION_PROVENANCE_KEYS = frozenset(
+    {
+        "audit",
+        "status",
+        *EXTRACTION_PROVENANCE_INTEGER_KEYS,
+        *EXTRACTION_PROVENANCE_BOOLEAN_KEYS,
+        *EXTRACTION_PROVENANCE_COUNT_MAP_KEYS,
+        "preprocessing_gate_state_counts",
+        "temporal_sampling_policy",
+        "temporal_fallback_policy",
+        "temporal_sampling_long_cine_rule",
+        "temporal_sampling_short_cine_rule",
+    }
+)
 
 COMPLETED_CANARY_RUN_ID = "lvef_c3_minimal_5907a1ac53b05036_e5ca24c4"
 COMPLETED_CANARY_PRIVATE_TOPOLOGY = (
@@ -162,6 +286,12 @@ class FullRun:
     launch_authority: Mapping[str, Any]
     launch_authority_sha256: str
     scheduler_job_identity: str
+
+
+@dataclass(frozen=True)
+class ExtractionCacheInventory:
+    active: int
+    preserved_terminal_failed: int
 
 
 @dataclass(frozen=True)
@@ -1140,7 +1270,11 @@ def run_batch_task(
     # have retired its extracted clips.  Recheck the physical topology before
     # any token or body boundary so an unexpected second cache fails closed.
     with _stage_boundary("PREBODY_AUTHORITY"):
-        if _active_extraction_cache_count(effective_run.production_root) != 0:
+        cache_inventory = _extraction_cache_inventory(
+            effective_run.production_root,
+            current_attempt_id=effective_run.attempt_id,
+        )
+        if cache_inventory.active != 0:
             _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
 
     with _stage_boundary("SUBMISSION_AUTHORITY"):
@@ -1374,13 +1508,333 @@ def run_batch_task(
     }
 
 
-def _active_extraction_cache_count(production_root: Path) -> int:
+def _closed_extraction_provenance(value: object) -> bool:
+    """Accept only the exact aggregate-only output of ``summarize_extraction``."""
+
+    if not isinstance(value, Mapping) or frozenset(value) != EXTRACTION_PROVENANCE_KEYS:
+        return False
+    if (
+        value.get("audit") != "prospective_cine_extraction"
+        or value.get("status") not in {"PASS", "FAIL"}
+        or value.get("temporal_sampling_policy")
+        != "historical_compatible_linspace_or_tail_repeat_v1"
+        or value.get("temporal_fallback_policy")
+        != "stride2_signal_coverage_pair_repeat_v1"
+        or value.get("temporal_sampling_long_cine_rule")
+        != "endpoint_inclusive_integer_linspace"
+        or value.get("temporal_sampling_short_cine_rule")
+        != "ordered_source_frames_then_repeat_final_frame"
+        or value.get("row_values_emitted") is not False
+        or value.get("paths_emitted") is not False
+    ):
+        return False
+    if any(
+        not isinstance(value.get(key), bool)
+        for key in EXTRACTION_PROVENANCE_BOOLEAN_KEYS
+    ):
+        return False
+    if any(
+        not isinstance(value.get(key), int)
+        or isinstance(value.get(key), bool)
+        or int(value[key]) < 0
+        for key in EXTRACTION_PROVENANCE_INTEGER_KEYS
+    ):
+        return False
+    requested = int(value["n_requested_cines"])
+    extracted = int(value["n_extracted_cines"])
+    if (
+        requested < 1
+        or extracted > requested
+        or int(value["n_failed_cines"]) != requested - extracted
+        or any(
+            int(value[key]) > extracted
+            for key in EXTRACTION_PROVENANCE_INTEGER_KEYS
+            if key not in {"n_requested_cines", "n_failed_cines"}
+        )
+    ):
+        return False
+
+    gate_state_counts = value.get("preprocessing_gate_state_counts")
+    gate_states = frozenset({"PASS", "FAIL", "NOT_EVALUATED", "INVALID"})
+    if (
+        not isinstance(gate_state_counts, Mapping)
+        or len(gate_state_counts) != len(EXTRACTION_PROVENANCE_GATE_STATE_KEYS)
+        or frozenset(gate_state_counts) != EXTRACTION_PROVENANCE_GATE_STATE_KEYS
+    ):
+        return False
+    for gate in EXTRACTION_PROVENANCE_GATE_STATE_KEYS:
+        states = gate_state_counts.get(gate)
+        if (
+            not isinstance(states, Mapping)
+            or len(states) != 4
+            or frozenset(states) != gate_states
+            or any(
+                not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+                for count in states.values()
+            )
+            or sum(states.values()) != requested
+        ):
+            return False
+
+    allowed_map_keys: Mapping[str, frozenset[str] | None] = {
+        "selected_preprocessing_path_counts": frozenset(
+            {
+                "ORDINARY_CENTER_CROP_RESIZE_HISTORICAL_TEMPORAL_V1",
+                "SECTOR_BOUND_SQUARE_PAD_SPATIAL_FALLBACK_V1",
+                "STRIDE2_SIGNAL_COVERAGE_TEMPORAL_FALLBACK_V1",
+                "SECTOR_BOUND_SQUARE_PAD_AND_STRIDE2_SIGNAL_COVERAGE_FALLBACK_V1",
+                "NOT_SELECTED",
+                "MISSING",
+                "INVALID",
+            }
+        ),
+        "fallback_status_counts": frozenset(
+            {
+                "NOT_ATTEMPTED",
+                "FALLBACK_PATH_PASS",
+                "FALLBACK_PATH_FAILED",
+                "MISSING",
+                "INVALID",
+            }
+        ),
+        "failure_substage_counts": frozenset(
+            {
+                "NONE",
+                "DECODE_OR_COLOR_CONVERSION_FAILURE",
+                "SOURCE_SIGNAL_QUALITY_FAILURE",
+                "SPATIAL_CROP_RESIZE_FAILURE",
+                "POST_CROP_SIGNAL_QUALITY_FAILURE",
+                "TEMPORAL_SAMPLING_FAILURE",
+                "SAMPLED_NONZERO_SIGNAL_FAILURE",
+                "SAMPLED_TEMPORAL_VARIATION_FAILURE",
+                "OUTPUT_WRITE_FAILURE",
+                "MISSING",
+                "INVALID",
+            }
+        ),
+        "decode_color_status_counts": frozenset(
+            {
+                "PASS",
+                "NOT_REACHED",
+                "DECODE_OR_COLOR_CONVERSION_FAILURE",
+                "MISSING",
+                "INVALID",
+            }
+        ),
+        "temporal_sampling_policy_counts": frozenset(
+            {
+                "historical_compatible_linspace_or_tail_repeat_v1",
+                "stride2_signal_coverage_pair_repeat_v1",
+                "MISSING",
+                "INVALID",
+            }
+        ),
+        "photometric_interpretation_counts": frozenset(
+            {"MONOCHROME1", "MONOCHROME2", "RGB", "YBR_FULL", "YBR_FULL_422",
+             "MISSING", "INVALID"}
+        ),
+        "transfer_syntax_uid_counts": None,
+        "decoder_backend_counts": None,
+        "decoder_color_behavior_counts": frozenset(
+            {"STORED_COLOR_RAW", "MISSING", "INVALID"}
+        ),
+        "color_transform_counts": frozenset(
+            {
+                "MONOCHROME1_INVERT_REPLICATE_TO_RGB",
+                "MONOCHROME2_REPLICATE_TO_RGB",
+                "NONE_RGB",
+                "EXPLICIT_YBR_FULL_TO_RGB",
+                "EXPLICIT_YBR_FULL_422_TO_RGB",
+                "MISSING",
+                "INVALID",
+            }
+        ),
+    }
+    whole_frame_maps = {
+        "fallback_status_counts",
+        "failure_substage_counts",
+        "decode_color_status_counts",
+    }
+    for field in EXTRACTION_PROVENANCE_COUNT_MAP_KEYS:
+        observed = value.get(field)
+        if not isinstance(observed, Mapping) or len(observed) > 64:
+            return False
+        allowed = allowed_map_keys[field]
+        total = 0
+        for key, count in observed.items():
+            if not isinstance(key, str) or not key or len(key) > 120:
+                return False
+            if allowed is not None and key not in allowed:
+                return False
+            if field == "transfer_syntax_uid_counts" and key not in {
+                "MISSING", "INVALID"
+            } and re.fullmatch(r"1\.2\.840\.10008\.1\.2(?:\.[0-9]+)*", key) is None:
+                return False
+            if field == "decoder_backend_counts" and key not in {
+                "MISSING", "INVALID"
+            } and re.fullmatch(
+                r"pydicom_pixels_raw:(?:native|pylibjpeg|gdcm|pillow|pyjpegls)",
+                key,
+            ) is None:
+                return False
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                return False
+            total += count
+        expected_total = requested if field in whole_frame_maps else extracted
+        if total != expected_total:
+            return False
+    return True
+
+
+def _closed_terminal_dicom_counts(value: Mapping[str, Any]) -> bool:
+    count_names = (
+        "n_objects",
+        "n_studies",
+        "n_readable",
+        "n_unreadable",
+        "n_multiframe_candidates",
+        "n_single_frame",
+        "n_pixel_decode_failures",
+    )
+    if any(
+        not isinstance(value.get(name), int)
+        or isinstance(value.get(name), bool)
+        or int(value[name]) < 0
+        for name in count_names
+    ):
+        return False
+    return bool(
+        value["n_objects"] >= 1
+        and value["n_studies"] >= 1
+        and value["n_readable"] + value["n_unreadable"]
+        == value["n_objects"]
+        and value["n_multiframe_candidates"] + value["n_single_frame"]
+        == value["n_readable"]
+        and value["n_pixel_decode_failures"]
+        <= value["n_multiframe_candidates"]
+        and (
+            value["n_unreadable"] > 0
+            or value["n_pixel_decode_failures"] > 0
+        )
+        and value.get("physical_source_keys_unique") is True
+    )
+
+
+def _closed_owner_private_partial_tree(partial: Path) -> bool:
+    """Require a bounded all-owner, no-follow, closed partial evidence tree."""
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        _validate_private_directory(partial)
+        entries = 0
+        for current_text, directories, filenames in os.walk(
+            partial,
+            topdown=True,
+            onerror=raise_walk_error,
+            followlinks=False,
+        ):
+            current = Path(current_text)
+            directories.sort()
+            filenames.sort()
+            paths = [(current / name, False) for name in filenames]
+            if current == partial:
+                paths.insert(0, (current, True))
+            paths.extend((current / name, True) for name in directories)
+            for path, expected_directory in paths:
+                item = os.lstat(path)
+                entries += 1
+                if entries > TERMINAL_PARTIAL_MAXIMUM_ENTRIES:
+                    return False
+                if stat.S_ISLNK(item.st_mode) or item.st_uid != os.geteuid():
+                    return False
+                mode = stat.S_IMODE(item.st_mode)
+                if expected_directory:
+                    if not stat.S_ISDIR(item.st_mode) or mode not in {0o700, 0o2700}:
+                        return False
+                elif not stat.S_ISREG(item.st_mode) or mode != 0o600:
+                    return False
+    except (FullSequentialError, OSError):
+        return False
+    return True
+
+
+def _closed_terminal_failure_summary(partial: Path) -> bool:
+    """Recognize only an atomically written, owner-private closed failure.
+
+    A prior attempt's partial clip tree is immutable failure evidence only after
+    the production writer has published one of its exact terminal summaries.
+    Ambiguous, malformed, symlinked, or permission-drifted summaries are never
+    treated as terminal and therefore remain blocking caches.
+    """
+
+    if not _closed_owner_private_partial_tree(partial):
+        return False
+    try:
+        value, _ = _load_owner_private_json(partial / "failure.summary.json")
+    except (FullSequentialError, OSError):
+        return False
+    if (
+        value.get("identifiers_emitted") is not False
+        or value.get("paths_emitted") is not False
+    ):
+        return False
+    keys = frozenset(value)
+    status = value.get("status")
+    if keys == TERMINAL_DOWNLOAD_FAILURE_SUMMARY_KEYS:
+        return status in TERMINAL_DOWNLOAD_FAILURE_STATUSES
+    if keys == TERMINAL_EXTRACTION_FAILURE_SUMMARY_KEYS:
+        error_code = value.get("error_code")
+        return (
+            status == "FAIL_EXTRACTION_GATE"
+            and isinstance(error_code, str)
+            and re.fullmatch(r"[A-Z][A-Z0-9_]{1,127}", error_code) is not None
+        )
+    if keys == TERMINAL_EXTRACTION_FAILURE_SUMMARY_V2_KEYS:
+        error_code = value.get("error_code")
+        return bool(
+            value.get("schema_version") == 2
+            and value.get("artifact_type")
+            == "lvef_c3_batch_extraction_failure_summary_v2"
+            and status == "FAIL_EXTRACTION_GATE"
+            and isinstance(error_code, str)
+            and re.fullmatch(r"[A-Z][A-Z0-9_]{1,127}", error_code) is not None
+            and _closed_extraction_provenance(value.get("extraction_provenance"))
+        )
+    if keys == TERMINAL_DICOM_FAILURE_SUMMARY_KEYS:
+        return bool(
+            status == "FAIL_DICOM_OR_PIXEL_DECODE_GATE"
+            and _closed_terminal_dicom_counts(value)
+        )
+    if keys == TERMINAL_DICOM_FAILURE_SUMMARY_V2_KEYS:
+        return bool(
+            value.get("schema_version") == 2
+            and value.get("artifact_type")
+            == "lvef_c3_batch_dicom_or_extraction_failure_summary_v2"
+            and status == "FAIL_DICOM_OR_PIXEL_DECODE_GATE"
+            and _closed_terminal_dicom_counts(value)
+            and _closed_extraction_provenance(value.get("extraction_provenance"))
+        )
+    return False
+
+
+def _extraction_cache_inventory(
+    production_root: Path, *, current_attempt_id: str
+) -> ExtractionCacheInventory:
+    """Separate live caches from immutable terminal evidence across attempts."""
+
+    if ATTEMPT_RE.fullmatch(current_attempt_id) is None:
+        _fail("FULL_SEQUENTIAL_ATTEMPT_ID_INVALID")
     attempts = production_root / "attempts"
     if not os.path.lexists(attempts):
-        return 0
+        return ExtractionCacheInventory(active=0, preserved_terminal_failed=0)
     if attempts.is_symlink() or not attempts.is_dir():
         _fail("FULL_SEQUENTIAL_ATTEMPTS_ROOT_INVALID")
-    count = 0
+    active = 0
+    preserved = 0
     for attempt in attempts.iterdir():
         if attempt.is_symlink() or not attempt.is_dir():
             _fail("FULL_SEQUENTIAL_ATTEMPT_TOPOLOGY_INVALID")
@@ -1390,11 +1844,33 @@ def _active_extraction_cache_count(production_root: Path) -> int:
         if cache_root.is_symlink() or not cache_root.is_dir():
             _fail("FULL_SEQUENTIAL_CACHE_TOPOLOGY_INVALID")
         for batch in cache_root.iterdir():
+            if (
+                batch.is_symlink()
+                or not batch.is_dir()
+                or re.fullmatch(r"c3_batch_(?:00[0-9]|01[0-8])", batch.name)
+                is None
+            ):
+                active += 1
+                continue
             clips = batch / "dicom_extraction" / "clips"
             partial = batch / "dicom_extraction.partial"
-            if os.path.lexists(clips) or os.path.lexists(partial):
-                count += 1
-    return count
+            clips_present = os.path.lexists(clips)
+            partial_present = os.path.lexists(partial)
+            if not clips_present and not partial_present:
+                continue
+            if (
+                ATTEMPT_RE.fullmatch(attempt.name) is not None
+                and attempt.name != current_attempt_id
+                and partial_present
+                and not clips_present
+                and _closed_terminal_failure_summary(partial)
+            ):
+                preserved += 1
+            else:
+                active += 1
+    return ExtractionCacheInventory(
+        active=active, preserved_terminal_failed=preserved
+    )
 
 
 def validate_installation() -> Mapping[str, Any]:
@@ -1408,6 +1884,7 @@ def validate_installation() -> Mapping[str, Any]:
         SCRIPT_ROOT / "preserve_lvef_c3_production_batch.py",
         SCRIPT_ROOT / "retire_lvef_c3_extracted_cache_v2.py",
         SCRIPT_ROOT / "finalize_lvef_c3_production.py",
+        SCRIPT_ROOT / "replay_lvef_c3_failed_extraction_one_object.py",
     )
     if any(path.is_symlink() or not path.is_file() for path in required):
         _fail("FULL_SEQUENTIAL_TRACKED_CONTROL_MISSING")
@@ -1447,8 +1924,10 @@ def preflight_full(
         else capacity.probe_current_full_headroom()
     )
     capacity.validate_current_full_headroom(observed_capacity)
-    active_caches = _active_extraction_cache_count(run.production_root)
-    if active_caches != 0:
+    cache_inventory = _extraction_cache_inventory(
+        run.production_root, current_attempt_id=run.attempt_id
+    )
+    if cache_inventory.active != 0:
         _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
     aggregate = core.aggregate_batch_plan(
         run.plan, requirements=run.requirements
@@ -1464,7 +1943,10 @@ def preflight_full(
         "batch_count": aggregate["batch_count"],
         "expected_study_embeddings": 4525,
         "expected_no_cine_studies": 5,
-        "active_extraction_caches": active_caches,
+        "active_extraction_caches": cache_inventory.active,
+        "preserved_terminal_failed_extraction_caches": (
+            cache_inventory.preserved_terminal_failed
+        ),
         "storage_reserve": "PASS",
         "echoprime_runtime": "PASS",
         "crc32c_external_runtime": "PASS",
@@ -1515,6 +1997,15 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
         "writes_performed": 0,
     }
     if any(value.get(key) != expected for key, expected in scalar_expectations.items()):
+        _fail("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID")
+    preserved_failed_caches = value.get(
+        "preserved_terminal_failed_extraction_caches"
+    )
+    if (
+        not isinstance(preserved_failed_caches, int)
+        or isinstance(preserved_failed_caches, bool)
+        or preserved_failed_caches < 0
+    ):
         _fail("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID")
     governing_commit = value.get("governing_commit")
     if not isinstance(governing_commit, str) or COMMIT_RE.fullmatch(governing_commit) is None:
@@ -1577,6 +2068,8 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
         "FULL_C3_EXPECTED_STUDY_EMBEDDINGS=4525",
         "FULL_C3_EXPECTED_NO_CINE_STUDIES=5",
         "FULL_C3_ACTIVE_EXTRACTION_CACHES=0",
+        "FULL_C3_PRESERVED_TERMINAL_FAILED_EXTRACTION_CACHES="
+        f"{preserved_failed_caches}",
         "FULL_C3_STORAGE_RESERVE=PASS",
         "ECHOPRIME_RUNTIME=PASS",
         "CRC32C_EXTERNAL_RUNTIME=PASS",

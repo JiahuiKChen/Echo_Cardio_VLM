@@ -911,6 +911,13 @@ def _synthetic_hooks(
                 assert extracted_row["write_ok"] is True, extracted_row["error_code"]
                 assert extracted_row["error_code"] is None
                 assert extracted_row["mask_status"] == "APPLIED"
+                assert extracted_row["decode_color_status"] == "PASS"
+                assert (
+                    extracted_row["selected_preprocessing_path"]
+                    == reconstruction.ORDINARY_PREPROCESSING_PATH
+                )
+                assert extracted_row["fallback_status"] == "NOT_ATTEMPTED"
+                assert extracted_row["failure_substage"] == "NONE"
                 output_path = extraction_root / extracted_row["output_relative_path"]
                 with np.load(output_path, allow_pickle=False) as archive:
                     assert set(archive.files) == {
@@ -938,6 +945,8 @@ def _synthetic_hooks(
         )
         context.call_trace.append("validate_production_extraction_rows")
         assert validation["all_shapes_and_dtypes_valid"] is True
+        assert validation["n_ordinary_preprocessing_path"] == 10
+        assert validation["n_fallback_path_pass"] == 0
         context.artifacts["extraction_rows"] = extraction_rows
         context.artifacts["extracted_frames"] = extracted
 

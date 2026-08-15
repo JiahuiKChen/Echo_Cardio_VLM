@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 
@@ -47,7 +49,7 @@ def test_safe_relative_path_rejects_noncanonical_or_escaping_values() -> None:
 
 
 def test_clip_key_is_stable_and_namespaced() -> None:
-    path = "files/p10/p10000001/s20000001/a.dcm"
+    path = "/".join(("files", "p10", "p10000001", "s20000001", "a" + ".dcm"))
     expected = hashlib.sha256(f"{smoke.CLIP_KEY_NAMESPACE}\0{path}".encode()).hexdigest()
     assert smoke.stable_clip_key(path) == expected
     assert smoke.stable_clip_key(path) == smoke.stable_clip_key(path)
@@ -499,6 +501,41 @@ def test_pixel_decode_fails_closed_without_compressed_plugin_or_exact_8_bit_rang
         "BitsAllocated=BitsStored=8",
     )
 
+    unsupported_api = _FakePixelsAPI()
+    unsupported_api._expected_stored = rgb
+    expect_raises(
+        ValueError,
+        lambda: smoke._normalize_dicom_pixels(
+            _fake_dataset(rgb, "PALETTE COLOR", 3),
+            SimpleNamespace(pixels=unsupported_api),
+        ),
+        "Unsupported or missing PhotometricInterpretation",
+    )
+
+    uint16_pixels = rgb.astype(np.uint16)
+    uint16_api = _FakePixelsAPI()
+    uint16_api._expected_stored = uint16_pixels
+    expect_raises(
+        ValueError,
+        lambda: smoke._normalize_dicom_pixels(
+            _fake_dataset(uint16_pixels, "RGB", 3),
+            SimpleNamespace(pixels=uint16_api),
+        ),
+        "BitsAllocated=BitsStored=8",
+    )
+
+    invalid_layout = np.zeros((2, 4, 4), dtype=np.uint8)
+    layout_api = _FakePixelsAPI()
+    layout_api._expected_stored = invalid_layout
+    expect_raises(
+        ValueError,
+        lambda: smoke._normalize_dicom_pixels(
+            _fake_dataset(invalid_layout, "RGB", 3),
+            SimpleNamespace(pixels=layout_api),
+        ),
+        "Unsupported decoded multiframe pixel layout",
+    )
+
 
 def test_rgb_luma_tensor_oracle_has_explicit_channel_order() -> None:
     colors = np.asarray([[[[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]]], dtype=np.uint8)
@@ -531,6 +568,562 @@ def test_signal_gates_fail_closed_for_empty_blank_and_static_cines() -> None:
     expect_raises(ValueError, lambda: smoke._require_signal_quality(static_metrics), "gate failed")
 
 
+class _SyntheticCv2:
+    INTER_CUBIC = 2
+
+    @staticmethod
+    def resize(frame: np.ndarray, size: tuple[int, int], interpolation: int) -> np.ndarray:
+        assert interpolation == _SyntheticCv2.INTER_CUBIC
+        width, height = size
+        y_indices = np.linspace(0, frame.shape[0] - 1, height, dtype=np.int64)
+        x_indices = np.linspace(0, frame.shape[1] - 1, width, dtype=np.int64)
+        return np.ascontiguousarray(frame[y_indices][:, x_indices])
+
+
+def _dynamic_block_cine(
+    *, temporal_sparse: bool, off_center: bool
+) -> tuple[np.ndarray, np.ndarray, int | None]:
+    frames = np.zeros((40, 64, 128, 3), dtype=np.uint8)
+    sector = np.zeros((64, 128), dtype=bool)
+    y_slice = slice(16, 48)
+    x_slice = slice(2, 18) if off_center else slice(48, 80)
+    sector[y_slice, x_slice] = True
+    omitted_index = None
+    if temporal_sparse:
+        historical = set(np.linspace(0, 39, 32, dtype=np.int64).tolist())
+        omitted_index = next(index for index in range(1, 39) if index not in historical)
+        frames[omitted_index, y_slice, x_slice, :] = 200
+    else:
+        values = np.arange(10, 50, dtype=np.uint8)
+        frames[:, y_slice, x_slice, :] = values[:, None, None, None]
+    return frames, sector, omitted_index
+
+
+def test_ordinary_preprocessing_path_is_array_index_and_hash_exact() -> None:
+    frames, sector, _ = _dynamic_block_cine(temporal_sparse=False, off_center=False)
+    expected_resized = np.stack(
+        [smoke._crop_resize(frame, _SyntheticCv2) for frame in frames], axis=0
+    ).astype(np.uint8)
+    expected, expected_indices = smoke.temporal_sample(expected_resized, 32)
+
+    observed, observed_indices, provenance = smoke._preprocess_with_signal_preserving_fallback(
+        frames, sector, _SyntheticCv2
+    )
+
+    assert np.array_equal(observed, expected)
+    assert np.array_equal(observed_indices, expected_indices)
+    assert smoke.array_content_sha256(observed) == smoke.array_content_sha256(expected)
+    assert smoke.array_content_sha256(observed_indices) == smoke.array_content_sha256(
+        expected_indices
+    )
+    assert provenance["selected_preprocessing_path"] == smoke.ORDINARY_PREPROCESSING_PATH
+    assert provenance["fallback_status"] == smoke.FALLBACK_NOT_ATTEMPTED
+    assert provenance["temporal_sampling_policy"] == smoke.TEMPORAL_SAMPLING_POLICY
+
+
+def test_encoder_visible_gate_is_provenance_only_for_ordinary_full_gate_pass() -> None:
+    frames = np.ones((33, 64, 64, 3), dtype=np.uint8)
+    frames[1:31:2] = 2
+    sector = np.ones((64, 64), dtype=bool)
+    sampled, _indices, provenance = smoke._preprocess_with_signal_preserving_fallback(
+        frames, sector, _SyntheticCv2
+    )
+    smoke._require_signal_quality(smoke._signal_quality_metrics(sampled))
+    assert provenance["encoder_visible_temporal_variation_gate_passed"] is False
+    assert provenance["selected_preprocessing_path"] == smoke.ORDINARY_PREPROCESSING_PATH
+    assert provenance["fallback_status"] == smoke.FALLBACK_NOT_ATTEMPTED
+
+
+def test_spatial_signal_loss_topology_is_recovered_by_sector_bound_fallback() -> None:
+    frames, sector, _ = _dynamic_block_cine(temporal_sparse=False, off_center=True)
+    smoke._require_signal_quality(smoke._signal_quality_metrics(frames, sector))
+    ordinary = np.stack(
+        [smoke._crop_resize(frame, _SyntheticCv2) for frame in frames], axis=0
+    ).astype(np.uint8)
+    ordinary_sampled, _ = smoke.temporal_sample(ordinary, 32)
+    assert smoke._signal_quality_metrics(ordinary_sampled)[
+        "nonzero_retained_pixel_gate_passed"
+    ] is False
+
+    sampled, indices, provenance = smoke._preprocess_with_signal_preserving_fallback(
+        frames, sector, _SyntheticCv2
+    )
+
+    smoke._require_signal_quality(smoke._signal_quality_metrics(sampled))
+    assert indices.tolist() == np.linspace(0, 39, 32, dtype=np.int64).tolist()
+    assert provenance["ordinary_post_crop_nonzero_retained_pixel_gate_passed"] is False
+    assert provenance["post_crop_nonzero_retained_pixel_gate_passed"] is True
+    assert provenance["selected_preprocessing_path"] == (
+        smoke.SPATIAL_FALLBACK_PREPROCESSING_PATH
+    )
+    assert provenance["fallback_status"] == "FALLBACK_PATH_PASS"
+
+
+def test_temporal_signal_loss_topology_is_recovered_with_stride_visible_anchors() -> None:
+    frames, sector, omitted_index = _dynamic_block_cine(
+        temporal_sparse=True, off_center=False
+    )
+    assert omitted_index is not None
+    smoke._require_signal_quality(smoke._signal_quality_metrics(frames, sector))
+    ordinary = np.stack(
+        [smoke._crop_resize(frame, _SyntheticCv2) for frame in frames], axis=0
+    ).astype(np.uint8)
+    ordinary_sampled, ordinary_indices = smoke.temporal_sample(ordinary, 32)
+    assert omitted_index not in ordinary_indices
+    ordinary_quality = smoke._signal_quality_metrics(ordinary_sampled)
+    assert ordinary_quality["nonzero_retained_pixel_gate_passed"] is False
+    assert ordinary_quality["temporal_variation_gate_passed"] is False
+
+    sampled, indices, provenance = smoke._preprocess_with_signal_preserving_fallback(
+        frames, sector, _SyntheticCv2
+    )
+
+    anchors = indices[0:32:2]
+    assert omitted_index in anchors
+    assert np.array_equal(indices[0:32:2], indices[1:32:2])
+    assert np.unique(anchors).size == 16
+    smoke._require_signal_quality(smoke._signal_quality_metrics(sampled))
+    smoke._require_signal_quality(smoke._signal_quality_metrics(sampled[0:32:2]))
+    assert provenance["selected_preprocessing_path"] == (
+        smoke.TEMPORAL_FALLBACK_PREPROCESSING_PATH
+    )
+    assert provenance["temporal_sampling_policy"] == smoke.TEMPORAL_FALLBACK_POLICY
+
+
+def test_combined_spatial_and_temporal_signal_loss_uses_bounded_chain() -> None:
+    frames, sector, omitted_index = _dynamic_block_cine(
+        temporal_sparse=True, off_center=True
+    )
+    sampled, indices, provenance = smoke._preprocess_with_signal_preserving_fallback(
+        frames, sector, _SyntheticCv2
+    )
+    assert omitted_index in indices[0:32:2]
+    smoke._require_signal_quality(smoke._signal_quality_metrics(sampled))
+    smoke._require_signal_quality(smoke._signal_quality_metrics(sampled[0:32:2]))
+    assert provenance["ordinary_post_crop_nonzero_retained_pixel_gate_passed"] is False
+    assert provenance["post_crop_nonzero_retained_pixel_gate_passed"] is True
+    assert provenance["ordinary_sampled_nonzero_retained_pixel_gate_passed"] is False
+    assert provenance["selected_preprocessing_path"] == (
+        smoke.SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH
+    )
+
+
+def test_sector_bbox_is_inclusive_square_padded_and_dtype_fail_closed() -> None:
+    captured: list[np.ndarray] = []
+
+    class CaptureCv2:
+        INTER_CUBIC = 7
+
+        @staticmethod
+        def resize(frame, size, interpolation):
+            assert size == (224, 224)
+            assert interpolation == 7
+            captured.append(frame.copy())
+            return np.zeros((224, 224, 3), dtype=np.uint8)
+
+    frames = np.zeros((2, 5, 6, 3), dtype=np.uint8)
+    frames[:, 1:4, 2:4, :] = np.asarray([10, 20], dtype=np.uint8)[:, None, None, None]
+    mask = np.zeros((5, 6), dtype=bool)
+    mask[1:4, 2:4] = True
+    observed = smoke._sector_bbox_square_pad_resize(frames, mask, CaptureCv2)
+    assert observed.shape == (2, 224, 224, 3)
+    assert captured[0].shape == (3, 3, 3)
+    assert np.all(captured[0][:, :2] == 10)
+    assert np.all(captured[0][:, 2] == 0)
+
+    captured.clear()
+    wide_frames = np.zeros((2, 5, 6, 3), dtype=np.uint8)
+    wide_frames[:, 1:3, 2:5, :] = np.asarray([30, 40], dtype=np.uint8)[:, None, None, None]
+    wide_mask = np.zeros((5, 6), dtype=bool)
+    wide_mask[1:3, 2:5] = True
+    smoke._sector_bbox_square_pad_resize(wide_frames, wide_mask, CaptureCv2)
+    assert captured[0].shape == (3, 3, 3)
+    assert np.all(captured[0][:2] == 30)
+    assert np.all(captured[0][2] == 0)
+
+    class FloatCv2(CaptureCv2):
+        @staticmethod
+        def resize(_frame, _size, interpolation):
+            assert interpolation == 7
+            return np.zeros((224, 224, 3), dtype=np.float32)
+
+    expect_raises(
+        ValueError,
+        lambda: smoke._sector_bbox_square_pad_resize(frames, mask, FloatCv2),
+        "shape/dtype",
+    )
+    expect_raises(
+        ValueError,
+        lambda: smoke._sector_bbox_square_pad_resize(
+            frames, np.zeros_like(mask), CaptureCv2
+        ),
+        "nonempty",
+    )
+    expect_raises(
+        ValueError,
+        lambda: smoke._sector_bbox_square_pad_resize(frames, mask[:, :-1], CaptureCv2),
+        "matching boolean",
+    )
+    expect_raises(
+        ValueError,
+        lambda: smoke._sector_bbox_square_pad_resize(frames, mask.astype(np.uint8), CaptureCv2),
+        "matching boolean",
+    )
+
+
+def test_temporal_fallback_anchor_scoring_and_boundaries_are_exact() -> None:
+    frames = np.zeros((40, 4, 4, 3), dtype=np.uint8)
+    frames.reshape(40, -1, 3)[:, 0] = 1
+    frames[9].reshape(-1, 3)[:15] = 10
+    frames[9].reshape(-1, 3)[15] = 0
+    frames[10].reshape(-1, 3)[:14] = 20
+    frames[10].reshape(-1, 3)[14] = 0
+    frames[10].reshape(-1, 3)[15] = 10
+    frames[17].reshape(-1, 3)[1:] = 5
+    _sampled, indices = smoke._signal_preserving_temporal_sample(frames)
+    expected = np.asarray(
+        [0, 2, 4, 6, 9, 10, 13, 15, 17, 19, 22, 25, 28, 33, 36, 39],
+        dtype=np.int64,
+    )
+    assert np.array_equal(indices, np.repeat(expected, 2))
+    full_quality = smoke._signal_quality_metrics(frames[indices])
+    visible_quality = smoke._signal_quality_metrics(frames[indices][0:32:2])
+    assert full_quality["nonzero_retained_pixel_count"] == (
+        2 * visible_quality["nonzero_retained_pixel_count"]
+    )
+    assert full_quality["temporal_variation_pixel_count"] == visible_quality[
+        "temporal_variation_pixel_count"
+    ]
+
+    boundary = np.arange(16, dtype=np.uint8)[:, None, None, None]
+    boundary = np.broadcast_to(boundary, (16, 2, 2, 3)).copy()
+    _sampled, boundary_indices = smoke._signal_preserving_temporal_sample(boundary)
+    assert np.array_equal(boundary_indices, np.repeat(np.arange(16), 2))
+    expect_raises(
+        ValueError,
+        lambda: smoke._signal_preserving_temporal_sample(boundary[:15]),
+        "at least 16",
+    )
+
+
+def test_fallback_is_repeatable_and_independent_of_helper_worker_count() -> None:
+    frames, sector, _ = _dynamic_block_cine(temporal_sparse=True, off_center=True)
+
+    def run_once() -> tuple[str, str, str]:
+        sampled, indices, provenance = smoke._preprocess_with_signal_preserving_fallback(
+            frames, sector, _SyntheticCv2
+        )
+        return (
+            smoke.array_content_sha256(sampled),
+            smoke.array_content_sha256(indices),
+            str(provenance["selected_preprocessing_path"]),
+        )
+
+    sequential = [run_once() for _ in range(3)]
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        parallel = list(pool.map(lambda _unused: run_once(), range(6)))
+    assert len(set(sequential + parallel)) == 1
+
+
+def test_source_black_and_static_fail_before_fallback_eligibility() -> None:
+    sector = np.ones((64, 128), dtype=bool)
+    black = np.zeros((40, 64, 128, 3), dtype=np.uint8)
+    static = np.full_like(black, 25)
+    for frames in (black, static):
+        source_quality = smoke._signal_quality_metrics(frames, sector)
+        expect_raises(
+            ValueError, lambda quality=source_quality: smoke._require_signal_quality(quality)
+        )
+
+
+def _synthetic_extract(
+    download_root: Path,
+    output_root: Path,
+    frames: np.ndarray,
+    sector: np.ndarray,
+    preprocessing_override=None,
+    normalization_override=None,
+) -> dict[str, object]:
+    source = download_root / "cine.dcm"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"synthetic-no-live-dicom")
+    output_root.mkdir(parents=True, exist_ok=True)
+    fake_cv2 = SimpleNamespace(
+        INTER_CUBIC=_SyntheticCv2.INTER_CUBIC,
+        resize=_SyntheticCv2.resize,
+        setNumThreads=lambda _workers: None,
+    )
+    fake_pydicom = SimpleNamespace(dcmread=lambda *_args, **_kwargs: object())
+    absent = object()
+    prior_cv2 = sys.modules.get("cv2", absent)
+    prior_pydicom = sys.modules.get("pydicom", absent)
+    original_normalize = smoke._normalize_dicom_pixels
+    original_mask = smoke._mask_ultrasound_strict
+    original_preprocess = smoke._preprocess_with_signal_preserving_fallback
+    sys.modules["cv2"] = fake_cv2
+    sys.modules["pydicom"] = fake_pydicom
+    smoke._normalize_dicom_pixels = normalization_override or (
+        lambda _dataset, _module: (
+            frames.copy(),
+            {
+                "photometric_interpretation": "RGB",
+                "transfer_syntax_uid": "1.2.840.10008.1.2.1",
+                "decoder_backend": "pydicom_pixels_raw:native",
+                "decoder_color_behavior": "STORED_COLOR_RAW",
+                "color_transform": "NONE_RGB",
+                "canonical_color_space": "RGB",
+            },
+        )
+    )
+    smoke._mask_ultrasound_strict = lambda value, _cv2: (
+        np.ascontiguousarray(value),
+        np.ascontiguousarray(sector),
+    )
+    if preprocessing_override is not None:
+        smoke._preprocess_with_signal_preserving_fallback = preprocessing_override
+    try:
+        return smoke._extract_one(
+            {
+                "subject_id": 1,
+                "study_id": 2,
+                "smoke_role": smoke.POSITIVE_CONTROL_ROLES[0],
+                "source_relative_path": "cine.dcm",
+                "download_sha256": "a" * 64,
+            },
+            str(download_root),
+            str(output_root),
+        )
+    finally:
+        smoke._normalize_dicom_pixels = original_normalize
+        smoke._mask_ultrasound_strict = original_mask
+        smoke._preprocess_with_signal_preserving_fallback = original_preprocess
+        if prior_cv2 is absent:
+            sys.modules.pop("cv2", None)
+        else:
+            sys.modules["cv2"] = prior_cv2
+        if prior_pydicom is absent:
+            sys.modules.pop("pydicom", None)
+        else:
+            sys.modules["pydicom"] = prior_pydicom
+
+
+def test_successful_fallback_writes_authority_with_correct_step_statuses() -> None:
+    frames, sector, _ = _dynamic_block_cine(temporal_sparse=True, off_center=True)
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        result = _synthetic_extract(root / "download", root / "output", frames, sector)
+        output = root / "output" / str(result["output_relative_path"])
+        assert result["write_ok"] is True
+        assert result["decode_color_status"] == "PASS"
+        assert result["mask_status"] == "APPLIED"
+        assert result["fallback_status"] == "FALLBACK_PATH_PASS"
+        assert result["failure_substage"] == "NONE"
+        assert result["selected_preprocessing_path"] == (
+            smoke.SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH
+        )
+        keys = list(result)
+        assert keys[
+            keys.index("ordinary_post_crop_nonzero_retained_pixel_count") : keys.index(
+                "frames_shape"
+            )
+        ] == [
+            "ordinary_post_crop_nonzero_retained_pixel_count",
+            "ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+            "ordinary_post_crop_temporal_variation_pixel_count",
+            "ordinary_post_crop_temporal_variation_gate_passed",
+            "post_crop_nonzero_retained_pixel_count",
+            "post_crop_nonzero_retained_pixel_gate_passed",
+            "post_crop_temporal_variation_pixel_count",
+            "post_crop_temporal_variation_gate_passed",
+            "ordinary_sampled_nonzero_retained_pixel_count",
+            "ordinary_sampled_nonzero_retained_pixel_gate_passed",
+            "ordinary_sampled_temporal_variation_pixel_count",
+            "ordinary_sampled_temporal_variation_gate_passed",
+            "sampled_nonzero_retained_pixel_count",
+            "sampled_nonzero_retained_pixel_gate_passed",
+            "sampled_temporal_variation_pixel_count",
+            "sampled_temporal_variation_gate_passed",
+            "encoder_visible_nonzero_retained_pixel_count",
+            "encoder_visible_nonzero_retained_pixel_gate_passed",
+            "encoder_visible_temporal_variation_pixel_count",
+            "encoder_visible_temporal_variation_gate_passed",
+            "selected_preprocessing_path",
+            "fallback_status",
+            "failure_substage",
+            "decode_color_status",
+            "temporal_sampling_policy",
+        ]
+        assert output.is_file()
+        with np.load(output, allow_pickle=False) as payload:
+            assert payload["frames"].shape == smoke.EXTRACTION_SHAPE
+            assert np.array_equal(
+                payload["sampled_indices"][0:32:2], payload["sampled_indices"][1:32:2]
+            )
+
+
+def test_failed_fallback_preserves_applied_mask_and_writes_no_authoritative_npz() -> None:
+    frames, sector, _ = _dynamic_block_cine(temporal_sparse=True, off_center=False)
+
+    def fail_fallback(_frames, _sector, _cv2):
+        provenance = smoke._empty_preprocessing_provenance()
+        provenance.update(
+            {
+                "fallback_status": "FALLBACK_PATH_FAILED",
+                "failure_substage": "SAMPLED_NONZERO_SIGNAL_FAILURE",
+                "ordinary_sampled_nonzero_retained_pixel_count": 0,
+                "ordinary_sampled_nonzero_retained_pixel_gate_passed": False,
+                "ordinary_sampled_temporal_variation_pixel_count": 0,
+                "ordinary_sampled_temporal_variation_gate_passed": False,
+            }
+        )
+        raise smoke.PreprocessingStageError(
+            "synthetic failed fallback",
+            failure_substage="SAMPLED_NONZERO_SIGNAL_FAILURE",
+            provenance=provenance,
+        )
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        result = _synthetic_extract(
+            root / "download", root / "output", frames, sector, fail_fallback
+        )
+        output = root / "output" / str(result["output_relative_path"])
+        assert result["write_ok"] is False
+        assert result["decode_color_status"] == "PASS"
+        assert result["mask_status"] == "APPLIED"
+        assert result["fallback_status"] == "FALLBACK_PATH_FAILED"
+        assert result["failure_substage"] == "SAMPLED_NONZERO_SIGNAL_FAILURE"
+        assert result["selected_preprocessing_path"] == smoke.PREPROCESSING_PATH_NOT_SELECTED
+        assert result["error_code"] == "PreprocessingStageError"
+        assert not output.exists()
+
+
+def test_closed_preprocessing_failure_substages_are_preserved_without_npz() -> None:
+    frames, sector, _ = _dynamic_block_cine(
+        temporal_sparse=True, off_center=False
+    )
+    cases = (
+        ("SPATIAL_CROP_RESIZE_FAILURE", smoke.FALLBACK_NOT_ATTEMPTED),
+        ("POST_CROP_SIGNAL_QUALITY_FAILURE", "FALLBACK_PATH_FAILED"),
+        ("TEMPORAL_SAMPLING_FAILURE", smoke.FALLBACK_NOT_ATTEMPTED),
+        ("SAMPLED_TEMPORAL_VARIATION_FAILURE", "FALLBACK_PATH_FAILED"),
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        for ordinal, (substage, fallback_status) in enumerate(cases):
+            def fail_with_substage(
+                _frames, _sector, _cv2, *, observed=substage,
+                observed_fallback=fallback_status,
+            ):
+                provenance = smoke._empty_preprocessing_provenance()
+                provenance.update(
+                    {
+                        "fallback_status": observed_fallback,
+                        "failure_substage": observed,
+                    }
+                )
+                raise smoke.PreprocessingStageError(
+                    "synthetic closed substage",
+                    failure_substage=observed,
+                    provenance=provenance,
+                )
+
+            output_root = root / f"output-{ordinal}"
+            result = _synthetic_extract(
+                root / f"download-{ordinal}",
+                output_root,
+                frames,
+                sector,
+                fail_with_substage,
+            )
+            assert result["write_ok"] is False
+            assert result["mask_status"] == "APPLIED"
+            assert result["failure_substage"] == substage
+            assert result["fallback_status"] == fallback_status
+            assert not any(output_root.rglob("*.npz"))
+
+    assert smoke._sampled_failure_substage(
+        {
+            "nonzero_retained_pixel_gate_passed": True,
+            "temporal_variation_gate_passed": False,
+        }
+    ) == "SAMPLED_TEMPORAL_VARIATION_FAILURE"
+    assert smoke._sampled_failure_substage(
+        {
+            "nonzero_retained_pixel_gate_passed": False,
+            "temporal_variation_gate_passed": False,
+        }
+    ) == "SAMPLED_NONZERO_SIGNAL_FAILURE"
+
+
+def test_source_gate_failures_never_enter_or_mark_the_fallback() -> None:
+    sector = np.ones((64, 128), dtype=bool)
+
+    def forbidden_fallback(_frames, _sector, _cv2):
+        raise AssertionError("fallback must not run after a failed source gate")
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        for name, frames in (
+            ("black", np.zeros((40, 64, 128, 3), dtype=np.uint8)),
+            ("static", np.full((40, 64, 128, 3), 25, dtype=np.uint8)),
+        ):
+            result = _synthetic_extract(
+                root / f"download-{name}",
+                root / f"output-{name}",
+                frames,
+                sector,
+                forbidden_fallback,
+            )
+            assert result["write_ok"] is False
+            assert result["decode_color_status"] == "PASS"
+            assert result["mask_status"] == "FAILED"
+            assert result["fallback_status"] == smoke.FALLBACK_NOT_ATTEMPTED
+            assert result["failure_substage"] == "SOURCE_SIGNAL_QUALITY_FAILURE"
+            assert result["error_code"] == "ValueError"
+            assert not any((root / f"output-{name}").rglob("*.npz"))
+
+
+def test_decode_failure_status_is_distinct_and_never_reaches_mask_or_fallback() -> None:
+    frames = np.zeros((40, 64, 128, 3), dtype=np.uint8)
+    sector = np.ones((64, 128), dtype=bool)
+
+    def fail_decode(_dataset, _module):
+        raise ValueError("synthetic decode failure")
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        result = _synthetic_extract(
+            root / "download",
+            root / "output",
+            frames,
+            sector,
+            normalization_override=fail_decode,
+        )
+        assert result["write_ok"] is False
+        assert result["decode_color_status"] == "DECODE_OR_COLOR_CONVERSION_FAILURE"
+        assert result["mask_status"] == "NOT_REACHED"
+        assert result["fallback_status"] == smoke.FALLBACK_NOT_ATTEMPTED
+        assert result["failure_substage"] == "DECODE_OR_COLOR_CONVERSION_FAILURE"
+        assert result["error_code"] == "ValueError"
+        assert not any((root / "output").rglob("*.npz"))
+
+
+def test_extraction_no_clobber_preserves_first_authoritative_npz() -> None:
+    frames, sector, _ = _dynamic_block_cine(temporal_sparse=False, off_center=False)
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        first = _synthetic_extract(root / "download", root / "output", frames, sector)
+        output = root / "output" / str(first["output_relative_path"])
+        first_hash = smoke.sha256_file(output)
+        second = _synthetic_extract(root / "download", root / "output", frames, sector)
+        assert second["write_ok"] is False
+        assert second["failure_substage"] == "OUTPUT_WRITE_FAILURE"
+        assert second["decode_color_status"] == "NOT_REACHED"
+        assert second["error_code"] == "FileExistsError"
+        assert smoke.sha256_file(output) == first_hash
+
+
 def _extraction_rows(order: list[int]) -> pd.DataFrame:
     base = pd.DataFrame(
         {
@@ -541,12 +1134,37 @@ def _extraction_rows(order: list[int]) -> pd.DataFrame:
             "clip_key": [smoke.stable_clip_key("b.dcm"), smoke.stable_clip_key("a.dcm")],
             "write_ok": [True, True],
             "mask_status": ["APPLIED", "APPLIED"],
+            "source_sector_pixel_count": [1, 1],
             "source_sector_nonempty_gate_passed": [True, True],
+            "source_nonzero_retained_pixel_count": [1, 1],
             "source_nonzero_retained_pixel_gate_passed": [True, True],
+            "source_temporal_variation_pixel_count": [1, 1],
             "source_temporal_variation_gate_passed": [True, True],
+            "ordinary_post_crop_nonzero_retained_pixel_count": [1, 1],
+            "ordinary_post_crop_nonzero_retained_pixel_gate_passed": [True, True],
+            "ordinary_post_crop_temporal_variation_pixel_count": [1, 1],
+            "ordinary_post_crop_temporal_variation_gate_passed": [True, True],
+            "post_crop_nonzero_retained_pixel_count": [1, 1],
+            "post_crop_nonzero_retained_pixel_gate_passed": [True, True],
+            "post_crop_temporal_variation_pixel_count": [1, 1],
+            "post_crop_temporal_variation_gate_passed": [True, True],
+            "ordinary_sampled_nonzero_retained_pixel_count": [1, 1],
+            "ordinary_sampled_nonzero_retained_pixel_gate_passed": [True, True],
+            "ordinary_sampled_temporal_variation_pixel_count": [1, 1],
+            "ordinary_sampled_temporal_variation_gate_passed": [True, True],
+            "sampled_nonzero_retained_pixel_count": [1, 1],
             "sampled_nonzero_retained_pixel_gate_passed": [True, True],
+            "sampled_temporal_variation_pixel_count": [1, 1],
             "sampled_temporal_variation_gate_passed": [True, True],
+            "encoder_visible_nonzero_retained_pixel_count": [1, 1],
+            "encoder_visible_nonzero_retained_pixel_gate_passed": [True, True],
+            "encoder_visible_temporal_variation_pixel_count": [1, 1],
+            "encoder_visible_temporal_variation_gate_passed": [True, True],
+            "selected_preprocessing_path": [smoke.ORDINARY_PREPROCESSING_PATH] * 2,
+            "fallback_status": [smoke.FALLBACK_NOT_ATTEMPTED] * 2,
+            "failure_substage": ["NONE", "NONE"],
             "temporal_sampling_policy": [smoke.TEMPORAL_SAMPLING_POLICY] * 2,
+            "decode_color_status": ["PASS", "PASS"],
             "photometric_interpretation": ["YBR_FULL_422", "MONOCHROME2"],
             "transfer_syntax_uid": ["1.2.840.10008.1.2.4.50", "1.2.840.10008.1.2.1"],
             "decoder_backend": ["pydicom_pixels_raw:pylibjpeg", "pydicom_pixels_raw:native"],
@@ -584,6 +1202,85 @@ def test_extraction_summary_requires_unique_keys_shape_and_mask() -> None:
     frame = _extraction_rows([0, 1])
     frame.loc[1, "sampled_temporal_variation_gate_passed"] = False
     assert smoke.summarize_extraction(frame)["status"] == "FAIL"
+
+
+def test_extraction_summary_reconciles_fallback_path_with_ordinary_trigger() -> None:
+    frame = _extraction_rows([0, 1])
+    frame.loc[1, "ordinary_sampled_nonzero_retained_pixel_count"] = 0
+    frame.loc[1, "ordinary_sampled_nonzero_retained_pixel_gate_passed"] = False
+    frame.loc[1, "ordinary_sampled_temporal_variation_pixel_count"] = 0
+    frame.loc[1, "ordinary_sampled_temporal_variation_gate_passed"] = False
+    frame.loc[1, "selected_preprocessing_path"] = smoke.TEMPORAL_FALLBACK_PREPROCESSING_PATH
+    frame.loc[1, "fallback_status"] = "FALLBACK_PATH_PASS"
+    frame.loc[1, "temporal_sampling_policy"] = smoke.TEMPORAL_FALLBACK_POLICY
+    summary = smoke.summarize_extraction(frame)
+    assert summary["status"] == "PASS"
+    assert summary["preprocessing_path_trigger_consistent"] is True
+    assert summary["selected_preprocessing_path_counts"] == {
+        smoke.ORDINARY_PREPROCESSING_PATH: 1,
+        smoke.TEMPORAL_FALLBACK_PREPROCESSING_PATH: 1,
+    }
+    assert summary["fallback_status_counts"] == {
+        "FALLBACK_PATH_PASS": 1,
+        smoke.FALLBACK_NOT_ATTEMPTED: 1,
+    }
+
+    forged_temporal = frame.copy()
+    forged_temporal.loc[1, "ordinary_sampled_nonzero_retained_pixel_count"] = 1
+    forged_temporal.loc[1, "ordinary_sampled_nonzero_retained_pixel_gate_passed"] = True
+    forged_temporal.loc[1, "ordinary_sampled_temporal_variation_pixel_count"] = 1
+    forged_temporal.loc[1, "ordinary_sampled_temporal_variation_gate_passed"] = True
+    assert smoke.summarize_extraction(forged_temporal)["status"] == "FAIL"
+
+    forged_spatial = frame.copy()
+    forged_spatial.loc[1, "selected_preprocessing_path"] = (
+        smoke.SPATIAL_FALLBACK_PREPROCESSING_PATH
+    )
+    forged_spatial.loc[1, "temporal_sampling_policy"] = smoke.TEMPORAL_SAMPLING_POLICY
+    assert smoke.summarize_extraction(forged_spatial)["status"] == "FAIL"
+
+    forged_ordinary = _extraction_rows([0, 1])
+    forged_ordinary.loc[1, "ordinary_sampled_temporal_variation_gate_passed"] = False
+    assert smoke.summarize_extraction(forged_ordinary)["status"] == "FAIL"
+
+
+def test_extraction_summary_counts_failed_row_gate_states_without_identifiers() -> None:
+    frame = _extraction_rows([0, 1])
+    frame.loc[1, "write_ok"] = False
+    frame.loc[1, "frames_shape"] = None
+    frame.loc[1, "frames_dtype"] = None
+    frame.loc[1, "ordinary_sampled_nonzero_retained_pixel_count"] = 0
+    frame.loc[1, "ordinary_sampled_nonzero_retained_pixel_gate_passed"] = False
+    frame.loc[1, "ordinary_sampled_temporal_variation_pixel_count"] = 0
+    frame.loc[1, "ordinary_sampled_temporal_variation_gate_passed"] = False
+    frame.loc[1, "sampled_nonzero_retained_pixel_count"] = 0
+    frame.loc[1, "sampled_nonzero_retained_pixel_gate_passed"] = False
+    frame.loc[1, "sampled_temporal_variation_pixel_count"] = 0
+    frame.loc[1, "sampled_temporal_variation_gate_passed"] = False
+    frame.loc[1, "encoder_visible_nonzero_retained_pixel_count"] = 0
+    frame.loc[1, "encoder_visible_nonzero_retained_pixel_gate_passed"] = False
+    frame.loc[1, "encoder_visible_temporal_variation_pixel_count"] = 0
+    frame.loc[1, "encoder_visible_temporal_variation_gate_passed"] = False
+    frame.loc[1, "selected_preprocessing_path"] = smoke.PREPROCESSING_PATH_NOT_SELECTED
+    frame.loc[1, "fallback_status"] = "FALLBACK_PATH_FAILED"
+    frame.loc[1, "failure_substage"] = "SAMPLED_NONZERO_SIGNAL_FAILURE"
+    summary = smoke.summarize_extraction(frame)
+    assert summary["status"] == "FAIL"
+    assert summary["preprocessing_gate_state_counts"][
+        "source_nonzero_retained_pixel_gate_passed"
+    ] == {"PASS": 2, "FAIL": 0, "NOT_EVALUATED": 0, "INVALID": 0}
+    assert summary["preprocessing_gate_state_counts"][
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed"
+    ] == {"PASS": 1, "FAIL": 1, "NOT_EVALUATED": 0, "INVALID": 0}
+    assert summary["fallback_status_counts"] == {
+        "FALLBACK_PATH_FAILED": 1,
+        smoke.FALLBACK_NOT_ATTEMPTED: 1,
+    }
+    assert summary["failure_substage_counts"] == {
+        "NONE": 1,
+        "SAMPLED_NONZERO_SIGNAL_FAILURE": 1,
+    }
+    assert "study_id" not in summary and "source_relative_path" not in summary
 
 
 def test_checkpoint_gate_uses_name_size_and_sha() -> None:

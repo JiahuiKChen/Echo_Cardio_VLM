@@ -332,13 +332,345 @@ def test_active_cache_gate_precedes_token_and_body_boundaries(tmp_path: Path) ->
     )
     with (
         mock.patch.object(
-            sequential, "_active_extraction_cache_count", return_value=1
+            sequential,
+            "_extraction_cache_inventory",
+            return_value=sequential.ExtractionCacheInventory(
+                active=1, preserved_terminal_failed=0
+            ),
         ),
         pytest.raises(sequential.FullSequentialError) as caught,
     ):
         sequential.run_batch_task(task_id=1, run=run, dependencies=dependencies)
     assert caught.value.code == "FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT"
     assert calls == []
+
+
+def _write_terminal_dicom_failure(partial: Path) -> None:
+    partial.mkdir(mode=0o700, parents=True)
+    summary = partial / "failure.summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "FAIL_DICOM_OR_PIXEL_DECODE_GATE",
+                "n_objects": 10,
+                "n_studies": 2,
+                "n_readable": 10,
+                "n_unreadable": 0,
+                "n_multiframe_candidates": 6,
+                "n_single_frame": 4,
+                "n_pixel_decode_failures": 1,
+                "physical_source_keys_unique": True,
+                "identifiers_emitted": False,
+                "paths_emitted": False,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(summary, 0o600)
+
+
+def test_foreign_closed_failure_cache_is_preserved_but_never_current_or_final() -> None:
+    current = "lvef_c3_full_1111111111111111_aaaaaaaa"
+    prior = "lvef_c3_full_2222222222222222_bbbbbbbb"
+    with tempfile.TemporaryDirectory() as directory:
+        production = Path(directory).resolve()
+        prior_batch = (
+            production / "attempts" / prior / "extracted_cache" / "c3_batch_001"
+        )
+        partial = prior_batch / "dicom_extraction.partial"
+        _write_terminal_dicom_failure(partial)
+        inventory = sequential._extraction_cache_inventory(
+            production, current_attempt_id=current
+        )
+        assert inventory == sequential.ExtractionCacheInventory(
+            active=0, preserved_terminal_failed=1
+        )
+
+        # The same exact tree is active when it belongs to the current attempt.
+        current_production = production / "current_case"
+        current_partial = (
+            current_production
+            / "attempts"
+            / current
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        _write_terminal_dicom_failure(current_partial)
+        current_inventory = sequential._extraction_cache_inventory(
+            current_production, current_attempt_id=current
+        )
+        assert current_inventory == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+        # A foreign finalized clip cache remains a live/blocking cache even if
+        # a closed partial failure summary also exists.
+        clips = prior_batch / "dicom_extraction" / "clips"
+        clips.mkdir(mode=0o700, parents=True)
+        final_inventory = sequential._extraction_cache_inventory(
+            production, current_attempt_id=current
+        )
+        assert final_inventory == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+
+def test_malformed_or_nonprivate_foreign_failure_summary_remains_active() -> None:
+    current = "lvef_c3_full_1111111111111111_aaaaaaaa"
+    prior = "lvef_c3_full_2222222222222222_bbbbbbbb"
+    with tempfile.TemporaryDirectory() as directory:
+        production = Path(directory).resolve()
+        partial = (
+            production
+            / "attempts"
+            / prior
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        _write_terminal_dicom_failure(partial)
+        summary = partial / "failure.summary.json"
+        value = json.loads(summary.read_text(encoding="utf-8"))
+        value["unexpected"] = 1
+        summary.write_text(json.dumps(value) + "\n", encoding="utf-8")
+        os.chmod(summary, 0o600)
+        assert sequential._extraction_cache_inventory(
+            production, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+        malformed_attempt_root = production / "malformed_attempt_case"
+        malformed_partial = (
+            malformed_attempt_root
+            / "attempts"
+            / "foreign_attempt_name"
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        _write_terminal_dicom_failure(malformed_partial)
+        assert sequential._extraction_cache_inventory(
+            malformed_attempt_root, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+        symlink_root = production / "unsafe_nested_symlink_case"
+        symlink_partial = (
+            symlink_root
+            / "attempts"
+            / prior
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        _write_terminal_dicom_failure(symlink_partial)
+        nested = symlink_partial / "clips"
+        nested.mkdir(mode=0o700)
+        (nested / "unsafe_alias").symlink_to(
+            symlink_partial / "failure.summary.json"
+        )
+        assert sequential._extraction_cache_inventory(
+            symlink_root, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+        nonprivate_root = production / "unsafe_nested_mode_case"
+        nonprivate_partial = (
+            nonprivate_root
+            / "attempts"
+            / prior
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        _write_terminal_dicom_failure(nonprivate_partial)
+        unsafe_file = nonprivate_partial / "unexpected.restricted.json"
+        unsafe_file.write_text("{}\n", encoding="utf-8")
+        os.chmod(unsafe_file, 0o640)
+        assert sequential._extraction_cache_inventory(
+            nonprivate_root, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+        value.pop("unexpected")
+        summary.write_text(json.dumps(value) + "\n", encoding="utf-8")
+        os.chmod(summary, 0o644)
+        assert sequential._extraction_cache_inventory(
+            production, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+
+def _closed_v2_extraction_provenance() -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "audit": "prospective_cine_extraction",
+        "status": "FAIL",
+        "temporal_sampling_policy": (
+            "historical_compatible_linspace_or_tail_repeat_v1"
+        ),
+        "temporal_fallback_policy": "stride2_signal_coverage_pair_repeat_v1",
+        "temporal_sampling_long_cine_rule": (
+            "endpoint_inclusive_integer_linspace"
+        ),
+        "temporal_sampling_short_cine_rule": (
+            "ordered_source_frames_then_repeat_final_frame"
+        ),
+    }
+    value.update({key: 0 for key in sequential.EXTRACTION_PROVENANCE_INTEGER_KEYS})
+    value.update({key: False for key in sequential.EXTRACTION_PROVENANCE_BOOLEAN_KEYS})
+    value.update({key: {} for key in sequential.EXTRACTION_PROVENANCE_COUNT_MAP_KEYS})
+    value["preprocessing_gate_state_counts"] = {
+        gate: {"PASS": 0, "FAIL": 0, "NOT_EVALUATED": 1, "INVALID": 0}
+        for gate in sequential.EXTRACTION_PROVENANCE_GATE_STATE_KEYS
+    }
+    value.update(
+        {
+            "n_requested_cines": 1,
+            "n_failed_cines": 1,
+            "fallback_status_counts": {"FALLBACK_PATH_FAILED": 1},
+            "failure_substage_counts": {
+                "SAMPLED_NONZERO_SIGNAL_FAILURE": 1
+            },
+            "decode_color_status_counts": {"PASS": 1},
+        }
+    )
+    return value
+
+
+def test_foreign_closed_v2_failure_summaries_are_preserved() -> None:
+    current = "lvef_c3_full_1111111111111111_aaaaaaaa"
+    prior = "lvef_c3_full_2222222222222222_bbbbbbbb"
+    with tempfile.TemporaryDirectory() as directory:
+        production = Path(directory).resolve()
+        partial = (
+            production
+            / "attempts"
+            / prior
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        partial.mkdir(mode=0o700, parents=True)
+        summary_path = partial / "failure.summary.json"
+        extraction_summary = {
+            "schema_version": 2,
+            "artifact_type": "lvef_c3_batch_extraction_failure_summary_v2",
+            "status": "FAIL_EXTRACTION_GATE",
+            "error_code": "EXTRACTION_SAMPLED_NONZERO_SIGNAL_FAILURE",
+            "extraction_provenance": _closed_v2_extraction_provenance(),
+            "identifiers_emitted": False,
+            "paths_emitted": False,
+        }
+        summary_path.write_text(
+            json.dumps(extraction_summary, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(summary_path, 0o600)
+        assert sequential._extraction_cache_inventory(
+            production, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=0, preserved_terminal_failed=1
+        )
+
+        dicom_summary = {
+            "schema_version": 2,
+            "artifact_type": (
+                "lvef_c3_batch_dicom_or_extraction_failure_summary_v2"
+            ),
+            "status": "FAIL_DICOM_OR_PIXEL_DECODE_GATE",
+            "n_objects": 10,
+            "n_studies": 2,
+            "n_readable": 10,
+            "n_unreadable": 0,
+            "n_multiframe_candidates": 6,
+            "n_single_frame": 4,
+            "n_pixel_decode_failures": 1,
+            "physical_source_keys_unique": True,
+            "extraction_provenance": _closed_v2_extraction_provenance(),
+            "identifiers_emitted": False,
+            "paths_emitted": False,
+        }
+        summary_path.write_text(
+            json.dumps(dicom_summary, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(summary_path, 0o600)
+        assert sequential._extraction_cache_inventory(
+            production, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=0, preserved_terminal_failed=1
+        )
+
+
+def test_v2_failure_summary_with_unclosed_nested_provenance_remains_active() -> None:
+    current = "lvef_c3_full_1111111111111111_aaaaaaaa"
+    prior = "lvef_c3_full_2222222222222222_bbbbbbbb"
+    with tempfile.TemporaryDirectory() as directory:
+        production = Path(directory).resolve()
+        partial = (
+            production
+            / "attempts"
+            / prior
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        partial.mkdir(mode=0o700, parents=True)
+        provenance = _closed_v2_extraction_provenance()
+        provenance["decoder_backend_counts"] = {"123456": 0}
+        summary = partial / "failure.summary.json"
+        summary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "artifact_type": (
+                        "lvef_c3_batch_extraction_failure_summary_v2"
+                    ),
+                    "status": "FAIL_EXTRACTION_GATE",
+                    "error_code": "EXTRACTION_SAMPLED_NONZERO_SIGNAL_FAILURE",
+                    "extraction_provenance": provenance,
+                    "identifiers_emitted": False,
+                    "paths_emitted": False,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(summary, 0o600)
+        assert sequential._extraction_cache_inventory(
+            production, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
+
+def test_installation_tracks_replay_entrypoint_without_effects() -> None:
+    replay = sequential.SCRIPT_ROOT / (
+        "replay_lvef_c3_failed_extraction_one_object.py"
+    )
+    assert replay.is_file() and not replay.is_symlink()
+    with (
+        mock.patch.object(sequential, "_current_commit", return_value="a" * 40),
+        mock.patch.object(
+            sequential.minimal, "_validate_two_runtime_installation"
+        ) as runtime,
+    ):
+        result = sequential.validate_installation()
+    runtime.assert_called_once_with(repository=sequential.REPOSITORY_ROOT)
+    assert result["status"] == "PASS_FULL_C3_INSTALLATION"
+    assert result["cloud_requests"] == 0
+    assert result["qsub_submissions"] == 0
+    assert result["dicom_body_reads"] == 0
+    assert result["gpu_executions"] == 0
 
 
 def test_plan_object_and_byte_mutations_fail_closed() -> None:
@@ -1622,6 +1954,7 @@ def _aggregate_safe_preflight_report_fixture() -> dict[str, Any]:
         "expected_study_embeddings": 4525,
         "expected_no_cine_studies": 5,
         "active_extraction_caches": 0,
+        "preserved_terminal_failed_extraction_caches": 1,
         "storage_reserve": "PASS",
         "echoprime_runtime": "PASS",
         "crc32c_external_runtime": "PASS",
@@ -1661,6 +1994,9 @@ def test_preflight_report_is_complete_aggregate_safe_and_zero_effect() -> None:
     assert markers["FULL_C3_BATCHES"] == "19"
     assert markers["FULL_C3_EXPECTED_STUDY_EMBEDDINGS"] == "4525"
     assert markers["FULL_C3_EXPECTED_NO_CINE_STUDIES"] == "5"
+    assert markers[
+        "FULL_C3_PRESERVED_TERMINAL_FAILED_EXTRACTION_CACHES"
+    ] == "1"
     assert markers["ECHOPRIME_RUNTIME"] == "PASS"
     assert markers["CRC32C_EXTERNAL_RUNTIME"] == "PASS"
     assert markers["COMPLETED_CANARY_EVIDENCE"] == "PASS"

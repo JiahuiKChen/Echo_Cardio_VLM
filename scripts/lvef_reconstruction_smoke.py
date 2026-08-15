@@ -32,6 +32,15 @@ CLIP_KEY_NAMESPACE = "mimic-iv-echo-1.0:prospective-cine-v1"
 EXTRACTION_SHAPE = (32, 224, 224, 3)
 EMBEDDING_WIDTH = 512
 TEMPORAL_SAMPLING_POLICY = "historical_compatible_linspace_or_tail_repeat_v1"
+TEMPORAL_FALLBACK_POLICY = "stride2_signal_coverage_pair_repeat_v1"
+PREPROCESSING_PATH_NOT_SELECTED = "NOT_SELECTED"
+ORDINARY_PREPROCESSING_PATH = "ORDINARY_CENTER_CROP_RESIZE_HISTORICAL_TEMPORAL_V1"
+SPATIAL_FALLBACK_PREPROCESSING_PATH = "SECTOR_BOUND_SQUARE_PAD_SPATIAL_FALLBACK_V1"
+TEMPORAL_FALLBACK_PREPROCESSING_PATH = "STRIDE2_SIGNAL_COVERAGE_TEMPORAL_FALLBACK_V1"
+SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH = (
+    "SECTOR_BOUND_SQUARE_PAD_AND_STRIDE2_SIGNAL_COVERAGE_FALLBACK_V1"
+)
+FALLBACK_NOT_ATTEMPTED = "NOT_ATTEMPTED"
 DECODER_PLUGIN_PRIORITY = ("pylibjpeg", "gdcm", "pillow", "pyjpegls")
 NATIVE_PIXEL_TRANSFER_SYNTAX_UIDS = {
     "1.2.840.10008.1.2",       # Implicit VR Little Endian
@@ -88,6 +97,51 @@ def _technical_counts(frame: pd.DataFrame, column: str, *, kind: str) -> dict[st
     keys = frame[column].map(lambda value: _technical_count_key(value, kind=kind))
     counts = keys.value_counts(dropna=False).to_dict()
     return {str(key): int(counts[key]) for key in sorted(counts)}
+
+
+def _gate_state_counts(
+    frame: pd.DataFrame, gate_column: str, count_column: str
+) -> dict[str, int]:
+    """Count evaluated gate states without exposing any row-level value."""
+
+    states: list[str] = []
+    for gate_value, count_value in zip(frame[gate_column], frame[count_column], strict=True):
+        if count_value is None or pd.isna(count_value):
+            states.append("NOT_EVALUATED")
+            continue
+        if isinstance(count_value, bool):
+            states.append("INVALID")
+            continue
+        if isinstance(count_value, (int, np.integer)):
+            count = int(count_value)
+        elif isinstance(count_value, (float, np.floating)):
+            if not np.isfinite(count_value) or not float(count_value).is_integer():
+                states.append("INVALID")
+                continue
+            count = int(count_value)
+        else:
+            count_text = str(count_value)
+            if re.fullmatch(r"0|[1-9][0-9]*", count_text) is None:
+                states.append("INVALID")
+                continue
+            count = int(count_text)
+        if count < 0:
+            states.append("INVALID")
+            continue
+        try:
+            passed = parse_bool(gate_value)
+        except ValueError:
+            states.append("INVALID")
+            continue
+        if passed != (count > 0):
+            states.append("INVALID")
+        else:
+            states.append("PASS" if passed else "FAIL")
+    counts = pd.Series(states, dtype="object").value_counts().to_dict()
+    return {
+        state: int(counts.get(state, 0))
+        for state in ("PASS", "FAIL", "NOT_EVALUATED", "INVALID")
+    }
 
 
 def sha256_file(path: Path) -> str:
@@ -844,6 +898,308 @@ def _crop_resize(frame: np.ndarray, cv2: Any, size: int = 224, zoom: float = 0.1
     return cv2.resize(frame, (size, size), interpolation=cv2.INTER_CUBIC)
 
 
+class PreprocessingStageError(ValueError):
+    """Carry restricted step provenance when preprocessing fails closed."""
+
+    def __init__(
+        self, message: str, *, failure_substage: str, provenance: Mapping[str, Any]
+    ) -> None:
+        super().__init__(message)
+        self.failure_substage = failure_substage
+        self.provenance = dict(provenance)
+
+
+def _empty_preprocessing_provenance() -> dict[str, Any]:
+    return {
+        "ordinary_post_crop_nonzero_retained_pixel_count": None,
+        "ordinary_post_crop_nonzero_retained_pixel_gate_passed": False,
+        "ordinary_post_crop_temporal_variation_pixel_count": None,
+        "ordinary_post_crop_temporal_variation_gate_passed": False,
+        "post_crop_nonzero_retained_pixel_count": None,
+        "post_crop_nonzero_retained_pixel_gate_passed": False,
+        "post_crop_temporal_variation_pixel_count": None,
+        "post_crop_temporal_variation_gate_passed": False,
+        "ordinary_sampled_nonzero_retained_pixel_count": None,
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed": False,
+        "ordinary_sampled_temporal_variation_pixel_count": None,
+        "ordinary_sampled_temporal_variation_gate_passed": False,
+        "sampled_nonzero_retained_pixel_count": None,
+        "sampled_nonzero_retained_pixel_gate_passed": False,
+        "sampled_temporal_variation_pixel_count": None,
+        "sampled_temporal_variation_gate_passed": False,
+        "encoder_visible_nonzero_retained_pixel_count": None,
+        "encoder_visible_nonzero_retained_pixel_gate_passed": False,
+        "encoder_visible_temporal_variation_pixel_count": None,
+        "encoder_visible_temporal_variation_gate_passed": False,
+        "selected_preprocessing_path": PREPROCESSING_PATH_NOT_SELECTED,
+        "fallback_status": FALLBACK_NOT_ATTEMPTED,
+        "failure_substage": "NONE",
+        "temporal_sampling_policy": TEMPORAL_SAMPLING_POLICY,
+    }
+
+
+def _quality_fields(prefix: str, metrics: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        f"{prefix}_nonzero_retained_pixel_count": metrics["nonzero_retained_pixel_count"],
+        f"{prefix}_nonzero_retained_pixel_gate_passed": metrics[
+            "nonzero_retained_pixel_gate_passed"
+        ],
+        f"{prefix}_temporal_variation_pixel_count": metrics[
+            "temporal_variation_pixel_count"
+        ],
+        f"{prefix}_temporal_variation_gate_passed": metrics[
+            "temporal_variation_gate_passed"
+        ],
+    }
+
+
+def _sampled_failure_substage(metrics: Mapping[str, Any]) -> str:
+    if not bool(metrics["nonzero_retained_pixel_gate_passed"]):
+        return "SAMPLED_NONZERO_SIGNAL_FAILURE"
+    if not bool(metrics["temporal_variation_gate_passed"]):
+        return "SAMPLED_TEMPORAL_VARIATION_FAILURE"
+    raise ValueError("Sampled failure substage requested for passing metrics.")
+
+
+def _sector_bbox_square_pad_resize(
+    frames: np.ndarray, sector_mask: np.ndarray, cv2: Any, size: int = 224
+) -> np.ndarray:
+    """Resize the inclusive sector bounding box after symmetric zero square padding."""
+
+    value = np.asarray(frames)
+    mask = np.asarray(sector_mask)
+    if value.ndim != 4 or value.shape[-1] != 3 or value.dtype != np.uint8:
+        raise ValueError("Spatial fallback requires uint8 T,H,W,3 frames.")
+    if mask.shape != value.shape[1:3] or mask.dtype != np.bool_:
+        raise ValueError("Spatial fallback requires a matching boolean sector mask.")
+    occupied_y, occupied_x = np.nonzero(mask)
+    if occupied_y.size == 0:
+        raise ValueError("Spatial fallback requires a nonempty sector mask.")
+    y_min, y_max = int(occupied_y.min()), int(occupied_y.max())
+    x_min, x_max = int(occupied_x.min()), int(occupied_x.max())
+    cropped = value[:, y_min : y_max + 1, x_min : x_max + 1, :]
+    height, width = cropped.shape[1:3]
+    side = max(height, width)
+    top = (side - height) // 2
+    bottom = side - height - top
+    left = (side - width) // 2
+    right = side - width - left
+    padded = np.pad(
+        cropped,
+        ((0, 0), (top, bottom), (left, right), (0, 0)),
+        mode="constant",
+        constant_values=0,
+    )
+    resized = np.stack(
+        [cv2.resize(frame, (size, size), interpolation=cv2.INTER_CUBIC) for frame in padded],
+        axis=0,
+    )
+    if resized.shape != (value.shape[0], size, size, 3) or resized.dtype != np.uint8:
+        raise ValueError("Spatial fallback resize shape/dtype gate failed.")
+    return np.ascontiguousarray(resized)
+
+
+def _signal_preserving_temporal_sample(
+    frames: np.ndarray, target_frames: int = 32, encoder_stride: int = 2
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select deterministic signal anchors and pair-repeat them for stride-2 visibility."""
+
+    value = np.asarray(frames)
+    if value.ndim != 4 or value.shape[-1] != 3 or value.dtype != np.uint8:
+        raise ValueError("Temporal fallback requires uint8 T,H,W,3 frames.")
+    if target_frames != 32 or encoder_stride != 2:
+        raise ValueError("Temporal fallback is frozen to 32 frames and encoder stride 2.")
+    anchor_count = target_frames // encoder_stride
+    if value.shape[0] < anchor_count:
+        raise ValueError("Temporal fallback requires at least 16 unique source frames.")
+
+    nonzero_counts = np.count_nonzero(np.any(value != 0, axis=-1), axis=(1, 2))
+    adjacent_variation_counts = np.count_nonzero(
+        np.any(value[1:] != value[:-1], axis=-1), axis=(1, 2)
+    )
+    max_nonzero_index = int(np.argmax(nonzero_counts))
+    max_difference_left = int(np.argmax(adjacent_variation_counts))
+    selected = {0, value.shape[0] - 1, max_nonzero_index, max_difference_left,
+                max_difference_left + 1}
+    while len(selected) < anchor_count:
+        ordered = np.asarray(sorted(selected), dtype=np.int64)
+        best_index = -1
+        best_distance = -1
+        for candidate in range(value.shape[0]):
+            if candidate in selected:
+                continue
+            distance = int(np.min(np.abs(ordered - candidate)))
+            if distance > best_distance:
+                best_index = candidate
+                best_distance = distance
+        if best_index < 0:
+            raise ValueError("Temporal fallback could not construct unique anchors.")
+        selected.add(best_index)
+    anchors = np.asarray(sorted(selected), dtype=np.int64)
+    if anchors.shape != (anchor_count,) or np.unique(anchors).size != anchor_count:
+        raise ValueError("Temporal fallback anchor cardinality gate failed.")
+    indices = np.repeat(anchors, encoder_stride)
+    sampled = np.ascontiguousarray(value[indices])
+    return sampled, indices
+
+
+def _preprocess_with_signal_preserving_fallback(
+    frames: np.ndarray, sector_mask: np.ndarray, cv2: Any
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Preserve the exact ordinary path, then try one bounded pixel-only fallback."""
+
+    provenance = _empty_preprocessing_provenance()
+    try:
+        ordinary_resized = np.stack([_crop_resize(frame, cv2) for frame in frames], axis=0).astype(
+            np.uint8
+        )
+    except Exception as exc:
+        provenance["failure_substage"] = "SPATIAL_CROP_RESIZE_FAILURE"
+        raise PreprocessingStageError(
+            "Ordinary spatial crop/resize failed.",
+            failure_substage="SPATIAL_CROP_RESIZE_FAILURE",
+            provenance=provenance,
+        ) from exc
+
+    ordinary_post_crop = _signal_quality_metrics(ordinary_resized)
+    provenance.update(_quality_fields("ordinary_post_crop", ordinary_post_crop))
+    provenance.update(_quality_fields("post_crop", ordinary_post_crop))
+    try:
+        ordinary_sampled, ordinary_indices = temporal_sample(ordinary_resized, 32)
+    except Exception as exc:
+        provenance["failure_substage"] = "TEMPORAL_SAMPLING_FAILURE"
+        raise PreprocessingStageError(
+            "Ordinary temporal sampling failed.",
+            failure_substage="TEMPORAL_SAMPLING_FAILURE",
+            provenance=provenance,
+        ) from exc
+    if ordinary_sampled.shape != EXTRACTION_SHAPE or ordinary_sampled.dtype != np.uint8:
+        provenance["failure_substage"] = "TEMPORAL_SAMPLING_FAILURE"
+        raise PreprocessingStageError(
+            "Ordinary temporal sampling shape/dtype gate failed.",
+            failure_substage="TEMPORAL_SAMPLING_FAILURE",
+            provenance=provenance,
+        )
+    ordinary_sampled_quality = _signal_quality_metrics(ordinary_sampled)
+    provenance.update(_quality_fields("ordinary_sampled", ordinary_sampled_quality))
+    provenance.update(_quality_fields("sampled", ordinary_sampled_quality))
+    ordinary_encoder_quality = _signal_quality_metrics(ordinary_sampled[0:32:2])
+    provenance.update(_quality_fields("encoder_visible", ordinary_encoder_quality))
+    ordinary_passed = bool(
+        ordinary_sampled_quality["nonzero_retained_pixel_gate_passed"]
+        and ordinary_sampled_quality["temporal_variation_gate_passed"]
+    )
+    if ordinary_passed:
+        provenance["selected_preprocessing_path"] = ORDINARY_PREPROCESSING_PATH
+        return ordinary_sampled, ordinary_indices, provenance
+
+    provenance["fallback_status"] = "FALLBACK_PATH_FAILED"
+    ordinary_post_crop_passed = bool(
+        ordinary_post_crop["nonzero_retained_pixel_gate_passed"]
+        and ordinary_post_crop["temporal_variation_gate_passed"]
+    )
+    selected_resized = ordinary_resized
+    used_spatial_fallback = False
+    if not ordinary_post_crop_passed:
+        used_spatial_fallback = True
+        try:
+            selected_resized = _sector_bbox_square_pad_resize(frames, sector_mask, cv2)
+        except Exception as exc:
+            provenance["failure_substage"] = "SPATIAL_CROP_RESIZE_FAILURE"
+            raise PreprocessingStageError(
+                "Sector-bound spatial fallback failed.",
+                failure_substage="SPATIAL_CROP_RESIZE_FAILURE",
+                provenance=provenance,
+            ) from exc
+        fallback_post_crop = _signal_quality_metrics(selected_resized)
+        provenance.update(_quality_fields("post_crop", fallback_post_crop))
+        if not (
+            fallback_post_crop["nonzero_retained_pixel_gate_passed"]
+            and fallback_post_crop["temporal_variation_gate_passed"]
+        ):
+            provenance["failure_substage"] = "POST_CROP_SIGNAL_QUALITY_FAILURE"
+            raise PreprocessingStageError(
+                "Sector-bound spatial fallback failed post-crop signal gates.",
+                failure_substage="POST_CROP_SIGNAL_QUALITY_FAILURE",
+                provenance=provenance,
+            )
+        try:
+            spatial_sampled, spatial_indices = temporal_sample(selected_resized, 32)
+        except Exception as exc:
+            provenance["failure_substage"] = "TEMPORAL_SAMPLING_FAILURE"
+            raise PreprocessingStageError(
+                "Spatial-fallback historical temporal sampling failed.",
+                failure_substage="TEMPORAL_SAMPLING_FAILURE",
+                provenance=provenance,
+            ) from exc
+        spatial_quality = _signal_quality_metrics(spatial_sampled)
+        spatial_encoder_quality = _signal_quality_metrics(spatial_sampled[0:32:2])
+        provenance.update(_quality_fields("sampled", spatial_quality))
+        provenance.update(_quality_fields("encoder_visible", spatial_encoder_quality))
+        if (
+            spatial_quality["nonzero_retained_pixel_gate_passed"]
+            and spatial_quality["temporal_variation_gate_passed"]
+            and spatial_encoder_quality["nonzero_retained_pixel_gate_passed"]
+            and spatial_encoder_quality["temporal_variation_gate_passed"]
+        ):
+            provenance.update(
+                {
+                    "selected_preprocessing_path": SPATIAL_FALLBACK_PREPROCESSING_PATH,
+                    "fallback_status": "FALLBACK_PATH_PASS",
+                    "failure_substage": "NONE",
+                }
+            )
+            return spatial_sampled, spatial_indices, provenance
+
+    try:
+        fallback_sampled, fallback_indices = _signal_preserving_temporal_sample(
+            selected_resized, 32, 2
+        )
+    except Exception as exc:
+        provenance["failure_substage"] = "TEMPORAL_SAMPLING_FAILURE"
+        raise PreprocessingStageError(
+            "Signal-preserving temporal fallback failed.",
+            failure_substage="TEMPORAL_SAMPLING_FAILURE",
+            provenance=provenance,
+        ) from exc
+    fallback_quality = _signal_quality_metrics(fallback_sampled)
+    encoder_quality = _signal_quality_metrics(fallback_sampled[0:32:2])
+    provenance.update(_quality_fields("sampled", fallback_quality))
+    provenance.update(_quality_fields("encoder_visible", encoder_quality))
+    failing_quality = None
+    if not (
+        fallback_quality["nonzero_retained_pixel_gate_passed"]
+        and fallback_quality["temporal_variation_gate_passed"]
+    ):
+        failing_quality = fallback_quality
+    elif not (
+        encoder_quality["nonzero_retained_pixel_gate_passed"]
+        and encoder_quality["temporal_variation_gate_passed"]
+    ):
+        failing_quality = encoder_quality
+    if failing_quality is not None:
+        substage = _sampled_failure_substage(failing_quality)
+        provenance["failure_substage"] = substage
+        raise PreprocessingStageError(
+            "Signal-preserving temporal fallback failed unchanged sampled gates.",
+            failure_substage=substage,
+            provenance=provenance,
+        )
+    provenance.update(
+        {
+            "selected_preprocessing_path": (
+                SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH
+                if used_spatial_fallback
+                else TEMPORAL_FALLBACK_PREPROCESSING_PATH
+            ),
+            "fallback_status": "FALLBACK_PATH_PASS",
+            "failure_substage": "NONE",
+            "temporal_sampling_policy": TEMPORAL_FALLBACK_POLICY,
+        }
+    )
+    return fallback_sampled, fallback_indices, provenance
+
+
 def _extract_one(record: Mapping[str, Any], download_root: str, output_root: str) -> dict[str, Any]:
     import cv2  # optional dependencies; intentionally local
     import pydicom
@@ -852,6 +1208,8 @@ def _extract_one(record: Mapping[str, Any], download_root: str, output_root: str
     relative = safe_relative_path(record["source_relative_path"])
     clip_key = stable_clip_key(relative)
     output_relative = f"clips/{clip_key[:2]}/{clip_key}.npz"
+    preprocessing_defaults = _empty_preprocessing_provenance()
+    temporal_policy_default = preprocessing_defaults.pop("temporal_sampling_policy")
     result = {
         "subject_id": record["subject_id"],
         "study_id": record["study_id"],
@@ -874,11 +1232,9 @@ def _extract_one(record: Mapping[str, Any], download_root: str, output_root: str
         "source_nonzero_retained_pixel_gate_passed": False,
         "source_temporal_variation_pixel_count": None,
         "source_temporal_variation_gate_passed": False,
-        "sampled_nonzero_retained_pixel_count": None,
-        "sampled_nonzero_retained_pixel_gate_passed": False,
-        "sampled_temporal_variation_pixel_count": None,
-        "sampled_temporal_variation_gate_passed": False,
-        "temporal_sampling_policy": TEMPORAL_SAMPLING_POLICY,
+        **preprocessing_defaults,
+        "decode_color_status": "NOT_REACHED",
+        "temporal_sampling_policy": temporal_policy_default,
         "frames_shape": None,
         "frames_dtype": None,
         "frames_sha256": None,
@@ -889,15 +1245,21 @@ def _extract_one(record: Mapping[str, Any], download_root: str, output_root: str
         "error_code": None,
     }
     try:
+        result["failure_substage"] = "DECODE_OR_COLOR_CONVERSION_FAILURE"
         source_path = resolve_under(Path(download_root), relative, must_exist=True)
+        result["failure_substage"] = "OUTPUT_WRITE_FAILURE"
         output_path = resolve_under(Path(output_root), output_relative, must_exist=False)
         if output_path.exists():
             raise FileExistsError("Fresh output root required.")
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        result["failure_substage"] = "DECODE_OR_COLOR_CONVERSION_FAILURE"
+        result["decode_color_status"] = "DECODE_OR_COLOR_CONVERSION_FAILURE"
         ds = pydicom.dcmread(str(source_path), stop_before_pixels=False, force=False)
         frames, decoder_metadata = _normalize_dicom_pixels(ds, pydicom)
         result.update(decoder_metadata)
+        result["decode_color_status"] = "PASS"
         result["source_num_frames"] = int(frames.shape[0])
+        result["failure_substage"] = "SOURCE_SIGNAL_QUALITY_FAILURE"
         try:
             frames, sector_mask = _mask_ultrasound_strict(frames, cv2)
             result["mask_status"] = "GENERATED_PENDING_SIGNAL_GATES"
@@ -926,34 +1288,21 @@ def _extract_one(record: Mapping[str, Any], download_root: str, output_root: str
         except Exception:
             result["mask_status"] = "FAILED"
             raise
-        resized = np.stack([_crop_resize(frame, cv2) for frame in frames], axis=0).astype(np.uint8)
-        sampled, indices = temporal_sample(resized, 32)
-        if sampled.shape != EXTRACTION_SHAPE or sampled.dtype != np.uint8:
-            raise ValueError("Extraction shape/dtype gate failed.")
-        sampled_quality = _signal_quality_metrics(sampled)
-        result.update(
-            {
-                "sampled_nonzero_retained_pixel_count": sampled_quality[
-                    "nonzero_retained_pixel_count"
-                ],
-                "sampled_nonzero_retained_pixel_gate_passed": sampled_quality[
-                    "nonzero_retained_pixel_gate_passed"
-                ],
-                "sampled_temporal_variation_pixel_count": sampled_quality[
-                    "temporal_variation_pixel_count"
-                ],
-                "sampled_temporal_variation_gate_passed": sampled_quality[
-                    "temporal_variation_gate_passed"
-                ],
-            }
-        )
-        try:
-            _require_signal_quality(sampled_quality)
-        except Exception:
-            result["mask_status"] = "FAILED"
-            raise
         result["mask_status"] = "APPLIED"
+        result["failure_substage"] = "NONE"
+        try:
+            sampled, indices, preprocessing = _preprocess_with_signal_preserving_fallback(
+                frames, sector_mask, cv2
+            )
+        except PreprocessingStageError as exc:
+            result.update(exc.provenance)
+            raise
+        result.update(preprocessing)
+        if sampled.shape != EXTRACTION_SHAPE or sampled.dtype != np.uint8:
+            result["failure_substage"] = "TEMPORAL_SAMPLING_FAILURE"
+            raise ValueError("Extraction shape/dtype gate failed.")
         source_num_frames_array = np.asarray([frames.shape[0]], dtype=np.int32)
+        result["failure_substage"] = "OUTPUT_WRITE_FAILURE"
         write_npz_atomic(
             output_path,
             frames=sampled,
@@ -969,16 +1318,50 @@ def _extract_one(record: Mapping[str, Any], download_root: str, output_root: str
                 "sampled_indices_sha256": array_content_sha256(indices.astype(np.int64)),
                 "source_num_frames_sha256": array_content_sha256(source_num_frames_array),
                 "npz_sha256": sha256_file(output_path),
+                "failure_substage": "NONE",
             }
         )
     except Exception as exc:
-        if result["mask_status"] == "GENERATED_PENDING_SIGNAL_GATES":
-            result["mask_status"] = "FAILED"
         result["error_code"] = type(exc).__name__
     return result
 
 
 def summarize_extraction(frame: pd.DataFrame) -> dict[str, Any]:
+    gate_count_columns = {
+        "source_sector_nonempty_gate_passed": "source_sector_pixel_count",
+        "source_nonzero_retained_pixel_gate_passed": "source_nonzero_retained_pixel_count",
+        "source_temporal_variation_gate_passed": "source_temporal_variation_pixel_count",
+        "ordinary_post_crop_nonzero_retained_pixel_gate_passed": (
+            "ordinary_post_crop_nonzero_retained_pixel_count"
+        ),
+        "ordinary_post_crop_temporal_variation_gate_passed": (
+            "ordinary_post_crop_temporal_variation_pixel_count"
+        ),
+        "post_crop_nonzero_retained_pixel_gate_passed": (
+            "post_crop_nonzero_retained_pixel_count"
+        ),
+        "post_crop_temporal_variation_gate_passed": (
+            "post_crop_temporal_variation_pixel_count"
+        ),
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed": (
+            "ordinary_sampled_nonzero_retained_pixel_count"
+        ),
+        "ordinary_sampled_temporal_variation_gate_passed": (
+            "ordinary_sampled_temporal_variation_pixel_count"
+        ),
+        "sampled_nonzero_retained_pixel_gate_passed": (
+            "sampled_nonzero_retained_pixel_count"
+        ),
+        "sampled_temporal_variation_gate_passed": (
+            "sampled_temporal_variation_pixel_count"
+        ),
+        "encoder_visible_nonzero_retained_pixel_gate_passed": (
+            "encoder_visible_nonzero_retained_pixel_count"
+        ),
+        "encoder_visible_temporal_variation_gate_passed": (
+            "encoder_visible_temporal_variation_pixel_count"
+        ),
+    }
     required = {
         "write_ok",
         "clip_key",
@@ -989,15 +1372,28 @@ def summarize_extraction(frame: pd.DataFrame) -> dict[str, Any]:
         "source_sector_nonempty_gate_passed",
         "source_nonzero_retained_pixel_gate_passed",
         "source_temporal_variation_gate_passed",
+        "ordinary_post_crop_nonzero_retained_pixel_gate_passed",
+        "ordinary_post_crop_temporal_variation_gate_passed",
+        "post_crop_nonzero_retained_pixel_gate_passed",
+        "post_crop_temporal_variation_gate_passed",
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed",
+        "ordinary_sampled_temporal_variation_gate_passed",
         "sampled_nonzero_retained_pixel_gate_passed",
         "sampled_temporal_variation_gate_passed",
+        "encoder_visible_nonzero_retained_pixel_gate_passed",
+        "encoder_visible_temporal_variation_gate_passed",
+        "selected_preprocessing_path",
+        "fallback_status",
+        "failure_substage",
         "temporal_sampling_policy",
+        "decode_color_status",
         "photometric_interpretation",
         "transfer_syntax_uid",
         "decoder_backend",
         "decoder_color_behavior",
         "color_transform",
         "canonical_color_space",
+        *gate_count_columns.values(),
     }
     if not required.issubset(frame.columns):
         raise ValueError("Extraction frame is missing strict preprocessing authority fields.")
@@ -1013,18 +1409,89 @@ def summarize_extraction(frame: pd.DataFrame) -> dict[str, Any]:
         "source_sector_nonempty_gate_passed",
         "source_nonzero_retained_pixel_gate_passed",
         "source_temporal_variation_gate_passed",
+        "post_crop_nonzero_retained_pixel_gate_passed",
+        "post_crop_temporal_variation_gate_passed",
         "sampled_nonzero_retained_pixel_gate_passed",
         "sampled_temporal_variation_gate_passed",
     )
     gate_values = {
         column: successful[column].map(parse_bool) for column in gate_columns
     }
+    preprocessing_gate_state_counts = {
+        gate: _gate_state_counts(frame, gate, count)
+        for gate, count in gate_count_columns.items()
+    }
+    successful_gate_state_counts = {
+        gate: _gate_state_counts(successful, gate, count)
+        for gate, count in gate_count_columns.items()
+    }
+    all_successful_gate_counts_consistent = bool(
+        all(
+            states["NOT_EVALUATED"] == 0 and states["INVALID"] == 0
+            for states in successful_gate_state_counts.values()
+        )
+    )
     all_signal_gates = bool(all(values.all() for values in gate_values.values()))
+    ordinary_paths = successful["selected_preprocessing_path"].eq(
+        ORDINARY_PREPROCESSING_PATH
+    )
+    spatial_paths = successful["selected_preprocessing_path"].eq(
+        SPATIAL_FALLBACK_PREPROCESSING_PATH
+    )
+    temporal_paths = successful["selected_preprocessing_path"].eq(
+        TEMPORAL_FALLBACK_PREPROCESSING_PATH
+    )
+    combined_paths = successful["selected_preprocessing_path"].eq(
+        SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH
+    )
+    fallback_paths = spatial_paths | temporal_paths | combined_paths
+    ordinary_post_crop_passed = (
+        successful["ordinary_post_crop_nonzero_retained_pixel_gate_passed"].map(
+            parse_bool
+        )
+        & successful["ordinary_post_crop_temporal_variation_gate_passed"].map(
+            parse_bool
+        )
+    )
+    ordinary_sampled_passed = (
+        successful["ordinary_sampled_nonzero_retained_pixel_gate_passed"].map(
+            parse_bool
+        )
+        & successful["ordinary_sampled_temporal_variation_gate_passed"].map(
+            parse_bool
+        )
+    )
+    path_trigger_consistent = bool(
+        ordinary_sampled_passed.loc[ordinary_paths].all()
+        and (~ordinary_sampled_passed.loc[fallback_paths]).all()
+        and (~ordinary_post_crop_passed.loc[spatial_paths | combined_paths]).all()
+        and ordinary_post_crop_passed.loc[temporal_paths].all()
+    )
+    selected_paths_valid = bool(
+        (ordinary_paths | fallback_paths).all()
+        and successful.loc[ordinary_paths, "fallback_status"].eq(FALLBACK_NOT_ATTEMPTED).all()
+        and successful.loc[fallback_paths, "fallback_status"].eq("FALLBACK_PATH_PASS").all()
+        and successful["failure_substage"].eq("NONE").all()
+    )
+    fallback_encoder_gates = bool(
+        successful.loc[
+            fallback_paths, "encoder_visible_nonzero_retained_pixel_gate_passed"
+        ].map(parse_bool).all()
+        and successful.loc[
+            fallback_paths, "encoder_visible_temporal_variation_gate_passed"
+        ].map(parse_bool).all()
+    )
     sampling_policy_locked = bool(
-        successful["temporal_sampling_policy"].eq(TEMPORAL_SAMPLING_POLICY).all()
+        successful.loc[
+            ordinary_paths | spatial_paths, "temporal_sampling_policy"
+        ].eq(TEMPORAL_SAMPLING_POLICY).all()
+        and successful.loc[
+            temporal_paths | combined_paths, "temporal_sampling_policy"
+        ].eq(TEMPORAL_FALLBACK_POLICY).all()
     )
     decoder_authority_ok = bool(
-        successful["decoder_color_behavior"].eq("STORED_COLOR_RAW").all()
+        successful["decode_color_status"].eq("PASS").all()
+        and successful["decoder_color_behavior"].eq("STORED_COLOR_RAW").all()
         and successful["canonical_color_space"].eq("RGB").all()
         and successful["decoder_backend"].notna().all()
     )
@@ -1035,6 +1502,10 @@ def summarize_extraction(frame: pd.DataFrame) -> dict[str, Any]:
         and shape_dtype_ok
         and mask_ok
         and all_signal_gates
+        and all_successful_gate_counts_consistent
+        and selected_paths_valid
+        and path_trigger_consistent
+        and fallback_encoder_gates
         and sampling_policy_locked
         and decoder_authority_ok
     )
@@ -1058,14 +1529,71 @@ def summarize_extraction(frame: pd.DataFrame) -> dict[str, Any]:
         "n_source_temporal_variation_gate_passed": int(
             gate_values["source_temporal_variation_gate_passed"].sum()
         ),
+        "n_ordinary_post_crop_nonzero_retained_pixel_gate_passed": int(
+            successful["ordinary_post_crop_nonzero_retained_pixel_gate_passed"]
+            .map(parse_bool)
+            .sum()
+        ),
+        "n_ordinary_post_crop_temporal_variation_gate_passed": int(
+            successful["ordinary_post_crop_temporal_variation_gate_passed"]
+            .map(parse_bool)
+            .sum()
+        ),
+        "n_post_crop_nonzero_retained_pixel_gate_passed": int(
+            gate_values["post_crop_nonzero_retained_pixel_gate_passed"].sum()
+        ),
+        "n_post_crop_temporal_variation_gate_passed": int(
+            gate_values["post_crop_temporal_variation_gate_passed"].sum()
+        ),
+        "n_ordinary_sampled_nonzero_retained_pixel_gate_passed": int(
+            successful["ordinary_sampled_nonzero_retained_pixel_gate_passed"]
+            .map(parse_bool)
+            .sum()
+        ),
+        "n_ordinary_sampled_temporal_variation_gate_passed": int(
+            successful["ordinary_sampled_temporal_variation_gate_passed"]
+            .map(parse_bool)
+            .sum()
+        ),
         "n_sampled_nonzero_retained_pixel_gate_passed": int(
             gate_values["sampled_nonzero_retained_pixel_gate_passed"].sum()
         ),
         "n_sampled_temporal_variation_gate_passed": int(
             gate_values["sampled_temporal_variation_gate_passed"].sum()
         ),
+        "n_encoder_visible_nonzero_retained_pixel_gate_passed": int(
+            successful["encoder_visible_nonzero_retained_pixel_gate_passed"]
+            .map(parse_bool)
+            .sum()
+        ),
+        "n_encoder_visible_temporal_variation_gate_passed": int(
+            successful["encoder_visible_temporal_variation_gate_passed"]
+            .map(parse_bool)
+            .sum()
+        ),
         "all_preprocessing_signal_gates_passed": all_signal_gates,
+        "all_successful_gate_counts_mechanically_consistent": (
+            all_successful_gate_counts_consistent
+        ),
+        "preprocessing_gate_state_counts": preprocessing_gate_state_counts,
+        "all_fallback_encoder_visible_signal_gates_passed": fallback_encoder_gates,
+        "selected_preprocessing_paths_valid": selected_paths_valid,
+        "preprocessing_path_trigger_consistent": path_trigger_consistent,
+        "selected_preprocessing_path_counts": _technical_counts(
+            successful, "selected_preprocessing_path", kind="decoder"
+        ),
+        "fallback_status_counts": _technical_counts(frame, "fallback_status", kind="decoder"),
+        "failure_substage_counts": _technical_counts(
+            frame, "failure_substage", kind="decoder"
+        ),
+        "decode_color_status_counts": _technical_counts(
+            frame, "decode_color_status", kind="decoder"
+        ),
         "temporal_sampling_policy": TEMPORAL_SAMPLING_POLICY,
+        "temporal_fallback_policy": TEMPORAL_FALLBACK_POLICY,
+        "temporal_sampling_policy_counts": _technical_counts(
+            successful, "temporal_sampling_policy", kind="decoder"
+        ),
         "temporal_sampling_policy_locked_for_all_extracted_cines": sampling_policy_locked,
         "temporal_sampling_long_cine_rule": "endpoint_inclusive_integer_linspace",
         "temporal_sampling_short_cine_rule": "ordered_source_frames_then_repeat_final_frame",

@@ -182,8 +182,44 @@ def _extraction_row(seed: str = "a") -> dict[str, object]:
         "frames_shape": "32x224x224x3",
         "frames_dtype": "uint8",
         "mask_status": "APPLIED",
+        "photometric_interpretation": "RGB",
+        "transfer_syntax_uid": "1.2.840.10008.1.2.1",
+        "decoder_backend": "pydicom_pixels_raw:native",
+        "decoder_color_behavior": "STORED_COLOR_RAW",
+        "color_transform": "NONE_RGB",
+        "canonical_color_space": "RGB",
         "temporal_sampling_policy": "historical_compatible_linspace_or_tail_repeat_v1",
         "pixel_decode_ok": True,
+        "decode_color_status": "PASS",
+        "source_sector_pixel_count": 100,
+        "source_sector_nonempty_gate_passed": True,
+        "source_nonzero_retained_pixel_count": 50,
+        "source_nonzero_retained_pixel_gate_passed": True,
+        "source_temporal_variation_pixel_count": 10,
+        "source_temporal_variation_gate_passed": True,
+        "ordinary_post_crop_nonzero_retained_pixel_count": 50,
+        "ordinary_post_crop_nonzero_retained_pixel_gate_passed": True,
+        "ordinary_post_crop_temporal_variation_pixel_count": 10,
+        "ordinary_post_crop_temporal_variation_gate_passed": True,
+        "post_crop_nonzero_retained_pixel_count": 50,
+        "post_crop_nonzero_retained_pixel_gate_passed": True,
+        "post_crop_temporal_variation_pixel_count": 10,
+        "post_crop_temporal_variation_gate_passed": True,
+        "ordinary_sampled_nonzero_retained_pixel_count": 50,
+        "ordinary_sampled_nonzero_retained_pixel_gate_passed": True,
+        "ordinary_sampled_temporal_variation_pixel_count": 10,
+        "ordinary_sampled_temporal_variation_gate_passed": True,
+        "sampled_nonzero_retained_pixel_count": 50,
+        "sampled_nonzero_retained_pixel_gate_passed": True,
+        "sampled_temporal_variation_pixel_count": 10,
+        "sampled_temporal_variation_gate_passed": True,
+        "encoder_visible_nonzero_retained_pixel_count": 25,
+        "encoder_visible_nonzero_retained_pixel_gate_passed": True,
+        "encoder_visible_temporal_variation_pixel_count": 5,
+        "encoder_visible_temporal_variation_gate_passed": True,
+        "selected_preprocessing_path": stages.ORDINARY_PREPROCESSING_PATH,
+        "fallback_status": stages.FALLBACK_NOT_ATTEMPTED,
+        "failure_substage": "NONE",
         "npz_sha256": hashlib.sha256(f"npz-{seed}".encode()).hexdigest(),
     }
 
@@ -206,6 +242,113 @@ def test_production_extraction_validator_rejects_shape_and_duplicate_clip_key() 
         "DUPLICATE_CLIP_KEY",
         lambda: stages.validate_production_extraction_rows(
             [good, duplicate], expected_cines=2
+        ),
+    )
+    expect_code(
+        "EXTRACTION_DECODE_COLOR_AUTHORITY_INVALID",
+        lambda: stages.validate_production_extraction_rows(
+            [dict(good, color_transform="EXPLICIT_YBR_FULL_TO_RGB")],
+            expected_cines=1,
+        ),
+    )
+
+
+def test_production_extraction_validator_preserves_exact_failure_substage() -> None:
+    failed = dict(
+        _extraction_row(),
+        write_ok=False,
+        fallback_status=stages.FALLBACK_PATH_FAILED,
+        failure_substage="SAMPLED_NONZERO_SIGNAL_FAILURE",
+    )
+    expect_code(
+        "EXTRACTION_SAMPLED_NONZERO_SIGNAL_FAILURE",
+        lambda: stages.validate_production_extraction_rows(
+            [failed], expected_cines=1
+        ),
+    )
+
+
+def test_mixed_success_and_source_failure_preserves_exact_substage_after_dataframe_promotion() -> None:
+    good = _extraction_row()
+    count_fields = tuple(
+        key for key in good if key.endswith("_pixel_count")
+    )
+    promoted = {
+        **good,
+        **{key: float(good[key]) for key in count_fields},
+    }
+    failed = dict(
+        _extraction_row("b"),
+        write_ok=False,
+        fallback_status=stages.FALLBACK_NOT_ATTEMPTED,
+        failure_substage="SOURCE_SIGNAL_QUALITY_FAILURE",
+    )
+    expect_code(
+        "EXTRACTION_SOURCE_SIGNAL_QUALITY_FAILURE",
+        lambda: stages.validate_production_extraction_rows(
+            [promoted, failed], expected_cines=2
+        ),
+    )
+
+
+def test_production_extraction_validator_accepts_only_closed_fallback_authority() -> None:
+    fallback = dict(
+        _extraction_row(),
+        selected_preprocessing_path=stages.TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+        fallback_status=stages.FALLBACK_PATH_PASS,
+        temporal_sampling_policy=stages.FALLBACK_TEMPORAL_SAMPLING_POLICY,
+        ordinary_sampled_nonzero_retained_pixel_count=0,
+        ordinary_sampled_nonzero_retained_pixel_gate_passed=False,
+        ordinary_sampled_temporal_variation_pixel_count=0,
+        ordinary_sampled_temporal_variation_gate_passed=False,
+    )
+    result = stages.validate_production_extraction_rows(
+        [fallback], expected_cines=1
+    )
+    assert result["n_temporal_fallback_preprocessing_path"] == 1
+    assert result["n_fallback_path_pass"] == 1
+    blocked = dict(
+        fallback,
+        encoder_visible_temporal_variation_pixel_count=0,
+        encoder_visible_temporal_variation_gate_passed=False,
+    )
+    expect_code(
+        "EXTRACTION_FALLBACK_ENCODER_VISIBLE_SIGNAL_GATE_FAILED",
+        lambda: stages.validate_production_extraction_rows(
+            [blocked], expected_cines=1
+        ),
+    )
+    no_trigger = dict(
+        fallback,
+        ordinary_sampled_nonzero_retained_pixel_count=50,
+        ordinary_sampled_nonzero_retained_pixel_gate_passed=True,
+        ordinary_sampled_temporal_variation_pixel_count=10,
+        ordinary_sampled_temporal_variation_gate_passed=True,
+    )
+    expect_code(
+        "EXTRACTION_FALLBACK_TRIGGER_INVALID",
+        lambda: stages.validate_production_extraction_rows(
+            [no_trigger], expected_cines=1
+        ),
+    )
+    wrong_spatial_trigger = dict(
+        fallback,
+        selected_preprocessing_path=stages.SPATIAL_FALLBACK_PREPROCESSING_PATH,
+        temporal_sampling_policy=stages.ORDINARY_TEMPORAL_SAMPLING_POLICY,
+    )
+    expect_code(
+        "EXTRACTION_SPATIAL_FALLBACK_TRIGGER_INVALID",
+        lambda: stages.validate_production_extraction_rows(
+            [wrong_spatial_trigger], expected_cines=1
+        ),
+    )
+    count_gate_contradiction = dict(
+        _extraction_row(), source_nonzero_retained_pixel_count=0
+    )
+    expect_code(
+        "EXTRACTION_PROVENANCE_GATE_CONTRADICTION",
+        lambda: stages.validate_production_extraction_rows(
+            [count_gate_contradiction], expected_cines=1
         ),
     )
 
@@ -531,21 +674,9 @@ def test_echoprime_execution_calls_shared_mean_pooling_helper() -> None:
             )
             extraction_rows.append(
                 {
+                    **_extraction_row(str(index)),
                     "subject_id": subject_id,
                     "study_id": study_id,
-                    "clip_key": hashlib.sha256(f"clip-{index}".encode()).hexdigest(),
-                    "physical_source_key": hashlib.sha256(
-                        f"source-{index}".encode()
-                    ).hexdigest(),
-                    "write_ok": True,
-                    "frames_shape": "32x224x224x3",
-                    "frames_dtype": "uint8",
-                    "mask_status": "APPLIED",
-                    "temporal_sampling_policy": (
-                        "historical_compatible_linspace_or_tail_repeat_v1"
-                    ),
-                    "pixel_decode_ok": True,
-                    "npz_sha256": hashlib.sha256(f"npz-{index}".encode()).hexdigest(),
                 }
             )
         pd.DataFrame(extraction_rows).to_csv(extraction_manifest, index=False)

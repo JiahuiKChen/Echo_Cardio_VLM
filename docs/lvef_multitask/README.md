@@ -46,6 +46,12 @@ one persistent worker per download batch. Failed attempts 001–004 and passing
 attempt 005 remain immutable. Phase 1E-F uses a fresh no-clobber production
 attempt only to bind the final commit, capacity, recovery, and launch envelope.
 
+The Phase 1I terminal failure and the correctness-first R3A repair boundary are
+recorded in the [Phase 1I-R3A sampled-signal repair and successor-readiness
+record](phase1i_r3a_sampled_signal_repair.md). The failed attempt remains
+immutable, live replay remains unexecuted, and full C3 remains no-go pending
+repair validation and a separately authorized bounded local replay.
+
 ## Terminology
 
 New documents use:
