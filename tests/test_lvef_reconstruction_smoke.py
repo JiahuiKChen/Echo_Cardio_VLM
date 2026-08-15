@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import os
+import stat
 import sys
 import tempfile
 from types import SimpleNamespace
+from unittest import mock
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -915,6 +920,7 @@ def test_successful_fallback_writes_authority_with_correct_step_statuses() -> No
         output = root / "output" / str(result["output_relative_path"])
         assert result["write_ok"] is True
         assert result["decode_color_status"] == "PASS"
+        assert "pixel_decode_ok" not in result
         assert result["mask_status"] == "APPLIED"
         assert result["fallback_status"] == "FALLBACK_PATH_PASS"
         assert result["failure_substage"] == "NONE"
@@ -954,6 +960,11 @@ def test_successful_fallback_writes_authority_with_correct_step_statuses() -> No
             "temporal_sampling_policy",
         ]
         assert output.is_file()
+        observed = smoke.validate_extracted_npz(result, root / "output")
+        assert observed.shape == smoke.EXTRACTION_SHAPE
+        assert np.array_equal(
+            smoke._load_extracted_frames(result, root / "output"), observed
+        )
         with np.load(output, allow_pickle=False) as payload:
             assert payload["frames"].shape == smoke.EXTRACTION_SHAPE
             assert np.array_equal(
@@ -1077,6 +1088,7 @@ def test_source_gate_failures_never_enter_or_mark_the_fallback() -> None:
             )
             assert result["write_ok"] is False
             assert result["decode_color_status"] == "PASS"
+            assert "pixel_decode_ok" not in result
             assert result["mask_status"] == "FAILED"
             assert result["fallback_status"] == smoke.FALLBACK_NOT_ATTEMPTED
             assert result["failure_substage"] == "SOURCE_SIGNAL_QUALITY_FAILURE"
@@ -1102,6 +1114,7 @@ def test_decode_failure_status_is_distinct_and_never_reaches_mask_or_fallback() 
         )
         assert result["write_ok"] is False
         assert result["decode_color_status"] == "DECODE_OR_COLOR_CONVERSION_FAILURE"
+        assert "pixel_decode_ok" not in result
         assert result["mask_status"] == "NOT_REACHED"
         assert result["fallback_status"] == smoke.FALLBACK_NOT_ATTEMPTED
         assert result["failure_substage"] == "DECODE_OR_COLOR_CONVERSION_FAILURE"
@@ -1530,3 +1543,316 @@ def test_guarded_main_suppresses_exception_message_and_path() -> None:
     assert secret_path not in output
     assert "BLOCKED_SMOKE_EXCEPTION" in output
     assert '"exception_message_emitted": false' in output
+
+
+def _r3c_npz_fixture(root: Path) -> tuple[dict[str, object], Path]:
+    source_relative = f"{'a' * 64}.dcm"
+    clip_key = smoke.stable_clip_key(source_relative)
+    relative = f"clips/{clip_key[:2]}/{clip_key}.npz"
+    path = root / relative
+    path.parent.mkdir(mode=0o700, parents=True)
+    anchors = np.zeros((16, 224, 224, 3), dtype=np.uint8)
+    for index in range(16):
+        anchors[index, :, :, :] = np.uint8(20 + index)
+        anchors[index, 30:90, 50 + index : 130 + index, :] = np.uint8(190)
+    frames = np.repeat(anchors, 2, axis=0)
+    indices = np.repeat(np.linspace(0, 63, 16, dtype=np.int64), 2)
+    source_count = np.asarray([64], dtype=np.int32)
+    smoke.write_npz_atomic(
+        path,
+        frames=frames,
+        sampled_indices=indices,
+        source_num_frames=source_count,
+    )
+    sampled = smoke._signal_quality_metrics(frames)
+    encoder = smoke._signal_quality_metrics(frames[0:32:2])
+    row: dict[str, object] = {
+        "source_relative_path": source_relative,
+        "source_sha256": "b" * 64,
+        "clip_key": clip_key,
+        "output_relative_path": relative,
+        "write_ok": True,
+        "pixel_decode_ok": True,
+        "mask_status": "APPLIED",
+        "decode_color_status": "PASS",
+        "failure_substage": "NONE",
+        "error_code": None,
+        "frames_shape": "32x224x224x3",
+        "frames_dtype": "uint8",
+        "selected_preprocessing_path": smoke.TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+        "temporal_sampling_policy": smoke.TEMPORAL_FALLBACK_POLICY,
+        "fallback_status": "FALLBACK_PATH_PASS",
+        "source_num_frames": 64,
+        "frames_sha256": smoke.array_content_sha256(frames),
+        "sampled_indices_sha256": smoke.array_content_sha256(indices),
+        "source_num_frames_sha256": smoke.array_content_sha256(source_count),
+        "npz_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "sampled_nonzero_retained_pixel_count": sampled[
+            "nonzero_retained_pixel_count"
+        ],
+        "sampled_nonzero_retained_pixel_gate_passed": sampled[
+            "nonzero_retained_pixel_gate_passed"
+        ],
+        "sampled_temporal_variation_pixel_count": sampled[
+            "temporal_variation_pixel_count"
+        ],
+        "sampled_temporal_variation_gate_passed": sampled[
+            "temporal_variation_gate_passed"
+        ],
+        "encoder_visible_nonzero_retained_pixel_count": encoder[
+            "nonzero_retained_pixel_count"
+        ],
+        "encoder_visible_nonzero_retained_pixel_gate_passed": encoder[
+            "nonzero_retained_pixel_gate_passed"
+        ],
+        "encoder_visible_temporal_variation_pixel_count": encoder[
+            "temporal_variation_pixel_count"
+        ],
+        "encoder_visible_temporal_variation_gate_passed": encoder[
+            "temporal_variation_gate_passed"
+        ],
+    }
+    return row, path
+
+
+def _rewrite_r3c_npz(
+    path: Path,
+    *,
+    frames: np.ndarray,
+    indices: np.ndarray,
+    source_count: np.ndarray,
+) -> None:
+    np.savez_compressed(
+        path,
+        frames=frames,
+        sampled_indices=indices,
+        source_num_frames=source_count,
+    )
+    os.chmod(path, 0o600)
+
+
+def _write_named_npy_members(
+    path: Path, members: list[tuple[str, np.ndarray]]
+) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as container:
+        for name, value in members:
+            payload = io.BytesIO()
+            np.lib.format.write_array(payload, value, allow_pickle=False)
+            container.writestr(name, payload.getvalue())
+    os.chmod(path, 0o600)
+
+
+def test_r3c_canonical_npz_deep_reopen_and_complete_tamper_matrix() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        row, path = _r3c_npz_fixture(root)
+        observed = smoke.validate_extracted_npz(
+            row,
+            root,
+            require_owner_private=True,
+            expected_source_sha256="b" * 64,
+        )
+        assert observed.shape == smoke.EXTRACTION_SHAPE
+        assert observed.dtype == np.uint8
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    mutation_names = (
+        "array_value",
+        "sampled_index",
+        "source_binding",
+        "dtype",
+        "shape",
+        "missing_member",
+        "unexpected_member",
+        "duplicate_member",
+        "content_hash",
+        "truncated",
+        "exact_size_changed_container",
+        "wrong_mode",
+        "symlink",
+    )
+    for mutation in mutation_names:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            row, path = _r3c_npz_fixture(root)
+            with np.load(path, allow_pickle=False) as archive:
+                frames = np.asarray(archive["frames"]).copy()
+                indices = np.asarray(archive["sampled_indices"]).copy()
+                source_count = np.asarray(archive["source_num_frames"]).copy()
+            if mutation == "array_value":
+                frames[0, 0, 0, 0] ^= np.uint8(1)
+                _rewrite_r3c_npz(
+                    path, frames=frames, indices=indices, source_count=source_count
+                )
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "sampled_index":
+                indices[2] += np.int64(1)
+                _rewrite_r3c_npz(
+                    path, frames=frames, indices=indices, source_count=source_count
+                )
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "source_binding":
+                row["source_sha256"] = "c" * 64
+            elif mutation == "dtype":
+                _rewrite_r3c_npz(
+                    path,
+                    frames=frames.astype(np.int16),
+                    indices=indices,
+                    source_count=source_count,
+                )
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "shape":
+                _rewrite_r3c_npz(
+                    path,
+                    frames=frames[:-1],
+                    indices=indices,
+                    source_count=source_count,
+                )
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "missing_member":
+                _write_named_npy_members(
+                    path,
+                    [("frames.npy", frames), ("sampled_indices.npy", indices)],
+                )
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "unexpected_member":
+                _write_named_npy_members(
+                    path,
+                    [
+                        ("frames.npy", frames),
+                        ("sampled_indices.npy", indices),
+                        ("source_num_frames.npy", source_count),
+                        ("unexpected.npy", source_count),
+                    ],
+                )
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "duplicate_member":
+                _write_named_npy_members(
+                    path,
+                    [
+                        ("frames.npy", frames),
+                        ("frames.npy", frames),
+                        ("sampled_indices.npy", indices),
+                        ("source_num_frames.npy", source_count),
+                    ],
+                )
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "content_hash":
+                row["frames_sha256"] = "0" * 64
+            elif mutation == "truncated":
+                path.write_bytes(path.read_bytes()[:-11])
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "exact_size_changed_container":
+                payload = bytearray(path.read_bytes())
+                payload[len(payload) // 2] ^= 1
+                path.write_bytes(payload)
+                row["npz_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif mutation == "wrong_mode":
+                os.chmod(path, 0o640)
+            elif mutation == "symlink":
+                target = path.with_name("canonical-payload.npz")
+                os.replace(path, target)
+                path.symlink_to(target.name)
+            if mutation not in {"wrong_mode", "symlink"}:
+                os.chmod(path, 0o600)
+            expect_raises(
+                ValueError,
+                lambda row=row, root=root: smoke.validate_extracted_npz(
+                    row,
+                    root,
+                    require_owner_private=True,
+                    expected_source_sha256="b" * 64,
+                ),
+            )
+
+
+def test_replay_only_both_fail_guard_runs_before_any_fallback() -> None:
+    frames, sector, _ = _dynamic_block_cine(
+        temporal_sparse=True, off_center=False
+    )
+    sampled, _indices, provenance = smoke._preprocess_with_signal_preserving_fallback(
+        frames,
+        sector,
+        _SyntheticCv2,
+        required_ordinary_failure_topology=(
+            smoke.REPLAY_REQUIRED_ORDINARY_FAILURE_TOPOLOGY
+        ),
+    )
+    assert provenance["ordinary_sampled_nonzero_retained_pixel_gate_passed"] is False
+    assert provenance["ordinary_sampled_temporal_variation_gate_passed"] is False
+    assert provenance["fallback_status"] == "FALLBACK_PATH_PASS"
+    assert sampled.shape == smoke.EXTRACTION_SHAPE
+
+    gate_template = {
+        "sector_pixel_count": 1,
+        "sector_nonempty_gate_passed": True,
+        "nonzero_retained_pixel_count": 1,
+        "nonzero_retained_pixel_gate_passed": True,
+        "temporal_variation_pixel_count": 1,
+        "temporal_variation_gate_passed": True,
+    }
+    for nonzero, temporal in ((True, False), (False, True), (True, True)):
+        ordinary_sampled = {
+            **gate_template,
+            "nonzero_retained_pixel_count": int(nonzero),
+            "nonzero_retained_pixel_gate_passed": nonzero,
+            "temporal_variation_pixel_count": int(temporal),
+            "temporal_variation_gate_passed": temporal,
+        }
+        metrics = [gate_template, ordinary_sampled, gate_template]
+        with (
+            mock.patch.object(smoke, "_signal_quality_metrics", side_effect=metrics),
+            mock.patch.object(
+                smoke,
+                "_sector_bbox_square_pad_resize",
+                side_effect=AssertionError("fallback must remain unreachable"),
+            ) as fallback,
+        ):
+            expect_raises(
+                smoke.PreprocessingStageError,
+                lambda: smoke._preprocess_with_signal_preserving_fallback(
+                    frames,
+                    sector,
+                    _SyntheticCv2,
+                    required_ordinary_failure_topology=(
+                        smoke.REPLAY_REQUIRED_ORDINARY_FAILURE_TOPOLOGY
+                    ),
+                ),
+                "both-fail",
+            )
+        fallback.assert_not_called()
+
+
+def test_npz_and_json_style_publication_never_overwrite_destination() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        target = root / "fixed.npz"
+        target.write_bytes(b"existing")
+        expect_raises(
+            FileExistsError,
+            lambda: smoke.write_npz_atomic(
+                target, frames=np.zeros((1,), dtype=np.uint8)
+            ),
+        )
+        assert target.read_bytes() == b"existing"
+        assert not tuple(root.glob(".fixed.npz.tmp.*"))
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        target = root / "raced.npz"
+        competing = b"competing-publication"
+
+        def publish_competing(*_args, **kwargs) -> None:
+            assert kwargs["follow_symlinks"] is False
+            target.write_bytes(competing)
+            raise FileExistsError("synthetic hard-link race")
+
+        with mock.patch.object(smoke.os, "link", side_effect=publish_competing):
+            expect_raises(
+                FileExistsError,
+                lambda: smoke.write_npz_atomic(
+                    target, frames=np.zeros((1,), dtype=np.uint8)
+                ),
+            )
+        assert target.read_bytes() == competing
+        assert not tuple(root.glob(".raced.npz.tmp.*"))

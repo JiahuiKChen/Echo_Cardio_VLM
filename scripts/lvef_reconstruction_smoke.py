@@ -19,7 +19,9 @@ import os
 from pathlib import Path, PurePosixPath
 import random
 import re
+import stat
 from typing import Any, Mapping, Sequence
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -41,6 +43,16 @@ SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH = (
     "SECTOR_BOUND_SQUARE_PAD_AND_STRIDE2_SIGNAL_COVERAGE_FALLBACK_V1"
 )
 FALLBACK_NOT_ATTEMPTED = "NOT_ATTEMPTED"
+REPLAY_REQUIRED_ORDINARY_FAILURE_TOPOLOGY = "BOTH_FAIL"
+REPLAY_ORDINARY_TOPOLOGY_RECORD_KEY = (
+    "_replay_required_ordinary_failure_topology"
+)
+MAXIMUM_EXTRACTION_NPZ_BYTES = 32 * 1024 * 1024
+MAXIMUM_EXTRACTION_MEMBER_BYTES = {
+    "frames.npy": int(np.prod(EXTRACTION_SHAPE, dtype=np.int64)) + 4096,
+    "sampled_indices.npy": EXTRACTION_SHAPE[0] * np.dtype(np.int64).itemsize + 4096,
+    "source_num_frames.npy": np.dtype(np.int32).itemsize + 4096,
+}
 DECODER_PLUGIN_PRIORITY = ("pylibjpeg", "gdcm", "pillow", "pyjpegls")
 NATIVE_PIXEL_TRANSFER_SYNTAX_UIDS = {
     "1.2.840.10008.1.2",       # Implicit VR Little Endian
@@ -274,12 +286,118 @@ def write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
 
 def write_npz_atomic(path: Path, **arrays: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
+    if os.path.lexists(path):
         raise FileExistsError("Refusing to overwrite an existing output.")
-    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}.npz")
-    np.savez_compressed(temporary, **arrays)
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    temporary_name = f".{path.name}.tmp.{os.getpid()}.npz"
+    parent_descriptor = -1
+    created_identity: tuple[int, int] | None = None
+    try:
+        parent_before = os.lstat(path.parent)
+        parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        parent_descriptor = os.open(path.parent, parent_flags)
+        parent_opened = os.fstat(parent_descriptor)
+        parent_identity = (
+            int(parent_opened.st_dev),
+            int(parent_opened.st_ino),
+            int(parent_opened.st_uid),
+            int(parent_opened.st_mode),
+        )
+        if (
+            not stat.S_ISDIR(parent_before.st_mode)
+            or not stat.S_ISDIR(parent_opened.st_mode)
+            or (parent_before.st_dev, parent_before.st_ino)
+            != (parent_opened.st_dev, parent_opened.st_ino)
+        ):
+            raise OSError("NPZ output parent authority is unstable.")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        descriptor = os.open(
+            temporary_name, flags, 0o600, dir_fd=parent_descriptor
+        )
+        opened = os.fstat(descriptor)
+        created_identity = (int(opened.st_dev), int(opened.st_ino))
+        with os.fdopen(descriptor, "wb") as handle:
+            np.savez_compressed(handle, **arrays)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o600)
+            after = os.fstat(handle.fileno())
+            if (
+                (after.st_dev, after.st_ino) != created_identity
+                or after.st_uid != os.geteuid()
+                or stat.S_IMODE(after.st_mode) != 0o600
+                or after.st_size < 1
+            ):
+                raise OSError("Temporary NPZ identity changed during write.")
+            expected_size = int(after.st_size)
+        temporary_metadata = os.stat(
+            temporary_name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(temporary_metadata.st_mode)
+            or temporary_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(temporary_metadata.st_mode) != 0o600
+            or (temporary_metadata.st_dev, temporary_metadata.st_ino)
+            != created_identity
+            or temporary_metadata.st_size != expected_size
+        ):
+            raise OSError("Temporary NPZ authority changed before publication.")
+        try:
+            os.link(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise FileExistsError(
+                "Refusing to overwrite an existing output."
+            ) from exc
+        published = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        parent_after = os.fstat(parent_descriptor)
+        visible_parent = os.lstat(path.parent)
+        if (
+            not stat.S_ISREG(published.st_mode)
+            or published.st_uid != os.geteuid()
+            or stat.S_IMODE(published.st_mode) != 0o600
+            or (published.st_dev, published.st_ino) != created_identity
+            or published.st_size != expected_size
+            or (
+                parent_after.st_dev,
+                parent_after.st_ino,
+                parent_after.st_uid,
+                parent_after.st_mode,
+            )
+            != parent_identity
+            or (visible_parent.st_dev, visible_parent.st_ino)
+            != parent_identity[:2]
+        ):
+            raise OSError("Published NPZ authority is invalid.")
+        os.unlink(temporary_name, dir_fd=parent_descriptor)
+    finally:
+        if created_identity is not None and parent_descriptor >= 0:
+            try:
+                metadata = os.stat(
+                    temporary_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    stat.S_ISREG(metadata.st_mode)
+                    and metadata.st_uid == os.geteuid()
+                    and (metadata.st_dev, metadata.st_ino) == created_identity
+                ):
+                    os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
 
 
 def read_downloader_report(path: Path) -> dict[str, Any]:
@@ -1044,7 +1162,11 @@ def _signal_preserving_temporal_sample(
 
 
 def _preprocess_with_signal_preserving_fallback(
-    frames: np.ndarray, sector_mask: np.ndarray, cv2: Any
+    frames: np.ndarray,
+    sector_mask: np.ndarray,
+    cv2: Any,
+    *,
+    required_ordinary_failure_topology: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Preserve the exact ordinary path, then try one bounded pixel-only fallback."""
 
@@ -1085,6 +1207,27 @@ def _preprocess_with_signal_preserving_fallback(
     provenance.update(_quality_fields("sampled", ordinary_sampled_quality))
     ordinary_encoder_quality = _signal_quality_metrics(ordinary_sampled[0:32:2])
     provenance.update(_quality_fields("encoder_visible", ordinary_encoder_quality))
+    if required_ordinary_failure_topology is not None:
+        if (
+            required_ordinary_failure_topology
+            != REPLAY_REQUIRED_ORDINARY_FAILURE_TOPOLOGY
+        ):
+            raise ValueError("Unknown replay-only ordinary failure topology.")
+        ordinary_nonzero_passed = bool(
+            ordinary_sampled_quality["nonzero_retained_pixel_gate_passed"]
+        )
+        ordinary_temporal_passed = bool(
+            ordinary_sampled_quality["temporal_variation_gate_passed"]
+        )
+        if ordinary_nonzero_passed or ordinary_temporal_passed:
+            provenance[
+                "failure_substage"
+            ] = "REPLAY_ORDINARY_FAILURE_TOPOLOGY_MISMATCH"
+            raise PreprocessingStageError(
+                "Replay ordinary sampled gates did not reproduce both-fail authority.",
+                failure_substage="REPLAY_ORDINARY_FAILURE_TOPOLOGY_MISMATCH",
+                provenance=provenance,
+            )
     ordinary_passed = bool(
         ordinary_sampled_quality["nonzero_retained_pixel_gate_passed"]
         and ordinary_sampled_quality["temporal_variation_gate_passed"]
@@ -1291,9 +1434,24 @@ def _extract_one(record: Mapping[str, Any], download_root: str, output_root: str
         result["mask_status"] = "APPLIED"
         result["failure_substage"] = "NONE"
         try:
-            sampled, indices, preprocessing = _preprocess_with_signal_preserving_fallback(
-                frames, sector_mask, cv2
-            )
+            replay_topology = record.get(REPLAY_ORDINARY_TOPOLOGY_RECORD_KEY)
+            if replay_topology is None:
+                sampled, indices, preprocessing = (
+                    _preprocess_with_signal_preserving_fallback(
+                        frames,
+                        sector_mask,
+                        cv2,
+                    )
+                )
+            else:
+                sampled, indices, preprocessing = (
+                    _preprocess_with_signal_preserving_fallback(
+                        frames,
+                        sector_mask,
+                        cv2,
+                        required_ordinary_failure_topology=replay_topology,
+                    )
+                )
         except PreprocessingStageError as exc:
             result.update(exc.provenance)
             raise
@@ -1696,26 +1854,274 @@ def configure_torch_determinism(torch: Any, seed: int) -> dict[str, Any]:
     }
 
 
-def _load_extracted_frames(row: Mapping[str, Any], extraction_root: Path) -> np.ndarray:
+def _exact_integral_scalar(value: Any, *, field: str) -> int:
+    if hasattr(value, "item") and callable(value.item):
+        value = value.item()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Extracted {field} is not an exact integer.")
+    if isinstance(value, float) and (not np.isfinite(value) or not value.is_integer()):
+        raise ValueError(f"Extracted {field} is not an exact integer.")
+    return int(value)
+
+
+def _exact_boolean_scalar(value: Any, *, field: str) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    raise ValueError(f"Extracted {field} is not an exact boolean.")
+
+
+def validate_extracted_npz(
+    row: Mapping[str, Any],
+    extraction_root: Path,
+    *,
+    require_owner_private: bool = False,
+    expected_source_sha256: str | None = None,
+) -> np.ndarray:
+    """Deeply reopen one canonical three-array extraction NPZ fail-closed."""
+
+    try:
+        write_ok = parse_bool(row.get("write_ok"))
+        pixel_decode_ok = (
+            parse_bool(row.get("pixel_decode_ok"))
+            if "pixel_decode_ok" in row
+            else row.get("decode_color_status") == "PASS"
+        )
+    except ValueError as exc:
+        raise ValueError("Extracted NPZ row is not a successful extraction.") from exc
+    error_code = row.get("error_code")
+    error_absent = error_code is None or pd.isna(error_code) or error_code == ""
+    if (
+        not write_ok
+        or not pixel_decode_ok
+        or not error_absent
+        or row.get("mask_status") != "APPLIED"
+        or row.get("decode_color_status") != "PASS"
+        or row.get("failure_substage") != "NONE"
+        or row.get("frames_shape") != "32x224x224x3"
+        or row.get("frames_dtype") != "uint8"
+    ):
+        raise ValueError("Extracted NPZ row is not a coherent successful extraction.")
     relative = safe_relative_path(row["output_relative_path"])
     path = resolve_under(extraction_root, relative, must_exist=True)
-    if sha256_file(path) != str(row["npz_sha256"]):
-        raise ValueError("Extracted NPZ byte checksum mismatch.")
-    with np.load(path, allow_pickle=False) as archive:
-        if set(archive.files) != {"frames", "sampled_indices", "source_num_frames"}:
-            raise ValueError("Unexpected extracted NPZ schema.")
-        frames = archive["frames"]
-        sampled_indices = archive["sampled_indices"]
-        source_num_frames = archive["source_num_frames"]
+    try:
+        before = os.lstat(path)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError("Extracted NPZ is not a stable regular file.") from exc
+    try:
+        opened = os.fstat(descriptor)
+        identity = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or (
+                require_owner_private
+                and (
+                    opened.st_uid != os.geteuid()
+                    or stat.S_IMODE(opened.st_mode) != 0o600
+                )
+            )
+            or opened.st_size < 1
+            or opened.st_size > MAXIMUM_EXTRACTION_NPZ_BYTES
+        ):
+            raise ValueError("Extracted NPZ is not a stable private regular file.")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+            if digest.hexdigest() != str(row["npz_sha256"]):
+                raise ValueError("Extracted NPZ byte checksum mismatch.")
+            handle.seek(0)
+            try:
+                with zipfile.ZipFile(handle, mode="r") as container:
+                    members = container.infolist()
+                    names = [item.filename for item in members]
+                    if names.count("frames.npy") != 1 or names.count(
+                        "sampled_indices.npy"
+                    ) != 1 or names.count("source_num_frames.npy") != 1 or set(
+                        names
+                    ) != {
+                        "frames.npy",
+                        "sampled_indices.npy",
+                        "source_num_frames.npy",
+                    }:
+                        raise ValueError("Unexpected or duplicated extracted NPZ member.")
+                    if (
+                        len(members) != 3
+                        or sum(item.file_size for item in members)
+                        > sum(MAXIMUM_EXTRACTION_MEMBER_BYTES.values())
+                        or any(
+                            item.flag_bits & 0x1
+                            or item.compress_type
+                            not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+                            or item.file_size < 1
+                            or item.file_size
+                            > MAXIMUM_EXTRACTION_MEMBER_BYTES[item.filename]
+                            for item in members
+                        )
+                    ):
+                        raise ValueError("Extracted NPZ member size/codec gate failed.")
+                    if container.testzip() is not None:
+                        raise ValueError("Extracted NPZ ZIP integrity gate failed.")
+                handle.seek(0)
+                with np.load(handle, allow_pickle=False) as archive:
+                    if archive.files != [
+                        "frames",
+                        "sampled_indices",
+                        "source_num_frames",
+                    ]:
+                        raise ValueError("Unexpected extracted NPZ schema.")
+                    frames = np.asarray(archive["frames"])
+                    sampled_indices = np.asarray(archive["sampled_indices"])
+                    source_num_frames = np.asarray(archive["source_num_frames"])
+            except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+                if isinstance(exc, ValueError) and str(exc).startswith("Unexpected"):
+                    raise
+                raise ValueError("Extracted NPZ deep reopen failed.") from exc
+            after = os.fstat(handle.fileno())
+            if identity != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise ValueError("Extracted NPZ changed during deep reopen.")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if frames.shape != EXTRACTION_SHAPE or frames.dtype != np.uint8:
         raise ValueError("Extracted frame shape/dtype gate failed.")
+    if not np.isfinite(frames).all() or not np.any(frames):
+        raise ValueError("Extracted frames are empty or nonfinite.")
+    if sampled_indices.shape != (EXTRACTION_SHAPE[0],) or sampled_indices.dtype != np.int64:
+        raise ValueError("Extracted sampled-index shape/dtype gate failed.")
+    if source_num_frames.shape != (1,) or source_num_frames.dtype != np.int32:
+        raise ValueError("Extracted source-frame metadata shape/dtype gate failed.")
+    source_count = int(source_num_frames[0])
+    if source_count < 2 or _exact_integral_scalar(
+        row.get("source_num_frames"), field="source_num_frames"
+    ) != source_count:
+        raise ValueError("Extracted source-frame metadata value mismatch.")
+    if (
+        np.any(sampled_indices < 0)
+        or np.any(sampled_indices >= source_count)
+        or np.any(sampled_indices[1:] < sampled_indices[:-1])
+    ):
+        raise ValueError("Extracted sampled-index range/order gate failed.")
     if array_content_sha256(frames) != str(row["frames_sha256"]):
         raise ValueError("Extracted frame content checksum mismatch.")
     if array_content_sha256(sampled_indices) != str(row["sampled_indices_sha256"]):
         raise ValueError("Extracted sampled-index checksum mismatch.")
     if array_content_sha256(source_num_frames) != str(row["source_num_frames_sha256"]):
         raise ValueError("Extracted source-frame metadata checksum mismatch.")
+
+    source_relative = safe_relative_path(row["source_relative_path"])
+    clip_key = str(row.get("clip_key", ""))
+    if (
+        clip_key != stable_clip_key(source_relative)
+        or relative != f"clips/{clip_key[:2]}/{clip_key}.npz"
+    ):
+        raise ValueError("Extracted source/output binding mismatch.")
+    if expected_source_sha256 is not None and str(row.get("source_sha256")) != str(
+        expected_source_sha256
+    ):
+        raise ValueError("Extracted source checksum binding mismatch.")
+
+    selected_path = str(row.get("selected_preprocessing_path", ""))
+    temporal_policy = str(row.get("temporal_sampling_policy", ""))
+    fallback_status = str(row.get("fallback_status", ""))
+    if selected_path == ORDINARY_PREPROCESSING_PATH:
+        expected_policy = TEMPORAL_SAMPLING_POLICY
+        expected_fallback = FALLBACK_NOT_ATTEMPTED
+    elif selected_path == SPATIAL_FALLBACK_PREPROCESSING_PATH:
+        expected_policy = TEMPORAL_SAMPLING_POLICY
+        expected_fallback = "FALLBACK_PATH_PASS"
+    elif selected_path in {
+        TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+        SPATIAL_TEMPORAL_FALLBACK_PREPROCESSING_PATH,
+    }:
+        expected_policy = TEMPORAL_FALLBACK_POLICY
+        expected_fallback = "FALLBACK_PATH_PASS"
+    else:
+        raise ValueError("Extracted preprocessing path is invalid.")
+    if temporal_policy != expected_policy or fallback_status != expected_fallback:
+        raise ValueError("Extracted preprocessing policy/status mismatch.")
+
+    if temporal_policy == TEMPORAL_SAMPLING_POLICY:
+        if source_count >= EXTRACTION_SHAPE[0]:
+            expected_indices = np.linspace(
+                0, source_count - 1, EXTRACTION_SHAPE[0], dtype=np.int64
+            )
+        else:
+            expected_indices = np.concatenate(
+                [
+                    np.arange(source_count, dtype=np.int64),
+                    np.full(
+                        EXTRACTION_SHAPE[0] - source_count,
+                        source_count - 1,
+                        dtype=np.int64,
+                    ),
+                ]
+            )
+        if not np.array_equal(sampled_indices, expected_indices):
+            raise ValueError("Extracted historical sampled-index policy mismatch.")
+    else:
+        anchors = sampled_indices[0:32:2]
+        if (
+            source_count < 16
+            or not np.array_equal(anchors, sampled_indices[1:32:2])
+            or not np.array_equal(frames[0:32:2], frames[1:32:2])
+            or np.unique(anchors).size != 16
+            or np.any(anchors[1:] <= anchors[:-1])
+            or int(anchors[0]) != 0
+            or int(anchors[-1]) != source_count - 1
+        ):
+            raise ValueError("Extracted fallback sampled-index policy mismatch.")
+
+    for prefix, values in (
+        ("sampled", frames),
+        ("encoder_visible", frames[0:32:2]),
+    ):
+        metrics = _signal_quality_metrics(values)
+        for metric_name in (
+            "nonzero_retained_pixel_count",
+            "temporal_variation_pixel_count",
+        ):
+            row_field = f"{prefix}_{metric_name}"
+            if _exact_integral_scalar(row.get(row_field), field=row_field) != int(
+                metrics[metric_name]
+            ):
+                raise ValueError("Extracted signal count receipt mismatch.")
+            gate_suffix = (
+                "nonzero_retained_pixel_gate_passed"
+                if metric_name == "nonzero_retained_pixel_count"
+                else "temporal_variation_gate_passed"
+            )
+            gate_field = f"{prefix}_{gate_suffix}"
+            if _exact_boolean_scalar(row.get(gate_field), field=gate_field) is not bool(
+                metrics[gate_suffix]
+            ):
+                raise ValueError("Extracted signal gate receipt mismatch.")
+        if fallback_status == "FALLBACK_PATH_PASS" and not (
+            metrics["nonzero_retained_pixel_gate_passed"]
+            and metrics["temporal_variation_gate_passed"]
+        ):
+            raise ValueError("Extracted fallback signal gates did not pass.")
     return np.ascontiguousarray(frames)
+
+
+def _load_extracted_frames(row: Mapping[str, Any], extraction_root: Path) -> np.ndarray:
+    return validate_extracted_npz(row, extraction_root)
 
 
 def _prepare_encoder_input(frames: np.ndarray, torch: Any) -> Any:
