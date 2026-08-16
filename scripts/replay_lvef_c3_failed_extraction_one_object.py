@@ -10,6 +10,7 @@ attempt.  The live replay is not authorized merely because this file exists.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 from dataclasses import dataclass, field
 import hashlib
@@ -38,11 +39,15 @@ import lvef_c3_production_stages as production_stages
 EXPECTED_BRANCH = "codex/lvef-multitask-revalidation"
 PRODUCTION_ROOT = Path("/restricted/projectnb/mimicecho/lvef_multitask_c3_v2")
 ALLOWED_DIAGNOSTIC_PREFIX = PRODUCTION_ROOT / "owner_private"
+APPROVED_RESEARCH_MOUNT_TARGET = Path("/restricted/projectnb")
+APPROVED_RESEARCH_FILESYSTEM_TYPE = "nfs"
+APPROVED_RESEARCH_FILESYSTEM_ROOT = "/"
+FINDMNT_PATH = Path("/usr/bin/findmnt")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SAFE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,127}$")
 DIAGNOSTIC_NAME_RE = re.compile(
-    r"^lvef_c3_r3c_one_object_replay_[a-z0-9][a-z0-9_-]{7,63}$"
+    r"^lvef_c3_r3e_one_object_replay_[a-z0-9][a-z0-9_-]{7,63}$"
 )
 MAXIMUM_MANIFEST_BYTES = 512 * 1024 * 1024
 MAXIMUM_REPAIRED_NPZ_BYTES = 32 * 1024 * 1024
@@ -62,6 +67,10 @@ class OriginalAttemptAuthority:
     successful_extraction_rows: int
     download_rows: int
     batch_plan_sha256_prefix: str
+    root_mode: int
+    full_kind_mode_histogram: tuple[tuple[str, int, int], ...]
+    exceptional_kind_mode_role_histogram: tuple[tuple[str, int, str, int], ...]
+    historical_device_must_differ: bool
 
 
 ORIGINAL_AUTHORITY = OriginalAttemptAuthority(
@@ -79,6 +88,16 @@ ORIGINAL_AUTHORITY = OriginalAttemptAuthority(
     successful_extraction_rows=9_936,
     download_rows=18_196,
     batch_plan_sha256_prefix="d574f21c760a5679",
+    root_mode=0o2700,
+    full_kind_mode_histogram=(
+        ("directory", 0o2700, 287),
+        ("file", 0o600, 158_268),
+        ("file", 0o644, 20),
+    ),
+    exceptional_kind_mode_role_histogram=(
+        ("file", 0o644, "scheduler_log", 20),
+    ),
+    historical_device_must_differ=True,
 )
 
 
@@ -109,6 +128,31 @@ class SourceFileIdentity:
 
 
 @dataclass(frozen=True)
+class LegacyRootIdentity:
+    path: Path
+    device: int
+    inode: int
+    group: int
+    mode: int
+    nlink: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True)
+class CurrentMountAuthority:
+    status: str
+    identity_sha256: str
+
+
+@dataclass(frozen=True)
+class HistoricalDeviceReconciliation:
+    status: str
+    historical_and_current_differ: bool
+
+
+@dataclass(frozen=True)
 class ReplayPreflight:
     attempt_root: Path
     original_inventory: Mapping[str, Any]
@@ -117,6 +161,9 @@ class ReplayPreflight:
     planned_object: Mapping[str, Any]
     source_path: Path
     source_identity: SourceFileIdentity
+    attempt_root_identity: LegacyRootIdentity
+    mount_authority: CurrentMountAuthority
+    device_reconciliation: HistoricalDeviceReconciliation
     objects_root: Path
     local_sha256: str
     diagnostic_root: Path
@@ -663,7 +710,7 @@ def _sha256_owner_private_regular(
 def _sha256_file(path: Path, *, expected_identity: SourceFileIdentity) -> str:
     return _sha256_owner_private_regular(
         path,
-        invalid_code="REPLAY_LOCAL_FILE_AUTHORITY_INVALID",
+        invalid_code="REPLAY_CURRENT_FILE_IDENTITY_CHANGED",
         dicom_body_reads=1,
         expected_identity=expected_identity,
     )
@@ -730,67 +777,221 @@ def validate_git_authority(
         _fail("ONE_OBJECT_REPLAY_ORIGINAL_COMMIT_NOT_ANCESTOR")
 
 
-def _attempt_metadata_inventory(attempt_root: Path) -> dict[str, Any]:
-    """Hash a dev/inode/ctime-complete stat snapshot, not the opaque D4 hash."""
+def _legacy_exception_role(relative: str, kind: str) -> str:
+    path = PurePosixPath(relative)
+    name = path.name.lower()
+    parts = tuple(part.lower() for part in path.parts)
+    if kind == "file" and "raw" in parts and name.endswith(".dcm"):
+        return "raw_dicom"
+    if kind == "file" and "extracted_cache" in parts and name.endswith(".npz"):
+        return "extracted_npz"
+    if kind == "file" and any("embedding" in part for part in parts):
+        return "embedding_artifact"
+    if kind == "file" and (
+        "receipt" in name
+        or "manifest" in name
+        or "ledger" in name
+        or re.search(
+            r"credential|token|requester[-_]?pays|oauth|service[-_]?account|"
+            r"application[-_]?default|secret|access[-_]?key",
+            relative,
+            re.IGNORECASE,
+        )
+    ):
+        return "replay_authority_file"
+    if (
+        kind == "file"
+        and len(parts) == 2
+        and parts[0] == "scheduler"
+        and re.fullmatch(r".+[.]o[0-9]+(?:[.][0-9]+)?", name)
+    ):
+        return "scheduler_log"
+    if kind == "directory":
+        return "stage_directory"
+    return "other"
 
-    _require_no_symlink_components(attempt_root)
-    if attempt_root.is_symlink() or not attempt_root.is_dir():
-        _fail("ONE_OBJECT_REPLAY_ORIGINAL_ATTEMPT_INVALID")
+
+def _attempt_metadata_inventory(attempt_root: Path) -> dict[str, Any]:
+    """Return an aggregate-only stable legacy metadata inventory without bodies."""
+
+    try:
+        _require_no_symlink_components(attempt_root)
+        root_before = os.lstat(attempt_root)
+    except (OSError, ReplayError) as exc:
+        raise ReplayError("REPLAY_ORIGINAL_ATTEMPT_ROOT_INVALID") from exc
     digest = hashlib.sha256()
     file_count = 0
     total_bytes = 0
+    symlink_count = 0
+    nonregular_count = 0
+    owner_mismatch_count = 0
+    path_escape_count = 0
+    cross_device_count = 0
+    identity_instability_count = 0
+    group_other_write_count = 0
+    unapproved_special_count = 0
+    regular_nlink_anomaly_count = 0
+    duplicate_inode_count = 0
+    sensitive_exception_count = 0
+    kind_mode: Counter[tuple[str, int]] = Counter()
+    exception_role: Counter[tuple[str, int, str]] = Counter()
+    seen_inodes: set[tuple[int, int]] = set()
+    directory_authority: dict[str, tuple[int, int]] = {}
+
+    def observe(child: Path, relative: str) -> None:
+        nonlocal file_count, total_bytes, symlink_count, nonregular_count
+        nonlocal owner_mismatch_count, path_escape_count, cross_device_count
+        nonlocal identity_instability_count, group_other_write_count
+        nonlocal unapproved_special_count, regular_nlink_anomaly_count
+        nonlocal duplicate_inode_count, sensitive_exception_count
+        try:
+            before = os.lstat(child)
+            after = os.lstat(child)
+        except OSError as exc:
+            raise ReplayError("REPLAY_ORIGINAL_ATTEMPT_PATH_ESCAPE") from exc
+        identity = lambda item: (
+            item.st_dev,
+            item.st_ino,
+            item.st_mode,
+            item.st_uid,
+            item.st_gid,
+            item.st_nlink,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+        if identity(before) != identity(after):
+            identity_instability_count += 1
+        mode = stat.S_IMODE(before.st_mode)
+        if stat.S_ISDIR(before.st_mode):
+            kind = "directory"
+        elif stat.S_ISREG(before.st_mode):
+            kind = "file"
+            file_count += 1
+            total_bytes += before.st_size
+        elif stat.S_ISLNK(before.st_mode):
+            kind = "symlink"
+            symlink_count += 1
+        else:
+            kind = "nonregular"
+            nonregular_count += 1
+        if before.st_uid != os.geteuid():
+            owner_mismatch_count += 1
+        if before.st_dev != root_before.st_dev:
+            cross_device_count += 1
+        try:
+            child.relative_to(attempt_root)
+        except ValueError:
+            path_escape_count += 1
+        if kind in {"file", "directory"}:
+            inode = (int(before.st_dev), int(before.st_ino))
+            if inode in seen_inodes:
+                duplicate_inode_count += 1
+            seen_inodes.add(inode)
+        if kind == "file" and before.st_nlink != 1:
+            regular_nlink_anomaly_count += 1
+        if mode & 0o022:
+            group_other_write_count += 1
+        if mode & 0o5000 or (mode & 0o2000 and kind != "directory"):
+            unapproved_special_count += 1
+        if kind == "directory":
+            directory_authority[relative] = (mode, int(before.st_gid))
+            if mode & 0o2000 and relative != ".":
+                parent = PurePosixPath(relative).parent.as_posix() or "."
+                parent_mode, parent_gid = directory_authority.get(parent, (0, -1))
+                if not (parent_mode & 0o2000) or parent_gid != before.st_gid:
+                    unapproved_special_count += 1
+        kind_mode[(kind, mode)] += 1
+        if mode & 0o077:
+            role = _legacy_exception_role(relative, kind)
+            exception_role[(kind, mode, role)] += 1
+            if role in {
+                "raw_dicom",
+                "extracted_npz",
+                "embedding_artifact",
+                "replay_authority_file",
+            } or re.search(
+                r"credential|token|requester[-_]?pays|oauth|service[-_]?account|"
+                r"application[-_]?default|secret|access[-_]?key",
+                relative,
+                re.IGNORECASE,
+            ):
+                sensitive_exception_count += 1
+        record = {
+            "relative": relative,
+            "kind": kind,
+            "mode": mode,
+            "uid": before.st_uid,
+            "gid": before.st_gid,
+            "st_dev": before.st_dev,
+            "st_ino": before.st_ino,
+            "st_nlink": before.st_nlink,
+            "size": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+            "st_ctime_ns": before.st_ctime_ns,
+        }
+        digest.update(
+            json.dumps(record, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+            + b"\n"
+        )
+
+    observe(attempt_root, ".")
+
+    def walk_error(_error: OSError) -> None:
+        _fail("REPLAY_ORIGINAL_ATTEMPT_PATH_ESCAPE")
+
     for current_text, directories, filenames in os.walk(
-        attempt_root, topdown=True, followlinks=False
+        attempt_root, topdown=True, followlinks=False, onerror=walk_error
     ):
         current = Path(current_text)
         directories.sort()
         filenames.sort()
-        children = [current / name for name in filenames]
-        if current == attempt_root:
-            children.insert(0, current)
-        children.extend(current / name for name in directories)
-        for child in children:
-            try:
-                item = os.lstat(child)
-            except OSError as exc:
-                raise ReplayError("ONE_OBJECT_REPLAY_ORIGINAL_ATTEMPT_INVALID") from exc
-            if stat.S_ISLNK(item.st_mode) or item.st_uid != os.geteuid():
-                _fail("ONE_OBJECT_REPLAY_ORIGINAL_ATTEMPT_NOT_OWNER_PRIVATE")
-            mode = stat.S_IMODE(item.st_mode)
-            if mode & 0o077:
-                _fail("ONE_OBJECT_REPLAY_ORIGINAL_ATTEMPT_NOT_OWNER_PRIVATE")
-            if stat.S_ISDIR(item.st_mode):
-                kind = "directory"
-            elif stat.S_ISREG(item.st_mode):
-                kind = "file"
-                file_count += 1
-                total_bytes += item.st_size
-            else:
-                _fail("ONE_OBJECT_REPLAY_ORIGINAL_ATTEMPT_NONREGULAR_ENTRY")
-            relative = "." if child == attempt_root else child.relative_to(
-                attempt_root
-            ).as_posix()
-            record = {
-                "relative": relative,
-                "kind": kind,
-                "mode": mode,
-                "uid": item.st_uid,
-                "gid": item.st_gid,
-                "st_dev": item.st_dev,
-                "st_ino": item.st_ino,
-                "size": item.st_size,
-                "mtime_ns": item.st_mtime_ns,
-                "st_ctime_ns": item.st_ctime_ns,
-            }
-            digest.update(
-                json.dumps(record, sort_keys=True, separators=(",", ":")).encode(
-                    "utf-8"
-                )
-                + b"\n"
-            )
+        for name in directories + filenames:
+            child = current / name
+            observe(child, child.relative_to(attempt_root).as_posix())
+    try:
+        root_after = os.lstat(attempt_root)
+    except OSError as exc:
+        raise ReplayError("REPLAY_ORIGINAL_ATTEMPT_ROOT_INVALID") from exc
+    root_fields = lambda item: (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
     return {
         "file_count": file_count,
         "total_bytes": total_bytes,
+        "root_mode": stat.S_IMODE(root_before.st_mode),
+        "root_kind_valid": stat.S_ISDIR(root_before.st_mode),
+        "root_owner_valid": root_before.st_uid == os.geteuid(),
+        "root_identity_stable": root_fields(root_before) == root_fields(root_after),
+        "symlink_count": symlink_count,
+        "nonregular_count": nonregular_count,
+        "owner_mismatch_count": owner_mismatch_count,
+        "path_escape_count": path_escape_count,
+        "cross_device_count": cross_device_count,
+        "identity_instability_count": identity_instability_count,
+        "group_other_write_count": group_other_write_count,
+        "unapproved_special_count": unapproved_special_count,
+        "regular_nlink_anomaly_count": regular_nlink_anomaly_count,
+        "duplicate_inode_count": duplicate_inode_count,
+        "sensitive_exception_count": sensitive_exception_count,
+        "full_kind_mode_histogram": tuple(
+            (kind, mode, count)
+            for (kind, mode), count in sorted(kind_mode.items())
+        ),
+        "exceptional_kind_mode_role_histogram": tuple(
+            (kind, mode, role, count)
+            for (kind, mode, role), count in sorted(exception_role.items())
+        ),
         "runtime_metadata_stat_snapshot_sha256": digest.hexdigest(),
     }
 
@@ -799,13 +1000,111 @@ def _validate_original_inventory(
     observed: Mapping[str, Any], authority: OriginalAttemptAuthority
 ) -> None:
     snapshot_sha256 = observed.get("runtime_metadata_stat_snapshot_sha256")
-    if (
-        observed.get("file_count") != authority.file_count
-        or observed.get("total_bytes") != authority.total_bytes
-        or not isinstance(snapshot_sha256, str)
-        or SHA256_RE.fullmatch(snapshot_sha256) is None
+    if observed.get("root_mode") != authority.root_mode or not observed.get(
+        "root_kind_valid"
     ):
-        _fail("ONE_OBJECT_REPLAY_ORIGINAL_ATTEMPT_INVENTORY_MISMATCH")
+        _fail("REPLAY_ORIGINAL_ATTEMPT_EFFECTIVE_PRIVACY_INVALID")
+    if not observed.get("root_owner_valid") or observed.get(
+        "owner_mismatch_count"
+    ):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_OWNER_MISMATCH")
+    if observed.get("symlink_count") or observed.get("nonregular_count"):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_SYMLINK_OR_NONREGULAR")
+    if observed.get("path_escape_count") or observed.get("cross_device_count"):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_PATH_ESCAPE")
+    if observed.get("group_other_write_count"):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_GROUP_OTHER_WRITE_INVALID")
+    if observed.get("unapproved_special_count"):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_SPECIAL_BITS_INVALID")
+    if observed.get("regular_nlink_anomaly_count") or observed.get(
+        "duplicate_inode_count"
+    ):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_TOPOLOGY_INVALID")
+    if not observed.get("root_identity_stable") or observed.get(
+        "identity_instability_count"
+    ):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_IDENTITY_MUTATION")
+    if observed.get("full_kind_mode_histogram") != authority.full_kind_mode_histogram:
+        _fail("REPLAY_ORIGINAL_ATTEMPT_MODE_HISTOGRAM_MISMATCH")
+    if (
+        observed.get("exceptional_kind_mode_role_histogram")
+        != authority.exceptional_kind_mode_role_histogram
+        or observed.get("sensitive_exception_count") != 0
+    ):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_EFFECTIVE_PRIVACY_INVALID")
+    if observed.get("file_count") != authority.file_count or observed.get(
+        "total_bytes"
+    ) != authority.total_bytes:
+        _fail("REPLAY_ORIGINAL_ATTEMPT_INVENTORY_MISMATCH")
+    if not isinstance(snapshot_sha256, str) or SHA256_RE.fullmatch(
+        snapshot_sha256
+    ) is None:
+        _fail("REPLAY_ORIGINAL_ATTEMPT_INVENTORY_MISMATCH")
+
+
+def _legacy_root_identity(
+    attempt_root: Path, authority: OriginalAttemptAuthority
+) -> LegacyRootIdentity:
+    try:
+        _require_no_symlink_components(attempt_root)
+        before = os.lstat(attempt_root)
+        descriptor = os.open(
+            attempt_root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except (OSError, ReplayError) as exc:
+        raise ReplayError("REPLAY_ORIGINAL_ATTEMPT_ROOT_INVALID") from exc
+    try:
+        opened = os.fstat(descriptor)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    fields = lambda item: (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+    if (
+        not stat.S_ISDIR(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or stat.S_IMODE(before.st_mode) != authority.root_mode
+        or fields(before) != fields(opened)
+        or fields(opened) != fields(after)
+    ):
+        _fail("REPLAY_ORIGINAL_ATTEMPT_ROOT_INVALID")
+    return LegacyRootIdentity(
+        path=attempt_root,
+        device=int(opened.st_dev),
+        inode=int(opened.st_ino),
+        group=int(opened.st_gid),
+        mode=stat.S_IMODE(opened.st_mode),
+        nlink=int(opened.st_nlink),
+        size=int(opened.st_size),
+        mtime_ns=int(opened.st_mtime_ns),
+        ctime_ns=int(opened.st_ctime_ns),
+    )
+
+
+def validate_immutable_legacy_attempt_effective_privacy(
+    attempt_root: Path, authority: OriginalAttemptAuthority
+) -> tuple[dict[str, Any], LegacyRootIdentity]:
+    root_before = _legacy_root_identity(attempt_root, authority)
+    first = _attempt_metadata_inventory(attempt_root)
+    _validate_original_inventory(first, authority)
+    second = _attempt_metadata_inventory(attempt_root)
+    _validate_original_inventory(second, authority)
+    root_after = _legacy_root_identity(attempt_root, authority)
+    if first != second or root_before != root_after:
+        _fail("REPLAY_ORIGINAL_ATTEMPT_IDENTITY_MUTATION")
+    return second, root_after
 
 
 def _validate_failure_summary(value: Mapping[str, Any]) -> None:
@@ -1200,9 +1499,84 @@ def _load_selected_source_object(
     return selected
 
 
+def _validate_replay_input_effective_privacy(
+    path: Path,
+    *,
+    attempt_root: Path,
+    root_identity: LegacyRootIdentity,
+    expected_mode: int = 0o600,
+) -> None:
+    try:
+        _require_no_symlink_components(path)
+        relative = path.relative_to(attempt_root)
+    except (ValueError, ReplayError) as exc:
+        raise ReplayError("REPLAY_INPUT_PATH_CONTAINMENT_INVALID") from exc
+    if not relative.parts:
+        _fail("REPLAY_INPUT_PATH_CONTAINMENT_INVALID")
+    try:
+        root_observed = os.lstat(attempt_root)
+    except OSError as exc:
+        raise ReplayError("REPLAY_INPUT_PATH_CONTAINMENT_INVALID") from exc
+    if (
+        not stat.S_ISDIR(root_observed.st_mode)
+        or root_observed.st_uid != os.geteuid()
+        or root_observed.st_dev != root_identity.device
+        or root_observed.st_ino != root_identity.inode
+        or root_observed.st_gid != root_identity.group
+        or stat.S_IMODE(root_observed.st_mode) != root_identity.mode
+        or root_observed.st_nlink != root_identity.nlink
+        or root_observed.st_size != root_identity.size
+        or root_observed.st_mtime_ns != root_identity.mtime_ns
+        or root_observed.st_ctime_ns != root_identity.ctime_ns
+    ):
+        _fail("REPLAY_CURRENT_FILE_IDENTITY_CHANGED")
+    cursor = attempt_root
+    for part in relative.parts[:-1]:
+        cursor /= part
+        try:
+            metadata = os.lstat(cursor)
+        except OSError as exc:
+            raise ReplayError("REPLAY_INPUT_PATH_CONTAINMENT_INVALID") from exc
+        mode = stat.S_IMODE(metadata.st_mode)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_dev != root_identity.device
+            or mode & 0o022
+            or mode & 0o5000
+        ):
+            _fail("REPLAY_INPUT_EFFECTIVE_PRIVACY_INVALID")
+    try:
+        leaf = os.lstat(path)
+    except OSError as exc:
+        raise ReplayError("REPLAY_INPUT_PATH_CONTAINMENT_INVALID") from exc
+    if (
+        not stat.S_ISREG(leaf.st_mode)
+        or leaf.st_uid != os.geteuid()
+        or leaf.st_dev != root_identity.device
+        or leaf.st_nlink != 1
+        or stat.S_IMODE(leaf.st_mode) != expected_mode
+    ):
+        if leaf.st_dev != root_identity.device:
+            _fail("REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID")
+        _fail("REPLAY_INPUT_EFFECTIVE_PRIVACY_INVALID")
+
+
 def _source_file_identity(
-    path: Path, *, expected_size: int
+    path: Path,
+    *,
+    expected_size: int,
+    attempt_root: Path | None = None,
+    root_identity: LegacyRootIdentity | None = None,
 ) -> SourceFileIdentity:
+    if (attempt_root is None) is not (root_identity is None):
+        _fail("REPLAY_INPUT_PATH_CONTAINMENT_INVALID")
+    if attempt_root is not None and root_identity is not None:
+        _validate_replay_input_effective_privacy(
+            path,
+            attempt_root=attempt_root,
+            root_identity=root_identity,
+        )
     try:
         _require_no_symlink_components(path)
         first = os.lstat(path)
@@ -1232,7 +1606,9 @@ def _source_file_identity(
     ):
         if first.st_size != expected_size:
             _fail("REPLAY_OBJECT_SIZE_MISMATCH")
-        _fail("REPLAY_LOCAL_FILE_AUTHORITY_INVALID")
+        if root_identity is not None and first.st_dev != root_identity.device:
+            _fail("REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID")
+        _fail("REPLAY_CURRENT_FILE_IDENTITY_CHANGED")
     return SourceFileIdentity(
         path=path,
         device=int(first.st_dev),
@@ -1243,14 +1619,110 @@ def _source_file_identity(
     )
 
 
-def _validate_download_receipt(
+def _findmnt_row(
+    path: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> tuple[str, str, str, tuple[str, ...], str]:
+    try:
+        completed = runner(
+            [
+                str(FINDMNT_PATH),
+                "--json",
+                "--target",
+                str(path),
+                "--output",
+                "TARGET,SOURCE,FSTYPE,OPTIONS,FSROOT",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+        )
+        if (
+            completed.returncode != 0
+            or completed.stderr
+            or not isinstance(completed.stdout, bytes)
+            or not completed.stdout
+            or len(completed.stdout) > 65_536
+        ):
+            raise ValueError
+    except Exception as exc:
+        raise ReplayError("REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID") from exc
+    try:
+        payload = json.loads(
+            completed.stdout.decode("utf-8"), object_pairs_hook=_strict_pairs
+        )
+        if not isinstance(payload, Mapping) or set(payload) != {"filesystems"}:
+            raise ValueError
+        rows = payload["filesystems"]
+        if not isinstance(rows, list) or len(rows) != 1:
+            raise ValueError
+        row = rows[0]
+        required = {"target", "source", "fstype", "options", "fsroot"}
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != required
+            or any(type(row[key]) is not str for key in required)
+        ):
+            raise ValueError
+        target, source, fstype, options, fsroot = (
+            row[key] for key in ("target", "source", "fstype", "options", "fsroot")
+        )
+        option_tokens = options.split(",")
+        option_set = tuple(sorted(set(option_tokens)))
+        if (
+            not source
+            or target != str(APPROVED_RESEARCH_MOUNT_TARGET)
+            or fstype != APPROVED_RESEARCH_FILESYSTEM_TYPE
+            or fsroot != APPROVED_RESEARCH_FILESYSTEM_ROOT
+            or not option_set
+            or len(option_set) != len(option_tokens)
+            or any(
+                not value
+                or value != value.strip()
+                or value in {"bind", "rbind"}
+                for value in option_set
+            )
+        ):
+            raise ValueError
+        path.relative_to(APPROVED_RESEARCH_MOUNT_TARGET)
+    except (ReplayError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        _fail("REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID")
+    return target, source, fstype, option_set, fsroot
+
+
+def validate_current_mount_authority(
+    attempt_root: Path,
+    source_path: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> CurrentMountAuthority:
+    root_row = _findmnt_row(attempt_root, runner=runner)
+    source_row = _findmnt_row(source_path, runner=runner)
+    if root_row != source_row:
+        _fail("REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID")
+    identity = hashlib.sha256(
+        json.dumps(root_row, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return CurrentMountAuthority(
+        status="PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT",
+        identity_sha256=identity,
+    )
+
+
+def validate_legacy_receipt_device_namespace(
     receipt: Mapping[str, Any],
     *,
     expectation: core.DownloadExpectation,
     source_identity: SourceFileIdentity,
-) -> str:
+    root_identity: LegacyRootIdentity,
+    mount_authority: CurrentMountAuthority,
+    authority: OriginalAttemptAuthority,
+) -> tuple[str, HistoricalDeviceReconciliation]:
     if set(receipt) != DOWNLOAD_VERIFICATION_RECEIPT_KEYS:
-        _fail("REPLAY_DOWNLOAD_RECEIPT_INVALID")
+        _fail("REPLAY_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID")
     exact = {
         "schema_version": 2,
         "status": "PASS_DOWNLOAD_VERIFICATION",
@@ -1259,7 +1731,6 @@ def _validate_download_receipt(
         "generation": expectation.generation,
         "md5_base64": expectation.md5_base64,
         "crc32c_base64": expectation.crc32c_base64,
-        "file_device": source_identity.device,
         "file_inode": source_identity.inode,
         "file_mtime_ns": source_identity.mtime_ns,
     }
@@ -1270,20 +1741,37 @@ def _validate_download_receipt(
         "crc32c_base64": "REPLAY_OBJECT_CRC32C_MISMATCH",
     }
     for field, expected in exact.items():
-        if receipt.get(field) != expected:
-            _fail(mismatch_codes.get(field, "REPLAY_DOWNLOAD_RECEIPT_INVALID"))
+        observed = receipt.get(field)
+        if type(observed) is not type(expected) or observed != expected:
+            _fail(
+                mismatch_codes.get(
+                    field, "REPLAY_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+                )
+            )
     local_sha256 = str(receipt.get("local_sha256", ""))
     chunk_size = receipt.get("digest_chunk_size_bytes")
     if (
         SHA256_RE.fullmatch(local_sha256) is None
         or receipt.get("digest_backend")
         != "google_crc32c_c_external_worker_v1"
-        or not isinstance(chunk_size, int)
-        or isinstance(chunk_size, bool)
+        or type(chunk_size) is not int
         or chunk_size != 8_388_608
     ):
-        _fail("REPLAY_DOWNLOAD_RECEIPT_INVALID")
-    return local_sha256
+        _fail("REPLAY_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID")
+    historical_device = receipt.get("file_device")
+    if source_identity.device != root_identity.device:
+        _fail("REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID")
+    if mount_authority.status != "PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT":
+        _fail("REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID")
+    if type(historical_device) is not int or historical_device < 0:
+        _fail("REPLAY_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID")
+    differs = historical_device != source_identity.device
+    if differs is not authority.historical_device_must_differ:
+        _fail("REPLAY_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID")
+    return local_sha256, HistoricalDeviceReconciliation(
+        status="CROSS_NODE_DEVICE_NAMESPACE_RECONCILED",
+        historical_and_current_differ=differs,
+    )
 
 
 def _inside(path: Path, parent: Path) -> bool:
@@ -1459,6 +1947,9 @@ def run_preflight(
         _discover_replay_row_authority
     ),
     git_validator: Callable[..., None] = validate_git_authority,
+    mount_validator: Callable[[Path, Path], CurrentMountAuthority] = (
+        validate_current_mount_authority
+    ),
 ) -> ReplayPreflight:
     """Validate the exact replay authority without creating or reading a DICOM."""
 
@@ -1467,22 +1958,44 @@ def run_preflight(
             repository, governing_commit, original_commit=authority.execution_commit
         )
         attempt_root = production_root / "attempts" / authority.attempt_id
-        _require_no_symlink_components(attempt_root)
-        inventory = _attempt_metadata_inventory(attempt_root)
-        _validate_original_inventory(inventory, authority)
+        inventory, attempt_root_identity = (
+            validate_immutable_legacy_attempt_effective_privacy(
+                attempt_root, authority
+            )
+        )
 
         batch_cache = attempt_root / "extracted_cache" / authority.batch_id
         partial = batch_cache / "dicom_extraction.partial"
+        failure_summary_path = partial / "failure.summary.json"
+        extraction_manifest_path = (
+            partial / "extraction_manifest.restricted.csv"
+        )
+        for replay_input in (failure_summary_path, extraction_manifest_path):
+            _validate_replay_input_effective_privacy(
+                replay_input,
+                attempt_root=attempt_root,
+                root_identity=attempt_root_identity,
+            )
         try:
-            _validate_failure_summary(_read_json(partial / "failure.summary.json"))
+            _validate_failure_summary(_read_json(failure_summary_path))
             extraction_rows = _read_csv_exact(
-                partial / "extraction_manifest.restricted.csv",
+                extraction_manifest_path,
                 LEGACY_B805_EXTRACTION_MANIFEST_HEADER,
             )
         except ReplayError as exc:
             raise ReplayError("REPLAY_SOURCE_MEMBERSHIP_INVALID") from exc
         failed = _validate_legacy_failed_row(extraction_rows, authority)
 
+        for replay_input in (
+            attempt_root / "full_batch_plan.restricted.json",
+            attempt_root / "full_submission_claim.restricted.json",
+            attempt_root / "full_launch_authority.restricted.json",
+        ):
+            _validate_replay_input_effective_privacy(
+                replay_input,
+                attempt_root=attempt_root,
+                root_identity=attempt_root_identity,
+            )
         plan, effective_requirements, planned_batch, launch_authority, plan_sha256 = (
             _load_bound_plan(
                 attempt_root, authority=authority, requirements=requirements
@@ -1517,6 +2030,11 @@ def run_preflight(
         download_manifest = (
             download_batch / "verified_download_manifest.restricted.csv"
         )
+        _validate_replay_input_effective_privacy(
+            download_manifest,
+            attempt_root=attempt_root,
+            root_identity=attempt_root_identity,
+        )
         try:
             download_rows, download_manifest_sha256 = _read_csv_exact_with_sha256(
                 download_manifest, VERIFIED_DOWNLOAD_MANIFEST_HEADER
@@ -1549,6 +2067,11 @@ def run_preflight(
             / "batches"
             / authority.batch_id
             / "download_resume_ledger.restricted.json"
+        )
+        _validate_replay_input_effective_privacy(
+            ledger_path,
+            attempt_root=attempt_root,
+            root_identity=attempt_root_identity,
         )
         try:
             ledger = _read_json(
@@ -1604,14 +2127,33 @@ def run_preflight(
         if source_path != objects_root / failed["source_relative_path"]:
             _fail("REPLAY_LOCAL_FILE_AUTHORITY_INVALID")
         source_identity = _source_file_identity(
-            source_path, expected_size=expectation.size_bytes
+            source_path,
+            expected_size=expectation.size_bytes,
+            attempt_root=attempt_root,
+            root_identity=attempt_root_identity,
         )
+        mount_authority = mount_validator(attempt_root, source_path)
+        if (
+            not isinstance(mount_authority, CurrentMountAuthority)
+            or mount_authority.status
+            != "PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT"
+            or SHA256_RE.fullmatch(mount_authority.identity_sha256) is None
+        ):
+            _fail("REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID")
 
         receipt_path = (
             download_batch
             / "receipts"
             / f"{expectation.source_object_key}.verification.json"
         )
+        try:
+            _validate_replay_input_effective_privacy(
+                receipt_path,
+                attempt_root=attempt_root,
+                root_identity=attempt_root_identity,
+            )
+        except ReplayError as exc:
+            raise ReplayError("REPLAY_DOWNLOAD_RECEIPT_INVALID") from exc
         try:
             receipt, receipt_sha256 = _read_json_with_sha256(
                 receipt_path, maximum_bytes=MAXIMUM_RECEIPT_BYTES
@@ -1624,8 +2166,15 @@ def run_preflight(
             or receipts.get(expectation.source_object_key) != receipt_sha256
         ):
             _fail("REPLAY_DOWNLOAD_RECEIPT_INVALID")
-        local_sha256 = _validate_download_receipt(
-            receipt, expectation=expectation, source_identity=source_identity
+        local_sha256, device_reconciliation = (
+            validate_legacy_receipt_device_namespace(
+                receipt,
+                expectation=expectation,
+                source_identity=source_identity,
+                root_identity=attempt_root_identity,
+                mount_authority=mount_authority,
+                authority=authority,
+            )
         )
         if downloaded["observed_sha256"] != local_sha256:
             _fail("REPLAY_LOCAL_SHA256_MISMATCH")
@@ -1649,9 +2198,16 @@ def run_preflight(
             original_attempt_root=attempt_root,
         )
         if _source_file_identity(
-            source_path, expected_size=expectation.size_bytes
+            source_path,
+            expected_size=expectation.size_bytes,
+            attempt_root=attempt_root,
+            root_identity=attempt_root_identity,
         ) != source_identity:
-            _fail("REPLAY_LOCAL_FILE_AUTHORITY_INVALID")
+            _fail("REPLAY_CURRENT_FILE_IDENTITY_CHANGED")
+        if _legacy_root_identity(attempt_root, authority) != attempt_root_identity:
+            _fail("REPLAY_CURRENT_FILE_IDENTITY_CHANGED")
+        if mount_validator(attempt_root, source_path) != mount_authority:
+            _fail("REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID")
         return ReplayPreflight(
             attempt_root=attempt_root,
             original_inventory=inventory,
@@ -1660,6 +2216,9 @@ def run_preflight(
             planned_object=planned_object,
             source_path=source_path,
             source_identity=source_identity,
+            attempt_root_identity=attempt_root_identity,
+            mount_authority=mount_authority,
+            device_reconciliation=device_reconciliation,
             objects_root=objects_root,
             local_sha256=local_sha256,
             diagnostic_root=diagnostic_root,
@@ -1996,6 +2555,38 @@ def _write_json_no_clobber(
     return len(payload), hashlib.sha256(payload).hexdigest()
 
 
+def _revalidate_current_replay_authority(
+    preflight: ReplayPreflight,
+    *,
+    authority: OriginalAttemptAuthority,
+    mount_validator: Callable[[Path, Path], CurrentMountAuthority],
+) -> None:
+    try:
+        root_identity = _legacy_root_identity(preflight.attempt_root, authority)
+        source_identity = _source_file_identity(
+            preflight.source_path,
+            expected_size=int(preflight.planned_object["size_bytes"]),
+            attempt_root=preflight.attempt_root,
+            root_identity=preflight.attempt_root_identity,
+        )
+    except ReplayError as exc:
+        if exc.code == "REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID":
+            raise
+        raise ReplayError(
+            "REPLAY_CURRENT_FILE_IDENTITY_CHANGED", dicom_body_reads=1
+        ) from exc
+    if (
+        root_identity != preflight.attempt_root_identity
+        or source_identity != preflight.source_identity
+    ):
+        _fail("REPLAY_CURRENT_FILE_IDENTITY_CHANGED", dicom_body_reads=1)
+    if (
+        mount_validator(preflight.attempt_root, preflight.source_path)
+        != preflight.mount_authority
+    ):
+        _fail("REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID", dicom_body_reads=1)
+
+
 def run_replay(
     *,
     governing_commit: str,
@@ -2013,6 +2604,9 @@ def run_replay(
         reconstruction._extract_one
     ),
     git_validator: Callable[..., None] = validate_git_authority,
+    mount_validator: Callable[[Path, Path], CurrentMountAuthority] = (
+        validate_current_mount_authority
+    ),
 ) -> dict[str, Any]:
     """Run the exact one-object local preprocessing replay after all gates."""
 
@@ -2027,6 +2621,7 @@ def run_replay(
         row_authority=row_authority,
         row_authority_loader=row_authority_loader,
         git_validator=git_validator,
+        mount_validator=mount_validator,
     )
     counters = ReplayAccessCounters(allowed_source=preflight.source_path)
     root_created = False
@@ -2034,27 +2629,26 @@ def run_replay(
         output, output_identity = _create_diagnostic_root(preflight)
         root_created = True
         source_relative = _safe_relative(preflight.failed_row["source_relative_path"])
-        if _source_file_identity(
-            preflight.source_path,
-            expected_size=int(preflight.planned_object["size_bytes"]),
-        ) != preflight.source_identity:
-            _fail("REPLAY_LOCAL_FILE_AUTHORITY_INVALID")
+        _revalidate_current_replay_authority(
+            preflight, authority=authority, mount_validator=mount_validator
+        )
         counters.register_hash(preflight.source_path)
         if _sha256_file(
             preflight.source_path, expected_identity=preflight.source_identity
         ) != preflight.local_sha256:
             _fail("REPLAY_LOCAL_SHA256_MISMATCH", dicom_body_reads=1)
-        if _source_file_identity(
-            preflight.source_path,
-            expected_size=int(preflight.planned_object["size_bytes"]),
-        ) != preflight.source_identity:
-            _fail("REPLAY_LOCAL_FILE_AUTHORITY_INVALID", dicom_body_reads=1)
+        _revalidate_current_replay_authority(
+            preflight, authority=authority, mount_validator=mount_validator
+        )
 
         extraction_output = output / "repaired_extraction"
         os.mkdir(extraction_output, mode=0o700)
         _private_directory_identity(extraction_output)
         previous_umask = os.umask(0o077)
         try:
+            _revalidate_current_replay_authority(
+                preflight, authority=authority, mount_validator=mount_validator
+            )
             counters.register_decode(preflight.source_path)
             repaired = dict(
                 extractor(
@@ -2074,11 +2668,14 @@ def run_replay(
             )
         finally:
             os.umask(previous_umask)
+        _revalidate_current_replay_authority(
+            preflight, authority=authority, mount_validator=mount_validator
+        )
         observation_bytes, observation_sha256 = _write_json_no_clobber(
             output / "technical_replay_observation.restricted.json",
             {
                 "schema_version": 1,
-                "artifact_type": "lvef_c3_r3c_replay_technical_observation_v1",
+                "artifact_type": "lvef_c3_r3e_replay_technical_observation_v1",
                 "technical_provenance": _technical_projection(repaired),
                 "identifiers_emitted": False,
                 "locators_emitted": False,
@@ -2100,7 +2697,9 @@ def run_replay(
         )
         comparison = {
             "schema_version": 1,
-            "artifact_type": "lvef_c3_one_object_preprocessing_replay_comparison_v1",
+            "artifact_type": (
+                "lvef_c3_r3e_one_object_preprocessing_replay_comparison_v1"
+            ),
             "status": "PASS_REPAIRED_EXTRACTION",
             "confirmed_original_failure_class": (
                 "SAMPLED_SIGNAL_QUALITY_GATE_FAILURE"
@@ -2116,18 +2715,22 @@ def run_replay(
             comparison,
             expected_parent_identity=output_identity,
         )
-        if _source_file_identity(
-            preflight.source_path,
-            expected_size=int(preflight.planned_object["size_bytes"]),
-        ) != preflight.source_identity:
-            _fail("REPLAY_LOCAL_FILE_AUTHORITY_INVALID", dicom_body_reads=1)
-        after = _attempt_metadata_inventory(preflight.attempt_root)
-        _validate_original_inventory(after, authority)
-        if preflight.original_inventory != after:
+        _revalidate_current_replay_authority(
+            preflight, authority=authority, mount_validator=mount_validator
+        )
+        after, after_root_identity = (
+            validate_immutable_legacy_attempt_effective_privacy(
+                preflight.attempt_root, authority
+            )
+        )
+        if (
+            preflight.original_inventory != after
+            or preflight.attempt_root_identity != after_root_identity
+        ):
             _fail("ONE_OBJECT_REPLAY_ORIGINAL_ATTEMPT_MUTATED", dicom_body_reads=1)
         summary = {
             "schema_version": 1,
-            "artifact_type": "lvef_c3_one_object_preprocessing_replay_summary_v1",
+            "artifact_type": "lvef_c3_r3e_one_object_preprocessing_replay_summary_v1",
             "status": "PASS_ONE_OBJECT_PREPROCESSING_REPLAY",
             "replay_governing_commit": governing_commit,
             "original_execution_commit": authority.execution_commit,
@@ -2144,6 +2747,21 @@ def run_replay(
                 "runtime_metadata_stat_snapshot_sha256"
             ],
             "original_attempt_metadata_unchanged": True,
+            "original_attempt_mode_histogram_unchanged": True,
+            "legacy_mode_classification": "EFFECTIVELY_PRIVATE_COMPATIBLE",
+            "legacy_mode_histogram": "PASS_FROZEN_EXACT",
+            "legacy_effective_privacy": "PASS",
+            "historical_device_namespace_reconciliation": (
+                preflight.device_reconciliation.status
+            ),
+            "historical_current_device_values_differ": (
+                preflight.device_reconciliation.historical_and_current_differ
+            ),
+            "current_mount_authority": "PASS",
+            "current_namespace_topology": "PASS",
+            "current_namespace_file_identity": "PASS",
+            "nondevice_download_receipt_authority": "PASS",
+            "replay_input_authority": "PASS",
             "source_dicom_objects_read": counters.unique_dicom_objects_accessed,
             "unique_dicom_objects_accessed": counters.unique_dicom_objects_accessed,
             "local_content_hash_passes": counters.local_content_hash_passes,
@@ -2249,6 +2867,22 @@ def _print_effect_boundary(
     print("CONFIRMATORY_PERFORMANCE_ACCESSED=NO")
 
 
+def _print_r3e_authority_passes() -> None:
+    print("LEGACY_MODE_CLASSIFICATION=EFFECTIVELY_PRIVATE_COMPATIBLE")
+    print("LEGACY_MODE_HISTOGRAM=PASS")
+    print("LEGACY_EFFECTIVE_PRIVACY=PASS")
+    print(
+        "HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION="
+        "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+    )
+    print("HISTORICAL_CURRENT_DEVICE_VALUES_DIFFER=YES")
+    print("CURRENT_MOUNT_AUTHORITY=PASS")
+    print("CURRENT_NAMESPACE_TOPOLOGY=PASS")
+    print("CURRENT_NAMESPACE_FILE_IDENTITY=PASS")
+    print("NONDEVICE_DOWNLOAD_RECEIPT_AUTHORITY=PASS")
+    print("REPLAY_INPUT_AUTHORITY=PASS")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.execute is arguments.preflight_only:
@@ -2262,7 +2896,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 78
     try:
         if arguments.preflight_only:
-            run_preflight(
+            preflight = run_preflight(
                 governing_commit=arguments.governing_commit,
                 diagnostic_root=arguments.diagnostic_root,
             )
@@ -2272,7 +2906,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 diagnostic_root=arguments.diagnostic_root,
             )
     except ReplayError as exc:
-        prefix = "R3C_REPLAY_PREFLIGHT" if arguments.preflight_only else (
+        prefix = "R3E_REPLAY_PREFLIGHT" if arguments.preflight_only else (
             "LVEF_C3_ONE_OBJECT_REPLAY"
         )
         print(f"{prefix}=BLOCKED_{exc.code}")
@@ -2284,7 +2918,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 78
     if arguments.preflight_only:
-        print("R3C_REPLAY_PREFLIGHT=PASS_ZERO_BODY_NO_ROOT")
+        if (
+            preflight.device_reconciliation.status
+            != "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+            or not preflight.device_reconciliation.historical_and_current_differ
+            or preflight.mount_authority.status
+            != "PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT"
+        ):
+            print("R3E_REPLAY_PREFLIGHT=BLOCKED_REPLAY_PREFLIGHT_STATUS_INVALID")
+            _print_effect_boundary(
+                unique_objects=0,
+                hash_passes=0,
+                decode_invocations=0,
+                diagnostic_root_created=False,
+            )
+            return 78
+        print("R3E_REPLAY_PREFLIGHT=PASS_ZERO_BODY_NO_ROOT")
+        _print_r3e_authority_passes()
         _print_effect_boundary(
             unique_objects=0,
             hash_passes=0,
@@ -2294,7 +2944,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     print("LVEF_C3_ONE_OBJECT_REPLAY=PASS")
     print("ORIGINAL_ATTEMPT_METADATA_UNCHANGED=YES")
-    print("REPLAY_INPUT_AUTHORITY=PASS")
+    print("ORIGINAL_ATTEMPT_MODE_HISTOGRAM_AFTER_REPLAY=IDENTICAL")
+    _print_r3e_authority_passes()
     print("ORDINARY_PATH_REPRODUCTION=PASS")
     print("ORDINARY_SAMPLED_NONZERO_GATE=FAIL")
     print("ORDINARY_SAMPLED_TEMPORAL_GATE=FAIL")
@@ -2302,7 +2953,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("FALLBACK_PATH=PASS")
     print("FULL32_SIGNAL_GATES=PASS")
     print("ENCODER_VISIBLE16_SIGNAL_GATES=PASS")
-    print("R3C_DIAGNOSTIC_NPZ_VALIDATION=PASS_DEEP_REOPEN")
+    print("R3E_DIAGNOSTIC_NPZ_VALIDATION=PASS_DEEP_REOPEN")
     print("DIAGNOSTIC_NPZ_ARTIFACT_ROLE=DIAGNOSTIC_REPAIRED_OBJECT_NPZ")
     print(f"DIAGNOSTIC_NPZ_BYTES={summary['diagnostic_npz_bytes']}")
     print(f"DIAGNOSTIC_NPZ_SHA256={summary['diagnostic_npz_sha256']}")

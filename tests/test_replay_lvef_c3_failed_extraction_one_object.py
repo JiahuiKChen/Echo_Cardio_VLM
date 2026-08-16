@@ -54,6 +54,15 @@ import replay_lvef_c3_failed_extraction_one_object as replay
 import lvef_c3_full_sequential as sequential
 
 
+def _synthetic_mount_validator(
+    _attempt_root: Path, _source_path: Path
+) -> replay.CurrentMountAuthority:
+    return replay.CurrentMountAuthority(
+        status="PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT",
+        identity_sha256="9" * 64,
+    )
+
+
 def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(
@@ -307,7 +316,7 @@ def _synthetic_original_attempt(
                 "md5_base64": str(planned["md5_base64"]),
                 "crc32c_base64": str(planned["crc32c_base64"]),
                 "local_sha256": local_sha,
-                "file_device": int(item.st_dev),
+                "file_device": int(item.st_dev) + 1,
                 "file_inode": int(item.st_ino),
                 "file_mtime_ns": int(item.st_mtime_ns),
                 "digest_backend": "google_crc32c_c_external_worker_v1",
@@ -472,6 +481,12 @@ def _synthetic_original_attempt(
         successful_extraction_rows=0,
         download_rows=2,
         batch_plan_sha256_prefix=plan_sha256[:16],
+        root_mode=inventory["root_mode"],
+        full_kind_mode_histogram=inventory["full_kind_mode_histogram"],
+        exceptional_kind_mode_role_histogram=inventory[
+            "exceptional_kind_mode_role_histogram"
+        ],
+        historical_device_must_differ=True,
     )
     return {
         "production": production,
@@ -590,6 +605,37 @@ def _repaired_row(
     }
 
 
+def _frozen_inventory_projection() -> dict[str, Any]:
+    return {
+        "file_count": 158_288,
+        "total_bytes": 151_954_116_217,
+        "root_mode": 0o2700,
+        "root_kind_valid": True,
+        "root_owner_valid": True,
+        "root_identity_stable": True,
+        "symlink_count": 0,
+        "nonregular_count": 0,
+        "owner_mismatch_count": 0,
+        "path_escape_count": 0,
+        "cross_device_count": 0,
+        "identity_instability_count": 0,
+        "group_other_write_count": 0,
+        "unapproved_special_count": 0,
+        "regular_nlink_anomaly_count": 0,
+        "duplicate_inode_count": 0,
+        "sensitive_exception_count": 0,
+        "full_kind_mode_histogram": (
+            ("directory", 0o2700, 287),
+            ("file", 0o600, 158_268),
+            ("file", 0o644, 20),
+        ),
+        "exceptional_kind_mode_role_histogram": (
+            ("file", 0o644, "scheduler_log", 20),
+        ),
+        "runtime_metadata_stat_snapshot_sha256": "8" * 64,
+    }
+
+
 def test_frozen_authority_and_legacy_header_are_explicit() -> None:
     assert replay.ORIGINAL_AUTHORITY.attempt_id == (
         "lvef_c3_full_d574f21c760a5679_b805fd1a"
@@ -599,6 +645,16 @@ def test_frozen_authority_and_legacy_header_are_explicit() -> None:
     )
     assert replay.ORIGINAL_AUTHORITY.file_count == 158_288
     assert replay.ORIGINAL_AUTHORITY.total_bytes == 151_954_116_217
+    assert replay.ORIGINAL_AUTHORITY.root_mode == 0o2700
+    assert replay.ORIGINAL_AUTHORITY.full_kind_mode_histogram == (
+        ("directory", 0o2700, 287),
+        ("file", 0o600, 158_268),
+        ("file", 0o644, 20),
+    )
+    assert replay.ORIGINAL_AUTHORITY.exceptional_kind_mode_role_histogram == (
+        ("file", 0o644, "scheduler_log", 20),
+    )
+    assert replay.ORIGINAL_AUTHORITY.historical_device_must_differ is True
     assert replay.ORIGINAL_AUTHORITY.opaque_d4_metadata_tree_sha256 == (
         "800ff8fa66949a919d00bf3f66b6aec16c3c244ff48e68dc47d866c924684bb3"
     )
@@ -610,6 +666,123 @@ def test_frozen_authority_and_legacy_header_are_explicit() -> None:
     assert "selected_preprocessing_path" not in (
         replay.LEGACY_B805_EXTRACTION_MANIFEST_HEADER
     )
+
+
+def test_exact_frozen_legacy_mode_projection_and_adversarial_mutations() -> None:
+    baseline = _frozen_inventory_projection()
+    replay._validate_original_inventory(baseline, replay.ORIGINAL_AUTHORITY)
+
+    for count in (19, 21):
+        changed = {
+            **baseline,
+            "file_count": baseline["file_count"] + count - 20,
+            "full_kind_mode_histogram": (
+                ("directory", 0o2700, 287),
+                ("file", 0o600, 158_268),
+                ("file", 0o644, count),
+            ),
+            "exceptional_kind_mode_role_histogram": (
+                ("file", 0o644, "scheduler_log", count),
+            ),
+        }
+        with pytest.raises(replay.ReplayError) as caught:
+            replay._validate_original_inventory(changed, replay.ORIGINAL_AUTHORITY)
+        assert caught.value.code == (
+            "REPLAY_ORIGINAL_ATTEMPT_MODE_HISTOGRAM_MISMATCH"
+        )
+
+    changed_role = {
+        **baseline,
+        "exceptional_kind_mode_role_histogram": (
+            ("file", 0o644, "replay_authority_file", 1),
+            ("file", 0o644, "scheduler_log", 19),
+        ),
+        "sensitive_exception_count": 1,
+    }
+    with pytest.raises(replay.ReplayError) as caught:
+        replay._validate_original_inventory(changed_role, replay.ORIGINAL_AUTHORITY)
+    assert caught.value.code == "REPLAY_ORIGINAL_ATTEMPT_EFFECTIVE_PRIVACY_INVALID"
+
+    for bad_mode in (0o2770, 0o750, 0o710, 0o701):
+        with pytest.raises(replay.ReplayError) as caught:
+            replay._validate_original_inventory(
+                {**baseline, "root_mode": bad_mode}, replay.ORIGINAL_AUTHORITY
+            )
+        assert caught.value.code == "REPLAY_ORIGINAL_ATTEMPT_EFFECTIVE_PRIVACY_INVALID"
+
+    anomaly_codes = {
+        "group_other_write_count": "REPLAY_ORIGINAL_ATTEMPT_GROUP_OTHER_WRITE_INVALID",
+        "unapproved_special_count": "REPLAY_ORIGINAL_ATTEMPT_SPECIAL_BITS_INVALID",
+        "symlink_count": "REPLAY_ORIGINAL_ATTEMPT_SYMLINK_OR_NONREGULAR",
+        "nonregular_count": "REPLAY_ORIGINAL_ATTEMPT_SYMLINK_OR_NONREGULAR",
+        "owner_mismatch_count": "REPLAY_ORIGINAL_ATTEMPT_OWNER_MISMATCH",
+        "path_escape_count": "REPLAY_ORIGINAL_ATTEMPT_PATH_ESCAPE",
+        "cross_device_count": "REPLAY_ORIGINAL_ATTEMPT_PATH_ESCAPE",
+        "regular_nlink_anomaly_count": "REPLAY_ORIGINAL_ATTEMPT_TOPOLOGY_INVALID",
+        "duplicate_inode_count": "REPLAY_ORIGINAL_ATTEMPT_TOPOLOGY_INVALID",
+        "identity_instability_count": "REPLAY_ORIGINAL_ATTEMPT_IDENTITY_MUTATION",
+    }
+    for field, expected_code in anomaly_codes.items():
+        with pytest.raises(replay.ReplayError) as caught:
+            replay._validate_original_inventory(
+                {**baseline, field: 1}, replay.ORIGINAL_AUTHORITY
+            )
+        assert caught.value.code == expected_code
+
+
+def test_legacy_scheduler_exception_role_is_closed_and_nonoverlapping() -> None:
+    assert replay._legacy_exception_role(
+        "scheduler/full_c3.o7183952.2", "file"
+    ) == "scheduler_log"
+    assert replay._legacy_exception_role(
+        "scheduler/nested/full_c3.o7183952.2", "file"
+    ) == "other"
+    assert replay._legacy_exception_role(
+        "scheduler/full_c3.e7183952.2", "file"
+    ) == "other"
+    assert replay._legacy_exception_role(
+        "scheduler/submission_receipt.o7183952", "file"
+    ) == "replay_authority_file"
+    assert replay._legacy_exception_role(
+        "scheduler/access_token.o7183952", "file"
+    ) == "replay_authority_file"
+
+
+def test_small_real_legacy_tree_rejects_symlink_fifo_and_hardlink() -> None:
+    for anomaly, expected_code in (
+        ("symlink", "REPLAY_ORIGINAL_ATTEMPT_SYMLINK_OR_NONREGULAR"),
+        ("fifo", "REPLAY_ORIGINAL_ATTEMPT_SYMLINK_OR_NONREGULAR"),
+        ("hardlink", "REPLAY_ORIGINAL_ATTEMPT_TOPOLOGY_INVALID"),
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            scheduler = root / "scheduler"
+            scheduler.mkdir(mode=0o700)
+            log = scheduler / "full_c3.o100.1"
+            log.write_bytes(b"aggregate scheduler evidence\n")
+            os.chmod(log, 0o644)
+            baseline = replay._attempt_metadata_inventory(root)
+            authority = replace(
+                replay.ORIGINAL_AUTHORITY,
+                file_count=baseline["file_count"],
+                total_bytes=baseline["total_bytes"],
+                root_mode=baseline["root_mode"],
+                full_kind_mode_histogram=baseline["full_kind_mode_histogram"],
+                exceptional_kind_mode_role_histogram=baseline[
+                    "exceptional_kind_mode_role_histogram"
+                ],
+            )
+            replay._validate_original_inventory(baseline, authority)
+            if anomaly == "symlink":
+                (root / "linked").symlink_to(log)
+            elif anomaly == "fifo":
+                os.mkfifo(root / "fifo", 0o600)
+            else:
+                os.link(log, scheduler / "full_c3.e100.1")
+            observed = replay._attempt_metadata_inventory(root)
+            with pytest.raises(replay.ReplayError) as caught:
+                replay._validate_original_inventory(observed, authority)
+            assert caught.value.code == expected_code
 
 
 def test_runtime_stat_snapshot_binds_inode_and_ctime_separately_from_d4() -> None:
@@ -634,6 +807,7 @@ def test_runtime_stat_snapshot_binds_inode_and_ctime_separately_from_d4() -> Non
                 st_gid=item.st_gid,
                 st_dev=item.st_dev,
                 st_ino=item.st_ino + 1,
+                st_nlink=item.st_nlink,
                 st_size=item.st_size,
                 st_mtime_ns=item.st_mtime_ns,
                 st_ctime_ns=item.st_ctime_ns + 1,
@@ -650,6 +824,54 @@ def test_runtime_stat_snapshot_binds_inode_and_ctime_separately_from_d4() -> Non
             baseline["runtime_metadata_stat_snapshot_sha256"],
             changed["runtime_metadata_stat_snapshot_sha256"],
         }
+
+
+def test_legacy_scan_detects_between_lstat_identity_mutation() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        target = root / "authority.restricted.json"
+        target.write_bytes(b"{}\n")
+        os.chmod(target, 0o600)
+        baseline = replay._attempt_metadata_inventory(root)
+        authority = replace(
+            replay.ORIGINAL_AUTHORITY,
+            file_count=baseline["file_count"],
+            total_bytes=baseline["total_bytes"],
+            root_mode=baseline["root_mode"],
+            full_kind_mode_histogram=baseline["full_kind_mode_histogram"],
+            exceptional_kind_mode_role_histogram=baseline[
+                "exceptional_kind_mode_role_histogram"
+            ],
+        )
+        original_lstat = replay.os.lstat
+        target_calls = 0
+
+        def mutating_lstat(path: os.PathLike[str] | str) -> Any:
+            nonlocal target_calls
+            observed = original_lstat(path)
+            if Path(path) != target:
+                return observed
+            target_calls += 1
+            if target_calls % 2:
+                return observed
+            return SimpleNamespace(
+                st_mode=observed.st_mode,
+                st_uid=observed.st_uid,
+                st_gid=observed.st_gid,
+                st_dev=observed.st_dev,
+                st_ino=observed.st_ino + 1,
+                st_nlink=observed.st_nlink,
+                st_size=observed.st_size,
+                st_mtime_ns=observed.st_mtime_ns,
+                st_ctime_ns=observed.st_ctime_ns + 1,
+            )
+
+        with mock.patch.object(replay.os, "lstat", side_effect=mutating_lstat):
+            changed = replay._attempt_metadata_inventory(root)
+        assert changed["identity_instability_count"] == 1
+        with pytest.raises(replay.ReplayError) as caught:
+            replay._validate_original_inventory(changed, authority)
+        assert caught.value.code == "REPLAY_ORIGINAL_ATTEMPT_IDENTITY_MUTATION"
 
 
 def test_replay_uses_one_retained_body_and_preserves_original_attempt() -> None:
@@ -684,7 +906,7 @@ def test_replay_uses_one_retained_body_and_preserves_original_attempt() -> None:
             assert governing_commit == "e" * 40
             assert original_commit == authority.execution_commit
 
-        diagnostic = root / "lvef_c3_r3c_one_object_replay_synthetic"
+        diagnostic = root / "lvef_c3_r3e_one_object_replay_synthetic"
         with mock.patch.object(
             replay.core,
             "EXPECTED_SELECTED_SOURCE_MANIFEST_SHA256",
@@ -701,12 +923,30 @@ def test_replay_uses_one_retained_body_and_preserves_original_attempt() -> None:
                 row_authority=fixture["row_authority"],
                 extractor=fake_extractor,
                 git_validator=fake_git,
+                mount_validator=_synthetic_mount_validator,
             )
 
         assert len(calls) == 1
         assert _tree_snapshot(attempt) == before_tree
         assert replay._attempt_metadata_inventory(attempt) == before_inventory
         assert stat.S_IMODE(diagnostic.stat().st_mode) == 0o700
+        for current, directories, filenames in os.walk(diagnostic):
+            current_path = Path(current)
+            assert stat.S_IMODE(current_path.stat(follow_symlinks=False).st_mode) in {
+                0o700,
+                0o2700,
+            }
+            for name in directories:
+                child = current_path / name
+                assert not child.is_symlink()
+                assert stat.S_IMODE(child.stat(follow_symlinks=False).st_mode) in {
+                    0o700,
+                    0o2700,
+                }
+            for name in filenames:
+                child = current_path / name
+                assert not child.is_symlink()
+                assert stat.S_IMODE(child.stat(follow_symlinks=False).st_mode) == 0o600
         assert summary["source_dicom_objects_read"] == 1
         assert summary["dicom_body_read_calls"] == 2
         assert summary["cloud_requests"] == 0
@@ -725,6 +965,22 @@ def test_replay_uses_one_retained_body_and_preserves_original_attempt() -> None:
         assert summary["runtime_metadata_stat_snapshot_before_sha256"] != (
             summary["opaque_d4_metadata_tree_authority_sha256"]
         )
+        assert summary["original_attempt_metadata_unchanged"] is True
+        assert summary["original_attempt_mode_histogram_unchanged"] is True
+        assert summary["legacy_mode_classification"] == (
+            "EFFECTIVELY_PRIVATE_COMPATIBLE"
+        )
+        assert summary["legacy_mode_histogram"] == "PASS_FROZEN_EXACT"
+        assert summary["legacy_effective_privacy"] == "PASS"
+        assert summary["historical_device_namespace_reconciliation"] == (
+            "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+        )
+        assert summary["historical_current_device_values_differ"] is True
+        assert summary["current_mount_authority"] == "PASS"
+        assert summary["current_namespace_topology"] == "PASS"
+        assert summary["current_namespace_file_identity"] == "PASS"
+        assert summary["nondevice_download_receipt_authority"] == "PASS"
+        assert summary["replay_input_authority"] == "PASS"
 
         comparison = json.loads(
             (diagnostic / "technical_comparison.restricted.json").read_text(
@@ -755,7 +1011,7 @@ def test_existing_diagnostic_root_fails_before_dicom_body_read() -> None:
         fixture = _synthetic_original_attempt(root)
         production = fixture["production"]
         authority = fixture["authority"]
-        diagnostic = root / "lvef_c3_r3c_one_object_replay_collision"
+        diagnostic = root / "lvef_c3_r3e_one_object_replay_collision"
         diagnostic.mkdir(mode=0o700)
         extractor = mock.Mock()
         with (
@@ -778,10 +1034,49 @@ def test_existing_diagnostic_root_fails_before_dicom_body_read() -> None:
                 row_authority=fixture["row_authority"],
                 extractor=extractor,
                 git_validator=lambda *_args, **_kwargs: None,
+                mount_validator=_synthetic_mount_validator,
             )
         assert caught.value.code == "REPLAY_DIAGNOSTIC_ROOT_INVALID"
         assert caught.value.dicom_body_reads == 0
         body_reader.assert_not_called()
+        extractor.assert_not_called()
+
+
+def test_stable_file_with_wrong_body_digest_stops_before_decode() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        fixture = _synthetic_original_attempt(root)
+        diagnostic = root / "lvef_c3_r3e_one_object_replay_wrong_body_digest"
+        extractor = mock.Mock()
+        with (
+            mock.patch.object(
+                replay.core,
+                "EXPECTED_SELECTED_SOURCE_MANIFEST_SHA256",
+                fixture["selected_source_sha256"],
+            ),
+            mock.patch.object(replay, "_sha256_file", return_value="0" * 64),
+            pytest.raises(replay.ReplayError) as caught,
+        ):
+            replay.run_replay(
+                governing_commit="e" * 40,
+                diagnostic_root=diagnostic,
+                production_root=fixture["production"],
+                allowed_diagnostic_prefix=root,
+                repository=ROOT,
+                authority=fixture["authority"],
+                requirements=fixture["requirements"],
+                row_authority=fixture["row_authority"],
+                extractor=extractor,
+                git_validator=lambda *_args, **_kwargs: None,
+                mount_validator=_synthetic_mount_validator,
+            )
+        assert caught.value.code == "REPLAY_LOCAL_SHA256_MISMATCH"
+        assert caught.value.unique_dicom_objects_accessed == 1
+        assert caught.value.local_content_hash_passes == 1
+        assert caught.value.pydicom_decode_invocations == 0
+        assert caught.value.dicom_body_reads == 1
+        assert caught.value.diagnostic_root_created is True
+        assert os.path.lexists(diagnostic)
         extractor.assert_not_called()
 
 
@@ -814,7 +1109,7 @@ def test_repaired_npz_hash_is_bound_to_the_fresh_private_file() -> None:
             replay.run_replay(
                 governing_commit="e" * 40,
                 diagnostic_root=(
-                    root / "lvef_c3_r3c_one_object_replay_npz_mismatch"
+                    root / "lvef_c3_r3e_one_object_replay_npz_mismatch"
                 ),
                 production_root=production,
                 allowed_diagnostic_prefix=root,
@@ -824,6 +1119,7 @@ def test_repaired_npz_hash_is_bound_to_the_fresh_private_file() -> None:
                 row_authority=fixture["row_authority"],
                 extractor=mismatched_extractor,
                 git_validator=lambda *_args, **_kwargs: None,
+                mount_validator=_synthetic_mount_validator,
             )
         assert caught.value.code == "REPLAY_DIAGNOSTIC_NPZ_VALIDATION_FAILED"
         assert caught.value.dicom_body_reads == 2
@@ -1006,6 +1302,7 @@ def _run_fixture_preflight(
             requirements=fixture["requirements"],
             row_authority=fixture["row_authority"],
             git_validator=lambda *_args, **_kwargs: None,
+            mount_validator=_synthetic_mount_validator,
         )
 
 
@@ -1016,6 +1313,11 @@ def _refresh_fixture_inventory(fixture: dict[str, Any]) -> None:
         fixture["authority"],
         file_count=inventory["file_count"],
         total_bytes=inventory["total_bytes"],
+        root_mode=inventory["root_mode"],
+        full_kind_mode_histogram=inventory["full_kind_mode_histogram"],
+        exceptional_kind_mode_role_histogram=inventory[
+            "exceptional_kind_mode_role_histogram"
+        ],
     )
 
 
@@ -1023,7 +1325,7 @@ def test_preflight_canonical_authority_is_zero_body_zero_root_and_no_model() -> 
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory).resolve()
         fixture = _synthetic_original_attempt(root)
-        diagnostic = root / "lvef_c3_r3c_one_object_replay_preflight"
+        diagnostic = root / "lvef_c3_r3e_one_object_replay_preflight"
         with (
             mock.patch.object(replay, "_sha256_file") as body_reader,
             mock.patch.object(
@@ -1058,12 +1360,206 @@ def test_preflight_canonical_authority_is_zero_body_zero_root_and_no_model() -> 
             )
         assert status == 0
         text = output.getvalue()
-        assert "R3C_REPLAY_PREFLIGHT=PASS_ZERO_BODY_NO_ROOT" in text
+        assert "R3E_REPLAY_PREFLIGHT=PASS_ZERO_BODY_NO_ROOT" in text
+        assert "LEGACY_MODE_HISTOGRAM=PASS" in text
+        assert "LEGACY_EFFECTIVE_PRIVACY=PASS" in text
+        assert (
+            "HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION="
+            "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+        ) in text
+        assert "CURRENT_MOUNT_AUTHORITY=PASS" in text
+        assert "CURRENT_NAMESPACE_TOPOLOGY=PASS" in text
+        assert "NONDEVICE_DOWNLOAD_RECEIPT_AUTHORITY=PASS" in text
+        assert "REPLAY_INPUT_AUTHORITY=PASS" in text
         assert "UNIQUE_DICOM_OBJECTS_ACCESSED=0" in text
         assert "DICOM_BODY_READS=0" in text
         assert "PYDICOM_DECODE_INVOCATIONS=0" in text
         assert "DIAGNOSTIC_ROOT_CREATED=NO" in text
         assert not os.path.lexists(diagnostic)
+
+
+def test_strict_current_mount_authority_and_nested_bind_rejection() -> None:
+    attempt = replay.APPROVED_RESEARCH_MOUNT_TARGET / "synthetic-attempt"
+    source = attempt / "raw" / "object.dcm"
+
+    def completed(row: Mapping[str, Any]) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0,
+            stderr=b"",
+            stdout=json.dumps({"filesystems": [dict(row)]}).encode("utf-8"),
+        )
+
+    canonical = {
+        "target": str(replay.APPROVED_RESEARCH_MOUNT_TARGET),
+        "source": "approved-research-export",
+        "fstype": "nfs",
+        "options": "rw,nosuid,nodev",
+        "fsroot": "/",
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def passing_runner(argv: list[str], **_kwargs: Any) -> SimpleNamespace:
+        calls.append(tuple(argv))
+        return completed(canonical)
+
+    mount = replay.validate_current_mount_authority(
+        attempt, source, runner=passing_runner
+    )
+    assert mount.status == "PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT"
+    assert replay.SHA256_RE.fullmatch(mount.identity_sha256) is not None
+    assert len(calls) == 2
+    assert all(call[0] == "/usr/bin/findmnt" for call in calls)
+
+    invalid_rows = (
+        {**canonical, "target": "/restricted/projectnb/nested"},
+        {**canonical, "fstype": "NFS"},
+        {**canonical, "fstype": "nfs4"},
+        {**canonical, "fsroot": "/nested"},
+        {**canonical, "options": "rw,bind"},
+        {**canonical, "options": "rw,rbind"},
+        {**canonical, "options": "rw,,nosuid"},
+    )
+    for row in invalid_rows:
+        with pytest.raises(replay.ReplayError) as caught:
+            replay.validate_current_mount_authority(
+                attempt,
+                source,
+                runner=lambda *_args, **_kwargs: completed(row),
+            )
+        assert caught.value.code == "REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID"
+
+    def mismatched_runner(argv: list[str], **_kwargs: Any) -> SimpleNamespace:
+        target = argv[argv.index("--target") + 1]
+        row = dict(canonical)
+        if target == str(source):
+            row["source"] = "unexpected-nested-export"
+        return completed(row)
+
+    with pytest.raises(replay.ReplayError) as caught:
+        replay.validate_current_mount_authority(
+            attempt, source, runner=mismatched_runner
+        )
+    assert caught.value.code == "REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+
+    for runner in (
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stderr=b"",
+            stdout=json.dumps({"filesystems": [canonical, canonical]}).encode(),
+        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("blocked")),
+    ):
+        with pytest.raises(replay.ReplayError) as caught:
+            replay.validate_current_mount_authority(attempt, source, runner=runner)
+        assert caught.value.code == "REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID"
+
+
+def test_historical_device_reconciliation_is_narrow_and_receipt_is_immutable() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        fixture = _synthetic_original_attempt(root)
+        diagnostic = root / "lvef_c3_r3e_one_object_replay_device_authority"
+        preflight = _run_fixture_preflight(fixture, diagnostic)
+        expectation = replay.core.expectation_from_plan_object(
+            preflight.planned_object
+        )
+        receipt_path = (
+            fixture["attempt"]
+            / "raw"
+            / fixture["authority"].batch_id
+            / "receipts"
+            / f"{fixture['physical_key']}.verification.json"
+        )
+        before = receipt_path.read_bytes()
+        receipt = replay._read_json(receipt_path)
+        local_sha, reconciliation = (
+            replay.validate_legacy_receipt_device_namespace(
+                receipt,
+                expectation=expectation,
+                source_identity=preflight.source_identity,
+                root_identity=preflight.attempt_root_identity,
+                mount_authority=preflight.mount_authority,
+                authority=fixture["authority"],
+            )
+        )
+        assert local_sha == fixture["source_sha256"]
+        assert reconciliation.status == "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+        assert reconciliation.historical_and_current_differ is True
+        assert receipt_path.read_bytes() == before
+
+        same_device = {**receipt, "file_device": preflight.source_identity.device}
+        with pytest.raises(replay.ReplayError) as caught:
+            replay.validate_legacy_receipt_device_namespace(
+                same_device,
+                expectation=expectation,
+                source_identity=preflight.source_identity,
+                root_identity=preflight.attempt_root_identity,
+                mount_authority=preflight.mount_authority,
+                authority=fixture["authority"],
+            )
+        assert caught.value.code == (
+            "REPLAY_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID"
+        )
+
+        with pytest.raises(replay.ReplayError) as caught:
+            replay.validate_legacy_receipt_device_namespace(
+                receipt,
+                expectation=expectation,
+                source_identity=replace(
+                    preflight.source_identity,
+                    device=preflight.source_identity.device + 1,
+                ),
+                root_identity=preflight.attempt_root_identity,
+                mount_authority=preflight.mount_authority,
+                authority=fixture["authority"],
+            )
+        assert caught.value.code == (
+            "REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+        )
+
+        nondevice_mutations = {
+            "schema_version": True,
+            "status": "FAILED",
+            "source_object_key": "0" * 64,
+            "file_inode": preflight.source_identity.inode + 1,
+            "file_mtime_ns": preflight.source_identity.mtime_ns + 1,
+            "digest_backend": "unexpected_backend",
+            "digest_chunk_size_bytes": True,
+        }
+        for field, value in nondevice_mutations.items():
+            with pytest.raises(replay.ReplayError) as caught:
+                replay.validate_legacy_receipt_device_namespace(
+                    {**receipt, field: value},
+                    expectation=expectation,
+                    source_identity=preflight.source_identity,
+                    root_identity=preflight.attempt_root_identity,
+                    mount_authority=preflight.mount_authority,
+                    authority=fixture["authority"],
+                )
+            assert caught.value.code == (
+                "REPLAY_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+            )
+
+
+def test_replay_input_must_remain_inside_pinned_immutable_attempt() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        fixture = _synthetic_original_attempt(root)
+        _, root_identity = (
+            replay.validate_immutable_legacy_attempt_effective_privacy(
+                fixture["attempt"], fixture["authority"]
+            )
+        )
+        outside = root / "outside-authority.json"
+        outside.write_bytes(b"{}\n")
+        os.chmod(outside, 0o600)
+        with pytest.raises(replay.ReplayError) as caught:
+            replay._validate_replay_input_effective_privacy(
+                outside,
+                attempt_root=fixture["attempt"],
+                root_identity=root_identity,
+            )
+        assert caught.value.code == "REPLAY_INPUT_PATH_CONTAINMENT_INVALID"
 
 
 def test_receipt_tuple_and_local_sha_mutations_fail_role_specifically() -> None:
@@ -1105,7 +1601,7 @@ def test_receipt_tuple_and_local_sha_mutations_fail_role_specifically() -> None:
             _write_private_json(ledger_path, ledger)
             _refresh_fixture_inventory(fixture)
             diagnostic = root / (
-                f"lvef_c3_r3c_one_object_replay_receipt_{ordinal:02d}"
+                f"lvef_c3_r3e_one_object_replay_receipt_{ordinal:02d}"
             )
             with pytest.raises(replay.ReplayError) as caught:
                 _run_fixture_preflight(fixture, diagnostic)
@@ -1127,7 +1623,7 @@ def test_plan_and_missing_receipt_fail_before_body_access() -> None:
         _refresh_fixture_inventory(fixture)
         with pytest.raises(replay.ReplayError) as caught:
             _run_fixture_preflight(
-                fixture, root / "lvef_c3_r3c_one_object_replay_plan_mismatch"
+                fixture, root / "lvef_c3_r3e_one_object_replay_plan_mismatch"
             )
         assert caught.value.code == "REPLAY_BATCH_MEMBERSHIP_INVALID"
         assert caught.value.dicom_body_reads == 0
@@ -1146,7 +1642,7 @@ def test_plan_and_missing_receipt_fail_before_body_access() -> None:
         _refresh_fixture_inventory(fixture)
         with pytest.raises(replay.ReplayError) as caught:
             _run_fixture_preflight(
-                fixture, root / "lvef_c3_r3c_one_object_replay_receipt_missing"
+                fixture, root / "lvef_c3_r3e_one_object_replay_receipt_missing"
             )
         assert caught.value.code == "REPLAY_DOWNLOAD_RECEIPT_INVALID"
         assert caught.value.dicom_body_reads == 0
@@ -1197,9 +1693,13 @@ def test_duplicate_and_contradictory_verification_receipts_fail_closed() -> None
             with pytest.raises(replay.ReplayError) as caught:
                 _run_fixture_preflight(
                     fixture,
-                    root / f"lvef_c3_r3c_one_object_replay_receipt_{mutation}",
+                    root / f"lvef_c3_r3e_one_object_replay_receipt_{mutation}",
                 )
-            assert caught.value.code == "REPLAY_DOWNLOAD_RECEIPT_INVALID"
+            assert caught.value.code == (
+                "REPLAY_DOWNLOAD_RECEIPT_INVALID"
+                if mutation == "duplicate_json_key"
+                else "REPLAY_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+            )
             assert caught.value.dicom_body_reads == 0
 
 
@@ -1255,14 +1755,14 @@ def test_exact_both_fail_topology_and_unique_object_counter() -> None:
     with pytest.raises(replay.ReplayError):
         replay._validate_ordinary_reproduction(earlier)
 
-    allowed = Path("/tmp/r3c-one-object").resolve()
+    allowed = Path("/tmp/r3e-one-object").resolve()
     counters = replay.ReplayAccessCounters(allowed_source=allowed)
     counters.register_hash(allowed)
     counters.register_decode(allowed)
     assert counters.unique_dicom_objects_accessed == 1
     assert counters.dicom_body_read_calls == 2
     with pytest.raises(replay.ReplayError) as caught:
-        counters.register_decode(Path("/tmp/r3c-second-object").resolve())
+        counters.register_decode(Path("/tmp/r3e-second-object").resolve())
     assert caught.value.code == "REPLAY_UNIQUE_OBJECT_SCOPE_EXCEEDED"
     assert counters.unique_dicom_objects_accessed == 1
 
@@ -1276,7 +1776,36 @@ def test_exact_both_fail_topology_and_unique_object_counter() -> None:
         changed = replace(identity, inode=identity.inode + 1)
         with pytest.raises(replay.ReplayError) as caught:
             replay._sha256_file(source, expected_identity=changed)
-        assert caught.value.code == "REPLAY_LOCAL_FILE_AUTHORITY_INVALID"
+        assert caught.value.code == "REPLAY_CURRENT_FILE_IDENTITY_CHANGED"
+
+        for changed_field in ("st_dev", "st_ino"):
+            real_fstat = replay.os.fstat
+            calls = 0
+
+            def unstable_fstat(descriptor: int) -> Any:
+                nonlocal calls
+                calls += 1
+                observed = real_fstat(descriptor)
+                if calls == 1:
+                    return observed
+                values = {
+                    "st_mode": observed.st_mode,
+                    "st_uid": observed.st_uid,
+                    "st_dev": observed.st_dev,
+                    "st_ino": observed.st_ino,
+                    "st_size": observed.st_size,
+                    "st_mtime_ns": observed.st_mtime_ns,
+                    "st_ctime_ns": observed.st_ctime_ns,
+                }
+                values[changed_field] += 1
+                return SimpleNamespace(**values)
+
+            with (
+                mock.patch.object(replay.os, "fstat", side_effect=unstable_fstat),
+                pytest.raises(replay.ReplayError) as caught,
+            ):
+                replay._sha256_file(source, expected_identity=identity)
+            assert caught.value.code == "REPLAY_CURRENT_FILE_IDENTITY_CHANGED"
 
 
 def test_private_parent_effective_modes_and_symlink_are_closed() -> None:
@@ -1285,7 +1814,7 @@ def test_private_parent_effective_modes_and_symlink_are_closed() -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()
             os.chmod(parent, mode)
-            candidate = parent / "lvef_c3_r3c_one_object_replay_private_ok"
+            candidate = parent / "lvef_c3_r3e_one_object_replay_private_ok"
             identity = replay._validate_diagnostic_candidate(
                 candidate,
                 allowed_prefix=parent,
@@ -1297,7 +1826,7 @@ def test_private_parent_effective_modes_and_symlink_are_closed() -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()
             os.chmod(parent, mode)
-            candidate = parent / "lvef_c3_r3c_one_object_replay_private_bad"
+            candidate = parent / "lvef_c3_r3e_one_object_replay_private_bad"
             with pytest.raises(replay.ReplayError) as caught:
                 replay._validate_diagnostic_candidate(
                     candidate,
@@ -1313,7 +1842,7 @@ def test_private_parent_effective_modes_and_symlink_are_closed() -> None:
         linked.symlink_to(private, target_is_directory=True)
         with pytest.raises(replay.ReplayError) as caught:
             replay._validate_diagnostic_candidate(
-                linked / "lvef_c3_r3c_one_object_replay_symlinked",
+                linked / "lvef_c3_r3e_one_object_replay_symlinked",
                 allowed_prefix=linked,
                 original_attempt_root=root / "original-attempt",
             )
@@ -1323,7 +1852,7 @@ def test_private_parent_effective_modes_and_symlink_are_closed() -> None:
 def test_effective_2700_wrong_owner_and_parent_identity_change() -> None:
     with tempfile.TemporaryDirectory() as directory:
         parent = Path(directory).resolve()
-        candidate = parent / "lvef_c3_r3c_one_object_replay_setgid_ok"
+        candidate = parent / "lvef_c3_r3e_one_object_replay_setgid_ok"
         original_lstat = replay.os.lstat
         parent_stat = original_lstat(parent)
 
@@ -1392,7 +1921,7 @@ def test_effective_2700_wrong_owner_and_parent_identity_change() -> None:
             pytest.raises(replay.ReplayError) as caught,
         ):
             replay._validate_diagnostic_candidate(
-                parent / "lvef_c3_r3c_one_object_replay_wrong_owner",
+                parent / "lvef_c3_r3e_one_object_replay_wrong_owner",
                 allowed_prefix=parent,
                 original_attempt_root=parent / "original-attempt",
             )
@@ -1401,7 +1930,7 @@ def test_effective_2700_wrong_owner_and_parent_identity_change() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory).resolve()
         fixture = _synthetic_original_attempt(root)
-        candidate = root / "lvef_c3_r3c_one_object_replay_parent_change"
+        candidate = root / "lvef_c3_r3e_one_object_replay_parent_change"
         preflight = _run_fixture_preflight(fixture, candidate)
         changed = replace(
             preflight,
@@ -1418,7 +1947,7 @@ def test_effective_2700_wrong_owner_and_parent_identity_change() -> None:
 
     with tempfile.TemporaryDirectory() as directory:
         parent = Path(directory).resolve()
-        candidate = parent / "lvef_c3_r3c_one_object_replay_postcheck"
+        candidate = parent / "lvef_c3_r3e_one_object_replay_postcheck"
         identity = replay._validate_diagnostic_candidate(
             candidate,
             allowed_prefix=parent,
