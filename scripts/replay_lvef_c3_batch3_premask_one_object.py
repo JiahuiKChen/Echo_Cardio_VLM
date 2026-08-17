@@ -407,9 +407,33 @@ class R4AttemptAuthority:
     download_rows: int = EXPECTED_DOWNLOAD_ROWS
     batch_plan_sha256_prefix: str = PLAN_SHA256_PREFIX
     root_mode: int = 0o2700
+    historical_device_must_differ: bool = True
 
 
 R4_AUTHORITY = R4AttemptAuthority()
+
+
+def _r3e_device_authority(
+    authority: R4AttemptAuthority,
+) -> r3e.OriginalAttemptAuthority:
+    """Adapt the frozen R4 authority to the canonical R3E device contract."""
+
+    return r3e.OriginalAttemptAuthority(
+        attempt_id=authority.attempt_id,
+        execution_commit=authority.execution_commit,
+        batch_id=authority.batch_id,
+        file_count=authority.file_count,
+        total_bytes=authority.total_bytes,
+        opaque_d4_metadata_tree_sha256=authority.metadata_stat_sha256,
+        extraction_rows=authority.extraction_rows,
+        successful_extraction_rows=authority.successful_extraction_rows,
+        download_rows=authority.download_rows,
+        batch_plan_sha256_prefix=authority.batch_plan_sha256_prefix,
+        root_mode=authority.root_mode,
+        full_kind_mode_histogram=FROZEN_KIND_MODE_HISTOGRAM,
+        exceptional_kind_mode_role_histogram=FROZEN_EXCEPTION_HISTOGRAM,
+        historical_device_must_differ=authority.historical_device_must_differ,
+    )
 
 
 @dataclass(frozen=True)
@@ -444,6 +468,7 @@ class PremaskReplayPreflight:
     source_identity: r3e.SourceFileIdentity
     root_identity: r3e.LegacyRootIdentity
     mount_authority: r3e.CurrentMountAuthority
+    device_reconciliation: r3e.HistoricalDeviceReconciliation
     local_sha256: str
     diagnostic_root: Path
     diagnostic_parent: r3e.PrivateDirectoryIdentity
@@ -1292,46 +1317,194 @@ def _validate_diagnostic_candidate(
         raise _translate(exc, "R4D2_DIAGNOSTIC_PARENT_INVALID") from exc
 
 
-def _strict_current_device_receipt(
+def _require_device_reconciliation(
+    value: object,
+) -> r3e.HistoricalDeviceReconciliation:
+    if (
+        not isinstance(value, r3e.HistoricalDeviceReconciliation)
+        or value.status != "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+        or value.historical_and_current_differ is not True
+    ):
+        _fail("R4D2_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID")
+    return value
+
+
+def _validate_reconciled_download_receipt(
     receipt: Mapping[str, Any],
     *,
     expectation: core.DownloadExpectation,
     source_identity: r3e.SourceFileIdentity,
     root_identity: r3e.LegacyRootIdentity,
     mount_authority: r3e.CurrentMountAuthority,
-) -> str:
-    if set(receipt) != r3e.DOWNLOAD_VERIFICATION_RECEIPT_KEYS:
-        _fail("R4D2_DOWNLOAD_RECEIPT_SCHEMA_INVALID")
-    exact: Mapping[str, Any] = {
-        "schema_version": 2,
-        "status": "PASS_DOWNLOAD_VERIFICATION",
-        "source_object_key": expectation.source_object_key,
-        "size_bytes": expectation.size_bytes,
-        "generation": expectation.generation,
-        "md5_base64": expectation.md5_base64,
-        "crc32c_base64": expectation.crc32c_base64,
-        "file_inode": source_identity.inode,
-        "file_mtime_ns": source_identity.mtime_ns,
-        "file_device": source_identity.device,
-        "digest_backend": "google_crc32c_c_external_worker_v1",
-        "digest_chunk_size_bytes": 8_388_608,
+    authority: R4AttemptAuthority,
+    manifest_local_sha256: object,
+    failed_row_local_sha256: object,
+) -> tuple[str, r3e.HistoricalDeviceReconciliation]:
+    if "file_device" not in receipt:
+        _fail("R4D2_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID")
+    mapped_codes = {
+        "REPLAY_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID": (
+            "R4D2_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID"
+        ),
+        "REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID": (
+            "R4D2_CURRENT_MOUNT_AUTHORITY_INVALID"
+        ),
+        "REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID": (
+            "R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+        ),
+        "REPLAY_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID": (
+            "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+        ),
+        "REPLAY_OBJECT_SIZE_MISMATCH": (
+            "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+        ),
+        "REPLAY_OBJECT_GENERATION_MISMATCH": (
+            "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+        ),
+        "REPLAY_OBJECT_MD5_MISMATCH": (
+            "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+        ),
+        "REPLAY_OBJECT_CRC32C_MISMATCH": (
+            "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+        ),
     }
-    for key, expected in exact.items():
-        observed = receipt.get(key)
-        if key == "file_device" and (
-            type(observed) is not int or observed != expected
+    try:
+        local_sha256, reconciliation = (
+            r3e.validate_legacy_receipt_device_namespace(
+                receipt,
+                expectation=expectation,
+                source_identity=source_identity,
+                root_identity=root_identity,
+                mount_authority=mount_authority,
+                authority=_r3e_device_authority(authority),
+            )
+        )
+    except Exception as exc:
+        code = mapped_codes.get(
+            getattr(exc, "code", ""),
+            "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID",
+        )
+        raise PremaskReplayError(code) from exc
+    reconciliation = _require_device_reconciliation(reconciliation)
+    if (
+        type(manifest_local_sha256) is not str
+        or type(failed_row_local_sha256) is not str
+        or local_sha256 != manifest_local_sha256
+        or local_sha256 != failed_row_local_sha256
+    ):
+        _fail("R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID")
+    return local_sha256, reconciliation
+
+
+def _validate_current_source_authority(
+    *,
+    source_path: Path,
+    attempt_root: Path,
+    root_identity: r3e.LegacyRootIdentity,
+    expected_size: int,
+    expected_identity: r3e.SourceFileIdentity | None = None,
+    expected_mount: r3e.CurrentMountAuthority | None = None,
+    identity_loader: Callable[..., r3e.SourceFileIdentity] | None = None,
+    mount_validator: Callable[[Path, Path], r3e.CurrentMountAuthority] = (
+        r3e.validate_current_mount_authority
+    ),
+) -> tuple[r3e.SourceFileIdentity, r3e.CurrentMountAuthority]:
+    loader = identity_loader or r3e._source_file_identity
+    try:
+        source_identity = loader(
+            source_path,
+            expected_size=expected_size,
+            attempt_root=attempt_root,
+            root_identity=root_identity,
+        )
+    except Exception as exc:
+        if getattr(exc, "code", "") == (
+            "REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
         ):
-            _fail("R4D2_HISTORICAL_FILE_DEVICE_NAMESPACE_UNRESOLVED")
-        if type(observed) is not type(expected) or observed != expected:
-            _fail("R4D2_DOWNLOAD_RECEIPT_AUTHORITY_INVALID")
-    local_sha256 = receipt.get("local_sha256")
-    if type(local_sha256) is not str or SHA256_RE.fullmatch(local_sha256) is None:
-        _fail("R4D2_DOWNLOAD_RECEIPT_AUTHORITY_INVALID")
+            raise PremaskReplayError(
+                "R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+            ) from exc
+        raise PremaskReplayError("R4D2_CURRENT_FILE_IDENTITY_CHANGED") from exc
+    if not isinstance(source_identity, r3e.SourceFileIdentity):
+        _fail("R4D2_CURRENT_FILE_IDENTITY_CHANGED")
+    if expected_identity is not None and source_identity != expected_identity:
+        _fail("R4D2_CURRENT_FILE_IDENTITY_CHANGED")
     if source_identity.device != root_identity.device:
-        _fail("R4D2_CURRENT_DEVICE_TOPOLOGY_INVALID")
-    if mount_authority.status != "PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT":
+        _fail("R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID")
+    try:
+        mount_authority = mount_validator(attempt_root, source_path)
+    except Exception as exc:
+        if getattr(exc, "code", "") == (
+            "REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+        ):
+            raise PremaskReplayError(
+                "R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+            ) from exc
+        raise PremaskReplayError("R4D2_CURRENT_MOUNT_AUTHORITY_INVALID") from exc
+    if (
+        not isinstance(mount_authority, r3e.CurrentMountAuthority)
+        or mount_authority.status != "PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT"
+        or SHA256_RE.fullmatch(mount_authority.identity_sha256) is None
+    ):
         _fail("R4D2_CURRENT_MOUNT_AUTHORITY_INVALID")
-    return local_sha256
+    if expected_mount is not None and mount_authority != expected_mount:
+        _fail("R4D2_CURRENT_MOUNT_AUTHORITY_INVALID")
+    return source_identity, mount_authority
+
+
+def _planned_failed_object(
+    planned_batch: Mapping[str, Any], failed_row: Mapping[str, str]
+) -> Mapping[str, Any]:
+    physical_key = str(failed_row["physical_source_key"])
+    matches = [
+        row
+        for row in planned_batch["objects"]
+        if row.get("source_object_key") == physical_key
+    ]
+    if len(matches) != 1:
+        _fail("R4D2_PLAN_OBJECT_MEMBERSHIP_INVALID")
+    planned_object = matches[0]
+    if (
+        str(planned_object["subject_id"]) != failed_row["subject_id"]
+        or str(planned_object["study_id"]) != failed_row["study_id"]
+    ):
+        _fail("R4D2_PLAN_OBJECT_MEMBERSHIP_INVALID")
+    return planned_object
+
+
+def _require_source_manifest_membership(
+    selected: r3e.ReplayRowAuthority,
+    *,
+    plan: Mapping[str, Any],
+    planned_object: Mapping[str, Any],
+    authority: R4AttemptAuthority,
+) -> None:
+    try:
+        r3e._load_selected_source_object(
+            selected,
+            plan=plan,
+            planned_object=planned_object,
+            authority=_r3e_device_authority(authority),
+        )
+    except Exception as exc:
+        raise PremaskReplayError(
+            "R4D2_SOURCE_MANIFEST_MEMBERSHIP_INVALID"
+        ) from exc
+
+
+def _require_receipt_membership(
+    receipts: object,
+    *,
+    expected_keys: set[str],
+    selected_key: str,
+    receipt_sha256: str,
+) -> None:
+    if (
+        not isinstance(receipts, Mapping)
+        or set(receipts) != expected_keys
+        or receipts.get(selected_key) != receipt_sha256
+    ):
+        _fail("R4D2_DOWNLOAD_RECEIPT_AUTHORITY_INVALID")
 
 
 def _load_plan_and_source(
@@ -1351,6 +1524,7 @@ def _load_plan_and_source(
     r3e.SourceFileIdentity,
     r3e.CurrentMountAuthority,
     str,
+    r3e.HistoricalDeviceReconciliation,
 ]:
     for path in (
         attempt_root / "full_batch_plan.restricted.json",
@@ -1373,30 +1547,14 @@ def _load_plan_and_source(
         raise _translate(exc, "R4D2_PLAN_AUTHORITY_INVALID") from exc
     if plan_sha256 != PLAN_SHA256:
         _fail("R4D2_PLAN_SHA256_MISMATCH")
-    physical_key = str(failed_row["physical_source_key"])
-    matches = [
-        row
-        for row in planned_batch["objects"]
-        if row.get("source_object_key") == physical_key
-    ]
-    if len(matches) != 1:
-        _fail("R4D2_PLAN_OBJECT_MEMBERSHIP_INVALID")
-    planned_object = matches[0]
-    if (
-        str(planned_object["subject_id"]) != failed_row["subject_id"]
-        or str(planned_object["study_id"]) != failed_row["study_id"]
-    ):
-        _fail("R4D2_PLAN_OBJECT_MEMBERSHIP_INVALID")
+    planned_object = _planned_failed_object(planned_batch, failed_row)
     selected = row_authority or row_authority_loader(repository)
-    try:
-        r3e._load_selected_source_object(
-            selected,
-            plan=plan,
-            planned_object=planned_object,
-            authority=authority,
-        )
-    except Exception as exc:
-        raise _translate(exc, "R4D2_SOURCE_MANIFEST_MEMBERSHIP_INVALID") from exc
+    _require_source_manifest_membership(
+        selected,
+        plan=plan,
+        planned_object=planned_object,
+        authority=authority,
+    )
 
     raw_batch = attempt_root / "raw" / BATCH_ID
     manifest_path = raw_batch / "verified_download_manifest.restricted.csv"
@@ -1478,22 +1636,13 @@ def _load_plan_and_source(
     source_path = objects_root / core.planned_final_name(expectation)
     if source_path != objects_root / failed_row["source_relative_path"]:
         _fail("R4D2_LOCAL_SOURCE_BINDING_INVALID")
-    try:
-        source_identity = r3e._source_file_identity(
-            source_path,
-            expected_size=expectation.size_bytes,
-            attempt_root=attempt_root,
-            root_identity=root_identity,
-        )
-        mount_authority = mount_validator(attempt_root, source_path)
-    except Exception as exc:
-        raise _translate(exc, "R4D2_CURRENT_SOURCE_AUTHORITY_INVALID") from exc
-    if (
-        not isinstance(mount_authority, r3e.CurrentMountAuthority)
-        or mount_authority.status != "PASS_APPROVED_RESTRICTED_RESEARCH_MOUNT"
-        or SHA256_RE.fullmatch(mount_authority.identity_sha256) is None
-    ):
-        _fail("R4D2_CURRENT_MOUNT_AUTHORITY_INVALID")
+    source_identity, mount_authority = _validate_current_source_authority(
+        source_path=source_path,
+        attempt_root=attempt_root,
+        root_identity=root_identity,
+        expected_size=expectation.size_bytes,
+        mount_validator=mount_validator,
+    )
     receipt_path = (
         raw_batch / "receipts" / f"{expectation.source_object_key}.verification.json"
     )
@@ -1507,20 +1656,22 @@ def _load_plan_and_source(
     except Exception as exc:
         raise _translate(exc, "R4D2_DOWNLOAD_RECEIPT_AUTHORITY_INVALID") from exc
     receipts = ledger_batch.get("download_verification_receipts", {})
-    if set(receipts) != expected_keys or receipts.get(expectation.source_object_key) != receipt_sha256:
-        _fail("R4D2_DOWNLOAD_RECEIPT_AUTHORITY_INVALID")
-    local_sha256 = _strict_current_device_receipt(
+    _require_receipt_membership(
+        receipts,
+        expected_keys=expected_keys,
+        selected_key=expectation.source_object_key,
+        receipt_sha256=receipt_sha256,
+    )
+    local_sha256, device_reconciliation = _validate_reconciled_download_receipt(
         receipt,
         expectation=expectation,
         source_identity=source_identity,
         root_identity=root_identity,
         mount_authority=mount_authority,
+        authority=authority,
+        manifest_local_sha256=downloaded.get("observed_sha256"),
+        failed_row_local_sha256=failed_row.get("source_sha256"),
     )
-    if (
-        downloaded.get("observed_sha256") != local_sha256
-        or failed_row.get("source_sha256") != local_sha256
-    ):
-        _fail("R4D2_LOCAL_SHA256_AUTHORITY_INVALID")
     planned_partial = raw_batch / "partials" / core.planned_partial_name(
         expectation, ATTEMPT_ID
     )
@@ -1529,7 +1680,14 @@ def _load_plan_and_source(
     )
     if os.path.lexists(planned_partial) or os.path.lexists(receipt_temporary):
         _fail("R4D2_LOCAL_SOURCE_AUTHORITY_INVALID")
-    return planned_object, source_path, source_identity, mount_authority, local_sha256
+    return (
+        planned_object,
+        source_path,
+        source_identity,
+        mount_authority,
+        local_sha256,
+        device_reconciliation,
+    )
 
 
 def run_preflight(
@@ -1562,7 +1720,14 @@ def run_preflight(
         batch1 = _validate_batch_terminal_receipt(attempt_root, BATCH_1_RECEIPT)
         batch2 = _validate_batch_terminal_receipt(attempt_root, BATCH_2_RECEIPT)
         failed_row, batch3 = _load_batch3_authority(attempt_root)
-        planned, source, source_identity, mount, local_sha = _load_plan_and_source(
+        (
+            planned,
+            source,
+            source_identity,
+            mount,
+            local_sha,
+            device_reconciliation,
+        ) = _load_plan_and_source(
             attempt_root=attempt_root,
             root_identity=root_identity,
             failed_row=failed_row,
@@ -1573,6 +1738,9 @@ def run_preflight(
             repository=repository,
             mount_validator=mount_validator,
         )
+        device_reconciliation = _require_device_reconciliation(
+            device_reconciliation
+        )
         diagnostic_root = (
             allowed_diagnostic_prefix
             / f"lvef_c3_r4d2_premask_{execution_commit[:16]}"
@@ -1582,14 +1750,15 @@ def run_preflight(
             allowed_prefix=allowed_diagnostic_prefix,
             attempt_root=attempt_root,
         )
-        current = r3e._source_file_identity(
-            source,
-            expected_size=int(planned["size_bytes"]),
+        _validate_current_source_authority(
+            source_path=source,
             attempt_root=attempt_root,
             root_identity=root_identity,
+            expected_size=int(planned["size_bytes"]),
+            expected_identity=source_identity,
+            expected_mount=mount,
+            mount_validator=mount_validator,
         )
-        if current != source_identity or mount_validator(attempt_root, source) != mount:
-            _fail("R4D2_CURRENT_SOURCE_IDENTITY_CHANGED")
         artifacts = {
             "batch_1_terminal_receipt": batch1,
             "batch_2_terminal_receipt": batch2,
@@ -1605,6 +1774,7 @@ def run_preflight(
             source_identity=source_identity,
             root_identity=root_identity,
             mount_authority=mount,
+            device_reconciliation=device_reconciliation,
             local_sha256=local_sha,
             diagnostic_root=diagnostic_root,
             diagnostic_parent=diagnostic_parent,
@@ -1650,11 +1820,14 @@ def _read_source_once(
             1,
             0o600,
         )
+        if identity != expected or (before.st_dev, before.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
+            _fail("R4D2_CURRENT_FILE_IDENTITY_CHANGED")
         if (
             not stat.S_ISREG(before.st_mode)
             or not stat.S_ISREG(opened.st_mode)
-            or identity != expected
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
             or opened.st_size < 1
             or opened.st_size > MAXIMUM_DICOM_BYTES
         ):
@@ -1678,7 +1851,7 @@ def _read_source_once(
             after.st_nlink,
             stat.S_IMODE(after.st_mode),
         ) != identity:
-            _fail("R4D2_SOURCE_IDENTITY_CHANGED_DURING_READ")
+            _fail("R4D2_CURRENT_FILE_IDENTITY_CHANGED")
         payload = b"".join(blocks)
         return payload, hashlib.sha256(payload).hexdigest()
     finally:
@@ -2006,20 +2179,14 @@ def _validate_decode_authority(
 
 
 def _revalidate_source(preflight: PremaskReplayPreflight) -> None:
-    try:
-        source = r3e._source_file_identity(
-            preflight.source_path,
-            expected_size=int(preflight.planned_object["size_bytes"]),
-            attempt_root=preflight.attempt_root,
-            root_identity=preflight.root_identity,
-        )
-        mount = r3e.validate_current_mount_authority(
-            preflight.attempt_root, preflight.source_path
-        )
-    except Exception as exc:
-        raise _translate(exc, "R4D2_CURRENT_SOURCE_AUTHORITY_CHANGED") from exc
-    if source != preflight.source_identity or mount != preflight.mount_authority:
-        _fail("R4D2_CURRENT_SOURCE_AUTHORITY_CHANGED")
+    _validate_current_source_authority(
+        source_path=preflight.source_path,
+        attempt_root=preflight.attempt_root,
+        root_identity=preflight.root_identity,
+        expected_size=int(preflight.planned_object["size_bytes"]),
+        expected_identity=preflight.source_identity,
+        expected_mount=preflight.mount_authority,
+    )
 
 
 def _post_validate_original_authority(
@@ -2222,7 +2389,9 @@ def validate_aggregate_document(value: Mapping[str, Any]) -> None:
         "batch_2_terminal_receipt_unchanged": True,
         "batch_3_authorities_unchanged": True,
         "replay_input_authority": "PASS",
-        "historical_file_device_authority": "PASS_EXACT_CURRENT_DEVICE",
+        "historical_file_device_authority": (
+            "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+        ),
         "current_mount_authority": "PASS",
         "unique_dicom_objects_accessed": 1,
         "local_dicom_read_passes": 1,
@@ -2357,6 +2526,7 @@ def run_execute(
     cv2_module: Any | None = None,
 ) -> dict[str, Any]:
     effective = preflight if preflight is not None else preflight_loader()
+    _require_device_reconciliation(effective.device_reconciliation)
     counters = AccessCounters(allowed_source=effective.source_path)
     root_created = False
     try:
@@ -2438,7 +2608,9 @@ def run_execute(
             "batch_2_terminal_receipt_unchanged": True,
             "batch_3_authorities_unchanged": True,
             "replay_input_authority": "PASS",
-            "historical_file_device_authority": "PASS_EXACT_CURRENT_DEVICE",
+            "historical_file_device_authority": (
+                effective.device_reconciliation.status
+            ),
             "current_mount_authority": "PASS",
             "unique_dicom_objects_accessed": counters.unique_objects,
             "local_dicom_read_passes": counters.local_read_passes,
@@ -2578,8 +2750,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("R4D2_UNIQUE_FAILED_ROW=PASS")
         print("R4D2_SOURCE_PLAN_MEMBERSHIP=PASS")
         print("R4D2_DOWNLOAD_AUTHORITY=PASS")
-        print("R4D2_HISTORICAL_FILE_DEVICE_AUTHORITY=PASS_EXACT_CURRENT_DEVICE")
+        print("R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY=PASS")
+        print(
+            "R4D2_HISTORICAL_FILE_DEVICE_AUTHORITY="
+            + preflight.device_reconciliation.status
+        )
         print("R4D2_CURRENT_MOUNT_AUTHORITY=PASS")
+        print("R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY=PASS")
         _effect_boundary(
             unique_objects=0,
             local_read_passes=0,

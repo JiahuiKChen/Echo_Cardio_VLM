@@ -106,6 +106,13 @@ def _root_identity(path: Path, *, mode: int = 0o2700) -> replay.r3e.LegacyRootId
     )
 
 
+def _device_reconciliation() -> replay.r3e.HistoricalDeviceReconciliation:
+    return replay.r3e.HistoricalDeviceReconciliation(
+        status="CROSS_NODE_DEVICE_NAMESPACE_RECONCILED",
+        historical_and_current_differ=True,
+    )
+
+
 def _frozen_inventory(path: Path) -> replay.R4Inventory:
     root = _root_identity(path)
     return replay.R4Inventory(
@@ -331,7 +338,7 @@ def _valid_aggregate() -> dict[str, object]:
         "batch_2_terminal_receipt_unchanged": True,
         "batch_3_authorities_unchanged": True,
         "replay_input_authority": "PASS",
-        "historical_file_device_authority": "PASS_EXACT_CURRENT_DEVICE",
+        "historical_file_device_authority": "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED",
         "current_mount_authority": "PASS",
         "unique_dicom_objects_accessed": 1,
         "local_dicom_read_passes": 1,
@@ -766,7 +773,86 @@ def test_failed_csv_row_mutations_fail_closed(
     assert captured.value.code == code
 
 
-def test_current_device_receipt_rejects_historical_device_namespace() -> None:
+@pytest.mark.parametrize("mutation", ["batch_plan_key", "failed_row_binding"])
+def test_batch_plan_and_failed_row_membership_mismatches_fail(
+    mutation: str,
+) -> None:
+    failed, _ = _failed_row()
+    planned = {
+        "source_object_key": failed["physical_source_key"],
+        "subject_id": failed["subject_id"],
+        "study_id": failed["study_id"],
+    }
+    if mutation == "batch_plan_key":
+        planned["source_object_key"] = "0" * 64
+    else:
+        planned["study_id"] = "different-study"
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay._planned_failed_object({"objects": [planned]}, failed)
+    assert captured.value.code == "R4D2_PLAN_OBJECT_MEMBERSHIP_INVALID"
+
+
+def test_source_manifest_membership_mismatch_uses_canonical_boundary() -> None:
+    selected = replay.r3e.ReplayRowAuthority(
+        selected_source=Path("/private/selected.csv"),
+        selected_source_sha256="a" * 64,
+        source_metadata=Path("/private/metadata.jsonl"),
+    )
+    with mock.patch.object(
+        replay.r3e,
+        "_load_selected_source_object",
+        side_effect=replay.r3e.ReplayError("REPLAY_SOURCE_MEMBERSHIP_INVALID"),
+    ) as canonical:
+        with pytest.raises(replay.PremaskReplayError) as captured:
+            replay._require_source_manifest_membership(
+                selected,
+                plan={"authority": {}},
+                planned_object={"source_object_key": "a" * 64},
+                authority=replay.R4_AUTHORITY,
+            )
+    assert captured.value.code == "R4D2_SOURCE_MANIFEST_MEMBERSHIP_INVALID"
+    canonical.assert_called_once()
+    assert isinstance(
+        canonical.call_args.kwargs["authority"],
+        replay.r3e.OriginalAttemptAuthority,
+    )
+
+
+def test_failed_row_audit_membership_mismatch_fails_before_source_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failed, audit = _failed_row()
+    audit["study_id"] = "different-study"
+    monkeypatch.setattr(replay, "EXPECTED_EXTRACTION_ROWS", 1)
+    monkeypatch.setattr(replay, "EXPECTED_SUCCESSFUL_EXTRACTIONS", 0)
+    monkeypatch.setattr(replay, "EXPECTED_AFFECTED_STUDY_ORDINARY_CINES", 0)
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay._validate_failed_row([failed], [audit], partial=tmp_path)
+    assert captured.value.code == "R4D2_DICOM_AUDIT_JOIN_INVALID"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "sha"])
+def test_receipt_membership_mismatch_fails_closed(mutation: str) -> None:
+    key = "a" * 64
+    receipt_sha256 = "b" * 64
+    receipts = {key: receipt_sha256}
+    if mutation == "missing":
+        receipts = {}
+    elif mutation == "extra":
+        receipts["c" * 64] = "d" * 64
+    else:
+        receipts[key] = "e" * 64
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay._require_receipt_membership(
+            receipts,
+            expected_keys={key},
+            selected_key=key,
+            receipt_sha256=receipt_sha256,
+        )
+    assert captured.value.code == "R4D2_DOWNLOAD_RECEIPT_AUTHORITY_INVALID"
+
+
+def _device_receipt_fixture() -> dict[str, object]:
     expectation = replay.core.DownloadExpectation(
         source_object_key="a" * 64,
         source_relative_path="private",
@@ -806,24 +892,237 @@ def test_current_device_receipt_rejects_historical_device_namespace() -> None:
         "digest_backend": "google_crc32c_c_external_worker_v1",
         "digest_chunk_size_bytes": 8_388_608,
     }
-    assert replay._strict_current_device_receipt(
-        receipt,
-        expectation=expectation,
-        source_identity=source,
-        root_identity=root,
-        mount_authority=mount,
-    ) == "c" * 64
     receipt["file_device"] = 40
+    return {
+        "expectation": expectation,
+        "source": source,
+        "root": root,
+        "mount": mount,
+        "receipt": receipt,
+    }
+
+
+def _reconcile_fixture(fixture: dict[str, object]):
+    return replay._validate_reconciled_download_receipt(
+        fixture["receipt"],  # type: ignore[arg-type]
+        expectation=fixture["expectation"],  # type: ignore[arg-type]
+        source_identity=fixture["source"],  # type: ignore[arg-type]
+        root_identity=fixture["root"],  # type: ignore[arg-type]
+        mount_authority=fixture["mount"],  # type: ignore[arg-type]
+        authority=replay.R4_AUTHORITY,
+        manifest_local_sha256="c" * 64,
+        failed_row_local_sha256="c" * 64,
+    )
+
+
+def test_cross_node_device_reconciliation_reuses_r3e_and_preserves_receipt(
+    tmp_path: Path,
+) -> None:
+    fixture = _device_receipt_fixture()
+    receipt_path = (tmp_path / "receipt.json").resolve()
+    serialized = (
+        json.dumps(fixture["receipt"], sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    receipt_path.write_bytes(serialized)
+    os.chmod(receipt_path, 0o600)
+    before = receipt_path.read_bytes()
+    fixture["receipt"] = json.loads(before)
+    with mock.patch.object(
+        replay.r3e,
+        "validate_legacy_receipt_device_namespace",
+        wraps=replay.r3e.validate_legacy_receipt_device_namespace,
+    ) as canonical:
+        local_sha256, reconciliation = _reconcile_fixture(fixture)
+
+    assert local_sha256 == "c" * 64
+    assert reconciliation == _device_reconciliation()
+    canonical.assert_called_once()
+    adapted = canonical.call_args.kwargs["authority"]
+    assert isinstance(adapted, replay.r3e.OriginalAttemptAuthority)
+    assert adapted.attempt_id == replay.ATTEMPT_ID
+    assert adapted.opaque_d4_metadata_tree_sha256 == replay.FROZEN_METADATA_STAT_SHA256
+    assert adapted.full_kind_mode_histogram == replay.FROZEN_KIND_MODE_HISTOGRAM
+    assert adapted.historical_device_must_differ is True
+    assert receipt_path.read_bytes() == before
+    assert hashlib.sha256(receipt_path.read_bytes()).digest() == hashlib.sha256(
+        before
+    ).digest()
+
+    wrapper_source = inspect.getsource(replay._validate_reconciled_download_receipt)
+    assert "r3e.validate_legacy_receipt_device_namespace" in wrapper_source
+    assert wrapper_source.count('"file_device"') == 1
+    assert '"file_device" not in receipt' in wrapper_source
+
+
+@pytest.mark.parametrize(
+    "historical_device",
+    ["MISSING", -1, True, "40", 40.0, None],
+)
+def test_historical_device_malformed_values_fail_role_specifically(
+    historical_device: object,
+) -> None:
+    fixture = _device_receipt_fixture()
+    receipt = fixture["receipt"]
+    assert isinstance(receipt, dict)
+    if historical_device == "MISSING":
+        receipt.pop("file_device")
+    else:
+        receipt["file_device"] = historical_device
     with pytest.raises(replay.PremaskReplayError) as captured:
-        replay._strict_current_device_receipt(
-            receipt,
-            expectation=expectation,
-            source_identity=source,
+        _reconcile_fixture(fixture)
+    assert captured.value.code == (
+        "R4D2_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID"
+    )
+
+
+def test_known_cross_node_relation_and_current_topology_are_both_required() -> None:
+    fixture = _device_receipt_fixture()
+    receipt = fixture["receipt"]
+    source = fixture["source"]
+    assert isinstance(receipt, dict)
+    assert isinstance(source, replay.r3e.SourceFileIdentity)
+    receipt["file_device"] = source.device
+    with pytest.raises(replay.PremaskReplayError) as same_device:
+        _reconcile_fixture(fixture)
+    assert same_device.value.code == (
+        "R4D2_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID"
+    )
+
+    fixture = _device_receipt_fixture()
+    source = fixture["source"]
+    assert isinstance(source, replay.r3e.SourceFileIdentity)
+    fixture["source"] = replace(source, device=source.device + 1)
+    with pytest.raises(replay.PremaskReplayError) as topology:
+        _reconcile_fixture(fixture)
+    assert topology.value.code == "R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("size_bytes", 13),
+        ("generation", "8"),
+        ("md5_base64", "BBBBBBBBBBBBBBBBBBBBBB=="),
+        ("crc32c_base64", "BBBBBB=="),
+        ("local_sha256", "d" * 64),
+        ("digest_backend", "unexpected_backend"),
+        ("digest_chunk_size_bytes", 1),
+        ("file_inode", 9),
+        ("file_mtime_ns", 10),
+    ],
+)
+def test_nondevice_receipt_authority_mutations_fail_closed(
+    field: str, value: object
+) -> None:
+    fixture = _device_receipt_fixture()
+    receipt = fixture["receipt"]
+    assert isinstance(receipt, dict)
+    receipt[field] = value
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        _reconcile_fixture(fixture)
+    assert captured.value.code == (
+        "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY_INVALID"
+    )
+
+
+def test_current_source_mount_and_namespace_roles_remain_distinct() -> None:
+    assert "r3e.validate_current_mount_authority" in inspect.getsource(
+        replay._validate_current_source_authority
+    )
+    fixture = _device_receipt_fixture()
+    source = fixture["source"]
+    root = fixture["root"]
+    mount = fixture["mount"]
+    assert isinstance(source, replay.r3e.SourceFileIdentity)
+    assert isinstance(root, replay.r3e.LegacyRootIdentity)
+    assert isinstance(mount, replay.r3e.CurrentMountAuthority)
+
+    def identity_loader(*_args: object, **_kwargs: object):
+        return source
+
+    observed = replay._validate_current_source_authority(
+        source_path=source.path,
+        attempt_root=root.path,
+        root_identity=root,
+        expected_size=source.size,
+        identity_loader=identity_loader,
+        mount_validator=lambda *_: mount,
+    )
+    assert observed == (source, mount)
+
+    different_device = replace(source, device=source.device + 1)
+    with pytest.raises(replay.PremaskReplayError) as topology:
+        replay._validate_current_source_authority(
+            source_path=source.path,
+            attempt_root=root.path,
             root_identity=root,
-            mount_authority=mount,
+            expected_size=source.size,
+            identity_loader=lambda *_args, **_kwargs: different_device,
+            mount_validator=lambda *_: mount,
         )
-    assert captured.value.code == "R4D2_HISTORICAL_FILE_DEVICE_NAMESPACE_UNRESOLVED"
-    assert replay.SAFE_CODE_RE.fullmatch(captured.value.code)
+    assert topology.value.code == "R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID"
+
+    bad_mount = replay.r3e.CurrentMountAuthority("UNAPPROVED_NESTED_MOUNT", "b" * 64)
+    with pytest.raises(replay.PremaskReplayError) as unapproved:
+        replay._validate_current_source_authority(
+            source_path=source.path,
+            attempt_root=root.path,
+            root_identity=root,
+            expected_size=source.size,
+            identity_loader=identity_loader,
+            mount_validator=lambda *_: bad_mount,
+        )
+    assert unapproved.value.code == "R4D2_CURRENT_MOUNT_AUTHORITY_INVALID"
+
+    for r3e_code, expected_code in (
+        (
+            "REPLAY_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID",
+            "R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY_INVALID",
+        ),
+        (
+            "REPLAY_CURRENT_MOUNT_AUTHORITY_INVALID",
+            "R4D2_CURRENT_MOUNT_AUTHORITY_INVALID",
+        ),
+    ):
+        def raising_mount(*_args: object, **_kwargs: object):
+            raise replay.r3e.ReplayError(r3e_code)
+
+        with pytest.raises(replay.PremaskReplayError) as nested:
+            replay._validate_current_source_authority(
+                source_path=source.path,
+                attempt_root=root.path,
+                root_identity=root,
+                expected_size=source.size,
+                identity_loader=identity_loader,
+                mount_validator=raising_mount,
+            )
+        assert nested.value.code == expected_code
+
+
+@pytest.mark.parametrize("mutation", ["device", "inode"])
+def test_current_pre_post_device_or_inode_mutation_is_identity_change(
+    mutation: str,
+) -> None:
+    fixture = _device_receipt_fixture()
+    source = fixture["source"]
+    root = fixture["root"]
+    mount = fixture["mount"]
+    assert isinstance(source, replay.r3e.SourceFileIdentity)
+    assert isinstance(root, replay.r3e.LegacyRootIdentity)
+    assert isinstance(mount, replay.r3e.CurrentMountAuthority)
+    changed = replace(source, **{mutation: getattr(source, mutation) + 1})
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay._validate_current_source_authority(
+            source_path=source.path,
+            attempt_root=root.path,
+            root_identity=root,
+            expected_size=source.size,
+            expected_identity=source,
+            expected_mount=mount,
+            identity_loader=lambda *_args, **_kwargs: changed,
+            mount_validator=lambda *_: mount,
+        )
+    assert captured.value.code == "R4D2_CURRENT_FILE_IDENTITY_CHANGED"
 
 
 def test_preflight_is_structurally_zero_body_zero_root(
@@ -864,7 +1163,14 @@ def test_preflight_is_structurally_zero_body_zero_root(
     monkeypatch.setattr(
         replay,
         "_load_plan_and_source",
-        lambda **_: ({"size_bytes": source_identity.size}, source, source_identity, mount, "e" * 64),
+        lambda **_: (
+            {"size_bytes": source_identity.size},
+            source,
+            source_identity,
+            mount,
+            "e" * 64,
+            _device_reconciliation(),
+        ),
     )
     monkeypatch.setattr(replay, "_validate_diagnostic_candidate", lambda *_args, **_kwargs: parent_identity)
     monkeypatch.setattr(replay.r3e, "_source_file_identity", lambda *_args, **_kwargs: source_identity)
@@ -910,6 +1216,41 @@ def test_failed_execute_preflight_cannot_reach_root_body_or_decode(
             decoder=decoder,
         )
     assert captured.value.code == "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"
+    creator.assert_not_called()
+    reader.assert_not_called()
+    decoder.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "reconciliation",
+    [
+        replay.r3e.HistoricalDeviceReconciliation("UNVALIDATED", True),
+        replay.r3e.HistoricalDeviceReconciliation(
+            "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED", False
+        ),
+    ],
+)
+def test_injected_reconciliation_is_validated_before_root_or_body(
+    monkeypatch: pytest.MonkeyPatch,
+    reconciliation: replay.r3e.HistoricalDeviceReconciliation,
+) -> None:
+    creator = mock.Mock(side_effect=AssertionError("root creation reached"))
+    reader = mock.Mock(side_effect=AssertionError("body read reached"))
+    decoder = mock.Mock(side_effect=AssertionError("decode reached"))
+    monkeypatch.setattr(replay, "_create_root", creator)
+    injected = SimpleNamespace(
+        device_reconciliation=reconciliation,
+        source_path=Path("/private/unreached"),
+    )
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay.run_execute(
+            preflight=injected,  # type: ignore[arg-type]
+            source_reader=reader,
+            decoder=decoder,
+        )
+    assert captured.value.code == (
+        "R4D2_HISTORICAL_DEVICE_NAMESPACE_RECONCILIATION_INVALID"
+    )
     creator.assert_not_called()
     reader.assert_not_called()
     decoder.assert_not_called()
@@ -1063,6 +1404,46 @@ def test_access_counters_and_single_nofollow_read_are_hard_bounded(tmp_path: Pat
         replay.AccessCounters(source).register_read(tmp_path / "other")
 
 
+@pytest.mark.parametrize("mutation", ["st_dev", "st_ino"])
+def test_single_read_maps_postread_device_or_inode_mutation_to_current_identity(
+    tmp_path: Path, mutation: str
+) -> None:
+    source = (tmp_path / "source.bin").resolve()
+    source.write_bytes(b"one retained object")
+    os.chmod(source, 0o600)
+    descriptor = os.open(source, os.O_RDONLY)
+    try:
+        opened = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    fields = {
+        name: getattr(opened, name)
+        for name in (
+            "st_dev",
+            "st_ino",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+            "st_uid",
+            "st_nlink",
+            "st_mode",
+        )
+    }
+    fields[mutation] += 1
+    changed = SimpleNamespace(**fields)
+    counters = replay.AccessCounters(allowed_source=source)
+    with (
+        mock.patch.object(replay.os, "fstat", side_effect=[opened, changed]),
+        pytest.raises(replay.PremaskReplayError) as captured,
+    ):
+        replay._read_source_once(
+            source,
+            expected_identity=_identity(source),
+            counters=counters,
+        )
+    assert captured.value.code == "R4D2_CURRENT_FILE_IDENTITY_CHANGED"
+
+
 def test_single_read_rejects_an_actual_leaf_symlink(tmp_path: Path) -> None:
     target = (tmp_path / "target").resolve()
     target.write_bytes(b"retained object")
@@ -1111,6 +1492,7 @@ def test_execute_writes_exactly_two_safe_no_clobber_receipts(
         source_identity=source_identity,
         root_identity=inventory.root_identity,
         mount_authority=mount,
+        device_reconciliation=_device_reconciliation(),
         local_sha256=hashlib.sha256(b"dicom").hexdigest(),
         diagnostic_root=diagnostic,
         diagnostic_parent=replay.r3e._private_directory_identity(parent),
@@ -1146,6 +1528,9 @@ def test_execute_writes_exactly_two_safe_no_clobber_receipts(
     assert result["unique_dicom_objects_accessed"] == 1
     assert result["local_dicom_read_passes"] == 1
     assert result["pydicom_decode_invocations"] == 1
+    assert result["historical_file_device_authority"] == (
+        "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+    )
     assert {path.name for path in diagnostic.iterdir()} == {
         "premask_replay_observation.restricted.json",
         "premask_replay.aggregate_safe.json",
@@ -1243,6 +1628,7 @@ def test_reopened_observation_rejects_closed_schema_mutations(
         ("diagnostic_npz_created", True, "R4D2_DIAGNOSTIC_JSON_SCHEMA_INVALID"),
         ("observation_receipt_bytes", 0, "R4D2_DIAGNOSTIC_JSON_SCHEMA_INVALID"),
         ("observation_receipt_sha256", "bad", "R4D2_DIAGNOSTIC_JSON_SCHEMA_INVALID"),
+        ("historical_file_device_authority", "PASS_EXACT_CURRENT_DEVICE", "R4D2_DIAGNOSTIC_JSON_SCHEMA_INVALID"),
         ("selected_next_action", "READ_ONLY_AUTHORITY_RECONCILIATION", "R4D2_DIAGNOSTIC_CLASSIFICATION_SCHEMA_INVALID"),
         ("observation_receipt_basename", "/restricted/private.json", "R4D2_DIAGNOSTIC_SAFE_EXPORT_INVALID"),
     ],
@@ -1287,12 +1673,22 @@ def test_cli_has_only_two_exclusive_modes_and_preflight_effects_are_zero(
     monkeypatch.setattr(
         replay,
         "run_preflight",
-        lambda: SimpleNamespace(execution_commit="f" * 40),
+        lambda: SimpleNamespace(
+            execution_commit="f" * 40,
+            device_reconciliation=_device_reconciliation(),
+        ),
     )
     assert replay.main(["--preflight-only"]) == 0
     output = capsys.readouterr().out
     assert "R4D2_PREFLIGHT=PASS_ZERO_BODY_NO_ROOT" in output
     assert "R4D2_FROZEN_CSV_BOOLEAN_DIALECT=PASS" in output
+    assert "R4D2_DOWNLOAD_RECEIPT_NONDEVICE_AUTHORITY=PASS" in output
+    assert (
+        "R4D2_HISTORICAL_FILE_DEVICE_AUTHORITY="
+        "CROSS_NODE_DEVICE_NAMESPACE_RECONCILED"
+    ) in output
+    assert "R4D2_CURRENT_MOUNT_AUTHORITY=PASS" in output
+    assert "R4D2_CURRENT_NAMESPACE_DEVICE_TOPOLOGY=PASS" in output
     assert "UNIQUE_DICOM_OBJECTS_ACCESSED=0" in output
     assert "LOCAL_DICOM_READ_PASSES=0" in output
     assert "PYDICOM_DECODE_INVOCATIONS=0" in output
@@ -1357,6 +1753,7 @@ def test_production_science_and_orchestration_hashes_are_unchanged() -> None:
         "lvef_c3_full_sequential.py": "c97ad59482a77d9b68659b80a3fd36d3c545ffcdc93e2a3f2eb1004d66144926",
         "lvef_c3_full_scheduler.py": "602b42cfa5626f501bb4f4370878349b6edfd362270e5a57ac1595bd5fa8a7b3",
         "finalize_lvef_c3_production.py": "96d6f8e8075d48880c73184cf0313376621638b57d90ea148ca5743fc8e04a2d",
+        "replay_lvef_c3_failed_extraction_one_object.py": "0f60cbc7889d97a0bb6bfd6a9c651e36b121e3b1b4b8b2708f1b6de23dc55587",
     }
     for basename, expected_sha256 in expected.items():
         payload = (ROOT / "scripts" / basename).read_bytes()
