@@ -160,7 +160,7 @@ DOWNSTREAM_GATE_FIELDS = (
     ),
     (
         "ordinary_post_crop_temporal_variation_pixel_count",
-        "ordinary_post_crop_temporal_variation_pixel_gate_passed",
+        "ordinary_post_crop_temporal_variation_gate_passed",
     ),
     (
         "post_crop_nonzero_retained_pixel_count",
@@ -168,7 +168,7 @@ DOWNSTREAM_GATE_FIELDS = (
     ),
     (
         "post_crop_temporal_variation_pixel_count",
-        "post_crop_temporal_variation_pixel_gate_passed",
+        "post_crop_temporal_variation_gate_passed",
     ),
     (
         "ordinary_sampled_nonzero_retained_pixel_count",
@@ -176,7 +176,7 @@ DOWNSTREAM_GATE_FIELDS = (
     ),
     (
         "ordinary_sampled_temporal_variation_pixel_count",
-        "ordinary_sampled_temporal_variation_pixel_gate_passed",
+        "ordinary_sampled_temporal_variation_gate_passed",
     ),
     (
         "sampled_nonzero_retained_pixel_count",
@@ -184,7 +184,7 @@ DOWNSTREAM_GATE_FIELDS = (
     ),
     (
         "sampled_temporal_variation_pixel_count",
-        "sampled_temporal_variation_pixel_gate_passed",
+        "sampled_temporal_variation_gate_passed",
     ),
     (
         "encoder_visible_nonzero_retained_pixel_count",
@@ -192,9 +192,20 @@ DOWNSTREAM_GATE_FIELDS = (
     ),
     (
         "encoder_visible_temporal_variation_pixel_count",
-        "encoder_visible_temporal_variation_pixel_gate_passed",
+        "encoder_visible_temporal_variation_gate_passed",
     ),
 )
+
+CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT = "dicom_audit"
+CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST = "extraction_manifest"
+CSV_BOOLEAN_TWO_STATE = "TWO_STATE"
+CSV_BOOLEAN_TRI_STATE = "TRI_STATE"
+CSV_BOOLEAN_STATE_TRUE = "TRUE"
+CSV_BOOLEAN_STATE_FALSE = "FALSE"
+CSV_BOOLEAN_STATE_NOT_EVALUATED = "NOT_EVALUATED"
+FROZEN_CSV_BOOLEAN_DIALECT = "TITLECASE_TRUE_FALSE_UNQUOTED_V1"
+FROZEN_CSV_BOOLEAN_DIALECT_CLASS = "BOOLEAN_FIELD_ROUTING_DEFECT"
+_CSV_BOOLEAN_COLUMN_MISSING = object()
 
 OBSERVATION_KEYS = frozenset(
     {
@@ -325,6 +336,64 @@ def _fail(code: str) -> None:
 
 
 @dataclass(frozen=True)
+class ClosedCsvBooleanField:
+    artifact_role: str
+    field_name: str
+    semantic_type: str
+    frozen_dialect: str
+    raw_token_histogram: tuple[tuple[str, int], ...]
+
+
+FROZEN_CSV_BOOLEAN_FIELDS = (
+    ClosedCsvBooleanField(
+        CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+        "read_ok",
+        CSV_BOOLEAN_TWO_STATE,
+        FROZEN_CSV_BOOLEAN_DIALECT,
+        (("True", 18_653),),
+    ),
+    ClosedCsvBooleanField(
+        CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+        "is_multiframe",
+        CSV_BOOLEAN_TWO_STATE,
+        FROZEN_CSV_BOOLEAN_DIALECT,
+        (("False", 8_396), ("True", 10_257)),
+    ),
+    ClosedCsvBooleanField(
+        CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+        "pixel_decode_ok",
+        CSV_BOOLEAN_TWO_STATE,
+        FROZEN_CSV_BOOLEAN_DIALECT,
+        (("False", 8_396), ("True", 10_257)),
+    ),
+    ClosedCsvBooleanField(
+        CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+        "write_ok",
+        CSV_BOOLEAN_TWO_STATE,
+        FROZEN_CSV_BOOLEAN_DIALECT,
+        (("False", 1), ("True", 10_256)),
+    ),
+    *(
+        ClosedCsvBooleanField(
+            CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+            gate_field,
+            CSV_BOOLEAN_TWO_STATE,
+            FROZEN_CSV_BOOLEAN_DIALECT,
+            (("False", 1), ("True", 10_256)),
+        )
+        for _, gate_field in (*SOURCE_GATE_FIELDS, *DOWNSTREAM_GATE_FIELDS)
+    ),
+    ClosedCsvBooleanField(
+        CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+        "pixel_decode_ok",
+        CSV_BOOLEAN_TWO_STATE,
+        FROZEN_CSV_BOOLEAN_DIALECT,
+        (("True", 10_257),),
+    ),
+)
+
+
+@dataclass(frozen=True)
 class R4AttemptAuthority:
     attempt_id: str = ATTEMPT_ID
     execution_commit: str = STARTING_COMMIT
@@ -416,13 +485,121 @@ def _translate(error: BaseException, fallback: str) -> PremaskReplayError:
     return PremaskReplayError(code)
 
 
-def _strict_bool(value: object) -> bool:
-    text = str(value).strip().lower()
-    if text == "true":
-        return True
-    if text == "false":
-        return False
-    _fail("R4D2_CSV_BOOLEAN_INVALID")
+def _closed_csv_boolean_field(
+    artifact_role: str, field_name: str
+) -> ClosedCsvBooleanField:
+    matches = tuple(
+        item
+        for item in FROZEN_CSV_BOOLEAN_FIELDS
+        if item.artifact_role == artifact_role and item.field_name == field_name
+    )
+    if len(matches) != 1:
+        _fail("R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID")
+    return matches[0]
+
+
+def parse_closed_csv_boolean(
+    raw_value: object,
+    *,
+    artifact_role: str,
+    field_name: str,
+    semantic_type: str,
+    frozen_dialect: str,
+) -> str:
+    """Parse one frozen CSV Boolean without normalization or coercion."""
+
+    specification = _closed_csv_boolean_field(artifact_role, field_name)
+    if (
+        semantic_type != specification.semantic_type
+        or frozen_dialect != specification.frozen_dialect
+    ):
+        _fail("R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID")
+    if raw_value is _CSV_BOOLEAN_COLUMN_MISSING:
+        _fail("R4D2_CSV_BOOLEAN_COLUMN_MISSING")
+    if type(raw_value) is not str:
+        _fail("R4D2_CSV_BOOLEAN_TOKEN_INVALID")
+    if raw_value == "":
+        if semantic_type == CSV_BOOLEAN_TWO_STATE:
+            _fail("R4D2_CSV_BOOLEAN_REQUIRED_EMPTY")
+        return CSV_BOOLEAN_STATE_NOT_EVALUATED
+    if raw_value[:1].isspace() or raw_value[-1:].isspace():
+        _fail("R4D2_CSV_BOOLEAN_WHITESPACE_INVALID")
+    if raw_value == "True":
+        return CSV_BOOLEAN_STATE_TRUE
+    if raw_value == "False":
+        return CSV_BOOLEAN_STATE_FALSE
+    if raw_value == "NOT_EVALUATED":
+        if semantic_type != CSV_BOOLEAN_TRI_STATE:
+            _fail("R4D2_CSV_BOOLEAN_NOT_EVALUATED_INVALID_FOR_FIELD")
+        return CSV_BOOLEAN_STATE_NOT_EVALUATED
+    if raw_value in ("true", "false"):
+        _fail("R4D2_CSV_BOOLEAN_DIALECT_MISMATCH")
+    _fail("R4D2_CSV_BOOLEAN_TOKEN_INVALID")
+
+
+def _parse_csv_boolean_field(
+    row: Mapping[str, str], *, artifact_role: str, field_name: str
+) -> str:
+    specification = _closed_csv_boolean_field(artifact_role, field_name)
+    raw_value: object = (
+        row[field_name]
+        if field_name in row and row[field_name] is not None
+        else _CSV_BOOLEAN_COLUMN_MISSING
+    )
+    return parse_closed_csv_boolean(
+        raw_value,
+        artifact_role=artifact_role,
+        field_name=field_name,
+        semantic_type=specification.semantic_type,
+        frozen_dialect=specification.frozen_dialect,
+    )
+
+
+def _validate_frozen_csv_boolean_aggregate(
+    rows: Sequence[Mapping[str, str]], *, artifact_role: str
+) -> tuple[
+    tuple[str, tuple[tuple[str, int], ...], tuple[tuple[str, int], ...]], ...
+]:
+    fields = tuple(
+        item
+        for item in FROZEN_CSV_BOOLEAN_FIELDS
+        if item.artifact_role == artifact_role
+    )
+    if not fields:
+        _fail("R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID")
+    raw_histograms = {item: Counter() for item in fields}
+    state_histograms = {item: Counter() for item in fields}
+    for row in rows:
+        for specification in fields:
+            raw_value: object = (
+                row[specification.field_name]
+                if specification.field_name in row
+                and row[specification.field_name] is not None
+                else _CSV_BOOLEAN_COLUMN_MISSING
+            )
+            state = parse_closed_csv_boolean(
+                raw_value,
+                artifact_role=artifact_role,
+                field_name=specification.field_name,
+                semantic_type=specification.semantic_type,
+                frozen_dialect=specification.frozen_dialect,
+            )
+            raw_histograms[specification][raw_value] += 1
+            state_histograms[specification][state] += 1
+    observed = []
+    for specification in fields:
+        raw_histogram = raw_histograms[specification]
+        state_histogram = state_histograms[specification]
+        if raw_histogram != Counter(dict(specification.raw_token_histogram)):
+            _fail("R4D2_CSV_BOOLEAN_DIALECT_MISMATCH")
+        observed.append(
+            (
+                specification.field_name,
+                tuple(sorted(raw_histogram.items())),
+                tuple(sorted(state_histogram.items())),
+            )
+        )
+    return tuple(observed)
 
 
 def _csv_nonnegative_integer(value: object) -> int | None:
@@ -466,7 +643,47 @@ def _strict_json(payload: bytes) -> dict[str, Any]:
         raise _translate(exc, "R4D2_JSON_AUTHORITY_INVALID") from exc
 
 
-def _strict_csv(payload: bytes, header: Sequence[str]) -> list[dict[str, str]]:
+def _strict_csv(
+    payload: bytes, header: Sequence[str], *, artifact_role: str
+) -> list[dict[str, str]]:
+    if artifact_role == CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT:
+        governed_header = tuple(preservation.DICOM_AUDIT_HEADER)
+    elif artifact_role == CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST:
+        governed_header = tuple(preservation.EXTRACTION_MANIFEST_HEADER)
+    else:
+        _fail("R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID")
+    if tuple(header) != governed_header:
+        _fail("R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID")
+    try:
+        decoded = payload.decode("utf-8")
+        reader = csv.reader(io.StringIO(decoded, newline=""), strict=True)
+        observed_header = tuple(next(reader))
+    except Exception as exc:
+        raise _translate(exc, "R4D2_CSV_AUTHORITY_INVALID") from exc
+    header_histogram = Counter(observed_header)
+    if any(count != 1 for count in header_histogram.values()):
+        _fail("R4D2_CSV_BOOLEAN_COLUMN_DUPLICATED")
+    boolean_fields = {
+        item.field_name
+        for item in FROZEN_CSV_BOOLEAN_FIELDS
+        if item.artifact_role == artifact_role
+    }
+    unexpected_boolean_fields = {
+        field_name
+        for field_name in observed_header
+        if field_name not in boolean_fields
+        and (
+            field_name.endswith("_gate_passed")
+            or field_name.endswith("_ok")
+            or field_name == "is_multiframe"
+        )
+    } - set(governed_header)
+    if unexpected_boolean_fields:
+        _fail("R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID")
+    if any(field_name not in observed_header for field_name in boolean_fields):
+        _fail("R4D2_CSV_BOOLEAN_COLUMN_MISSING")
+    if observed_header != governed_header:
+        _fail("R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID")
     try:
         return r3e._decode_csv_exact(payload, header)
     except Exception as exc:
@@ -813,8 +1030,23 @@ def _validate_failed_row(
 ) -> dict[str, str]:
     if len(extraction_rows) != EXPECTED_EXTRACTION_ROWS:
         _fail("R4D2_EXTRACTION_ROW_COUNT_INVALID")
-    failed = [row for row in extraction_rows if not _strict_bool(row["write_ok"])]
-    successful = [row for row in extraction_rows if _strict_bool(row["write_ok"])]
+    write_states = tuple(
+        (
+            row,
+            _parse_csv_boolean_field(
+                row,
+                artifact_role=CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+                field_name="write_ok",
+            ),
+        )
+        for row in extraction_rows
+    )
+    failed = [
+        row for row, state in write_states if state == CSV_BOOLEAN_STATE_FALSE
+    ]
+    successful = [
+        row for row, state in write_states if state == CSV_BOOLEAN_STATE_TRUE
+    ]
     if len(failed) != 1 or len(successful) != EXPECTED_SUCCESSFUL_EXTRACTIONS:
         _fail("R4D2_FAILED_ROW_NOT_UNIQUE")
     row = dict(failed[0])
@@ -837,20 +1069,42 @@ def _validate_failed_row(
     if any(str(row.get(key, "")) != value for key, value in exact.items()):
         _fail("R4D2_FAILED_ROW_AUTHORITY_INVALID")
     if (
-        _strict_bool(row.get("write_ok", ""))
-        or not _strict_bool(row.get("pixel_decode_ok", ""))
+        _parse_csv_boolean_field(
+            row,
+            artifact_role=CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+            field_name="write_ok",
+        )
+        != CSV_BOOLEAN_STATE_FALSE
+        or _parse_csv_boolean_field(
+            row,
+            artifact_role=CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+            field_name="pixel_decode_ok",
+        )
+        != CSV_BOOLEAN_STATE_TRUE
         or _csv_nonnegative_integer(row.get("source_num_frames", ""))
         != EXPECTED_SOURCE_FRAMES
     ):
         _fail("R4D2_FAILED_ROW_AUTHORITY_INVALID")
     for count_field, gate_field in SOURCE_GATE_FIELDS:
-        if _csv_nonnegative_integer(row.get(count_field, "")) != 0 or _strict_bool(
-            row.get(gate_field, "")
+        if (
+            _csv_nonnegative_integer(row.get(count_field, "")) != 0
+            or _parse_csv_boolean_field(
+                row,
+                artifact_role=CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+                field_name=gate_field,
+            )
+            != CSV_BOOLEAN_STATE_FALSE
         ):
             _fail("R4D2_FROZEN_SOURCE_METRICS_INVALID")
     for count_field, gate_field in DOWNSTREAM_GATE_FIELDS:
-        if _csv_nonnegative_integer(row.get(count_field, "")) is not None or _strict_bool(
-            row.get(gate_field, "")
+        if (
+            _csv_nonnegative_integer(row.get(count_field, "")) is not None
+            or _parse_csv_boolean_field(
+                row,
+                artifact_role=CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+                field_name=gate_field,
+            )
+            != CSV_BOOLEAN_STATE_FALSE
         ):
             _fail("R4D2_DOWNSTREAM_STAGE_AUTHORITY_INVALID")
     for field_name in (
@@ -898,9 +1152,24 @@ def _validate_failed_row(
     if any(str(audit.get(key, "")) != value for key, value in audit_exact.items()):
         _fail("R4D2_DICOM_AUDIT_JOIN_INVALID")
     if (
-        not _strict_bool(audit.get("read_ok", ""))
-        or not _strict_bool(audit.get("is_multiframe", ""))
-        or not _strict_bool(audit.get("pixel_decode_ok", ""))
+        _parse_csv_boolean_field(
+            audit,
+            artifact_role=CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+            field_name="read_ok",
+        )
+        != CSV_BOOLEAN_STATE_TRUE
+        or _parse_csv_boolean_field(
+            audit,
+            artifact_role=CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+            field_name="is_multiframe",
+        )
+        != CSV_BOOLEAN_STATE_TRUE
+        or _parse_csv_boolean_field(
+            audit,
+            artifact_role=CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+            field_name="pixel_decode_ok",
+        )
+        != CSV_BOOLEAN_STATE_TRUE
         or _csv_nonnegative_integer(audit.get("number_of_frames", ""))
         != EXPECTED_SOURCE_FRAMES
         or _csv_nonnegative_integer(audit.get("samples_per_pixel", "")) != 3
@@ -964,11 +1233,21 @@ def _load_batch3_authority(
     ):
         _fail("R4D2_BATCH3_FAILURE_SUMMARY_INVALID")
     audit_rows = _strict_csv(
-        payloads["dicom_audit.restricted.csv"], preservation.DICOM_AUDIT_HEADER
+        payloads["dicom_audit.restricted.csv"],
+        preservation.DICOM_AUDIT_HEADER,
+        artifact_role=CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
     )
     extraction_rows = _strict_csv(
         payloads["extraction_manifest.restricted.csv"],
         preservation.EXTRACTION_MANIFEST_HEADER,
+        artifact_role=CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+    )
+    _validate_frozen_csv_boolean_aggregate(
+        audit_rows, artifact_role=CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT
+    )
+    _validate_frozen_csv_boolean_aggregate(
+        extraction_rows,
+        artifact_role=CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
     )
     if len(audit_rows) != EXPECTED_DOWNLOAD_ROWS:
         _fail("R4D2_DICOM_AUDIT_ROW_COUNT_INVALID")
@@ -2295,6 +2574,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("R4D2_FROZEN_R4_INVENTORY=PASS_EXACT")
         print("R4D2_BATCH1_BATCH2_RECEIPTS=PASS_UNCHANGED")
         print("R4D2_BATCH3_ARTIFACTS=PASS_UNCHANGED")
+        print("R4D2_FROZEN_CSV_BOOLEAN_DIALECT=PASS")
         print("R4D2_UNIQUE_FAILED_ROW=PASS")
         print("R4D2_SOURCE_PLAN_MEMBERSHIP=PASS")
         print("R4D2_DOWNLOAD_AUTHORITY=PASS")

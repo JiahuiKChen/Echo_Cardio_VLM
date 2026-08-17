@@ -234,6 +234,32 @@ def _failed_row() -> tuple[dict[str, str], dict[str, str]]:
     return row, audit
 
 
+def _frozen_boolean_rows() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    audit_true = {
+        "read_ok": "True",
+        "is_multiframe": "True",
+        "pixel_decode_ok": "True",
+    }
+    audit_non_multiframe = {
+        "read_ok": "True",
+        "is_multiframe": "False",
+        "pixel_decode_ok": "False",
+    }
+    extraction_fields = {
+        item.field_name
+        for item in replay.FROZEN_CSV_BOOLEAN_FIELDS
+        if item.artifact_role
+        == replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST
+    }
+    extraction_true = {field: "True" for field in extraction_fields}
+    extraction_failed = {field: "False" for field in extraction_fields}
+    extraction_failed["pixel_decode_ok"] = "True"
+    return (
+        [audit_true] * 10_257 + [audit_non_multiframe] * 8_396,
+        [extraction_true] * 10_256 + [extraction_failed],
+    )
+
+
 def _collapse_value(**changes: object) -> dict[str, object]:
     value: dict[str, object] = {
         "pre_mask_nonzero_pixel_count": 10,
@@ -385,6 +411,311 @@ def test_frozen_inventory_accepts_only_exact_authority(
     with pytest.raises(replay.PremaskReplayError) as captured:
         replay.validate_r4_inventory(replace(frozen, **mutation))
     assert captured.value.code == code
+
+
+def test_boolean_routing_repair_is_exactly_the_five_temporal_gate_fields() -> None:
+    corrected = {
+        "ordinary_post_crop_temporal_variation_gate_passed",
+        "post_crop_temporal_variation_gate_passed",
+        "ordinary_sampled_temporal_variation_gate_passed",
+        "sampled_temporal_variation_gate_passed",
+        "encoder_visible_temporal_variation_gate_passed",
+    }
+    legacy = {field.replace("_variation_", "_variation_pixel_") for field in corrected}
+    routed = {field for _, field in replay.DOWNSTREAM_GATE_FIELDS}
+    extraction_registry = {
+        item.field_name
+        for item in replay.FROZEN_CSV_BOOLEAN_FIELDS
+        if item.artifact_role
+        == replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST
+    }
+
+    assert corrected <= routed
+    assert corrected <= extraction_registry
+    assert legacy.isdisjoint(routed)
+    assert legacy.isdisjoint(extraction_registry)
+    assert legacy.isdisjoint(replay.preservation.EXTRACTION_MANIFEST_HEADER)
+    assert replay.FROZEN_CSV_BOOLEAN_DIALECT_CLASS == "BOOLEAN_FIELD_ROUTING_DEFECT"
+    for field_name in corrected:
+        assert replay.parse_closed_csv_boolean(
+            "False",
+            artifact_role=replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+            field_name=field_name,
+            semantic_type=replay.CSV_BOOLEAN_TWO_STATE,
+            frozen_dialect=replay.FROZEN_CSV_BOOLEAN_DIALECT,
+        ) == replay.CSV_BOOLEAN_STATE_FALSE
+    for field_name in legacy:
+        with pytest.raises(replay.PremaskReplayError) as captured:
+            replay.parse_closed_csv_boolean(
+                "False",
+                artifact_role=replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+                field_name=field_name,
+                semantic_type=replay.CSV_BOOLEAN_TWO_STATE,
+                frozen_dialect=replay.FROZEN_CSV_BOOLEAN_DIALECT,
+            )
+        assert captured.value.code == "R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID"
+
+
+def test_exact_r4d2b_first_failure_diagnosis_is_pinned() -> None:
+    configured = "ordinary_post_crop_temporal_variation_pixel_gate_passed"
+    governed = "ordinary_post_crop_temporal_variation_gate_passed"
+    assert configured not in replay.preservation.EXTRACTION_MANIFEST_HEADER
+    assert governed in replay.preservation.EXTRACTION_MANIFEST_HEADER
+    assert replay.EXPECTED_EXTRACTION_ROWS == 10_257
+    assert len(b"") == 0
+    assert "MISSING_COLUMN_NO_RAW_TOKEN" not in {"True", "False"}
+    assert replay.FROZEN_CSV_BOOLEAN_DIALECT_CLASS == "BOOLEAN_FIELD_ROUTING_DEFECT"
+
+
+def test_boolean_registry_is_closed_to_all_18_frozen_two_state_fields() -> None:
+    audit = {
+        item.field_name
+        for item in replay.FROZEN_CSV_BOOLEAN_FIELDS
+        if item.artifact_role == replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT
+    }
+    extraction = {
+        item.field_name
+        for item in replay.FROZEN_CSV_BOOLEAN_FIELDS
+        if item.artifact_role
+        == replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST
+    }
+    governed_gates = {
+        field for _, field in (*replay.SOURCE_GATE_FIELDS, *replay.DOWNSTREAM_GATE_FIELDS)
+    }
+
+    assert len(replay.FROZEN_CSV_BOOLEAN_FIELDS) == 18
+    assert audit == {"read_ok", "is_multiframe", "pixel_decode_ok"}
+    assert extraction == {"write_ok", "pixel_decode_ok", *governed_gates}
+    assert all(
+        item.semantic_type == replay.CSV_BOOLEAN_TWO_STATE
+        and item.frozen_dialect == replay.FROZEN_CSV_BOOLEAN_DIALECT
+        for item in replay.FROZEN_CSV_BOOLEAN_FIELDS
+    )
+    assert all(
+        item.field_name in (
+            replay.preservation.DICOM_AUDIT_HEADER
+            if item.artifact_role == replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT
+            else replay.preservation.EXTRACTION_MANIFEST_HEADER
+        )
+        for item in replay.FROZEN_CSV_BOOLEAN_FIELDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "state"),
+    [
+        ("True", replay.CSV_BOOLEAN_STATE_TRUE),
+        ("False", replay.CSV_BOOLEAN_STATE_FALSE),
+    ],
+)
+def test_closed_boolean_parser_accepts_only_exact_proven_tokens(
+    raw_value: str, state: str
+) -> None:
+    assert replay.parse_closed_csv_boolean(
+        raw_value,
+        artifact_role=replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+        field_name="read_ok",
+        semantic_type=replay.CSV_BOOLEAN_TWO_STATE,
+        frozen_dialect=replay.FROZEN_CSV_BOOLEAN_DIALECT,
+    ) == state
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "code"),
+    [
+        ("", "R4D2_CSV_BOOLEAN_REQUIRED_EMPTY"),
+        ("NOT_EVALUATED", "R4D2_CSV_BOOLEAN_NOT_EVALUATED_INVALID_FOR_FIELD"),
+        ("true", "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"),
+        ("false", "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"),
+        ("1", "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+        ("0", "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+        ("yes", "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+        ("no", "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+        ("TRUE", "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+        ("FALSE", "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+        ("TrUe", "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+        (" True", "R4D2_CSV_BOOLEAN_WHITESPACE_INVALID"),
+        ("False ", "R4D2_CSV_BOOLEAN_WHITESPACE_INVALID"),
+        ("\tTrue", "R4D2_CSV_BOOLEAN_WHITESPACE_INVALID"),
+        ("False\t", "R4D2_CSV_BOOLEAN_WHITESPACE_INVALID"),
+        ("\u00a0True", "R4D2_CSV_BOOLEAN_WHITESPACE_INVALID"),
+        ("False\u00a0", "R4D2_CSV_BOOLEAN_WHITESPACE_INVALID"),
+        (True, "R4D2_CSV_BOOLEAN_TOKEN_INVALID"),
+    ],
+)
+def test_closed_boolean_parser_rejects_coercion_and_undocumented_dialects(
+    raw_value: object, code: str
+) -> None:
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay.parse_closed_csv_boolean(
+            raw_value,
+            artifact_role=replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+            field_name="read_ok",
+            semantic_type=replay.CSV_BOOLEAN_TWO_STATE,
+            frozen_dialect=replay.FROZEN_CSV_BOOLEAN_DIALECT,
+        )
+    assert captured.value.code == code
+
+
+def test_closed_boolean_parser_distinguishes_missing_and_schema_errors() -> None:
+    for row in ({}, {"read_ok": None}):
+        with pytest.raises(replay.PremaskReplayError) as missing:
+            replay._parse_csv_boolean_field(
+                row,  # type: ignore[arg-type]
+                artifact_role=replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+                field_name="read_ok",
+            )
+        assert missing.value.code == "R4D2_CSV_BOOLEAN_COLUMN_MISSING"
+
+    for field_name, semantic_type, dialect in (
+        ("number_of_frames", replay.CSV_BOOLEAN_TWO_STATE, replay.FROZEN_CSV_BOOLEAN_DIALECT),
+        ("read_ok", replay.CSV_BOOLEAN_TRI_STATE, replay.FROZEN_CSV_BOOLEAN_DIALECT),
+        ("read_ok", replay.CSV_BOOLEAN_TWO_STATE, "CALLER_DEFINED_DIALECT"),
+    ):
+        with pytest.raises(replay.PremaskReplayError) as invalid:
+            replay.parse_closed_csv_boolean(
+                "True",
+                artifact_role=replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+                field_name=field_name,
+                semantic_type=semantic_type,
+                frozen_dialect=dialect,
+            )
+        assert invalid.value.code == "R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID"
+
+
+def test_strict_csv_distinguishes_missing_duplicate_and_legacy_field_schema() -> None:
+    header = list(replay.preservation.EXTRACTION_MANIFEST_HEADER)
+
+    missing = [field for field in header if field != "write_ok"]
+    with pytest.raises(replay.PremaskReplayError) as missing_error:
+        replay._strict_csv(
+            (",".join(missing) + "\n").encode(),
+            header,
+            artifact_role=replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+        )
+    assert missing_error.value.code == "R4D2_CSV_BOOLEAN_COLUMN_MISSING"
+
+    duplicated = [*header, "write_ok"]
+    with pytest.raises(replay.PremaskReplayError) as duplicate_error:
+        replay._strict_csv(
+            (",".join(duplicated) + "\n").encode(),
+            header,
+            artifact_role=replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+        )
+    assert duplicate_error.value.code == "R4D2_CSV_BOOLEAN_COLUMN_DUPLICATED"
+
+    legacy = list(header)
+    position = legacy.index("ordinary_post_crop_temporal_variation_gate_passed")
+    legacy[position] = "ordinary_post_crop_temporal_variation_pixel_gate_passed"
+    with pytest.raises(replay.PremaskReplayError) as schema_error:
+        replay._strict_csv(
+            (",".join(legacy) + "\n").encode(),
+            header,
+            artifact_role=replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+        )
+    assert schema_error.value.code == "R4D2_CSV_BOOLEAN_FIELD_SCHEMA_INVALID"
+
+
+def test_short_csv_row_is_missing_not_empty_or_invalid() -> None:
+    header = list(replay.preservation.DICOM_AUDIT_HEADER)
+    payload = (
+        ",".join(header) + "\n" + ",".join(["", "", "", "", "", "True"]) + "\n"
+    ).encode()
+    rows = replay._strict_csv(
+        payload,
+        header,
+        artifact_role=replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT,
+    )
+    assert rows[0]["read_ok"] == "True"
+    assert rows[0]["is_multiframe"] is None
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay._validate_frozen_csv_boolean_aggregate(
+            rows, artifact_role=replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT
+        )
+    assert captured.value.code == "R4D2_CSV_BOOLEAN_COLUMN_MISSING"
+
+
+def test_exact_frozen_boolean_histograms_pass_before_failed_row_selection() -> None:
+    audit_rows, extraction_rows = _frozen_boolean_rows()
+    audit = replay._validate_frozen_csv_boolean_aggregate(
+        audit_rows, artifact_role=replay.CSV_BOOLEAN_ARTIFACT_DICOM_AUDIT
+    )
+    extraction = replay._validate_frozen_csv_boolean_aggregate(
+        extraction_rows,
+        artifact_role=replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+    )
+    audit_by_field = {field: (raw, state) for field, raw, state in audit}
+    extraction_by_field = {field: (raw, state) for field, raw, state in extraction}
+
+    assert audit_by_field["read_ok"] == (
+        (("True", 18_653),),
+        ((replay.CSV_BOOLEAN_STATE_TRUE, 18_653),),
+    )
+    assert audit_by_field["is_multiframe"] == (
+        (("False", 8_396), ("True", 10_257)),
+        (
+            (replay.CSV_BOOLEAN_STATE_FALSE, 8_396),
+            (replay.CSV_BOOLEAN_STATE_TRUE, 10_257),
+        ),
+    )
+    assert extraction_by_field["write_ok"] == (
+        (("False", 1), ("True", 10_256)),
+        (
+            (replay.CSV_BOOLEAN_STATE_FALSE, 1),
+            (replay.CSV_BOOLEAN_STATE_TRUE, 10_256),
+        ),
+    )
+    assert extraction_by_field["pixel_decode_ok"] == (
+        (("True", 10_257),),
+        ((replay.CSV_BOOLEAN_STATE_TRUE, 10_257),),
+    )
+    for _, gate_field in (*replay.SOURCE_GATE_FIELDS, *replay.DOWNSTREAM_GATE_FIELDS):
+        assert extraction_by_field[gate_field] == extraction_by_field["write_ok"]
+
+    source = inspect.getsource(replay._load_batch3_authority)
+    assert source.count("_validate_frozen_csv_boolean_aggregate") == 2
+    assert source.index("_validate_frozen_csv_boolean_aggregate") < source.index(
+        "_validate_failed_row"
+    )
+
+
+@pytest.mark.parametrize("mutation", ["minus_one", "plus_one", "mixed_dialect"])
+def test_frozen_boolean_histogram_mutations_fail_closed(mutation: str) -> None:
+    _, extraction_rows = _frozen_boolean_rows()
+    if mutation == "minus_one":
+        extraction_rows = extraction_rows[:-1]
+        expected_code = "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"
+    elif mutation == "plus_one":
+        extraction_rows = [*extraction_rows, extraction_rows[0]]
+        expected_code = "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"
+    else:
+        changed = dict(extraction_rows[0])
+        changed["write_ok"] = "true"
+        extraction_rows[0] = changed
+        expected_code = "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay._validate_frozen_csv_boolean_aggregate(
+            extraction_rows,
+            artifact_role=replay.CSV_BOOLEAN_ARTIFACT_EXTRACTION_MANIFEST,
+        )
+    assert captured.value.code == expected_code
+
+
+def test_boolean_parser_source_contains_no_permissive_coercion() -> None:
+    source = inspect.getsource(replay.parse_closed_csv_boolean)
+    assert all(
+        token not in source
+        for token in (
+            ".strip(",
+            ".lower(",
+            ".casefold(",
+            "bool(",
+            "eval(",
+            "literal_eval(",
+            "json.loads(",
+            "strtobool(",
+        )
+    )
 
 
 def test_failed_csv_row_is_unique_privately_joined_and_exact(
@@ -558,6 +889,30 @@ def test_preflight_is_structurally_zero_body_zero_root(
     body_reader.assert_not_called()
     decoder.assert_not_called()
     creator.assert_not_called()
+
+
+def test_failed_execute_preflight_cannot_reach_root_body_or_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    creator = mock.Mock(side_effect=AssertionError("root creation reached"))
+    reader = mock.Mock(side_effect=AssertionError("body read reached"))
+    decoder = mock.Mock(side_effect=AssertionError("decode reached"))
+    monkeypatch.setattr(replay, "_create_root", creator)
+
+    with pytest.raises(replay.PremaskReplayError) as captured:
+        replay.run_execute(
+            preflight_loader=mock.Mock(
+                side_effect=replay.PremaskReplayError(
+                    "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"
+                )
+            ),
+            source_reader=reader,
+            decoder=decoder,
+        )
+    assert captured.value.code == "R4D2_CSV_BOOLEAN_DIALECT_MISMATCH"
+    creator.assert_not_called()
+    reader.assert_not_called()
+    decoder.assert_not_called()
 
 
 def test_mirror_is_bit_exact_with_frozen_helper_when_cv2_is_available() -> None:
@@ -937,6 +1292,7 @@ def test_cli_has_only_two_exclusive_modes_and_preflight_effects_are_zero(
     assert replay.main(["--preflight-only"]) == 0
     output = capsys.readouterr().out
     assert "R4D2_PREFLIGHT=PASS_ZERO_BODY_NO_ROOT" in output
+    assert "R4D2_FROZEN_CSV_BOOLEAN_DIALECT=PASS" in output
     assert "UNIQUE_DICOM_OBJECTS_ACCESSED=0" in output
     assert "LOCAL_DICOM_READ_PASSES=0" in output
     assert "PYDICOM_DECODE_INVOCATIONS=0" in output
@@ -991,6 +1347,20 @@ def test_direct_imports_and_safe_receipt_keys_expose_no_prohibited_interface() -
     assert "O_NOFOLLOW" in source
     assert "np.save" not in source
     assert "to_csv(" not in source
+
+
+def test_production_science_and_orchestration_hashes_are_unchanged() -> None:
+    expected = {
+        "lvef_reconstruction_smoke.py": "23aaddbf1f108e52fc11c1ad1a2c325b1d3e038e4f86a6e9b648851964f77121",
+        "lvef_c3_production_stages.py": "39e4974e6435ce616bb0f91b9354232e6c4ff44c08d8e397c2363d3a388f760b",
+        "preserve_lvef_c3_production_batch.py": "419f46fe980908ec0215435f3533a1e7fbf38b41e99e9aa665ae0e762261152f",
+        "lvef_c3_full_sequential.py": "c97ad59482a77d9b68659b80a3fd36d3c545ffcdc93e2a3f2eb1004d66144926",
+        "lvef_c3_full_scheduler.py": "602b42cfa5626f501bb4f4370878349b6edfd362270e5a57ac1595bd5fa8a7b3",
+        "finalize_lvef_c3_production.py": "96d6f8e8075d48880c73184cf0313376621638b57d90ea148ca5743fc8e04a2d",
+    }
+    for basename, expected_sha256 in expected.items():
+        payload = (ROOT / "scripts" / basename).read_bytes()
+        assert hashlib.sha256(payload).hexdigest() == expected_sha256
 
 
 def test_strict_json_rejects_duplicate_keys() -> None:
