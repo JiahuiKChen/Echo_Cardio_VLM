@@ -22,6 +22,7 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lvef_c3_orchestration_core as core
+import lvef_c3_production_stages as production_stages
 import preserve_lvef_c3_production_batch as preservation
 
 
@@ -45,6 +46,8 @@ PRESERVATION_ROLES = {
     "extracted_npz_cache_owner_retirable",
     "embedding_and_pooling_retained",
     "download_ledger",
+    "extraction_ledger",
+    "pooling_ledger",
 }
 CLIP_MANIFEST_HEADER = [
     "embedding_idx", "subject_id", "study_id", "clip_key",
@@ -104,6 +107,21 @@ COHORT_PRESERVATION_RECEIPT_KEYS = {
     "clip_embeddings",
     "study_embeddings",
     "no_cine_studies",
+    "successfully_extracted_cines",
+    "object_technical_dispositions",
+    "blocking_failures",
+    "studies_affected_by_technical_disposition",
+    "new_no_cine_studies",
+    "technical_disposition_counts_by_class",
+    "technical_disposition_policy_version",
+    "technical_disposition_manifest_set_sha256",
+    "prespecified_no_cine_study_set_sha256",
+    "all_no_cine_studies_prespecified",
+    "all_extraction_rows_resolved",
+    "all_successful_extractions_embedded",
+    "all_technical_dispositions_retained",
+    "object_substitution_count",
+    "unaccounted_multiframe_objects",
     "artifacts",
     "second_pass_replay_passed",
     "raw_dicoms_retained",
@@ -112,7 +130,7 @@ COHORT_PRESERVATION_RECEIPT_KEYS = {
     "restricted_paths_emitted",
 }
 
-BATCH_RECEIPT_KEYS = {
+LEGACY_BATCH_RECEIPT_KEYS_V2 = {
     "schema_version",
     "artifact_type",
     "status",
@@ -188,14 +206,39 @@ BATCH_RECEIPT_KEYS = {
     "raw_dicoms_retained",
     "extracted_cache_retired",
 }
+CURRENT_RECEIPT_ADDITIONAL_KEYS = {
+    "n_successfully_extracted_cines",
+    "n_object_technical_dispositions",
+    "n_blocking_failures",
+    "n_studies_affected_by_technical_disposition",
+    "n_new_no_cine_studies",
+    "technical_disposition_counts_by_class",
+    "technical_disposition_policy_version",
+    "technical_disposition_manifest_sha256",
+    "prespecified_no_cine_study_set_sha256",
+    "all_no_cine_studies_prespecified",
+    "all_extraction_rows_resolved",
+    "all_successful_extractions_embedded",
+    "all_technical_dispositions_retained",
+    "object_substitution_count",
+    "unaccounted_multiframe_objects",
+}
+BATCH_RECEIPT_KEYS = (
+    LEGACY_BATCH_RECEIPT_KEYS_V2 | CURRENT_RECEIPT_ADDITIONAL_KEYS
+)
 RETIREMENT_RECEIPT_KEYS = {
     "cache_retirement_authorization_sha256",
     "cache_tree_sha256",
     "cache_atomically_staged_receipt_sha256",
     "cache_retirement_script_sha256",
 }
-PRESERVATION_ELIGIBILITY_RECEIPT_KEYS = BATCH_RECEIPT_KEYS - RETIREMENT_RECEIPT_KEYS
-TRUE_GATE_KEYS = {
+LEGACY_PRESERVATION_ELIGIBILITY_RECEIPT_KEYS_V2 = (
+    LEGACY_BATCH_RECEIPT_KEYS_V2 - RETIREMENT_RECEIPT_KEYS
+)
+PRESERVATION_ELIGIBILITY_RECEIPT_KEYS = (
+    BATCH_RECEIPT_KEYS - RETIREMENT_RECEIPT_KEYS
+)
+LEGACY_TRUE_GATE_KEYS_V2 = {
     "source_gate_passed",
     "download_gate_passed",
     "dicom_audit_gate_passed",
@@ -207,7 +250,13 @@ TRUE_GATE_KEYS = {
     "aggregate_safety_gate_passed",
     "raw_dicoms_retained",
 }
-ZERO_KEYS = {
+TRUE_GATE_KEYS = LEGACY_TRUE_GATE_KEYS_V2 | {
+    "all_extraction_rows_resolved",
+    "all_successful_extractions_embedded",
+    "all_technical_dispositions_retained",
+    "all_no_cine_studies_prespecified",
+}
+LEGACY_ZERO_KEYS_V2 = {
     "n_outside_selected_studies",
     "n_missing_selected_studies",
     "n_duplicate_physical_sources",
@@ -215,7 +264,13 @@ ZERO_KEYS = {
     "n_nonfinite_embeddings",
     "n_wrong_dimension_embeddings",
 }
-HASH_KEYS = {
+ZERO_KEYS = LEGACY_ZERO_KEYS_V2 | {
+    "n_blocking_failures",
+    "n_new_no_cine_studies",
+    "object_substitution_count",
+    "unaccounted_multiframe_objects",
+}
+LEGACY_HASH_KEYS_V2 = {
     "orchestration_contract_sha256",
     "batch_plan_sha256",
     "checkpoint_sha256",
@@ -241,7 +296,11 @@ HASH_KEYS = {
     "cache_atomically_staged_receipt_sha256",
     "cache_retirement_script_sha256",
 }
-COUNT_KEYS = {
+HASH_KEYS = LEGACY_HASH_KEYS_V2 | {
+    "technical_disposition_manifest_sha256",
+    "prespecified_no_cine_study_set_sha256",
+}
+LEGACY_COUNT_KEYS_V2 = {
     "n_selected_studies",
     "n_selected_subjects",
     "n_expected_objects",
@@ -256,7 +315,16 @@ COUNT_KEYS = {
     "n_clip_embeddings",
     "n_pooled_studies",
     "n_no_cine_studies",
-    *ZERO_KEYS,
+    *LEGACY_ZERO_KEYS_V2,
+}
+COUNT_KEYS = LEGACY_COUNT_KEYS_V2 | {
+    "n_successfully_extracted_cines",
+    "n_object_technical_dispositions",
+    "n_blocking_failures",
+    "n_studies_affected_by_technical_disposition",
+    "n_new_no_cine_studies",
+    "object_substitution_count",
+    "unaccounted_multiframe_objects",
 }
 BASE_FINAL_KEYS = {
     "schema_version",
@@ -272,6 +340,14 @@ BASE_FINAL_KEYS = {
     "multiframe_cines",
     "single_frame_objects",
     "extracted_clips",
+    "successfully_extracted_cines",
+    "object_technical_dispositions",
+    "blocking_failures",
+    "studies_affected_by_technical_disposition",
+    "new_no_cine_studies",
+    "technical_disposition_counts_by_class",
+    "technical_disposition_policy_version",
+    "technical_disposition_manifest_set_sha256",
     "unique_clip_keys",
     "clip_embeddings",
     "pooled_imaging_eligible_studies",
@@ -288,7 +364,12 @@ BASE_FINAL_KEYS = {
     "all_authority_bindings_identical",
     "all_source_receipts_passed",
     "all_dicom_audits_passed",
-    "all_extractions_passed",
+    "all_extraction_rows_resolved",
+    "all_successful_extractions_embedded",
+    "all_technical_dispositions_retained",
+    "all_no_cine_studies_prespecified",
+    "object_substitution_count",
+    "unaccounted_multiframe_objects",
     "all_embeddings_passed",
     "all_pooling_passed",
     "all_preservation_manifests_passed",
@@ -449,7 +530,18 @@ def replay_batch_preservation_manifest(
         ),
         "embedding_and_pooling_retained": f"{prefix}/batches/{batch_id}/echoprime/",
     }
-    exact_ledger = f"{prefix}/batches/{batch_id}/download_resume_ledger.restricted.json"
+    exact_ledgers = {
+        "download_ledger": (
+            f"{prefix}/batches/{batch_id}/download_resume_ledger.restricted.json"
+        ),
+        "extraction_ledger": (
+            f"{prefix}/batches/{batch_id}/extraction_resume_ledger.restricted.json"
+        ),
+        "pooling_ledger": (
+            f"{prefix}/batches/{batch_id}/pooling_resume_ledger.restricted.json"
+        ),
+    }
+    observed_ledger_roles: set[str] = set()
     cache_prefix = role_prefixes["extracted_npz_cache_owner_retirable"]
     for cells in values:
         if len(cells) != len(PRESERVATION_MANIFEST_HEADER):
@@ -464,9 +556,10 @@ def replay_batch_preservation_manifest(
             raise ProductionFinalizationError("PRESERVATION_ROLE_INVALID")
         if not row["size_bytes"].isdigit() or not SHA256_RE.fullmatch(row["sha256"]):
             raise ProductionFinalizationError("PRESERVATION_METADATA_INVALID")
-        if role == "download_ledger":
-            if relative != exact_ledger:
+        if role in exact_ledgers:
+            if relative != exact_ledgers[role] or role in observed_ledger_roles:
                 raise ProductionFinalizationError("PRESERVATION_ROLE_PATH_MISMATCH")
+            observed_ledger_roles.add(role)
         elif not relative.startswith(role_prefixes[role]):
             raise ProductionFinalizationError("PRESERVATION_ROLE_PATH_MISMATCH")
         path = _safe_manifest_path(production_root, relative)
@@ -479,16 +572,24 @@ def replay_batch_preservation_manifest(
             )
             retired += 1
             continue
-        if path.is_symlink() or not path.is_file():
-            raise ProductionFinalizationError("RETAINED_ARTIFACT_MISSING")
-        if path.stat(follow_symlinks=False).st_size != int(row["size_bytes"]):
+        try:
+            size_bytes, digest = (
+                preservation.stable_manifest_artifact_authority(path)
+            )
+        except preservation.BatchPreservationError as exc:
+            raise ProductionFinalizationError(
+                "RETAINED_ARTIFACT_AUTHORITY_INVALID"
+            ) from exc
+        if size_bytes != int(row["size_bytes"]):
             raise ProductionFinalizationError("RETAINED_ARTIFACT_SIZE_MISMATCH")
-        if sha256_file(path) != row["sha256"]:
+        if digest != row["sha256"]:
             raise ProductionFinalizationError("RETAINED_ARTIFACT_HASH_MISMATCH")
         listed_retained.add(relative)
         retained += 1
     if not cache_records:
         raise ProductionFinalizationError("RETIRED_CACHE_INVENTORY_EMPTY")
+    if observed_ledger_roles != set(exact_ledgers):
+        raise ProductionFinalizationError("PRESERVATION_LEDGER_SET_MISMATCH")
     cache_tree_sha = hashlib.sha256(
         ("\n".join(sorted(cache_records)) + "\n").encode("utf-8")
     ).hexdigest()
@@ -512,10 +613,11 @@ def replay_batch_preservation_manifest(
                 if path.is_symlink() or not path.is_file():
                     raise ProductionFinalizationError("RETAINED_ARTIFACT_NOT_REGULAR")
                 actual_retained.add(path.relative_to(production_root).as_posix())
-    ledger_path = production_root / exact_ledger
-    if ledger_path.is_symlink() or not ledger_path.is_file():
-        raise ProductionFinalizationError("RETAINED_ARTIFACT_MISSING")
-    actual_retained.add(exact_ledger)
+    for relative in exact_ledgers.values():
+        ledger_path = production_root / relative
+        if ledger_path.is_symlink() or not ledger_path.is_file():
+            raise ProductionFinalizationError("RETAINED_ARTIFACT_MISSING")
+        actual_retained.add(relative)
     if actual_retained != listed_retained:
         raise ProductionFinalizationError("UNLISTED_OR_MISSING_RETAINED_ARTIFACT")
     return {"retained_artifacts_reverified": retained, "retired_cache_artifacts": retired}
@@ -629,6 +731,166 @@ def _read_closed_csv(
     except (OSError, UnicodeError, csv.Error, StopIteration) as exc:
         raise ProductionFinalizationError(f"{code}_INVALID") from exc
     return rows
+
+
+def _stable_nofollow_bytes(
+    path: Path, *, code: str, max_bytes: int = 256_000_000
+) -> bytes:
+    """Capture one retained metadata file through stable bound descriptors."""
+
+    absolute = Path(os.path.abspath(path))
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+    def directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_uid,
+            metadata.st_gid,
+            metadata.st_nlink,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+
+    def file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_uid,
+            metadata.st_gid,
+            metadata.st_nlink,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+
+    def open_parent() -> tuple[int, tuple[int, ...]]:
+        descriptor = -1
+        try:
+            descriptor = os.open(absolute.anchor, directory_flags)
+            for component in absolute.parts[1:-1]:
+                child = os.open(component, directory_flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+            return descriptor, directory_identity(os.fstat(descriptor))
+        except OSError as exc:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise ProductionFinalizationError(f"{code}_AUTHORITY_INVALID") from exc
+
+    parent_descriptor, parent_before = open_parent()
+
+    def read_once() -> tuple[tuple[int, ...], bytes]:
+        descriptor = -1
+        try:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(
+                absolute.name, flags, dir_fd=parent_descriptor
+            )
+            before = os.fstat(descriptor)
+            visible_before = os.stat(
+                absolute.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_uid != os.getuid()
+                or stat.S_IMODE(before.st_mode) != 0o600
+                or before.st_size < 1
+                or before.st_size > max_bytes
+                or file_identity(before) != file_identity(visible_before)
+            ):
+                raise ProductionFinalizationError(
+                    f"{code}_AUTHORITY_INVALID"
+                )
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                block = os.read(
+                    descriptor, min(1024 * 1024, max_bytes + 1 - total)
+                )
+                if not block:
+                    break
+                chunks.append(block)
+                total += len(block)
+                if total > max_bytes:
+                    raise ProductionFinalizationError(
+                        f"{code}_AUTHORITY_INVALID"
+                    )
+            after = os.fstat(descriptor)
+            visible_after = os.stat(
+                absolute.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            identity = file_identity(before)
+            if (
+                identity != file_identity(after)
+                or identity != file_identity(visible_after)
+            ):
+                raise ProductionFinalizationError(
+                    f"{code}_AUTHORITY_INVALID"
+                )
+            return identity, b"".join(chunks)
+        except ProductionFinalizationError:
+            raise
+        except OSError as exc:
+            raise ProductionFinalizationError(
+                f"{code}_AUTHORITY_INVALID"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    try:
+        first_identity, payload = read_once()
+        second_identity, second_payload = read_once()
+        if (
+            first_identity != second_identity
+            or payload != second_payload
+            or parent_before
+            != directory_identity(os.fstat(parent_descriptor))
+        ):
+            raise ProductionFinalizationError(f"{code}_AUTHORITY_INVALID")
+        rebound_descriptor, rebound_parent = open_parent()
+        os.close(rebound_descriptor)
+        if rebound_parent != parent_before:
+            raise ProductionFinalizationError(f"{code}_AUTHORITY_INVALID")
+        return payload
+    finally:
+        os.close(parent_descriptor)
+
+
+def _read_closed_csv_bytes(
+    payload: bytes, *, expected_header: Sequence[str], code: str
+) -> list[dict[str, str]]:
+    try:
+        reader = csv.reader(io.StringIO(payload.decode("utf-8"), newline=""))
+        header = next(reader)
+        if header != list(expected_header) or len(header) != len(set(header)):
+            raise ProductionFinalizationError(f"{code}_SCHEMA_MISMATCH")
+        rows = []
+        for cells in reader:
+            if len(cells) != len(header):
+                raise ProductionFinalizationError(f"{code}_ROW_WIDTH_MISMATCH")
+            rows.append(dict(zip(header, cells)))
+        return rows
+    except ProductionFinalizationError:
+        raise
+    except (UnicodeError, csv.Error, StopIteration) as exc:
+        raise ProductionFinalizationError(f"{code}_INVALID") from exc
 
 
 def _load_embedding_array(path: Path, *, code: str) -> Any:
@@ -750,6 +1012,31 @@ def replay_batch_study_embeddings(
     ):
         raise ProductionFinalizationError(
             "FINALIZER_NO_CINE_DISPOSITION_MISMATCH"
+        )
+    expected_no_cine_keys = list(
+        planned_batch.get("prespecified_no_cine_study_keys", ())
+    )
+    expected_no_cine = {
+        (str(row.get("subject_id")), str(row.get("study_id")))
+        for row in expected_no_cine_keys
+        if isinstance(row, Mapping)
+    }
+    actual_no_cine = {
+        (str(row.get("subject_id")), str(row.get("study_id")))
+        for row in disposition_rows
+        if row.get("disposition")
+        == "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
+    }
+    if (
+        expected_no_cine_studies
+        != planned_batch.get("expected_no_cine_studies")
+        or len(expected_no_cine) != expected_no_cine_studies
+        or actual_no_cine != expected_no_cine
+        or core.canonical_json_sha256(expected_no_cine_keys)
+        != planned_batch.get("prespecified_no_cine_study_set_sha256")
+    ):
+        raise ProductionFinalizationError(
+            "FINALIZER_NO_CINE_IDENTITY_MISMATCH"
         )
     records: list[dict[str, Any]] = []
     for row in study_rows:
@@ -1124,10 +1411,12 @@ def _validate_cohort_receipt_fields(
     clip_embeddings = receipt.get("clip_embeddings")
     study_embeddings = receipt.get("study_embeddings")
     no_cine_studies = receipt.get("no_cine_studies")
+    successful_cines = receipt.get("successfully_extracted_cines")
+    dispositions = receipt.get("object_technical_dispositions")
     if (
-        receipt.get("schema_version") != 1
+        receipt.get("schema_version") != 2
         or receipt.get("artifact_type")
-        != "lvef_c3_cohort_preservation_receipt_v1"
+        != "lvef_c3_cohort_preservation_receipt_v2"
         or receipt.get("status") != "PASS_COHORT_PRESERVATION"
         or COMMIT_RE.fullmatch(str(receipt.get("governing_commit"))) is None
         or re.fullmatch(
@@ -1150,6 +1439,46 @@ def _validate_cohort_receipt_fields(
         or isinstance(no_cine_studies, bool)
         or not isinstance(no_cine_studies, int)
         or no_cine_studies < 0
+        or isinstance(successful_cines, bool)
+        or not isinstance(successful_cines, int)
+        or successful_cines < 1
+        or isinstance(dispositions, bool)
+        or not isinstance(dispositions, int)
+        or dispositions < 0
+        or isinstance(
+            receipt.get("studies_affected_by_technical_disposition"), bool
+        )
+        or not isinstance(
+            receipt.get("studies_affected_by_technical_disposition"), int
+        )
+        or receipt["studies_affected_by_technical_disposition"] < 0
+        or receipt["studies_affected_by_technical_disposition"] > dispositions
+        or (
+            receipt["studies_affected_by_technical_disposition"] == 0
+        ) is not (dispositions == 0)
+        or receipt.get("clip_embeddings") != successful_cines
+        or receipt.get("blocking_failures") != 0
+        or receipt.get("new_no_cine_studies") != 0
+        or receipt.get("object_substitution_count") != 0
+        or receipt.get("unaccounted_multiframe_objects") != 0
+        or receipt.get("technical_disposition_policy_version")
+        != "source_signal_object_technical_disposition_v1"
+        or SHA256_RE.fullmatch(
+            str(receipt.get("technical_disposition_manifest_set_sha256"))
+        )
+        is None
+        or SHA256_RE.fullmatch(
+            str(receipt.get("prespecified_no_cine_study_set_sha256"))
+        )
+        is None
+        or receipt.get("technical_disposition_counts_by_class")
+        != {
+            "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": dispositions
+        }
+        or receipt.get("all_extraction_rows_resolved") is not True
+        or receipt.get("all_successful_extractions_embedded") is not True
+        or receipt.get("all_technical_dispositions_retained") is not True
+        or receipt.get("all_no_cine_studies_prespecified") is not True
         or receipt.get("second_pass_replay_passed") is not True
         or receipt.get("raw_dicoms_retained") is not True
         or receipt.get("extracted_cache_retired") is not True
@@ -1171,6 +1500,176 @@ def _validate_cohort_receipt_fields(
         production_batches=production_batches,
         output_relative=output_relative,
     )
+
+
+def _replay_batch_extraction_partition(
+    *,
+    artifact_root: Path,
+    attempt_id: str,
+    batch_id: str,
+    planned_batch: Mapping[str, Any],
+    batch_receipt: Mapping[str, Any],
+) -> tuple[set[tuple[str, str, str, str]], set[tuple[str, str, str, str]]]:
+    """Rebuild the exact success/disposition partition from retained metadata."""
+
+    extraction_prefix = (
+        PurePosixPath("attempts")
+        / attempt_id
+        / "extracted_cache"
+        / batch_id
+        / "dicom_extraction"
+    )
+    try:
+        extraction_path = _cohort_artifact_path(
+            artifact_root,
+            (
+                extraction_prefix / "extraction_manifest.restricted.csv"
+            ).as_posix(),
+        )
+        technical_path = _cohort_artifact_path(
+            artifact_root,
+            (
+                extraction_prefix
+                / "technical_disposition_manifest.restricted.csv"
+            ).as_posix(),
+        )
+        extraction_payload = _stable_nofollow_bytes(
+            extraction_path, code="COHORT_EXTRACTION_MANIFEST"
+        )
+        if hashlib.sha256(extraction_payload).hexdigest() != str(
+            batch_receipt["extraction_manifest_sha256"]
+        ):
+            raise ProductionFinalizationError(
+                "COHORT_EXTRACTION_PARTITION_MISMATCH"
+            )
+        extraction_rows = _read_closed_csv_bytes(
+            extraction_payload,
+            expected_header=preservation.EXTRACTION_MANIFEST_HEADER,
+            code="COHORT_EXTRACTION_MANIFEST",
+        )
+        technical_rows, technical_sha = (
+            production_stages.read_technical_disposition_manifest_authority(
+                technical_path
+            )
+        )
+        if technical_sha != str(
+            batch_receipt["technical_disposition_manifest_sha256"]
+        ):
+            raise ProductionFinalizationError(
+                "COHORT_EXTRACTION_PARTITION_MISMATCH"
+            )
+    except (ProductionFinalizationError, production_stages.ProductionStageError) as exc:
+        if (
+            isinstance(exc, ProductionFinalizationError)
+            and exc.code == "COHORT_EXTRACTION_PARTITION_MISMATCH"
+        ):
+            raise
+        raise ProductionFinalizationError(
+            "COHORT_EXTRACTION_PARTITION_MISMATCH"
+        ) from exc
+
+    expected_sources = {
+        str(row["source_object_key"]): (
+            str(row["subject_id"]), str(row["study_id"])
+        )
+        for row in planned_batch["objects"]
+    }
+    successful: set[tuple[str, str, str, str]] = set()
+    disposed: set[tuple[str, str, str, str]] = set()
+    seen_sources: set[str] = set()
+    seen_clips: set[str] = set()
+    for row in extraction_rows:
+        if None in row.values():
+            raise ProductionFinalizationError(
+                "COHORT_EXTRACTION_PARTITION_MISMATCH"
+            )
+        source = str(row["physical_source_key"])
+        clip = str(row["clip_key"])
+        identity = (
+            str(row["subject_id"]),
+            str(row["study_id"]),
+            clip,
+            source,
+        )
+        if (
+            source in seen_sources
+            or clip in seen_clips
+            or expected_sources.get(source) != identity[:2]
+            or SHA256_RE.fullmatch(source) is None
+            or SHA256_RE.fullmatch(clip) is None
+        ):
+            raise ProductionFinalizationError(
+                "COHORT_EXTRACTION_PARTITION_MISMATCH"
+            )
+        seen_sources.add(source)
+        seen_clips.add(clip)
+        if row["write_ok"] == "True":
+            if SHA256_RE.fullmatch(str(row["npz_sha256"])) is None:
+                raise ProductionFinalizationError(
+                    "COHORT_EXTRACTION_PARTITION_MISMATCH"
+                )
+            successful.add(identity)
+        elif (
+            row["write_ok"] == "False"
+            and row["failure_substage"] == "SOURCE_SIGNAL_QUALITY_FAILURE"
+            and row["npz_sha256"] == ""
+        ):
+            disposed.add(identity)
+        else:
+            raise ProductionFinalizationError(
+                "COHORT_EXTRACTION_PARTITION_MISMATCH"
+            )
+    technical_identities: set[tuple[str, str, str, str]] = set()
+    technical_true_fields = (
+        "selected_source_membership_passed",
+        "batch_plan_membership_passed",
+        "download_integrity_authority_passed",
+        "dicom_header_readable",
+        "pixel_decode_ok",
+        "raw_dicom_retained",
+        "npz_absent",
+        "embedding_absent",
+        "study_retains_valid_cine_coverage",
+    )
+    for row in technical_rows:
+        identity = (
+            str(row["subject_id"]),
+            str(row["study_id"]),
+            str(row["clip_key"]),
+            str(row["physical_source_key"]),
+        )
+        if (
+            identity in technical_identities
+            or any(row[field] != "True" for field in technical_true_fields)
+            or row["object_substitution"] != "False"
+            or row["failure_substage"]
+            != "SOURCE_SIGNAL_QUALITY_FAILURE"
+            or row["technical_disposition"]
+            != "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR"
+            or row["decode_color_status"] != "PASS"
+            or row["canonical_color_space"] != "RGB"
+            or row["technical_disposition_policy_version"]
+            != "source_signal_object_technical_disposition_v1"
+        ):
+            raise ProductionFinalizationError(
+                "COHORT_EXTRACTION_PARTITION_MISMATCH"
+            )
+        technical_identities.add(identity)
+    if (
+        len(extraction_rows) != int(batch_receipt["n_multiframe_cines"])
+        or not seen_sources.issubset(set(expected_sources))
+        or successful.intersection(disposed)
+        or technical_identities != disposed
+        or len(technical_rows) != len(technical_identities)
+        or len(successful)
+        != int(batch_receipt["n_successfully_extracted_cines"])
+        or len(disposed)
+        != int(batch_receipt["n_object_technical_dispositions"])
+    ):
+        raise ProductionFinalizationError(
+            "COHORT_EXTRACTION_PARTITION_MISMATCH"
+        )
+    return successful, disposed
 
 
 def _replay_cohort_artifact_inventory(
@@ -1199,6 +1698,45 @@ def _replay_cohort_artifact_inventory(
     attempt_id = str(receipt["attempt_id"])
     production_batches = int(receipt["production_batches"])
     output_prefix = PurePosixPath(output_relative)
+    plan_path = (
+        artifact_root / "attempts" / attempt_id
+        / "full_batch_plan.restricted.json"
+    )
+    if plan_path.is_symlink() or not plan_path.is_file():
+        raise ProductionFinalizationError("COHORT_BATCH_PLAN_NOT_REGULAR")
+    plan = load_json(plan_path, "COHORT_BATCH_PLAN")
+    cohort = plan.get("cohort")
+    batches = plan.get("batches")
+    if not isinstance(cohort, Mapping) or not isinstance(batches, list):
+        raise ProductionFinalizationError("COHORT_BATCH_PLAN_INVALID")
+    try:
+        plan_requirements = core.PlanRequirements(
+            release=str(cohort["release"]),
+            selected_studies=int(cohort["selected_studies"]),
+            selected_subjects=int(cohort["selected_subjects"]),
+            normalized_source_objects=int(cohort["normalized_source_objects"]),
+            selected_source_bytes=int(cohort["selected_source_bytes"]),
+            batch_count=len(batches),
+            studies_per_full_batch=int(batches[0]["n_studies"]),
+            final_batch_studies=int(batches[-1]["n_studies"]),
+            contract_id=str(plan["contract_id"]),
+        )
+        observed_plan_sha = core.validate_current_batch_plan_v3(
+            plan, requirements=plan_requirements
+        )
+    except (KeyError, TypeError, ValueError, core.OrchestrationError) as exc:
+        raise ProductionFinalizationError("COHORT_BATCH_PLAN_INVALID") from exc
+    if (
+        production_batches != len(batches)
+        or observed_plan_sha != receipt["batch_plan_sha256"]
+        or sha256_file(plan_path) != receipt["batch_plan_sha256"]
+        or cohort.get("prespecified_no_cine_study_set_sha256")
+        != receipt.get("prespecified_no_cine_study_set_sha256")
+        or cohort.get("expected_no_cine_studies")
+        != receipt.get("no_cine_studies")
+    ):
+        raise ProductionFinalizationError("COHORT_NO_CINE_PLAN_BINDING_MISMATCH")
+    planned_by_batch = {str(item["batch_id"]): item for item in batches}
     batch_receipts: dict[str, Mapping[str, Any]] = {}
     receipt_hashes: list[str] = []
     for index in range(production_batches):
@@ -1212,12 +1750,18 @@ def _replay_cohort_artifact_inventory(
             _cohort_artifact_path(artifact_root, receipt_relative),
             "COHORT_BATCH_RECEIPT",
         )
-        _validate_receipt(batch_receipt)
+        _validate_current_receipt_v3(batch_receipt)
         if (
             batch_receipt.get("batch_id") != batch_id
             or batch_receipt.get("attempt_id") != attempt_id
             or batch_receipt.get("governing_commit") != receipt["governing_commit"]
             or batch_receipt.get("batch_plan_sha256") != receipt["batch_plan_sha256"]
+            or batch_receipt.get("prespecified_no_cine_study_set_sha256")
+            != planned_by_batch[batch_id][
+                "prespecified_no_cine_study_set_sha256"
+            ]
+            or batch_receipt.get("n_no_cine_studies")
+            != planned_by_batch[batch_id]["expected_no_cine_studies"]
         ):
             raise ProductionFinalizationError("COHORT_BATCH_RECEIPT_BINDING_MISMATCH")
         batch_receipts[batch_id] = batch_receipt
@@ -1227,6 +1771,43 @@ def _replay_cohort_artifact_inventory(
     ).hexdigest()
     if receipt_set_hash != receipt["batch_receipt_set_sha256"]:
         raise ProductionFinalizationError("COHORT_BATCH_RECEIPT_SET_MISMATCH")
+    def batch_total(key: str) -> int:
+        return sum(int(item[key]) for item in batch_receipts.values())
+
+    technical_set_hash = hashlib.sha256(
+        (
+            "\n".join(
+                sorted(
+                    str(item["technical_disposition_manifest_sha256"])
+                    for item in batch_receipts.values()
+                )
+            )
+            + "\n"
+        ).encode("ascii")
+    ).hexdigest()
+    disposition_total = batch_total("n_object_technical_dispositions")
+    if (
+        receipt.get("clip_embeddings") != batch_total("n_clip_embeddings")
+        or receipt.get("successfully_extracted_cines")
+        != batch_total("n_successfully_extracted_cines")
+        or receipt.get("object_technical_dispositions") != disposition_total
+        or receipt.get("studies_affected_by_technical_disposition")
+        != batch_total("n_studies_affected_by_technical_disposition")
+        or receipt.get("new_no_cine_studies") != batch_total("n_new_no_cine_studies")
+        or receipt.get("object_substitution_count")
+        != batch_total("object_substitution_count")
+        or receipt.get("unaccounted_multiframe_objects")
+        != batch_total("unaccounted_multiframe_objects")
+        or receipt.get("technical_disposition_counts_by_class")
+        != {
+            "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": disposition_total
+        }
+        or receipt.get("technical_disposition_manifest_set_sha256")
+        != technical_set_hash
+    ):
+        raise ProductionFinalizationError(
+            "COHORT_TECHNICAL_DISPOSITION_RECONCILIATION_MISMATCH"
+        )
     if (
         sum(int(item["n_clip_embeddings"]) for item in batch_receipts.values())
         != receipt["clip_embeddings"]
@@ -1269,6 +1850,8 @@ def _replay_cohort_artifact_inventory(
         if batch_id not in rows_by_batch:
             raise ProductionFinalizationError("CANONICAL_CLIP_BATCH_SET_MISMATCH")
         rows_by_batch[batch_id].append(row)
+    replayed_clip_keys: set[str] = set()
+    replayed_source_keys: set[str] = set()
     for batch_id, rows in rows_by_batch.items():
         batch_prefix = PurePosixPath("attempts") / attempt_id / "batches" / batch_id
         store_relative = (
@@ -1276,10 +1859,73 @@ def _replay_cohort_artifact_inventory(
         ).as_posix()
         store_item = by_role_and_path[("batch_clip_embeddings", store_relative)]
         batch_receipt = batch_receipts[batch_id]
+        batch_clip_manifest = _cohort_artifact_path(
+            artifact_root,
+            (batch_prefix / "echoprime" / "clip_manifest.restricted.csv").as_posix(),
+        )
+        expected_rows = accumulate_global_clip_authority(
+            batch_clip_manifest,
+            planned_batch=planned_by_batch[batch_id],
+            expected_rows=int(batch_receipt["n_clip_embeddings"]),
+            global_clip_keys=replayed_clip_keys,
+            global_physical_source_keys=replayed_source_keys,
+            batch_clip_embeddings_sha256=str(store_item["sha256"]),
+        )
+        successful_extractions, disposed_extractions = (
+            _replay_batch_extraction_partition(
+                artifact_root=artifact_root,
+                attempt_id=attempt_id,
+                batch_id=batch_id,
+                planned_batch=planned_by_batch[batch_id],
+                batch_receipt=batch_receipt,
+            )
+        )
+        embedded_identities = {
+            (
+                str(row["subject_id"]),
+                str(row["study_id"]),
+                str(row["clip_key"]),
+                str(row["physical_source_key"]),
+            )
+            for row in expected_rows
+        }
+        canonical_identity = [
+            (
+                str(row["batch_id"]),
+                int(row["batch_embedding_idx"]),
+                str(row["subject_id"]),
+                str(row["study_id"]),
+                str(row["clip_key"]),
+                str(row["physical_source_key"]),
+                str(row["embedding_sha256"]),
+                str(row["batch_clip_manifest_sha256"]),
+                str(row["batch_clip_embeddings_sha256"]),
+            )
+            for row in rows
+        ]
+        replayed_identity = [
+            (
+                str(row["batch_id"]),
+                int(row["batch_embedding_idx"]),
+                str(row["subject_id"]),
+                str(row["study_id"]),
+                str(row["clip_key"]),
+                str(row["physical_source_key"]),
+                str(row["embedding_sha256"]),
+                str(row["batch_clip_manifest_sha256"]),
+                str(row["batch_clip_embeddings_sha256"]),
+            )
+            for row in expected_rows
+        ]
         if (
             len(rows) != batch_receipt["n_clip_embeddings"]
             or len(rows) != batch_receipt["n_unique_clip_keys"]
             or store_item["sha256"] != batch_receipt["clip_embeddings_sha256"]
+            or sha256_file(batch_clip_manifest)
+            != batch_receipt["clip_manifest_sha256"]
+            or embedded_identities != successful_extractions
+            or embedded_identities.intersection(disposed_extractions)
+            or canonical_identity != replayed_identity
             or any(
                 row["batch_clip_embeddings_sha256"] != store_item["sha256"]
                 or row["batch_clip_manifest_sha256"]
@@ -1352,11 +1998,58 @@ def _replay_cohort_artifact_inventory(
         expected_header=CANONICAL_STUDY_MANIFEST_HEADER,
         code="COHORT_CANONICAL_STUDY_MANIFEST",
     )
+    planned_no_cine_keys = sorted(
+        [
+            {
+                "subject_id": str(row["subject_id"]),
+                "study_id": str(row["study_id"]),
+            }
+            for batch in batches
+            for row in batch["prespecified_no_cine_study_keys"]
+        ],
+        key=lambda row: (int(row["subject_id"]), int(row["study_id"])),
+    )
+    planned_no_cine_pairs = {
+        (row["subject_id"], row["study_id"]) for row in planned_no_cine_keys
+    }
+    expected_study_membership = [
+        (
+            str(index),
+            str(study["subject_id"]),
+            str(study["study_id"]),
+            str(batch["batch_id"]),
+        )
+        for index, (batch, study) in enumerate(
+            (
+                (batch, study)
+                for batch in batches
+                for study in batch["studies"]
+                if (str(study["subject_id"]), str(study["study_id"]))
+                not in planned_no_cine_pairs
+            )
+        )
+    ]
+    actual_study_membership = [
+        (
+            str(row.get("study_idx")),
+            str(row.get("subject_id")),
+            str(row.get("study_id")),
+            str(row.get("batch_id")),
+        )
+        for row in study_rows
+    ]
     if (
         len(study_array) != receipt["study_embeddings"]
         or len(study_rows) != receipt["study_embeddings"]
+        or actual_study_membership != expected_study_membership
+        or len(planned_no_cine_pairs) != receipt["no_cine_studies"]
+        or len(expected_study_membership) != receipt["study_embeddings"]
+        or core.canonical_json_sha256(planned_no_cine_keys)
+        != receipt["prespecified_no_cine_study_set_sha256"]
         or any(
             row.get("study_idx") != str(index)
+            or not str(row.get("n_clips", "")).isdigit()
+            or int(str(row["n_clips"])) < 1
             or row.get("embedding_sha256") != smoke.array_content_sha256(study_array[index])
             for index, row in enumerate(study_rows)
         )
@@ -1389,6 +2082,11 @@ def write_cohort_preservation_outputs(
     artifacts: Sequence[Mapping[str, Any]], governing_commit: str,
     attempt_id: str, batch_plan_sha256: str, batch_receipt_set_sha256: str,
     production_batches: int, study_embeddings: int, no_cine_studies: int,
+    successfully_extracted_cines: int,
+    object_technical_dispositions: int,
+    studies_affected_by_technical_disposition: int,
+    technical_disposition_manifest_set_sha256: str,
+    prespecified_no_cine_study_set_sha256: str,
 ) -> dict[str, Any]:
     """Publish the cohort clip index, replay it, then publish one receipt last."""
 
@@ -1416,8 +2114,8 @@ def write_cohort_preservation_outputs(
         output_relative=output_relative,
     )
     receipt = {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_cohort_preservation_receipt_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_cohort_preservation_receipt_v2",
         "status": "PASS_COHORT_PRESERVATION",
         "governing_commit": governing_commit,
         "attempt_id": attempt_id,
@@ -1427,6 +2125,33 @@ def write_cohort_preservation_outputs(
         "clip_embeddings": len(clip_index_rows),
         "study_embeddings": study_embeddings,
         "no_cine_studies": no_cine_studies,
+        "successfully_extracted_cines": successfully_extracted_cines,
+        "object_technical_dispositions": object_technical_dispositions,
+        "blocking_failures": 0,
+        "studies_affected_by_technical_disposition": (
+            studies_affected_by_technical_disposition
+        ),
+        "new_no_cine_studies": 0,
+        "technical_disposition_counts_by_class": {
+            "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": (
+                object_technical_dispositions
+            )
+        },
+        "technical_disposition_policy_version": (
+            "source_signal_object_technical_disposition_v1"
+        ),
+        "technical_disposition_manifest_set_sha256": (
+            technical_disposition_manifest_set_sha256
+        ),
+        "prespecified_no_cine_study_set_sha256": (
+            prespecified_no_cine_study_set_sha256
+        ),
+        "all_no_cine_studies_prespecified": True,
+        "all_extraction_rows_resolved": True,
+        "all_successful_extractions_embedded": True,
+        "all_technical_dispositions_retained": True,
+        "object_substitution_count": 0,
+        "unaccounted_multiframe_objects": 0,
         "artifacts": normalized,
         "second_pass_replay_passed": True,
         "raw_dicoms_retained": True,
@@ -1640,8 +2365,8 @@ def write_canonical_study_store(
     return receipt
 
 
-def _validate_receipt(value: Mapping[str, Any]) -> None:
-    if set(value) != BATCH_RECEIPT_KEYS:
+def _validate_legacy_receipt_v2(value: Mapping[str, Any]) -> None:
+    if set(value) != LEGACY_BATCH_RECEIPT_KEYS_V2:
         raise ProductionFinalizationError("BATCH_RECEIPT_SCHEMA_MISMATCH")
     if value.get("schema_version") != 1:
         raise ProductionFinalizationError("BATCH_RECEIPT_VERSION_MISMATCH")
@@ -1673,20 +2398,20 @@ def _validate_receipt(value: Mapping[str, Any]) -> None:
     ):
         if not isinstance(value.get(key), str) or not value[key]:
             raise ProductionFinalizationError("BATCH_RUNTIME_VERSION_INVALID")
-    for key in HASH_KEYS:
+    for key in LEGACY_HASH_KEYS_V2:
         if not SHA256_RE.fullmatch(str(value.get(key))):
             raise ProductionFinalizationError("BATCH_HASH_INVALID")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", str(value.get("scheduler_job_identity"))):
         raise ProductionFinalizationError("SCHEDULER_IDENTITY_INVALID")
-    for key in COUNT_KEYS:
+    for key in LEGACY_COUNT_KEYS_V2:
         if isinstance(value.get(key), bool) or not isinstance(value.get(key), int):
             raise ProductionFinalizationError("BATCH_COUNT_NOT_INTEGER")
         if value[key] < 0:
             raise ProductionFinalizationError("BATCH_COUNT_NEGATIVE")
-    for key in TRUE_GATE_KEYS:
+    for key in LEGACY_TRUE_GATE_KEYS_V2:
         if value.get(key) is not True:
             raise ProductionFinalizationError("BATCH_GATE_FAILED")
-    for key in ZERO_KEYS:
+    for key in LEGACY_ZERO_KEYS_V2:
         if value[key] != 0:
             raise ProductionFinalizationError("SCIENTIFIC_INCONSISTENCY")
     if value.get("extracted_cache_retired") is not True:
@@ -1712,9 +2437,134 @@ def _validate_receipt(value: Mapping[str, Any]) -> None:
         raise ProductionFinalizationError("NO_CINE_DISPOSITION_MISMATCH")
 
 
-def _validate_canary_eligibility_receipt(value: Mapping[str, Any]) -> None:
+def _validate_current_receipt_v3(value: Mapping[str, Any]) -> None:
+    if set(value) != BATCH_RECEIPT_KEYS:
+        raise ProductionFinalizationError("BATCH_RECEIPT_SCHEMA_MISMATCH")
+    if (
+        value.get("schema_version") != 2
+        or value.get("artifact_type")
+        != "lvef_c3_batch_finalization_receipt_v3"
+    ):
+        raise ProductionFinalizationError("BATCH_RECEIPT_VERSION_MISMATCH")
+    if value.get("status") != "PASS_BATCH_FINALIZED":
+        raise ProductionFinalizationError("BATCH_NOT_FINALIZED")
+    if value.get("batch_id") not in EXPECTED_BATCH_IDS:
+        raise ProductionFinalizationError("BATCH_ID_INVALID")
+    if not isinstance(value.get("attempt_id"), str) or not value["attempt_id"]:
+        raise ProductionFinalizationError("ATTEMPT_ID_INVALID")
+    if (
+        not COMMIT_RE.fullmatch(str(value.get("governing_commit")))
+        or value.get("source_commit") != value.get("governing_commit")
+        or not TIMESTAMP_RE.fullmatch(str(value.get("run_timestamp_utc")))
+    ):
+        raise ProductionFinalizationError("BATCH_PROVENANCE_VALUE_INVALID")
+    if (
+        value.get("cohort_version") != "mimic-iv-echo/1.0"
+        or not re.fullmatch(
+            r"split_map_sha256:[0-9a-f]{64}", str(value.get("split_version"))
+        )
+        or value.get("execution_contract_version") != 2
+        or value.get("aggregate_safety_gate_result") != "PASS"
+        or value.get("checkpoint_checksum") != value.get("checkpoint_sha256")
+        or value.get("technical_disposition_policy_version")
+        != "source_signal_object_technical_disposition_v1"
+    ):
+        raise ProductionFinalizationError("BATCH_PROVENANCE_VALUE_INVALID")
+    for key in (
+        "python_version", "pytorch_version", "torchvision_version",
+        "cuda_version", "cudnn_version",
+    ):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise ProductionFinalizationError("BATCH_RUNTIME_VERSION_INVALID")
+    for key in HASH_KEYS:
+        if not SHA256_RE.fullmatch(str(value.get(key))):
+            raise ProductionFinalizationError("BATCH_HASH_INVALID")
+    if not re.fullmatch(
+        r"[A-Za-z0-9_.:-]{1,80}", str(value.get("scheduler_job_identity"))
+    ):
+        raise ProductionFinalizationError("SCHEDULER_IDENTITY_INVALID")
+    for key in COUNT_KEYS:
+        if (
+            isinstance(value.get(key), bool)
+            or not isinstance(value.get(key), int)
+            or value[key] < 0
+        ):
+            raise ProductionFinalizationError("BATCH_COUNT_INVALID")
+    for key in TRUE_GATE_KEYS:
+        if value.get(key) is not True:
+            raise ProductionFinalizationError("BATCH_GATE_FAILED")
+    for key in ZERO_KEYS:
+        if value[key] != 0:
+            raise ProductionFinalizationError("SCIENTIFIC_INCONSISTENCY")
+    expected_counts = {
+        "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": value[
+            "n_object_technical_dispositions"
+        ]
+    }
+    if value.get("technical_disposition_counts_by_class") != expected_counts:
+        raise ProductionFinalizationError(
+            "TECHNICAL_DISPOSITION_COUNT_MAP_INVALID"
+        )
+    dispositions = value["n_object_technical_dispositions"]
+    affected_studies = value["n_studies_affected_by_technical_disposition"]
+    if (
+        affected_studies > dispositions
+        or (affected_studies == 0) is not (dispositions == 0)
+    ):
+        raise ProductionFinalizationError(
+            "TECHNICAL_DISPOSITION_STUDY_COUNT_INVALID"
+        )
+    if value.get("extracted_cache_retired") is not True:
+        raise ProductionFinalizationError("CACHE_RETIREMENT_NOT_COMPLETE")
+    if value["n_download_verified"] != value["n_expected_objects"]:
+        raise ProductionFinalizationError("DOWNLOAD_COUNT_MISMATCH")
+    if (
+        value["n_dicom_readable"] + value["n_dicom_unreadable"]
+        != value["n_expected_objects"]
+        or value["n_multiframe_cines"] + value["n_single_frame_objects"]
+        != value["n_dicom_readable"]
+    ):
+        raise ProductionFinalizationError("DICOM_COUNT_MISMATCH")
+    if (
+        value["n_multiframe_cines"]
+        != value["n_successfully_extracted_cines"]
+        + value["n_object_technical_dispositions"]
+        or value["n_successfully_extracted_cines"]
+        != value["n_extracted_clips"]
+        or value["n_successfully_extracted_cines"]
+        != value["n_unique_clip_keys"]
+        or value["n_successfully_extracted_cines"]
+        != value["n_clip_embeddings"]
+    ):
+        raise ProductionFinalizationError("CLIP_ACCOUNTING_MISMATCH")
+    if (
+        value["n_pooled_studies"] + value["n_no_cine_studies"]
+        != value["n_selected_studies"]
+    ):
+        raise ProductionFinalizationError("STUDY_POOLING_ACCOUNTING_MISMATCH")
+    if value.get("no_cine_disposition") != (
+        "NONE"
+        if value["n_no_cine_studies"] == 0
+        else "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
+    ):
+        raise ProductionFinalizationError("NO_CINE_DISPOSITION_MISMATCH")
+
+
+def _validate_receipt(value: Mapping[str, Any]) -> None:
+    identity = (value.get("schema_version"), value.get("artifact_type"))
+    if identity == (1, "lvef_c3_batch_finalization_receipt_v2"):
+        _validate_legacy_receipt_v2(value)
+    elif identity == (2, "lvef_c3_batch_finalization_receipt_v3"):
+        _validate_current_receipt_v3(value)
+    else:
+        raise ProductionFinalizationError("BATCH_RECEIPT_VERSION_MISMATCH")
+
+
+def _validate_legacy_canary_eligibility_receipt_v2(
+    value: Mapping[str, Any]
+) -> None:
     """Validate the retained-cache receipt subset used by a bounded canary."""
-    if set(value) != PRESERVATION_ELIGIBILITY_RECEIPT_KEYS:
+    if set(value) != LEGACY_PRESERVATION_ELIGIBILITY_RECEIPT_KEYS_V2:
         raise ProductionFinalizationError("CANARY_RECEIPT_SCHEMA_MISMATCH")
     if value.get("schema_version") != 1:
         raise ProductionFinalizationError("CANARY_RECEIPT_VERSION_MISMATCH")
@@ -1748,22 +2598,22 @@ def _validate_canary_eligibility_receipt(value: Mapping[str, Any]) -> None:
     ):
         if not isinstance(value.get(key), str) or not value[key]:
             raise ProductionFinalizationError("CANARY_RUNTIME_VERSION_INVALID")
-    for key in HASH_KEYS - RETIREMENT_RECEIPT_KEYS:
+    for key in LEGACY_HASH_KEYS_V2 - RETIREMENT_RECEIPT_KEYS:
         if not SHA256_RE.fullmatch(str(value.get(key))):
             raise ProductionFinalizationError("CANARY_HASH_INVALID")
     if not re.fullmatch(
         r"[A-Za-z0-9_.:-]{1,80}", str(value.get("scheduler_job_identity"))
     ):
         raise ProductionFinalizationError("CANARY_SCHEDULER_IDENTITY_INVALID")
-    for key in COUNT_KEYS:
+    for key in LEGACY_COUNT_KEYS_V2:
         if isinstance(value.get(key), bool) or not isinstance(value.get(key), int):
             raise ProductionFinalizationError("CANARY_COUNT_NOT_INTEGER")
         if value[key] < 0:
             raise ProductionFinalizationError("CANARY_COUNT_NEGATIVE")
-    for key in TRUE_GATE_KEYS:
+    for key in LEGACY_TRUE_GATE_KEYS_V2:
         if value.get(key) is not True:
             raise ProductionFinalizationError("CANARY_GATE_FAILED")
-    for key in ZERO_KEYS:
+    for key in LEGACY_ZERO_KEYS_V2:
         if value[key] != 0:
             raise ProductionFinalizationError("CANARY_SCIENTIFIC_INCONSISTENCY")
     if value.get("extracted_cache_retired") is not False:
@@ -1794,6 +2644,107 @@ def _validate_canary_eligibility_receipt(value: Mapping[str, Any]) -> None:
         == value["n_clip_embeddings"]
     ) or value["n_multiframe_cines"] < 5:
         raise ProductionFinalizationError("CANARY_CLIP_ACCOUNTING_MISMATCH")
+
+
+def _validate_current_canary_eligibility_receipt_v3(
+    value: Mapping[str, Any]
+) -> None:
+    if set(value) != PRESERVATION_ELIGIBILITY_RECEIPT_KEYS:
+        raise ProductionFinalizationError("CANARY_RECEIPT_SCHEMA_MISMATCH")
+    if (
+        value.get("schema_version") != 2
+        or value.get("artifact_type")
+        != "lvef_c3_batch_preservation_eligibility_receipt_v3"
+        or value.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE"
+    ):
+        raise ProductionFinalizationError("CANARY_RECEIPT_VERSION_MISMATCH")
+    if not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", str(value.get("batch_id"))
+    ):
+        raise ProductionFinalizationError("CANARY_BATCH_ID_INVALID")
+    if not isinstance(value.get("attempt_id"), str) or not value["attempt_id"]:
+        raise ProductionFinalizationError("CANARY_ATTEMPT_ID_INVALID")
+    if (
+        not COMMIT_RE.fullmatch(str(value.get("governing_commit")))
+        or value.get("source_commit") != value.get("governing_commit")
+        or not TIMESTAMP_RE.fullmatch(str(value.get("run_timestamp_utc")))
+        or value.get("cohort_version") != "mimic-iv-echo/1.0"
+        or not re.fullmatch(
+            r"split_map_sha256:[0-9a-f]{64}", str(value.get("split_version"))
+        )
+        or value.get("execution_contract_version") != 2
+        or value.get("aggregate_safety_gate_result") != "PASS"
+        or value.get("checkpoint_checksum") != value.get("checkpoint_sha256")
+        or value.get("technical_disposition_policy_version")
+        != "source_signal_object_technical_disposition_v1"
+    ):
+        raise ProductionFinalizationError("CANARY_PROVENANCE_VALUE_INVALID")
+    for key in HASH_KEYS - RETIREMENT_RECEIPT_KEYS:
+        if not SHA256_RE.fullmatch(str(value.get(key))):
+            raise ProductionFinalizationError("CANARY_HASH_INVALID")
+    for key in (
+        "python_version", "pytorch_version", "torchvision_version",
+        "cuda_version", "cudnn_version",
+    ):
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise ProductionFinalizationError("CANARY_RUNTIME_VERSION_INVALID")
+    if not re.fullmatch(
+        r"[A-Za-z0-9_.:-]{1,80}", str(value.get("scheduler_job_identity"))
+    ):
+        raise ProductionFinalizationError("CANARY_SCHEDULER_IDENTITY_INVALID")
+    for key in COUNT_KEYS:
+        if (
+            isinstance(value.get(key), bool)
+            or not isinstance(value.get(key), int)
+            or value[key] < 0
+        ):
+            raise ProductionFinalizationError("CANARY_COUNT_INVALID")
+    for key in TRUE_GATE_KEYS:
+        if value.get(key) is not True:
+            raise ProductionFinalizationError("CANARY_GATE_FAILED")
+    for key in ZERO_KEYS:
+        if value[key] != 0:
+            raise ProductionFinalizationError("CANARY_SCIENTIFIC_INCONSISTENCY")
+    if value.get("extracted_cache_retired") is not False:
+        raise ProductionFinalizationError("CANARY_CACHE_NOT_RETAINED")
+    if (
+        value.get("technical_disposition_counts_by_class")
+        != {"SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": 0}
+        or value.get("prespecified_no_cine_study_set_sha256")
+        != core.canonical_json_sha256([])
+        or value.get("all_no_cine_studies_prespecified") is not True
+        or value.get("n_object_technical_dispositions") != 0
+        or value.get("n_studies_affected_by_technical_disposition") != 0
+        or value["n_selected_studies"] != 5
+        or value["n_selected_subjects"] != 5
+        or value["n_pooled_studies"] != 5
+        or value["n_no_cine_studies"] != 0
+        or value.get("no_cine_disposition") != "NONE"
+        or value["n_expected_objects"] < 5
+        or value["expected_source_bytes"] < 1
+        or value["n_download_verified"] != value["n_expected_objects"]
+        or value["n_dicom_unreadable"] != 0
+        or value["n_dicom_readable"] != value["n_expected_objects"]
+        or value["n_multiframe_cines"] + value["n_single_frame_objects"]
+        != value["n_dicom_readable"]
+        or value["n_multiframe_cines"]
+        != value["n_successfully_extracted_cines"]
+        or value["n_successfully_extracted_cines"] != value["n_extracted_clips"]
+        or value["n_successfully_extracted_cines"] != value["n_unique_clip_keys"]
+        or value["n_successfully_extracted_cines"] != value["n_clip_embeddings"]
+        or value["n_multiframe_cines"] < 5
+    ):
+        raise ProductionFinalizationError("CANARY_CLIP_ACCOUNTING_MISMATCH")
+
+
+def _validate_canary_eligibility_receipt(value: Mapping[str, Any]) -> None:
+    identity = (value.get("schema_version"), value.get("artifact_type"))
+    if identity == (1, "lvef_c3_batch_preservation_eligibility_receipt_v2"):
+        _validate_legacy_canary_eligibility_receipt_v2(value)
+    elif identity == (2, "lvef_c3_batch_preservation_eligibility_receipt_v3"):
+        _validate_current_canary_eligibility_receipt_v3(value)
+    else:
+        raise ProductionFinalizationError("CANARY_RECEIPT_VERSION_MISMATCH")
 
 
 def validate_closed_canary_summary(value: Mapping[str, Any]) -> None:
@@ -1900,17 +2851,159 @@ def finalize_canary_preservation_receipt(
 def validate_closed_final_summary(value: Mapping[str, Any]) -> None:
     if set(value) != FINAL_KEYS:
         raise ProductionFinalizationError("FINAL_SUMMARY_SCHEMA_MISMATCH")
-    if SHA256_RE.fullmatch(str(value.get("batch_receipt_set_sha256"))) is None:
-        raise ProductionFinalizationError("FINAL_SUMMARY_BINDING_INVALID")
-    if any(
-        value.get(key) != 0
-        for key in (
-            "model_fitting_count",
-            "endpoint_prediction_count",
-            "confirmatory_performance_access_count",
-        )
-    ):
+    scientific_scope_keys = {
+        "model_fitting_count",
+        "endpoint_prediction_count",
+        "confirmatory_performance_access_count",
+    }
+    if any(type(value.get(key)) is not int or value[key] != 0 for key in scientific_scope_keys):
         raise ProductionFinalizationError("FINAL_SUMMARY_SCIENTIFIC_SCOPE_INVALID")
+    integer_keys = {
+        "production_batches",
+        "selected_studies",
+        "selected_subjects",
+        "verified_source_objects",
+        "selected_source_bytes",
+        "dicom_readable_objects",
+        "dicom_unreadable_objects",
+        "multiframe_cines",
+        "single_frame_objects",
+        "extracted_clips",
+        "successfully_extracted_cines",
+        "object_technical_dispositions",
+        "blocking_failures",
+        "studies_affected_by_technical_disposition",
+        "new_no_cine_studies",
+        "unique_clip_keys",
+        "clip_embeddings",
+        "pooled_imaging_eligible_studies",
+        "no_cine_studies",
+        "outside_selected_studies",
+        "missing_selected_studies",
+        "duplicate_physical_sources",
+        "duplicate_clip_keys",
+        "nonfinite_embeddings",
+        "wrong_dimension_embeddings",
+        "object_substitution_count",
+        "unaccounted_multiframe_objects",
+        *scientific_scope_keys,
+        "canonical_clip_index_size_bytes",
+        "canonical_clip_index_rows",
+        "canonical_study_embeddings_size_bytes",
+        "canonical_study_manifest_size_bytes",
+        "canonical_study_store_receipt_size_bytes",
+        "cohort_preservation_receipt_size_bytes",
+        "cohort_preserved_artifacts",
+    }
+    positive_keys = {
+        "production_batches",
+        "selected_studies",
+        "selected_subjects",
+        "verified_source_objects",
+        "selected_source_bytes",
+        "dicom_readable_objects",
+        "multiframe_cines",
+        "extracted_clips",
+        "successfully_extracted_cines",
+        "unique_clip_keys",
+        "clip_embeddings",
+        "pooled_imaging_eligible_studies",
+    }
+    zero_keys = {
+        "blocking_failures",
+        "new_no_cine_studies",
+        "outside_selected_studies",
+        "missing_selected_studies",
+        "duplicate_physical_sources",
+        "duplicate_clip_keys",
+        "nonfinite_embeddings",
+        "wrong_dimension_embeddings",
+        "object_substitution_count",
+        "unaccounted_multiframe_objects",
+        "model_fitting_count",
+        "endpoint_prediction_count",
+        "confirmatory_performance_access_count",
+    }
+    true_gate_keys = {
+        "all_batches_finalized",
+        "all_authority_bindings_identical",
+        "all_source_receipts_passed",
+        "all_dicom_audits_passed",
+        "all_extraction_rows_resolved",
+        "all_successful_extractions_embedded",
+        "all_technical_dispositions_retained",
+        "all_no_cine_studies_prespecified",
+        "all_embeddings_passed",
+        "all_pooling_passed",
+        "all_preservation_manifests_passed",
+        "all_aggregate_safety_gates_passed",
+        "raw_dicoms_retained",
+        "extracted_cache_retired",
+    }
+    false_gate_keys = {
+        "outside_selected_studies_permitted",
+        "scientific_inconsistency_repair_performed",
+        "identifiers_emitted",
+        "restricted_paths_emitted",
+    }
+    if (
+        value.get("schema_version") != 2
+        or value.get("artifact_type")
+        != "lvef_c3_production_finalization_summary_v2"
+        or SHA256_RE.fullmatch(str(value.get("batch_receipt_set_sha256"))) is None
+        or SHA256_RE.fullmatch(
+            str(value.get("technical_disposition_manifest_set_sha256"))
+        )
+        is None
+        or value.get("technical_disposition_policy_version")
+        != "source_signal_object_technical_disposition_v1"
+        or any(
+            isinstance(value.get(key), bool)
+            or not isinstance(value.get(key), int)
+            or value[key] < 0
+            for key in integer_keys
+        )
+        or any(value[key] < 1 for key in positive_keys)
+        or any(value[key] != 0 for key in zero_keys)
+        or any(value.get(key) is not True for key in true_gate_keys)
+        or any(value.get(key) is not False for key in false_gate_keys)
+        or value.get("technical_disposition_counts_by_class")
+        != {
+            "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": value.get(
+                "object_technical_dispositions"
+            )
+        }
+        or value.get("selected_subjects") != value.get("selected_studies")
+        or value.get("verified_source_objects")
+        != value.get("dicom_readable_objects")
+        + value.get("dicom_unreadable_objects")
+        or value.get("dicom_readable_objects")
+        != value.get("multiframe_cines") + value.get("single_frame_objects")
+        or value.get("multiframe_cines")
+        != value.get("successfully_extracted_cines")
+        + value.get("object_technical_dispositions")
+        or value.get("successfully_extracted_cines")
+        != value.get("clip_embeddings")
+        or value.get("successfully_extracted_cines")
+        != value.get("extracted_clips")
+        or value.get("successfully_extracted_cines")
+        != value.get("unique_clip_keys")
+        or value.get("pooled_imaging_eligible_studies")
+        + value.get("no_cine_studies")
+        != value.get("selected_studies")
+        or value.get("no_cine_disposition")
+        != (
+            "NONE"
+            if value.get("no_cine_studies") == 0
+            else "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
+        )
+        or value.get("studies_affected_by_technical_disposition")
+        > value.get("object_technical_dispositions")
+        or (
+            value.get("studies_affected_by_technical_disposition") == 0
+        ) is not (value.get("object_technical_dispositions") == 0)
+    ):
+        raise ProductionFinalizationError("FINAL_SUMMARY_BINDING_INVALID")
     if value.get("status") == "PASS_PRODUCTION_C3_FINALIZED":
         hash_keys = {
             "canonical_clip_index_sha256",
@@ -1981,7 +3074,7 @@ def finalize_receipts(
     receipt_paths_by_batch: dict[str, Path] = {}
     for path in receipt_paths:
         receipt = load_json(path, "BATCH_RECEIPT")
-        _validate_receipt(receipt)
+        _validate_current_receipt_v3(receipt)
         receipts.append(receipt)
         receipt_hashes.append(sha256_file(path))
         if receipt["batch_id"] in receipt_paths_by_batch:
@@ -2045,7 +3138,9 @@ def finalize_receipts(
             or not cache_retirement_authorization_root.is_dir()
         ):
             raise ProductionFinalizationError("CACHE_AUTHORIZATION_ROOT_INVALID")
-        plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+        plan_sha = core.validate_current_batch_plan_v3(
+            plan, requirements=requirements
+        )
         runtime_authority = (
             core.validate_runtime_authority(expected_runtime_authority)
             if expected_runtime_authority is not None
@@ -2083,6 +3178,11 @@ def finalize_receipts(
                 or receipt["n_selected_subjects"] != batch["n_subjects"]
                 or receipt["n_expected_objects"] != batch["n_objects"]
                 or receipt["expected_source_bytes"] != batch["source_bytes"]
+                or receipt.get("prespecified_no_cine_study_set_sha256")
+                != batch["prespecified_no_cine_study_set_sha256"]
+                or receipt.get("n_no_cine_studies")
+                != batch["expected_no_cine_studies"]
+                or receipt.get("all_no_cine_studies_prespecified") is not True
             ):
                 raise ProductionFinalizationError("FINALIZER_BATCH_PLAN_COUNT_MISMATCH")
             batch_root = production_root / "attempts" / attempt_id / "batches" / receipt["batch_id"]
@@ -2109,6 +3209,11 @@ def finalize_receipts(
                     / receipt["batch_id"] / "dicom_extraction"
                     / "extraction_manifest.restricted.csv"
                 ),
+                "technical_disposition_manifest_sha256": (
+                    production_root / "attempts" / attempt_id / "extracted_cache"
+                    / receipt["batch_id"] / "dicom_extraction"
+                    / "technical_disposition_manifest.restricted.csv"
+                ),
                 "clip_manifest_sha256": batch_root / "echoprime" / "clip_manifest.restricted.csv",
                 "clip_embeddings_sha256": batch_root / "echoprime" / "clip_embeddings.restricted.npz",
                 "study_manifest_sha256": batch_root / "echoprime" / "study_manifest.restricted.csv",
@@ -2132,7 +3237,12 @@ def finalize_receipts(
                         or stat.S_IMODE(metadata.st_mode) != 0o600
                     ):
                         raise ProductionFinalizationError("CACHE_AUTHORIZATION_FILE_INVALID")
-                if sha256_file(path) != receipt[key]:
+                observed_hash = (
+                    production_stages.technical_disposition_manifest_sha256(path)
+                    if key == "technical_disposition_manifest_sha256"
+                    else sha256_file(path)
+                )
+                if observed_hash != receipt[key]:
                     raise ProductionFinalizationError("FINALIZER_REFERENCED_ARTIFACT_HASH_MISMATCH")
             replay_batch_preservation_manifest(
                 expected_artifacts["preservation_manifest_sha256"],
@@ -2316,9 +3426,21 @@ def finalize_receipts(
     for key, expected in expected_totals.items():
         if total(key) != expected:
             raise ProductionFinalizationError("FINAL_COHORT_ACCOUNTING_MISMATCH")
+    disposition_total = total("n_object_technical_dispositions")
+    disposition_manifest_set_sha256 = hashlib.sha256(
+        (
+            "\n".join(
+                sorted(
+                    str(item["technical_disposition_manifest_sha256"])
+                    for item in receipts
+                )
+            )
+            + "\n"
+        ).encode("ascii")
+    ).hexdigest()
     result = {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_production_finalization_summary_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_production_finalization_summary_v2",
         "status": "PASS_PRODUCTION_C3_BATCH_RECEIPTS_RECONCILED",
         "production_batches": len(receipts),
         "selected_studies": total("n_selected_studies"),
@@ -2330,11 +3452,35 @@ def finalize_receipts(
         "multiframe_cines": total("n_multiframe_cines"),
         "single_frame_objects": total("n_single_frame_objects"),
         "extracted_clips": total("n_extracted_clips"),
+        "successfully_extracted_cines": total(
+            "n_successfully_extracted_cines"
+        ),
+        "object_technical_dispositions": disposition_total,
+        "blocking_failures": total("n_blocking_failures"),
+        "studies_affected_by_technical_disposition": total(
+            "n_studies_affected_by_technical_disposition"
+        ),
+        "new_no_cine_studies": total("n_new_no_cine_studies"),
+        "technical_disposition_counts_by_class": {
+            "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": (
+                disposition_total
+            )
+        },
+        "technical_disposition_policy_version": (
+            "source_signal_object_technical_disposition_v1"
+        ),
+        "technical_disposition_manifest_set_sha256": (
+            disposition_manifest_set_sha256
+        ),
         "unique_clip_keys": total("n_unique_clip_keys"),
         "clip_embeddings": total("n_clip_embeddings"),
         "pooled_imaging_eligible_studies": total("n_pooled_studies"),
         "no_cine_studies": total("n_no_cine_studies"),
-        "no_cine_disposition": "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE",
+        "no_cine_disposition": (
+            "NONE"
+            if total("n_no_cine_studies") == 0
+            else "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
+        ),
         "outside_selected_studies": total("n_outside_selected_studies"),
         "missing_selected_studies": total("n_missing_selected_studies"),
         "duplicate_physical_sources": total("n_duplicate_physical_sources"),
@@ -2346,7 +3492,14 @@ def finalize_receipts(
         "all_authority_bindings_identical": True,
         "all_source_receipts_passed": True,
         "all_dicom_audits_passed": True,
-        "all_extractions_passed": True,
+        "all_extraction_rows_resolved": True,
+        "all_successful_extractions_embedded": True,
+        "all_technical_dispositions_retained": True,
+        "all_no_cine_studies_prespecified": True,
+        "object_substitution_count": total("object_substitution_count"),
+        "unaccounted_multiframe_objects": total(
+            "unaccounted_multiframe_objects"
+        ),
         "all_embeddings_passed": True,
         "all_pooling_passed": True,
         "all_preservation_manifests_passed": True,
@@ -2420,6 +3573,19 @@ def finalize_receipts(
             production_batches=len(receipts),
             study_embeddings=study_receipt["study_embeddings"],
             no_cine_studies=total("n_no_cine_studies"),
+            successfully_extracted_cines=total(
+                "n_successfully_extracted_cines"
+            ),
+            object_technical_dispositions=disposition_total,
+            studies_affected_by_technical_disposition=total(
+                "n_studies_affected_by_technical_disposition"
+            ),
+            technical_disposition_manifest_set_sha256=(
+                disposition_manifest_set_sha256
+            ),
+            prespecified_no_cine_study_set_sha256=plan["cohort"][
+                "prespecified_no_cine_study_set_sha256"
+            ],
         )
         clip_index_path = canonical_output_root / CANONICAL_CLIP_INDEX_NAME
         study_embeddings_path = canonical_output_root / CANONICAL_STUDY_EMBEDDINGS_NAME

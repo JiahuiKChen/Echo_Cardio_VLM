@@ -8,6 +8,17 @@ from pathlib import Path
 import traceback
 
 
+def _is_module_declared_manual_skip(module: object, error: BaseException) -> bool:
+    """Recognize only the current test module's dependency-light skip sentinel."""
+    namespace = vars(module)
+    declared = namespace.get("_ManualSkip")
+    return (
+        isinstance(declared, type)
+        and issubclass(declared, Exception)
+        and isinstance(error, declared)
+    )
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     test_files = sorted((root / "tests").glob("test_*.py"))
@@ -37,10 +48,15 @@ def main() -> int:
                 continue
             try:
                 function()
-            except Exception:
-                print(f"FAIL {test_file.name}::{name}")
-                traceback.print_exc()
-                failed += 1
+            except Exception as exc:
+                if _is_module_declared_manual_skip(module, exc):
+                    reason = str(exc) or "dependency unavailable"
+                    print(f"SKIP {test_file.name}::{name}: {reason}")
+                    skipped += 1
+                else:
+                    print(f"FAIL {test_file.name}::{name}")
+                    traceback.print_exc()
+                    failed += 1
             else:
                 print(f"PASS {test_file.name}::{name}")
                 passed += 1

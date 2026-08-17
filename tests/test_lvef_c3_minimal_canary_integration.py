@@ -524,7 +524,22 @@ def test_direct_manifest_plan_rejects_each_runtime_identity_tamper(
         )
 
         # The untampered fixture is accepted by the same production-plan path.
-        minimal._build_direct_manifest_plan(sealed, authority=authority)
+        plan, requirements, _runtime = minimal._build_direct_manifest_plan(
+            sealed, authority=authority
+        )
+        core.validate_current_batch_plan_v3(plan, requirements=requirements)
+        empty_set_sha256 = core.canonical_json_sha256([])
+        assert plan["cohort"]["expected_no_cine_studies"] == 0
+        assert (
+            plan["cohort"]["prespecified_no_cine_study_set_sha256"]
+            == empty_set_sha256
+        )
+        assert plan["batches"][0]["expected_no_cine_studies"] == 0
+        assert plan["batches"][0]["prespecified_no_cine_study_keys"] == []
+        assert (
+            plan["batches"][0]["prespecified_no_cine_study_set_sha256"]
+            == empty_set_sha256
+        )
         cases = {
             "source_metadata": "MINIMAL_SELECTED_SOURCE_AUTHORITY_MISMATCH",
             "split_map": "MINIMAL_MANIFEST_RUNTIME_AUTHORITY_MISMATCH",

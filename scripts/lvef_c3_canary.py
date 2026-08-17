@@ -469,6 +469,7 @@ def build_canary_batch_plan(
             if synthetic_authority
             else live_plan_authority_from_manifest(normalized)
         ),
+        prespecified_no_cine_studies=(),
     )
     if (
         len(plan["batches"]) != 1
@@ -541,7 +542,7 @@ def run_synthetic_integration(
     production_plan, requirements = build_canary_batch_plan(
         normalized_manifest, synthetic_authority=True
     )
-    plan_sha = orchestration_core.validate_batch_plan(
+    plan_sha = orchestration_core.validate_current_batch_plan_v3(
         production_plan, requirements=requirements
     )
     declared = _manifest_objects(normalized_manifest)
@@ -1317,7 +1318,9 @@ def preflight_only(
     plan, requirements = build_canary_batch_plan(
         manifest, synthetic_authority=True
     )
-    plan_sha = orchestration_core.validate_batch_plan(plan, requirements=requirements)
+    plan_sha = orchestration_core.validate_current_batch_plan_v3(
+        plan, requirements=requirements
+    )
     aggregate = orchestration_core.aggregate_batch_plan(plan, requirements=requirements)
     if (
         aggregate["selected_studies"] != 5

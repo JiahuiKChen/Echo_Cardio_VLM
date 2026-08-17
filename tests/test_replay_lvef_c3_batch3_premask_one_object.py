@@ -1745,14 +1745,14 @@ def test_direct_imports_and_safe_receipt_keys_expose_no_prohibited_interface() -
     assert "to_csv(" not in source
 
 
-def test_production_science_and_orchestration_hashes_are_unchanged() -> None:
+def test_immutable_science_replay_and_scheduler_hashes_are_unchanged() -> None:
+    # R5A deliberately versions the production stages, preservation,
+    # full-sequential adapter, and finalizer.  The frozen reconstruction
+    # science, historical replay helper, and unchanged scheduler remain the
+    # R4D2 immutability boundary.
     expected = {
         "lvef_reconstruction_smoke.py": "23aaddbf1f108e52fc11c1ad1a2c325b1d3e038e4f86a6e9b648851964f77121",
-        "lvef_c3_production_stages.py": "39e4974e6435ce616bb0f91b9354232e6c4ff44c08d8e397c2363d3a388f760b",
-        "preserve_lvef_c3_production_batch.py": "419f46fe980908ec0215435f3533a1e7fbf38b41e99e9aa665ae0e762261152f",
-        "lvef_c3_full_sequential.py": "c97ad59482a77d9b68659b80a3fd36d3c545ffcdc93e2a3f2eb1004d66144926",
         "lvef_c3_full_scheduler.py": "602b42cfa5626f501bb4f4370878349b6edfd362270e5a57ac1595bd5fa8a7b3",
-        "finalize_lvef_c3_production.py": "96d6f8e8075d48880c73184cf0313376621638b57d90ea148ca5743fc8e04a2d",
         "replay_lvef_c3_failed_extraction_one_object.py": "0f60cbc7889d97a0bb6bfd6a9c651e36b121e3b1b4b8b2708f1b6de23dc55587",
     }
     for basename, expected_sha256 in expected.items():

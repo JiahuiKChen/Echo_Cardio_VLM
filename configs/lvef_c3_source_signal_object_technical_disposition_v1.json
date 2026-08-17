@@ -1,0 +1,55 @@
+{
+  "artifact_type": "lvef_c3_object_technical_disposition_policy_v1",
+  "closed_classifications": [
+    "SUCCESSFUL_EXTRACTION",
+    "APPROVED_OBJECT_TECHNICAL_DISPOSITION",
+    "BLOCKING_FAILURE"
+  ],
+  "downstream_metric_authority": "ALL_NOT_EVALUATED",
+  "eligible_failure_substages": [
+    "SOURCE_SIGNAL_QUALITY_FAILURE"
+  ],
+  "new_no_cine_studies_permitted": 0,
+  "object_substitution_permitted": false,
+  "policy_version": "source_signal_object_technical_disposition_v1",
+  "prohibited_decision_inputs": [
+    "R4D2C_REPLAY_CLASS",
+    "R4D2C_MECHANISM",
+    "ENDPOINT_LABELS",
+    "OUTCOMES",
+    "TARGET_VALUES",
+    "SPLIT_ROLES",
+    "MODEL_PREDICTIONS",
+    "VALIDATION_TEST_PERFORMANCE"
+  ],
+  "r4d2c_provenance": {
+    "aggregate_sha256": "8251c5f1eeaa89a0a09534be4dc3b4025617e8d65d5cbf6b8045f644e4e9112e",
+    "binding": "PROVENANCE_ONLY_NOT_CLASSIFIER_INPUT",
+    "observation_sha256": "ce4354611ba16688137db57bdd5bc1e49ffa1b5ee2512560fd0db83d841963a0"
+  },
+  "required_authority_gates": [
+    "SELECTED_SOURCE_MEMBERSHIP",
+    "BATCH_PLAN_MEMBERSHIP",
+    "EXACT_DOWNLOAD_INTEGRITY",
+    "DICOM_HEADER_READABILITY",
+    "PIXEL_DECODE",
+    "RAW_DICOM_RETENTION",
+    "NPZ_ABSENCE",
+    "EMBEDDING_ABSENCE",
+    "OBJECT_SUBSTITUTION_FALSE",
+    "STUDY_SUCCESSFUL_CINE_COVERAGE"
+  ],
+  "required_row_authority": {
+    "canonical_color_space": "RGB",
+    "decode_color_status": "PASS",
+    "fallback_status": "NOT_ATTEMPTED",
+    "failure_substage": "SOURCE_SIGNAL_QUALITY_FAILURE",
+    "mask_status": "FAILED",
+    "selected_preprocessing_path": "NOT_SELECTED",
+    "write_ok": false
+  },
+  "schema_version": 1,
+  "source_metric_authority": "ALL_EXACT_COUNT_GATE_PAIRS_WITH_AT_LEAST_ONE_FAILURE",
+  "status": "IMPLEMENTED_OWNER_GATED_UNAUTHORIZED",
+  "technical_disposition": "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR"
+}

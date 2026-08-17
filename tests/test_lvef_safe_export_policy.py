@@ -329,11 +329,126 @@ def test_git_gate_accepts_only_closed_control_entrypoint_hash_refresh() -> None:
     else:
         raise AssertionError("Non-hash control JSON mutation passed the Git gate")
 
+    for mutation in ("missing_reviewed_output", "extra_output", "other_stage"):
+        changed = json.loads(payload)
+        if mutation == "missing_reviewed_output":
+            changed["stages"][1]["outputs"].remove(
+                "technical_disposition_manifest"
+            )
+        elif mutation == "extra_output":
+            changed["stages"][1]["outputs"].append("unreviewed_output")
+        else:
+            changed["stages"][0]["outputs"].append("unreviewed_output")
+        try:
+            _assert_closed_control_hash_refresh(
+                repo=root,
+                relative_path=relative,
+                payload=(
+                    json.dumps(changed, sort_keys=True) + "\n"
+                ).encode("utf-8"),
+            )
+        except SafetyPolicyError:
+            pass
+        else:
+            raise AssertionError(
+                f"Unreviewed control output mutation passed: {mutation}"
+            )
+
     assert not _assert_closed_control_hash_refresh(
         repo=root,
         relative_path="configs/unreviewed_control.json",
         payload=b"{}\n",
     )
+
+
+def test_git_gate_accepts_only_reviewed_live_dependency_policy_addition() -> None:
+    root = Path(__file__).resolve().parents[1]
+    relative = "configs/lvef_c3_canary_live_dependencies_v1.json"
+    payload = (root / relative).read_bytes()
+    current = json.loads(payload)
+    dependency = next(
+        item
+        for item in current["dependencies"]
+        if item["dependency_id"] == "production_contract_and_callables"
+    )
+    policy_path = (
+        "configs/lvef_c3_source_signal_object_technical_disposition_v1.json"
+    )
+    assert dependency["artifact_paths"].count(policy_path) == 1
+
+    prior = json.loads(payload)
+    prior_dependency = next(
+        item
+        for item in prior["dependencies"]
+        if item["dependency_id"] == "production_contract_and_callables"
+    )
+    prior_dependency["artifact_paths"].remove(policy_path)
+
+    with tempfile.TemporaryDirectory() as directory:
+        repo = Path(directory) / "repo"
+        target = repo / relative
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps(prior, sort_keys=True) + "\n", encoding="utf-8")
+        _git(repo, "init", "-q")
+        _git(repo, "add", relative)
+        _git(
+            repo,
+            "-c",
+            "user.name=Synthetic Test",
+            "-c",
+            "user.email=synthetic@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-q",
+            "-m",
+            "synthetic pre-transition authority",
+        )
+        assert _assert_closed_control_hash_refresh(
+            repo=repo, relative_path=relative, payload=payload
+        )
+
+        for mutation in (
+            "missing_reviewed_addition",
+            "reordered_reviewed_addition",
+            "extra_artifact",
+            "unrelated_dependency_change",
+        ):
+            changed = json.loads(payload)
+            changed_dependency = next(
+                item
+                for item in changed["dependencies"]
+                if item["dependency_id"] == "production_contract_and_callables"
+            )
+            if mutation == "missing_reviewed_addition":
+                changed_dependency["artifact_paths"].remove(policy_path)
+            elif mutation == "reordered_reviewed_addition":
+                changed_dependency["artifact_paths"].remove(policy_path)
+                changed_dependency["artifact_paths"].append(policy_path)
+            elif mutation == "extra_artifact":
+                changed_dependency["artifact_paths"].append(
+                    "configs/unreviewed_policy.json"
+                )
+            else:
+                changed["dependencies"][0]["artifact_paths"].append(
+                    "configs/unreviewed_control.json"
+                )
+            try:
+                _assert_closed_control_hash_refresh(
+                    repo=repo,
+                    relative_path=relative,
+                    payload=(json.dumps(changed, sort_keys=True) + "\n").encode(
+                        "utf-8"
+                    ),
+                )
+            except SafetyPolicyError:
+                pass
+            else:
+                raise AssertionError(
+                    f"Unreviewed live-dependency mutation passed: {mutation}"
+                )
 
 
 def test_git_gate_blocks_unreviewed_file_in_release_root() -> None:

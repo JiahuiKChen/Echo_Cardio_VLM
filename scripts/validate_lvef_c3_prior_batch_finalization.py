@@ -93,7 +93,9 @@ def validate_prior_batch(
         plan_path, "PRIOR_BATCH_PLAN", max_bytes=512 * 1024 * 1024
     )[0]
     effective_requirements = requirements or core.production_requirements(contract)
-    plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=effective_requirements
+    )
     planned = {row["batch_id"]: row for row in plan["batches"]}
     if previous not in planned or current_batch_id not in planned:
         raise PriorBatchGateError("BATCH_SEQUENCE_NOT_PLANNED")
@@ -101,7 +103,7 @@ def validate_prior_batch(
         final_receipt_path, "PRIOR_FINAL_RECEIPT"
     )
     try:
-        finalizer._validate_receipt(receipt)
+        finalizer._validate_current_receipt_v3(receipt)
     except finalizer.ProductionFinalizationError as exc:
         raise PriorBatchGateError("PRIOR_FINAL_RECEIPT_INVALID") from exc
     if (
@@ -109,6 +111,11 @@ def validate_prior_batch(
         or receipt.get("attempt_id") != attempt_id
         or receipt.get("governing_commit") != governing_commit
         or receipt.get("batch_plan_sha256") != plan_sha
+        or receipt.get("prespecified_no_cine_study_set_sha256")
+        != planned[previous]["prespecified_no_cine_study_set_sha256"]
+        or receipt.get("n_no_cine_studies")
+        != planned[previous]["expected_no_cine_studies"]
+        or receipt.get("all_no_cine_studies_prespecified") is not True
         or receipt.get("raw_dicoms_retained") is not True
         or receipt.get("extracted_cache_retired") is not True
     ):

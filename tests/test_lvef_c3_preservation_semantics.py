@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
@@ -219,7 +220,7 @@ def test_preservation_authority_defaults_to_production_requirements() -> None:
     with mock.patch.object(
         preservation.core, "production_requirements", return_value=requirements
     ) as production_requirements, mock.patch.object(
-        preservation.core, "validate_batch_plan", return_value="c" * 64
+        preservation.core, "validate_current_batch_plan_v3", return_value="c" * 64
     ), mock.patch.object(
         preservation.core, "derive_expected_runtime_authority", return_value=runtime
     ):
@@ -246,7 +247,7 @@ def test_preservation_authority_accepts_explicit_exact_five_scope() -> None:
         }
     }
     with mock.patch.object(
-        preservation.core, "validate_batch_plan", return_value="c" * 64
+        preservation.core, "validate_current_batch_plan_v3", return_value="c" * 64
     ) as validate_plan, mock.patch.object(
         preservation.core, "production_requirements"
     ) as production_requirements, mock.patch.object(
@@ -291,7 +292,7 @@ def test_scoped_preservation_authority_rejects_every_runtime_binding_drift() -> 
             else {key: authority[key] for key in preservation.core.PLAN_AUTHORITY_KEYS}
         }
         with mock.patch.object(
-            preservation.core, "validate_batch_plan", return_value="c" * 64
+            preservation.core, "validate_current_batch_plan_v3", return_value="c" * 64
         ), mock.patch.object(preservation, "sha256_file", return_value="b" * 64):
             return preservation.resolve_preservation_runtime_authority(
                 plan=plan,
@@ -360,15 +361,29 @@ def _write_csv(path: Path, header, rows) -> None:
 
 
 def _stage_csv_fixture(root: Path) -> tuple[dict[str, Path], dict[str, object]]:
+    root = root.resolve()
     source_key = "1" * 64
-    clip_key = "2" * 64
+    source_relative_path = f"{source_key}.dcm"
+    clip_key = hashlib.sha256(
+        (
+            f"{preservation.production_stages.CLIP_KEY_NAMESPACE}"
+            f"\0{source_relative_path}"
+        ).encode("utf-8")
+    ).hexdigest()
+    output_relative_path = f"clips/{clip_key[:2]}/{clip_key}.npz"
+    clips_root = root / "extracted"
+    npz_path = clips_root / output_relative_path
+    npz_payload = b"synthetic canonical extraction artifact\n"
+    npz_path.parent.mkdir(parents=True)
+    npz_path.write_bytes(npz_payload)
+    npz_path.chmod(0o600)
     dicom = dict.fromkeys(preservation.DICOM_AUDIT_HEADER, "")
     dicom.update(
         {
             "subject_id": "1",
             "study_id": "10",
             "smoke_role": "production_selected",
-            "source_relative_path": f"{source_key}.dcm",
+            "source_relative_path": source_relative_path,
             "download_sha256": "3" * 64,
             "read_ok": "True",
             "is_multiframe": "True",
@@ -382,10 +397,10 @@ def _stage_csv_fixture(root: Path) -> tuple[dict[str, Path], dict[str, object]]:
             "subject_id": "1",
             "study_id": "10",
             "smoke_role": "production_selected",
-            "source_relative_path": f"{source_key}.dcm",
+            "source_relative_path": source_relative_path,
             "source_sha256": "3" * 64,
             "clip_key": clip_key,
-            "output_relative_path": f"clips/{clip_key[:2]}/{clip_key}.npz",
+            "output_relative_path": output_relative_path,
             "write_ok": "True",
             "mask_status": "APPLIED",
             "photometric_interpretation": "RGB",
@@ -431,7 +446,7 @@ def _stage_csv_fixture(root: Path) -> tuple[dict[str, Path], dict[str, object]]:
             ),
             "frames_shape": "32x224x224x3",
             "frames_dtype": "uint8",
-            "npz_sha256": "4" * 64,
+            "npz_sha256": hashlib.sha256(npz_payload).hexdigest(),
             "physical_source_key": source_key,
             "pixel_decode_ok": "True",
         }
@@ -490,11 +505,19 @@ def _stage_csv_fixture(root: Path) -> tuple[dict[str, Path], dict[str, object]]:
             preservation.DISPOSITION_HEADER,
             [disposition],
         ),
+        "technical_disposition_path": (
+            root / "technical_disposition.csv",
+            preservation.TECHNICAL_DISPOSITION_HEADER,
+            [],
+        ),
     }
     paths: dict[str, Path] = {}
     for name, (path, header, rows) in definitions.items():
         _write_csv(path, header, rows)
+        if name == "technical_disposition_path":
+            path.chmod(0o600)
         paths[name] = path
+    paths["clips_root"] = clips_root
     return paths, {
         "definitions": definitions,
         "source_key": source_key,
@@ -554,7 +577,7 @@ def test_extraction_and_clip_identity_require_exact_set_and_row_count() -> None:
         extra.append(dict(extra[0]))
         _write_csv(clip_path, clip_header, extra)
         expect_code(
-            "EXTRACTION_CLIP_ROW_COUNT_MISMATCH",
+            "EXTRACTION_CLIP_IDENTITY_SET_MISMATCH",
             lambda: _validate_stage_csvs(paths),
         )
 
@@ -562,12 +585,12 @@ def test_extraction_and_clip_identity_require_exact_set_and_row_count() -> None:
 def test_dicom_candidate_and_extraction_require_exact_same_count_source_set() -> None:
     with tempfile.TemporaryDirectory() as directory:
         paths, fixture = _stage_csv_fixture(Path(directory))
-        extraction_path, extraction_header, extraction_rows = fixture["definitions"][
-            "extraction_manifest_path"
+        dicom_path, dicom_header, dicom_rows = fixture["definitions"][
+            "dicom_audit_path"
         ]
-        substituted = copy.deepcopy(extraction_rows)
+        substituted = copy.deepcopy(dicom_rows)
         substituted[0]["source_relative_path"] = f"{'8' * 64}.dcm"
-        _write_csv(extraction_path, extraction_header, substituted)
+        _write_csv(dicom_path, dicom_header, substituted)
         expect_code(
             "DICOM_EXTRACTION_CANDIDATE_SET_MISMATCH",
             lambda: _validate_stage_csvs(paths),
@@ -579,9 +602,17 @@ def test_preservation_rejects_tampered_dicom_and_extraction_summary_counts() -> 
         paths, _ = _stage_csv_fixture(Path(directory))
         authority = _validate_stage_csvs(paths)
         summary = {
-            **authority["dicom_semantics"],
-            **authority["extraction_semantics"],
+            key: None
+            for key in preservation.production_stages.DICOM_EXTRACTION_SUMMARY_KEYS_V2
         }
+        summary.update(authority["dicom_semantics"])
+        summary.update(authority["extraction_semantics"])
+        summary.update(
+            {
+                "schema_version": 2,
+                "artifact_type": "lvef_c3_batch_dicom_extraction_summary_v2",
+            }
+        )
         preservation.validate_recomputed_stage_summaries(
             dicom_summary=summary,
             dicom_semantics=authority["dicom_semantics"],

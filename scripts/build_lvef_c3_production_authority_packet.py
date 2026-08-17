@@ -644,6 +644,7 @@ def validate_artifact_semantics(
         core._read_csv_rows(artifacts["split_map"]),
         requirements=requirements,
         authority=plan_authority,
+        _legacy_v2_historical=True,
     )
     if core.canonical_json_sha256(rebuilt) != plan_hash or rebuilt != plan:
         raise AuthorityPacketError("BATCH_PLAN_NOT_EXACT_REDERIVATION")

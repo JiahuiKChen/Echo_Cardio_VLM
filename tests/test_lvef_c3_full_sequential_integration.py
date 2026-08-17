@@ -253,6 +253,12 @@ def _fixture_plan() -> tuple[
         ],
         requirements=requirements,
         authority=original["authority"],
+        prespecified_no_cine_studies=[
+            {
+                "subject_id": selected[-1]["subject_id"],
+                "study_id": selected[-1]["study_id"],
+            }
+        ],
     )
     return plan, requirements, payloads
 
@@ -261,8 +267,8 @@ def _launch_authority(
     plan: Mapping[str, Any], requirements: core.PlanRequirements
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_full_selected_cohort_launch_authority_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_full_selected_cohort_launch_authority_v2",
         "status": "AUTHORIZED_FULL_SELECTED_COHORT_RECONSTRUCTION",
         "governing_commit": plan["authority"]["git_commit"],
         "batch_plan_sha256": core.canonical_json_sha256(plan),
@@ -276,6 +282,9 @@ def _launch_authority(
         "selected_source_bytes": requirements.selected_source_bytes,
         "batch_count": requirements.batch_count,
         "expected_no_cine_studies": 1,
+        "prespecified_no_cine_study_set_sha256": plan["cohort"][
+            "prespecified_no_cine_study_set_sha256"
+        ],
         "maximum_scheduler_submissions": 2,
         "array_task_range": f"1-{requirements.batch_count}",
         "array_max_concurrency": 1,
@@ -342,6 +351,11 @@ def _scoped_production_run(
         [{"subject_id": row["subject_id"], "split": "train"} for row in selected],
         requirements=requirements,
         authority=plan_authority,
+        prespecified_no_cine_studies=[
+            key
+            for batch in template["batches"]
+            for key in batch["prespecified_no_cine_study_keys"]
+        ],
     )
     plan_sha = core.canonical_json_sha256(plan)
     runtime = core.validate_runtime_authority(
@@ -355,7 +369,8 @@ def _scoped_production_run(
     os.chmod(production_root / "attempts", 0o700)
     os.chmod(attempt_root, 0o700)
     plan_path = attempt_root / "full_batch_plan.restricted.json"
-    _write_json(plan_path, plan)
+    plan_path.write_bytes(core.canonical_json_bytes(plan))
+    os.chmod(plan_path, 0o600)
     launch = _launch_authority(plan, requirements)
     run = sequential.FullRun(
         authority=authority,
@@ -726,6 +741,58 @@ def test_full_wrapper_two_batch_science_acceptance(
         assert second["n_no_cine_studies"] == 1
         assert second["extracted_cache_retired"] is True
         assert second["raw_dicoms_retained"] is True
+    disposition_class = stages.OBJECT_TECHNICAL_DISPOSITION
+    disposition_hashes: list[str] = []
+    for batch_id, receipt in (
+        ("c3_batch_000", first),
+        ("c3_batch_001", second),
+    ):
+        assert receipt["schema_version"] == 2
+        assert receipt["artifact_type"] == (
+            "lvef_c3_batch_finalization_receipt_v3"
+        )
+        assert receipt["n_object_technical_dispositions"] == 0
+        assert receipt["n_studies_affected_by_technical_disposition"] == 0
+        assert receipt["n_new_no_cine_studies"] == 0
+        assert receipt["technical_disposition_counts_by_class"] == {
+            disposition_class: 0
+        }
+        assert receipt["technical_disposition_policy_version"] == (
+            stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+        )
+        assert receipt["object_substitution_count"] == 0
+        assert receipt["unaccounted_multiframe_objects"] == 0
+        paths = sequential._batch_paths(run, batch_id)
+        technical_path = (
+            paths["extraction"]
+            / "technical_disposition_manifest.restricted.csv"
+        )
+        assert technical_path.read_text(encoding="utf-8") == (
+            ",".join(stages.TECHNICAL_DISPOSITION_MANIFEST_HEADER) + "\n"
+        )
+        technical_sha = stages.technical_disposition_manifest_sha256(
+            technical_path
+        )
+        disposition_hashes.append(technical_sha)
+        dicom_summary = core.load_strict_json(
+            paths["extraction"] / "dicom_extraction.summary.json"
+        )
+        echoprime_summary = core.load_strict_json(
+            paths["echoprime"] / "echoprime_pooling.summary.json"
+        )
+        for value in (dicom_summary, echoprime_summary, receipt):
+            assert value["technical_disposition_manifest_sha256"] == (
+                technical_sha
+            )
+            assert value["technical_disposition_counts_by_class"] == {
+                disposition_class: 0
+            }
+            assert value["n_object_technical_dispositions"] == 0
+            assert value["n_studies_affected_by_technical_disposition"] == 0
+            assert value["n_new_no_cine_studies"] == 0
+            assert value["object_substitution_count"] == 0
+            assert value["unaccounted_multiframe_objects"] == 0
+        assert not os.path.lexists(paths["batch_root"] / "echoprime.partial")
     assert calls["mock_requester_pays_transfer"] == 4
     assert calls["mock_encoder_compute"] == 2
 
@@ -736,6 +803,28 @@ def test_full_wrapper_two_batch_science_acceptance(
     assert result["n_no_cine_studies"] == 1
     assert result["exact_pooling_replay_passed"] is True
     assert result["raw_dicoms_retained"] is True
+    assert result["object_technical_dispositions"] == 0
+    assert result["studies_affected_by_technical_disposition"] == 0
+    assert result["new_no_cine_studies"] == 0
+    assert result["technical_disposition_counts_by_class"] == {
+        disposition_class: 0
+    }
+    assert result["object_substitution_count"] == 0
+    assert result["unaccounted_multiframe_objects"] == 0
+    assert result["technical_disposition_manifest_set_sha256"] == (
+        hashlib.sha256(
+            ("\n".join(sorted(disposition_hashes)) + "\n").encode("ascii")
+        ).hexdigest()
+    )
+    for gate in (
+        "all_extraction_rows_resolved",
+        "all_successful_extractions_embedded",
+        "all_technical_dispositions_retained",
+        "all_embeddings_passed",
+        "all_pooling_passed",
+        "all_preservation_manifests_passed",
+    ):
+        assert result[gate] is True
     assert result["model_fitting_count"] == 0
     assert result["endpoint_prediction_count"] == 0
     assert result["confirmatory_performance_access_count"] == 0

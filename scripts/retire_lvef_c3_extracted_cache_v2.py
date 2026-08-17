@@ -21,6 +21,7 @@ from typing import Any, Mapping, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lvef_c3_orchestration_core as core
 import finalize_lvef_c3_production as finalizer
+import lvef_c3_production_stages as production_stages
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -305,7 +306,9 @@ def derive_current_runtime_authority(
     # The exact-two-batch test uses synthetic cohort hashes that deliberately do
     # not equal the frozen live contract.  Still derive every runtime field from
     # the current plan/files; never accept the caller-supplied authority as truth.
-    plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=effective_requirements
+    )
     plan_authority = core.validate_runtime_authority(
         {**plan["authority"], "batch_plan_sha256": plan_sha}
     )
@@ -401,9 +404,9 @@ def validate_preservation_eligibility_receipt(
     if set(receipt) != expected_keys:
         raise CacheRetirementError("PRESERVATION_RECEIPT_SCHEMA_MISMATCH")
     if (
-        receipt.get("schema_version") != 1
+        receipt.get("schema_version") != 2
         or receipt.get("artifact_type")
-        != "lvef_c3_batch_preservation_eligibility_receipt_v2"
+        != "lvef_c3_batch_preservation_eligibility_receipt_v3"
         or receipt.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE"
         or receipt.get("attempt_id") != attempt_id
         or receipt.get("batch_id") != batch_id
@@ -425,6 +428,8 @@ def validate_preservation_eligibility_receipt(
         or finalizer.TIMESTAMP_RE.fullmatch(str(receipt.get("run_timestamp_utc")))
         is None
         or receipt.get("aggregate_safety_gate_result") != "PASS"
+        or receipt.get("technical_disposition_policy_version")
+        != "source_signal_object_technical_disposition_v1"
         or receipt.get("extracted_cache_retired") is not False
     ):
         raise CacheRetirementError("PRESERVATION_AUTHORITY_INVALID")
@@ -456,17 +461,36 @@ def validate_preservation_eligibility_receipt(
         or receipt["n_selected_subjects"] != planned_batch["n_subjects"]
         or receipt["n_expected_objects"] != planned_batch["n_objects"]
         or receipt["expected_source_bytes"] != planned_batch["source_bytes"]
+        or receipt.get("prespecified_no_cine_study_set_sha256")
+        != planned_batch["prespecified_no_cine_study_set_sha256"]
+        or receipt.get("n_no_cine_studies")
+        != planned_batch["expected_no_cine_studies"]
+        or receipt.get("all_no_cine_studies_prespecified") is not True
         or receipt["n_download_verified"] != receipt["n_expected_objects"]
         or receipt["n_dicom_readable"] + receipt["n_dicom_unreadable"]
         != receipt["n_expected_objects"]
         or receipt["n_multiframe_cines"] + receipt["n_single_frame_objects"]
         != receipt["n_dicom_readable"]
-        or not (
-            receipt["n_multiframe_cines"]
-            == receipt["n_extracted_clips"]
-            == receipt["n_unique_clip_keys"]
-            == receipt["n_clip_embeddings"]
-        )
+        or receipt["n_multiframe_cines"]
+        != receipt["n_successfully_extracted_cines"]
+        + receipt["n_object_technical_dispositions"]
+        or receipt["n_successfully_extracted_cines"]
+        != receipt["n_extracted_clips"]
+        or receipt["n_successfully_extracted_cines"]
+        != receipt["n_unique_clip_keys"]
+        or receipt["n_successfully_extracted_cines"]
+        != receipt["n_clip_embeddings"]
+        or receipt.get("technical_disposition_counts_by_class")
+        != {
+            "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR": receipt[
+                "n_object_technical_dispositions"
+            ]
+        }
+        or receipt["n_studies_affected_by_technical_disposition"]
+        > receipt["n_object_technical_dispositions"]
+        or (
+            receipt["n_studies_affected_by_technical_disposition"] == 0
+        ) is not (receipt["n_object_technical_dispositions"] == 0)
         or receipt["n_pooled_studies"] + receipt["n_no_cine_studies"]
         != receipt["n_selected_studies"]
         or (
@@ -495,6 +519,7 @@ def validate_preservation_eligibility_receipt(
         "source_receipt_sha256": batch_root / "download_resume_ledger.restricted.json",
         "dicom_audit_sha256": extraction_root / "dicom_audit.restricted.csv",
         "extraction_manifest_sha256": extraction_root / "extraction_manifest.restricted.csv",
+        "technical_disposition_manifest_sha256": extraction_root / "technical_disposition_manifest.restricted.csv",
         "clip_manifest_sha256": batch_root / "echoprime" / "clip_manifest.restricted.csv",
         "clip_embeddings_sha256": batch_root / "echoprime" / "clip_embeddings.restricted.npz",
         "study_manifest_sha256": batch_root / "echoprime" / "study_manifest.restricted.csv",
@@ -511,7 +536,12 @@ def validate_preservation_eligibility_receipt(
         ),
     }
     for key, path in artifact_paths.items():
-        if sha256_file(path) != receipt[key]:
+        observed_hash = (
+            production_stages.technical_disposition_manifest_sha256(path)
+            if key == "technical_disposition_manifest_sha256"
+            else sha256_file(path)
+        )
+        if observed_hash != receipt[key]:
             raise CacheRetirementError("PRESERVATION_REFERENCED_HASH_MISMATCH")
     expected_command_checksum = core.canonical_json_sha256(
         {
@@ -604,7 +634,9 @@ def validate_gate(
         plan_path, "BATCH_PLAN", max_bytes=512 * 1024 * 1024
     )[0]
     effective_requirements = requirements or core.production_requirements(contract)
-    plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=effective_requirements
+    )
     planned = next((row for row in plan["batches"] if row["batch_id"] == batch_id), None)
     if planned is None:
         raise CacheRetirementError("BATCH_NOT_PLANNED")
@@ -955,6 +987,28 @@ def main(
             _validate_raw_retention(
                 raw_root, planned_batch=context["planned_batch"]
             )
+            retained_extraction_root = cache_root.parent
+            retained_metadata = {
+                "dicom_audit_sha256": retained_extraction_root
+                / "dicom_audit.restricted.csv",
+                "extraction_manifest_sha256": retained_extraction_root
+                / "extraction_manifest.restricted.csv",
+                "technical_disposition_manifest_sha256": retained_extraction_root
+                / "technical_disposition_manifest.restricted.csv",
+            }
+            preservation_authority = context["preservation"]
+            for key, retained_path in retained_metadata.items():
+                retained_hash = (
+                    production_stages.technical_disposition_manifest_sha256(
+                        retained_path
+                    )
+                    if key == "technical_disposition_manifest_sha256"
+                    else sha256_file(retained_path)
+                )
+                if retained_hash != preservation_authority[key]:
+                    raise CacheRetirementError(
+                        "RETAINED_EXTRACTION_METADATA_CHANGED"
+                    )
             validate_preservation_coverage(
                 args.preservation_receipt.parent
                 / "batch_preservation_manifest.restricted.tsv",
@@ -968,7 +1022,7 @@ def main(
         preservation = dict(context["preservation"])
         final_receipt = {
             **preservation,
-            "artifact_type": "lvef_c3_batch_finalization_receipt_v2",
+            "artifact_type": "lvef_c3_batch_finalization_receipt_v3",
             "status": "PASS_BATCH_FINALIZED",
             "extracted_cache_retired": True,
             "cache_retirement_authorization_sha256": context[

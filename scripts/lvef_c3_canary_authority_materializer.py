@@ -837,8 +837,9 @@ def _build_plan(
         split_rows,
         requirements=requirements,
         authority=authority,
+        prespecified_no_cine_studies=(),
     )
-    core.validate_batch_plan(plan, requirements=requirements)
+    core.validate_current_batch_plan_v3(plan, requirements=requirements)
     return plan, requirements
 
 
@@ -1209,7 +1210,9 @@ def prepare_live_authority(
             "crc32c_distribution_sha256": configuration["crc32c_distribution"],
         }
         plan, requirements = _build_plan(manifest, plan_authority)
-        plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+        plan_sha = core.validate_current_batch_plan_v3(
+            plan, requirements=requirements
+        )
         plan_path = config.private_root / "exact_five_batch_plan.restricted.json"
         plan_file_sha = _write_bytes_no_clobber(
             plan_path, _canonical_private_json(plan)

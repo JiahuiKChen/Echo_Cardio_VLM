@@ -377,6 +377,13 @@ class SyntheticAuthority:
         stack.enter_context(
             mock.patch.object(
                 authority.core,
+                "validate_current_batch_plan_v3",
+                return_value=self.plan_sha,
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                authority.core,
                 "load_orchestration_contract",
                 return_value={"downloader": {"maximum_attempts_per_object": 5}},
             )

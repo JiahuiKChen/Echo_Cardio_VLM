@@ -179,8 +179,17 @@ CLOUD_CREDENTIAL_JSON_KEY_RE = re.compile(
 )
 HARD_BLOCKED_TEXT_SUFFIXES = (".jsonl", ".ndjson", ".log", ".out", ".err")
 CONTROL_HASH_REFRESH_JSON_PATHS = frozenset(
-    {"configs/lvef_c3_canary_scheduler_plan_v1.json"}
+    {
+        "configs/lvef_c3_canary_live_dependencies_v1.json",
+        "configs/lvef_c3_canary_scheduler_plan_v1.json",
+    }
 )
+LIVE_DEPENDENCY_CONTROL_PATH = "configs/lvef_c3_canary_live_dependencies_v1.json"
+REVIEWED_LIVE_DEPENDENCY_ID = "production_contract_and_callables"
+REVIEWED_LIVE_DEPENDENCY_ADDITION = (
+    "configs/lvef_c3_source_signal_object_technical_disposition_v1.json"
+)
+REVIEWED_LIVE_DEPENDENCY_PREDECESSOR = "configs/lvef_c3_orchestration_v2.yaml"
 
 
 def _assert_high_confidence_text_safety(
@@ -210,7 +219,7 @@ def _assert_high_confidence_text_safety(
 def _assert_closed_control_hash_refresh(
     *, repo: Path, relative_path: str, payload: bytes
 ) -> bool:
-    """Allow only an exact current-entrypoint hash refresh in one control JSON."""
+    """Allow only the two reviewed, path-specific control-file transitions."""
 
     if relative_path not in CONTROL_HASH_REFRESH_JSON_PATHS:
         return False
@@ -219,6 +228,60 @@ def _assert_closed_control_hash_refresh(
             _git(repo, ["show", f"HEAD:{relative_path}"])
         )
         after = _strict_json_loads(payload)
+        if relative_path == LIVE_DEPENDENCY_CONTROL_PATH:
+            before_dependencies = before["dependencies"]
+            after_dependencies = after["dependencies"]
+            if (
+                not isinstance(before_dependencies, list)
+                or not isinstance(after_dependencies, list)
+                or len(before_dependencies) != len(after_dependencies)
+            ):
+                raise SafetyPolicyError("Live-dependency topology changed")
+            before_matches = [
+                (index, dependency)
+                for index, dependency in enumerate(before_dependencies)
+                if dependency.get("dependency_id") == REVIEWED_LIVE_DEPENDENCY_ID
+            ]
+            after_matches = [
+                (index, dependency)
+                for index, dependency in enumerate(after_dependencies)
+                if dependency.get("dependency_id") == REVIEWED_LIVE_DEPENDENCY_ID
+            ]
+            if (
+                len(before_matches) != 1
+                or len(after_matches) != 1
+                or before_matches[0][0] != after_matches[0][0]
+            ):
+                raise SafetyPolicyError("Reviewed live dependency is not unique")
+            dependency_index = before_matches[0][0]
+            old_paths = before_matches[0][1].get("artifact_paths")
+            new_paths = after_matches[0][1].get("artifact_paths")
+            if (
+                not isinstance(old_paths, list)
+                or REVIEWED_LIVE_DEPENDENCY_ADDITION in old_paths
+                or old_paths.count(REVIEWED_LIVE_DEPENDENCY_PREDECESSOR) != 1
+            ):
+                raise SafetyPolicyError("Prior live-dependency authority is invalid")
+            expected_paths = list(old_paths)
+            insertion_index = (
+                expected_paths.index(REVIEWED_LIVE_DEPENDENCY_PREDECESSOR) + 1
+            )
+            expected_paths.insert(
+                insertion_index, REVIEWED_LIVE_DEPENDENCY_ADDITION
+            )
+            if new_paths != expected_paths:
+                raise SafetyPolicyError(
+                    "Live dependency changed beyond reviewed policy addition"
+                )
+            normalized_before = json.loads(json.dumps(before))
+            normalized_before["dependencies"][dependency_index][
+                "artifact_paths"
+            ] = expected_paths
+            if normalized_before != after:
+                raise SafetyPolicyError(
+                    "Live-dependency JSON changed beyond reviewed addition"
+                )
+            return True
         before_stages = before["stages"]
         after_stages = after["stages"]
         if (
@@ -245,6 +308,29 @@ def _assert_closed_control_hash_refresh(
             ):
                 raise SafetyPolicyError("Control JSON entrypoint identity changed")
             normalized_entrypoint["sha256"] = new_entrypoint.get("sha256")
+            old_outputs = old_stage.get("outputs")
+            new_outputs = new_stage.get("outputs")
+            if old_outputs != new_outputs:
+                if not (
+                    old_stage.get("stage_id") == "DICOM_EXTRACTION"
+                    and old_outputs
+                    == [
+                        "dicom_audit",
+                        "extraction_manifest",
+                        "extraction_complete_transition_receipt",
+                    ]
+                    and new_outputs
+                    == [
+                        "dicom_audit",
+                        "extraction_manifest",
+                        "technical_disposition_manifest",
+                        "extraction_complete_transition_receipt",
+                    ]
+                ):
+                    raise SafetyPolicyError(
+                        "Control JSON outputs changed beyond reviewed addition"
+                    )
+                normalized_stage["outputs"] = new_outputs
         if normalized_before != after:
             raise SafetyPolicyError("Control JSON changed beyond entrypoint hashes")
         from lvef_c3_canary_scheduler_plan import validate_scheduler_plan

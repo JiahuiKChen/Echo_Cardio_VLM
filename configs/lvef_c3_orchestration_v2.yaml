@@ -159,6 +159,11 @@ embedding:
   encoder_only: true
   view_classifier_used: false
 
+object_technical_disposition:
+  policy_filename: lvef_c3_source_signal_object_technical_disposition_v1.json
+  policy_sha256: c561d96ef049f37f1f20454ec30150fb2aada8aeddbb920b65260100107d3b11
+  policy_version: source_signal_object_technical_disposition_v1
+
 authorization:
   source_body_download: false
   scheduler_submission: false

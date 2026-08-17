@@ -1531,6 +1531,14 @@ export_profiles:
       - multiframe_cines
       - single_frame_objects
       - extracted_clips
+      - successfully_extracted_cines
+      - object_technical_dispositions
+      - blocking_failures
+      - studies_affected_by_technical_disposition
+      - new_no_cine_studies
+      - technical_disposition_counts_by_class
+      - technical_disposition_policy_version
+      - technical_disposition_manifest_set_sha256
       - unique_clip_keys
       - clip_embeddings
       - pooled_imaging_eligible_studies
@@ -1561,7 +1569,12 @@ export_profiles:
       - all_authority_bindings_identical
       - all_source_receipts_passed
       - all_dicom_audits_passed
-      - all_extractions_passed
+      - all_extraction_rows_resolved
+      - all_successful_extractions_embedded
+      - all_technical_dispositions_retained
+      - all_no_cine_studies_prespecified
+      - object_substitution_count
+      - unaccounted_multiframe_objects
       - all_embeddings_passed
       - all_pooling_passed
       - all_preservation_manifests_passed

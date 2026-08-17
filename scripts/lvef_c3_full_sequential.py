@@ -54,6 +54,42 @@ GENERIC_PRIVATE_FILE_MAXIMUM_BYTES = 16_000_000
 SUBMISSION_RECEIPT_MAXIMUM_BYTES = 4 * 1024 * 1024
 QSUB_ENVIRONMENT_SHA256_NAME = "LVEF_C3_QSUB_ENVIRONMENT_SHA256"
 TERMINAL_PARTIAL_MAXIMUM_ENTRIES = 50_000
+FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES = 1_611_642_076_332
+FROZEN_FULL_PLAN_ORIGINAL_CURRENT_USAGE_BYTES = 152_275_355_648
+SUCCESSOR_INCREMENT_BYTES = 1_459_366_720_684
+SUCCESSOR_REQUIRED_RESERVE_BYTES = 200_000_000_000
+SUCCESSOR_REQUIRED_FILE_SLOTS = 3_500_000
+SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES = 2
+SUCCESSOR_CAPACITY_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "source_capacity_authority_sha256",
+        "frozen_projected_peak_bytes",
+        "frozen_original_current_usage_bytes",
+        "successor_increment_bytes",
+        "live_research_usage_bytes",
+        "projected_total_research_usage_bytes",
+        "research_quota_bytes",
+        "quota_remaining_after_successor_bytes",
+        "research_filesystem_available_bytes",
+        "physical_remaining_after_successor_bytes",
+        "research_file_slots_remaining",
+        "required_reserve_bytes",
+        "required_remaining_file_slots",
+        "active_extraction_caches",
+        "preserved_terminal_failed_extraction_caches",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "terminal_failure_cache_gate_passed",
+        "cloud_requests",
+        "scheduler_jobs_submitted",
+        "dicom_body_reads",
+        "writes_performed",
+    }
+)
 
 TERMINAL_DOWNLOAD_FAILURE_SUMMARY_KEYS = frozenset(
     {"status", "identifiers_emitted", "paths_emitted"}
@@ -459,12 +495,21 @@ def task_to_batch(task_id: int, plan: Mapping[str, Any]) -> str:
 
 
 def _read_bound_rows(authority: minimal.LiveAuthority) -> tuple[
-    list[dict[str, str]], list[dict[str, Any]], list[dict[str, str]], str
+    list[dict[str, str]],
+    list[dict[str, Any]],
+    list[dict[str, str]],
+    str,
+    list[dict[str, str]],
 ]:
     selected_payload = minimal._read_regular(authority.selected_studies)
     source_payload = minimal._read_regular(authority.selected_source, private=True)
     metadata_payload = minimal._read_regular(authority.source_metadata, private=True)
     split_payload = minimal._read_regular(authority.split_map)
+    historical_payload = minimal._bound_payload(
+        minimal.HISTORICAL_STUDY_MANIFEST_PATH,
+        expected_sha256=minimal.HISTORICAL_STUDY_MANIFEST_SHA256,
+        private=False,
+    )
     if (
         minimal._sha256_bytes(selected_payload)
         != core.EXPECTED_SELECTED_MANIFEST_SHA256
@@ -477,6 +522,7 @@ def _read_bound_rows(authority: minimal.LiveAuthority) -> tuple[
     selected_source = minimal._strict_csv_rows(source_payload)
     metadata = minimal._strict_jsonl_rows(metadata_payload)
     split = minimal._strict_csv_rows(split_payload)
+    historical = minimal._strict_csv_rows(historical_payload)
     try:
         normalized = core.reconcile_selected_source_metadata(
             selected_source, metadata, release="mimic-iv-echo/1.0"
@@ -485,7 +531,48 @@ def _read_bound_rows(authority: minimal.LiveAuthority) -> tuple[
         raise FullSequentialError(
             "FULL_SEQUENTIAL_SOURCE_METADATA_RECONCILIATION_FAILED"
         ) from exc
-    return selected, normalized, split, minimal._sha256_bytes(metadata_payload)
+    selected_ownership: dict[str, str] = {}
+    selected_pairs: set[tuple[str, str]] = set()
+    for row in selected:
+        subject = str(row.get("subject_id", ""))
+        study = str(row.get("study_id", ""))
+        if (
+            not subject.isdigit()
+            or not study.isdigit()
+            or str(int(subject)) != subject
+            or str(int(study)) != study
+            or study in selected_ownership
+        ):
+            _fail("FULL_SEQUENTIAL_PRESPECIFIED_NO_CINE_AUTHORITY_INVALID")
+        selected_ownership[study] = subject
+        selected_pairs.add((subject, study))
+    historical_selected_pairs: set[tuple[str, str]] = set()
+    for row in historical:
+        subject = str(row.get("subject_id", ""))
+        study = str(row.get("study_id", ""))
+        owner = selected_ownership.get(study)
+        if owner is None:
+            continue
+        if owner != subject:
+            _fail("FULL_SEQUENTIAL_PRESPECIFIED_NO_CINE_AUTHORITY_INVALID")
+        historical_selected_pairs.add((subject, study))
+    no_cine_pairs = sorted(
+        selected_pairs - historical_selected_pairs,
+        key=lambda pair: (int(pair[0]), int(pair[1])),
+    )
+    if len(no_cine_pairs) != 5:
+        _fail("FULL_SEQUENTIAL_PRESPECIFIED_NO_CINE_AUTHORITY_INVALID")
+    no_cine_keys = [
+        {"subject_id": subject, "study_id": study}
+        for subject, study in no_cine_pairs
+    ]
+    return (
+        selected,
+        normalized,
+        split,
+        minimal._sha256_bytes(metadata_payload),
+        no_cine_keys,
+    )
 
 
 def _build_frozen_plan(
@@ -505,7 +592,9 @@ def _build_frozen_plan(
         contract_id="lvef_multitask_c3_production_orchestration_v2",
     ):
         _fail("FULL_SEQUENTIAL_FROZEN_REQUIREMENTS_CHANGED")
-    selected, normalized, split, metadata_sha = _read_bound_rows(authority)
+    selected, normalized, split, metadata_sha, no_cine_keys = _read_bound_rows(
+        authority
+    )
     for path, expected, code in (
         (CONTRACT_PATH, core.sha256_file(CONTRACT_PATH), "CONTRACT"),
         (STATE_MACHINE_PATH, str(contract["authority"]["state_machine_schema_sha256"]), "STATE"),
@@ -560,7 +649,14 @@ def _build_frozen_plan(
         split,
         requirements=requirements,
         authority=plan_authority,
+        prespecified_no_cine_studies=no_cine_keys,
     )
+    if (
+        plan["cohort"]["expected_no_cine_studies"] != 5
+        or plan["cohort"]["prespecified_no_cine_study_set_sha256"]
+        != core.canonical_json_sha256(no_cine_keys)
+    ):
+        _fail("FULL_SEQUENTIAL_PRESPECIFIED_NO_CINE_AUTHORITY_INVALID")
     core.validate_plan_authority_against_contract(
         plan["authority"], contract=contract, contract_path=CONTRACT_PATH
     )
@@ -579,7 +675,9 @@ def build_full_run(
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", scheduler_job_identity):
         _fail("FULL_SEQUENTIAL_SCHEDULER_IDENTITY_INVALID")
     plan, requirements, contract = _build_frozen_plan(current)
-    plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=requirements
+    )
     attempt_id = f"lvef_c3_full_{plan_sha[:16]}_{current.governing_commit[:8]}"
     if ATTEMPT_RE.fullmatch(attempt_id) is None:
         _fail("FULL_SEQUENTIAL_ATTEMPT_ID_INVALID")
@@ -587,8 +685,8 @@ def build_full_run(
         {**plan["authority"], "batch_plan_sha256": plan_sha}
     )
     launch = {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_full_selected_cohort_launch_authority_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_full_selected_cohort_launch_authority_v2",
         "status": "AUTHORIZED_FULL_SELECTED_COHORT_RECONSTRUCTION",
         "governing_commit": current.governing_commit,
         "batch_plan_sha256": plan_sha,
@@ -604,6 +702,9 @@ def build_full_run(
         "selected_source_bytes": 1216569133322,
         "batch_count": 19,
         "expected_no_cine_studies": 5,
+        "prespecified_no_cine_study_set_sha256": plan["cohort"][
+            "prespecified_no_cine_study_set_sha256"
+        ],
         "maximum_scheduler_submissions": 2,
         "array_task_range": "1-19",
         "array_max_concurrency": 1,
@@ -913,10 +1014,18 @@ def _validate_full_run(run: FullRun) -> None:
         != run.production_root / "attempts" / run.attempt_id
         or run.plan_path
         != run.attempt_root / "full_batch_plan.restricted.json"
-        or core.validate_batch_plan(run.plan, requirements=run.requirements)
+        or core.validate_current_batch_plan_v3(
+            run.plan, requirements=run.requirements
+        )
         != run.plan_sha256
         or core.canonical_json_sha256(run.launch_authority)
         != run.launch_authority_sha256
+        or set(run.launch_authority) != core.DIRECT_FULL_LAUNCH_KEYS
+        or run.launch_authority.get("schema_version") != 2
+        or run.launch_authority.get("artifact_type")
+        != "lvef_c3_full_selected_cohort_launch_authority_v2"
+        or run.launch_authority.get("prespecified_no_cine_study_set_sha256")
+        != run.plan["cohort"]["prespecified_no_cine_study_set_sha256"]
         or core.validate_runtime_authority(run.runtime_authority)
         != dict(sorted(run.runtime_authority.items()))
     ):
@@ -1184,9 +1293,19 @@ def _validate_batch_finalization(
 ) -> Mapping[str, Any]:
     paths = _batch_paths(run, batch_id)
     receipt = finalizer.load_json(paths["final_receipt"], "FULL_BATCH_FINAL_RECEIPT")
-    finalizer._validate_receipt(receipt)
+    finalizer._validate_current_receipt_v3(receipt)
+    planned_batch = next(
+        (row for row in run.plan["batches"] if row["batch_id"] == batch_id),
+        None,
+    )
     if (
-        receipt.get("attempt_id") != run.attempt_id
+        not isinstance(planned_batch, Mapping)
+        or receipt.get("prespecified_no_cine_study_set_sha256")
+        != planned_batch["prespecified_no_cine_study_set_sha256"]
+        or receipt.get("n_no_cine_studies")
+        != planned_batch["expected_no_cine_studies"]
+        or receipt.get("all_no_cine_studies_prespecified") is not True
+        or receipt.get("attempt_id") != run.attempt_id
         or receipt.get("batch_id") != batch_id
         or receipt.get("governing_commit") != run.authority.governing_commit
         or receipt.get("batch_plan_sha256") != run.plan_sha256
@@ -1385,6 +1504,8 @@ def run_batch_task(
             batch_id=batch_id,
             attempt_id=effective_run.attempt_id,
             runtime_authority=effective_run.runtime_authority,
+            planned_batch=planned,
+            embedding_output_root=paths["echoprime"],
         )
         stages.advance_stage_ledger(
             input_ledger=paths["download_ledger"],
@@ -1416,11 +1537,25 @@ def run_batch_task(
             paths["extraction"] / "extraction_manifest.restricted.csv"
         )
         stages.validate_extraction_manifest_plan_membership(
-            extraction_manifest, planned
+            extraction_manifest,
+            planned,
+            paths["extraction"]
+            / "technical_disposition_manifest.restricted.csv",
         )
         embedding_summary = dependency.echoprime(
             extraction_manifest=extraction_manifest,
             extraction_root=paths["extraction"] / "clips",
+            technical_disposition_manifest=(
+                paths["extraction"]
+                / "technical_disposition_manifest.restricted.csv"
+            ),
+            dicom_audit=paths["extraction"] / "dicom_audit.restricted.csv",
+            dicom_extraction_summary=(
+                paths["extraction"] / "dicom_extraction.summary.json"
+            ),
+            verified_download_manifest=(
+                paths["raw_batch"] / "verified_download_manifest.restricted.csv"
+            ),
             selected_batch_manifest=(
                 paths["raw_batch"] / "selected_batch.restricted.csv"
             ),
@@ -1755,7 +1890,11 @@ def _closed_owner_private_partial_tree(partial: Path) -> bool:
                 if expected_directory:
                     if not stat.S_ISDIR(item.st_mode) or mode not in {0o700, 0o2700}:
                         return False
-                elif not stat.S_ISREG(item.st_mode) or mode != 0o600:
+                elif (
+                    not stat.S_ISREG(item.st_mode)
+                    or mode != 0o600
+                    or item.st_nlink != 1
+                ):
                     return False
     except (FullSequentialError, OSError):
         return False
@@ -1873,6 +2012,162 @@ def _extraction_cache_inventory(
     )
 
 
+def validate_successor_capacity_authority(
+    value: Mapping[str, Any]
+) -> None:
+    if set(value) != SUCCESSOR_CAPACITY_KEYS:
+        _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SCHEMA_INVALID")
+    integer_keys = (
+        "frozen_projected_peak_bytes",
+        "frozen_original_current_usage_bytes",
+        "successor_increment_bytes",
+        "live_research_usage_bytes",
+        "projected_total_research_usage_bytes",
+        "research_quota_bytes",
+        "quota_remaining_after_successor_bytes",
+        "research_filesystem_available_bytes",
+        "physical_remaining_after_successor_bytes",
+        "research_file_slots_remaining",
+        "required_reserve_bytes",
+        "required_remaining_file_slots",
+        "active_extraction_caches",
+        "preserved_terminal_failed_extraction_caches",
+        "cloud_requests",
+        "scheduler_jobs_submitted",
+        "dicom_body_reads",
+        "writes_performed",
+    )
+    if (
+        value.get("schema_version") != 1
+        or value.get("artifact_type")
+        != "lvef_c3_fresh_successor_capacity_authority_v1"
+        or value.get("status")
+        != "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE"
+        or SHA_RE.fullmatch(
+            str(value.get("source_capacity_authority_sha256"))
+        )
+        is None
+        or any(
+            isinstance(value.get(key), bool)
+            or not isinstance(value.get(key), int)
+            for key in integer_keys
+        )
+        or value.get("frozen_projected_peak_bytes")
+        != FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES
+        or value.get("frozen_original_current_usage_bytes")
+        != FROZEN_FULL_PLAN_ORIGINAL_CURRENT_USAGE_BYTES
+        or value.get("successor_increment_bytes") != SUCCESSOR_INCREMENT_BYTES
+        or value.get("successor_increment_bytes")
+        != value.get("frozen_projected_peak_bytes")
+        - value.get("frozen_original_current_usage_bytes")
+        or value.get("projected_total_research_usage_bytes")
+        != value.get("live_research_usage_bytes") + SUCCESSOR_INCREMENT_BYTES
+        or value.get("quota_remaining_after_successor_bytes")
+        != value.get("research_quota_bytes")
+        - value.get("projected_total_research_usage_bytes")
+        or value.get("physical_remaining_after_successor_bytes")
+        != value.get("research_filesystem_available_bytes")
+        - SUCCESSOR_INCREMENT_BYTES
+        or value.get("required_reserve_bytes")
+        != SUCCESSOR_REQUIRED_RESERVE_BYTES
+        or value.get("required_remaining_file_slots")
+        != SUCCESSOR_REQUIRED_FILE_SLOTS
+        or value.get("active_extraction_caches") != 0
+        or value.get("preserved_terminal_failed_extraction_caches")
+        != SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+        or value.get("quota_remaining_after_successor_bytes")
+        < SUCCESSOR_REQUIRED_RESERVE_BYTES
+        or value.get("physical_remaining_after_successor_bytes")
+        < SUCCESSOR_REQUIRED_RESERVE_BYTES
+        or value.get("research_file_slots_remaining")
+        < SUCCESSOR_REQUIRED_FILE_SLOTS
+        or any(
+            value.get(key) is not True
+            for key in (
+                "quota_reserve_gate_passed",
+                "physical_reserve_gate_passed",
+                "file_slot_gate_passed",
+                "terminal_failure_cache_gate_passed",
+            )
+        )
+        or any(
+            value.get(key) != 0
+            for key in (
+                "cloud_requests",
+                "scheduler_jobs_submitted",
+                "dicom_body_reads",
+                "writes_performed",
+            )
+        )
+    ):
+        _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_INVALID")
+
+
+def build_successor_capacity_authority(
+    observed_capacity: Mapping[str, Any],
+    cache_inventory: ExtractionCacheInventory,
+) -> dict[str, Any]:
+    try:
+        capacity.validate_current_full_headroom(observed_capacity)
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID"
+        ) from exc
+    live_usage = int(observed_capacity["research_usage_bytes"])
+    research_quota = int(observed_capacity["research_quota_bytes"])
+    physical_available = int(
+        observed_capacity["research_filesystem_available_bytes"]
+    )
+    file_slots = int(observed_capacity["research_file_slots_remaining"])
+    projected_total = live_usage + SUCCESSOR_INCREMENT_BYTES
+    quota_remaining = research_quota - projected_total
+    physical_remaining = physical_available - SUCCESSOR_INCREMENT_BYTES
+    value = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v1",
+        "status": "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE",
+        "source_capacity_authority_sha256": core.canonical_json_sha256(
+            observed_capacity
+        ),
+        "frozen_projected_peak_bytes": FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES,
+        "frozen_original_current_usage_bytes": (
+            FROZEN_FULL_PLAN_ORIGINAL_CURRENT_USAGE_BYTES
+        ),
+        "successor_increment_bytes": SUCCESSOR_INCREMENT_BYTES,
+        "live_research_usage_bytes": live_usage,
+        "projected_total_research_usage_bytes": projected_total,
+        "research_quota_bytes": research_quota,
+        "quota_remaining_after_successor_bytes": quota_remaining,
+        "research_filesystem_available_bytes": physical_available,
+        "physical_remaining_after_successor_bytes": physical_remaining,
+        "research_file_slots_remaining": file_slots,
+        "required_reserve_bytes": SUCCESSOR_REQUIRED_RESERVE_BYTES,
+        "required_remaining_file_slots": SUCCESSOR_REQUIRED_FILE_SLOTS,
+        "active_extraction_caches": cache_inventory.active,
+        "preserved_terminal_failed_extraction_caches": (
+            cache_inventory.preserved_terminal_failed
+        ),
+        "quota_reserve_gate_passed": (
+            quota_remaining >= SUCCESSOR_REQUIRED_RESERVE_BYTES
+        ),
+        "physical_reserve_gate_passed": (
+            physical_remaining >= SUCCESSOR_REQUIRED_RESERVE_BYTES
+        ),
+        "file_slot_gate_passed": file_slots >= SUCCESSOR_REQUIRED_FILE_SLOTS,
+        "terminal_failure_cache_gate_passed": (
+            cache_inventory.active == 0
+            and cache_inventory.preserved_terminal_failed
+            == SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+        ),
+        "cloud_requests": 0,
+        "scheduler_jobs_submitted": 0,
+        "dicom_body_reads": 0,
+        "writes_performed": 0,
+    }
+    validate_successor_capacity_authority(value)
+    return value
+
+
 def validate_installation() -> Mapping[str, Any]:
     required = (
         Path(__file__).resolve(),
@@ -1929,6 +2224,9 @@ def preflight_full(
     )
     if cache_inventory.active != 0:
         _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
+    successor_capacity = build_successor_capacity_authority(
+        observed_capacity, cache_inventory
+    )
     aggregate = core.aggregate_batch_plan(
         run.plan, requirements=run.requirements
     )
@@ -1963,6 +2261,7 @@ def preflight_full(
             for index in range(1, 20)
         ],
         "capacity": observed_capacity,
+        "successor_capacity": successor_capacity,
         "bucket_listing_requests": 0,
         "cloud_requests": 0,
         "qsub_submissions": 0,
@@ -2004,7 +2303,7 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
     if (
         not isinstance(preserved_failed_caches, int)
         or isinstance(preserved_failed_caches, bool)
-        or preserved_failed_caches < 0
+        or preserved_failed_caches != SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
     ):
         _fail("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID")
     governing_commit = value.get("governing_commit")
@@ -2017,6 +2316,22 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
         capacity.validate_current_full_headroom(capacity_value)
     except Exception as exc:
         raise FullSequentialError("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID") from exc
+    successor_capacity = value.get("successor_capacity")
+    if not isinstance(successor_capacity, Mapping):
+        _fail("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID")
+    try:
+        validate_successor_capacity_authority(successor_capacity)
+    except FullSequentialError as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID"
+        ) from exc
+    if (
+        successor_capacity.get("source_capacity_authority_sha256")
+        != core.canonical_json_sha256(capacity_value)
+        or successor_capacity.get("preserved_terminal_failed_extraction_caches")
+        != preserved_failed_caches
+    ):
+        _fail("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID")
     mappings = value.get("task_mappings")
     if not isinstance(mappings, list) or len(mappings) != 19:
         _fail("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID")
@@ -2075,6 +2390,15 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
         "CRC32C_EXTERNAL_RUNTIME=PASS",
         "COMPLETED_CANARY_EVIDENCE=PASS",
         "FULL_C3_CAPACITY=PASS",
+        "FULL_C3_FRESH_SUCCESSOR_CAPACITY=PASS",
+        "FULL_C3_SUCCESSOR_INCREMENT_BYTES="
+        f"{successor_capacity['successor_increment_bytes']}",
+        "FULL_C3_SUCCESSOR_PROJECTED_TOTAL_BYTES="
+        f"{successor_capacity['projected_total_research_usage_bytes']}",
+        "FULL_C3_SUCCESSOR_QUOTA_REMAINING_BYTES="
+        f"{successor_capacity['quota_remaining_after_successor_bytes']}",
+        "FULL_C3_SUCCESSOR_PHYSICAL_REMAINING_BYTES="
+        f"{successor_capacity['physical_remaining_after_successor_bytes']}",
         "FULL_C3_SOURCE_PLAN_VALIDATION=PASS",
         "FULL_C3_TASK_MAPPING_VALIDATION=PASS",
         "FULL_C3_TASK_MAPPINGS=19",
@@ -2171,7 +2495,7 @@ def _load_bound_submission_environment_sha256(
         capacity_value, capacity_payload = _load_owner_private_json(
             capacity_path
         )
-        capacity.validate_current_full_headroom(capacity_value)
+        validate_successor_capacity_authority(capacity_value)
     except Exception as exc:
         raise FullSequentialError(
             "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID"
@@ -2232,7 +2556,7 @@ def claim_submission(
         )
         _write_private_json(
             run.attempt_root / "full_capacity_receipt.restricted.json",
-            preflight["capacity"],
+            preflight["successor_capacity"],
             attempt_id=run.attempt_id,
         )
         claim = _expected_submission_claim(

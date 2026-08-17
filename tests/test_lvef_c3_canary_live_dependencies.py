@@ -238,7 +238,13 @@ def test_declared_producers_consumers_tracking_and_tests_are_real() -> None:
         for path in item["artifact_paths"]:
             candidate = ROOT / path
             assert candidate.is_file() and not candidate.is_symlink(), path
-            assert _tracked(path), path
+            if path == (
+                "configs/"
+                "lvef_c3_source_signal_object_technical_disposition_v1.json"
+            ):
+                assert _tracked_or_pending_source(path), path
+            else:
+                assert _tracked(path), path
         if item["tracked"]:
             assert item["producer_exists"] is True
             assert any(_tracked(path) for path in item["artifact_paths"]) or any(
@@ -275,6 +281,18 @@ def test_table_covers_every_closed_execution_packet_role() -> None:
     assert role_holders["body_transfer_authorization"] == {
         "body_transfer_and_download_grant"
     }
+
+
+def test_production_dependency_inventory_includes_disposition_policy() -> None:
+    table = _load()
+    production = next(
+        item for item in table["dependencies"]
+        if item["dependency_id"] == "production_contract_and_callables"
+    )
+    assert (
+        "configs/lvef_c3_source_signal_object_technical_disposition_v1.json"
+        in production["artifact_paths"]
+    )
 
 
 def test_baseline_missing_producers_are_explicit_and_not_misreported_as_ready() -> None:

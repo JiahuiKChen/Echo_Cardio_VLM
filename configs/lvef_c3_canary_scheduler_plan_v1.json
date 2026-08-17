@@ -34,7 +34,7 @@
       },
       "entrypoint": {
         "path": "scripts/lvef_c3_orchestration_core.py",
-        "sha256": "2e4daf3359b5c980f0026d19753bec31761d47fe00df58f0e425600bf2dacb36",
+        "sha256": "3fc5d7aa91422c6ef6b8cf24199700281bd449d198f7ff0c79927bd31c033e2a",
         "callable": "execute_exact_batch_download"
       },
       "required_predecessor_receipts": [],
@@ -64,7 +64,7 @@
       },
       "entrypoint": {
         "path": "scripts/lvef_c3_production_stages.py",
-        "sha256": "39e4974e6435ce616bb0f91b9354232e6c4ff44c08d8e397c2363d3a388f760b",
+        "sha256": "2696b9d8a24a43f4290e628b70dce30d11c2c98d2b069fdf702b271268fe1cd8",
         "callable": "run_production_dicom_extraction"
       },
       "required_predecessor_receipts": [
@@ -73,6 +73,7 @@
       "outputs": [
         "dicom_audit",
         "extraction_manifest",
+        "technical_disposition_manifest",
         "extraction_complete_transition_receipt"
       ],
       "failure_boundary": "BLOCK_ALL_SUCCESSORS_NO_RESUBMISSION",
@@ -96,7 +97,7 @@
       },
       "entrypoint": {
         "path": "scripts/lvef_c3_production_stages.py",
-        "sha256": "39e4974e6435ce616bb0f91b9354232e6c4ff44c08d8e397c2363d3a388f760b",
+        "sha256": "2696b9d8a24a43f4290e628b70dce30d11c2c98d2b069fdf702b271268fe1cd8",
         "callable": "run_production_echoprime"
       },
       "required_predecessor_receipts": [
@@ -130,7 +131,7 @@
       },
       "entrypoint": {
         "path": "scripts/preserve_lvef_c3_production_batch.py",
-        "sha256": "419f46fe980908ec0215435f3533a1e7fbf38b41e99e9aa665ae0e762261152f",
+        "sha256": "ca929a74eb8acabddb81814453f3fd5b7dd22a03b66e7fced40b81a40669ed29",
         "callable": "preserve_batch"
       },
       "required_predecessor_receipts": [
@@ -162,7 +163,7 @@
       },
       "entrypoint": {
         "path": "scripts/finalize_lvef_c3_production.py",
-        "sha256": "96d6f8e8075d48880c73184cf0313376621638b57d90ea148ca5743fc8e04a2d",
+        "sha256": "354a9b9a7cef0b2dea273d8ae2f2a1d00f5606eb92344dbcc1018c91cc1be1a6",
         "callable": "finalize_canary_preservation_receipt"
       },
       "required_predecessor_receipts": [

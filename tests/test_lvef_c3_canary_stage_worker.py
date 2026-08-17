@@ -500,6 +500,130 @@ def test_stage_worker_production_function_identity_and_exact_stage_set() -> None
     assert dependencies.finalize is worker.finalizer.finalize_canary_preservation_receipt
 
 
+def test_canary_dicom_and_echoprime_routes_pass_exact_current_arguments() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        context = _context(Path(directory).resolve() / "canary_runs" / "run")
+        attempt_root = (
+            context.output_root / "attempts" / context.attempt_id
+        )
+        batch_root = attempt_root / "batches" / worker.BATCH_ID
+        raw_root = attempt_root / "raw"
+        cache_root = attempt_root / "extracted_cache" / worker.BATCH_ID
+        extraction_root = cache_root / "dicom_extraction"
+        plan = {"batches": [{"objects": [], "studies": []}]}
+        requirements = mock.sentinel.requirements
+
+        def dicom(**kwargs):
+            assert kwargs["embedding_output_root"] == batch_root / "echoprime"
+            assert kwargs["planned_batch"] is plan["batches"][0]
+            assert kwargs["download_root"] == raw_root / worker.BATCH_ID / "objects"
+            assert not os.path.lexists(batch_root / "echoprime")
+            assert not os.path.lexists(batch_root / "echoprime.partial")
+            return {"status": "PASS_DICOM"}
+
+        def echoprime(**kwargs):
+            assert kwargs["technical_disposition_manifest"] == (
+                extraction_root
+                / "technical_disposition_manifest.restricted.csv"
+            )
+            assert kwargs["dicom_audit"] == (
+                extraction_root / "dicom_audit.restricted.csv"
+            )
+            assert kwargs["dicom_extraction_summary"] == (
+                extraction_root / "dicom_extraction.summary.json"
+            )
+            assert kwargs["verified_download_manifest"] == (
+                raw_root
+                / worker.BATCH_ID
+                / "verified_download_manifest.restricted.csv"
+            )
+            assert kwargs["selected_batch_manifest"] == (
+                raw_root / worker.BATCH_ID / "selected_batch.restricted.csv"
+            )
+            assert kwargs["batch_output_root"] == batch_root
+            assert kwargs["requirements"] is requirements
+            assert not os.path.lexists(batch_root / "echoprime")
+            assert not os.path.lexists(batch_root / "echoprime.partial")
+            return {"status": "PASS_ECHOPRIME"}
+
+        advance = mock.Mock()
+        common_patches = (
+            mock.patch.object(
+                worker, "_validate_context",
+                return_value=({}, plan, requirements, {}),
+            ),
+            mock.patch.object(
+                worker, "_wait_for_submitted_dispatch_ledger", return_value={}
+            ),
+            mock.patch.object(worker, "_require_bound_scheduler_job"),
+            mock.patch.object(
+                worker, "_load_predecessor_stage_result",
+                return_value=("1" * 64, {}),
+            ),
+            mock.patch.object(worker, "_require_executing_lifecycle"),
+            mock.patch.object(
+                worker, "_claim_stage_execution",
+                return_value=(Path("claim"), "2" * 64),
+            ),
+            mock.patch.object(worker, "_write_stage_result"),
+            mock.patch.object(worker.stages, "validate_stage_predecessor"),
+            mock.patch.object(
+                worker.stages, "validate_download_manifest_plan_membership"
+            ),
+            mock.patch.object(
+                worker.stages, "validate_extraction_manifest_plan_membership"
+            ),
+            mock.patch.object(
+                worker.stages, "advance_stage_ledger", new=advance
+            ),
+            mock.patch.object(worker.stages, "sha256_file", return_value="3" * 64),
+        )
+        with common_patches[0], common_patches[1], common_patches[2], \
+            common_patches[3], common_patches[4], common_patches[5], \
+            common_patches[6], common_patches[7], common_patches[8], \
+            common_patches[9], common_patches[10], common_patches[11], \
+            mock.patch.object(
+                worker, "_create_scoped_cache_root", return_value=cache_root
+            ):
+            assert worker.run_canary_stage(
+                "DICOM_EXTRACTION",
+                context,
+                dependencies=worker.CanaryStageDependencies(dicom=dicom),
+                scheduler_job_identity="101",
+            )["status"] == "PASS_DICOM"
+            assert worker.run_canary_stage(
+                "ECHOPRIME_EMBEDDING",
+                context,
+                dependencies=worker.CanaryStageDependencies(
+                    echoprime=echoprime
+                ),
+                scheduler_job_identity="102",
+            )["status"] == "PASS_ECHOPRIME"
+        assert advance.call_count == 2
+        dicom_transition = advance.call_args_list[0].kwargs
+        assert dicom_transition["input_ledger"] == (
+            batch_root / "download_resume_ledger.restricted.json"
+        )
+        assert dicom_transition["output_ledger"] == (
+            batch_root / "extraction_resume_ledger.restricted.json"
+        )
+        assert [item[0] for item in dicom_transition["transitions"]] == [
+            "DICOM_AUDIT_COMPLETE",
+            "EXTRACTION_COMPLETE",
+        ]
+        echo_transition = advance.call_args_list[1].kwargs
+        assert echo_transition["input_ledger"] == (
+            batch_root / "extraction_resume_ledger.restricted.json"
+        )
+        assert echo_transition["output_ledger"] == (
+            batch_root / "pooling_resume_ledger.restricted.json"
+        )
+        assert [item[0] for item in echo_transition["transitions"]] == [
+            "EMBEDDING_COMPLETE",
+            "STUDY_POOLING_COMPLETE",
+        ]
+
+
 def test_download_uses_only_packet_billing_binding_and_restores_environment() -> None:
     class Provider:
         def validate_authority(self):

@@ -73,6 +73,7 @@ EXPECTED_OUTPUTS = {
     "DICOM_EXTRACTION": (
         "dicom_audit",
         "extraction_manifest",
+        "technical_disposition_manifest",
         "extraction_complete_transition_receipt",
     ),
     "ECHOPRIME_EMBEDDING": (

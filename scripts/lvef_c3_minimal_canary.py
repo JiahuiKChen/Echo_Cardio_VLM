@@ -1732,8 +1732,11 @@ def _build_direct_manifest_plan(
         split_rows,
         requirements=requirements,
         authority=plan_authority,
+        prespecified_no_cine_studies=(),
     )
-    plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=requirements
+    )
     return plan, requirements, core.validate_runtime_authority(
         {**plan_authority, "batch_plan_sha256": plan_sha}
     )
@@ -1814,7 +1817,9 @@ def _production_run(
     plan, requirements, runtime_authority = _build_direct_manifest_plan(
         manifest, authority=authority
     )
-    plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=requirements
+    )
     attempt_id = _minimal_run_identity(
         manifest_file_sha256, authority.governing_commit
     )
@@ -1991,6 +1996,8 @@ def build_production_operations(
             batch_id=BATCH_ID,
             attempt_id=run.attempt_id,
             runtime_authority=run.runtime_authority,
+            planned_batch=run.plan["batches"][0],
+            embedding_output_root=batch_root / "echoprime",
         )
         stages.advance_stage_ledger(
             input_ledger=input_ledger,
@@ -2036,11 +2043,23 @@ def build_production_operations(
             predecessor_transition_receipt=predecessor,
         )
         stages.validate_extraction_manifest_plan_membership(
-            extraction, run.plan["batches"][0]
+            extraction,
+            run.plan["batches"][0],
+            extraction_root / "technical_disposition_manifest.restricted.csv",
         )
         summary = dependency.echoprime(
             extraction_manifest=extraction,
             extraction_root=extraction_root / "clips",
+            technical_disposition_manifest=(
+                extraction_root / "technical_disposition_manifest.restricted.csv"
+            ),
+            dicom_audit=extraction_root / "dicom_audit.restricted.csv",
+            dicom_extraction_summary=(
+                extraction_root / "dicom_extraction.summary.json"
+            ),
+            verified_download_manifest=(
+                raw_batch_root / "verified_download_manifest.restricted.csv"
+            ),
             selected_batch_manifest=raw_batch_root
             / "selected_batch.restricted.csv",
             checkpoint=run.authority.checkpoint,

@@ -282,7 +282,12 @@ def _synthetic_original_attempt(
         splits,
         requirements=requirements,
         authority=plan_authority,
+        _legacy_v2_historical=True,
     )
+    assert (
+        plan.get("schema_version"),
+        plan.get("artifact_type"),
+    ) == (2, "lvef_c3_restricted_immutable_batch_plan_v2")
     plan_sha256 = replay.core.canonical_json_sha256(plan)
     attempt_id = f"lvef_c3_full_{plan_sha256[:16]}_{execution_commit[:8]}"
     batch_id = "c3_batch_000"
@@ -345,13 +350,24 @@ def _synthetic_original_attempt(
     runtime_authority = replay.core.validate_runtime_authority(
         {**plan["authority"], "batch_plan_sha256": plan_sha256}
     )
-    ledger = replay.core.initialize_resume_ledger(
-        plan,
-        requirements=requirements,
-        attempt_id=attempt_id,
-        authority=runtime_authority,
-        batch_ids=[batch_id],
-    )
+    with mock.patch.object(
+        replay.core,
+        "validate_current_batch_plan_v3",
+        side_effect=lambda candidate, *, requirements, expected_sha256=None: (
+            replay.core.validate_batch_plan(
+                candidate,
+                requirements=requirements,
+                expected_sha256=expected_sha256,
+            )
+        ),
+    ):
+        ledger = replay.core.initialize_resume_ledger(
+            plan,
+            requirements=requirements,
+            attempt_id=attempt_id,
+            authority=runtime_authority,
+            batch_ids=[batch_id],
+        )
     transition = {
         "schema_version": 2,
         "receipt_type": "lvef_c3_state_transition_v2",

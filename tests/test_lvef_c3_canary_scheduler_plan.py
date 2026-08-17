@@ -56,6 +56,12 @@ def test_frozen_scheduler_plan_is_closed_exact_five_and_hash_bound() -> None:
     assert bound["canary_manifest_sha256"] == MANIFEST_SHA
     assert [stage["array_task_count"] for stage in bound["stages"]] == [1] * 5
     assert [stage["retry_count"] for stage in bound["stages"]] == [0] * 5
+    assert bound["stages"][1]["outputs"] == [
+        "dicom_audit",
+        "extraction_manifest",
+        "technical_disposition_manifest",
+        "extraction_complete_transition_receipt",
+    ]
 
 
 def test_plan_rejects_unknown_and_duplicate_json_keys() -> None:

@@ -571,7 +571,10 @@ def _materialize_production_preservation_inputs(
 ) -> dict[str, Any]:
     """Write a complete synthetic instance of the production batch contract."""
 
-    production_root = Path(context.artifacts["synthetic_workspace"].name) / "production"
+    production_root = (
+        Path(context.artifacts["synthetic_workspace"].name).resolve()
+        / "production"
+    )
     production_root.mkdir(mode=0o700)
     attempt_root = production_root / "attempts" / integration.SYNTHETIC_ATTEMPT_ID
     raw_root = attempt_root / "raw" / integration.SYNTHETIC_BATCH_ID
@@ -636,7 +639,9 @@ def _materialize_production_preservation_inputs(
 
     for extracted in context.artifacts["extraction_rows"]:
         source = context.artifacts["extraction_root"] / extracted["output_relative_path"]
-        target = extraction_root / extracted["output_relative_path"]
+        target = (
+            extraction_root / "clips" / extracted["output_relative_path"]
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
     dicom_rows = list(context.artifacts["dicom_rows"])
@@ -657,14 +662,31 @@ def _materialize_production_preservation_inputs(
     extraction_semantics = production_stages.validate_production_extraction_rows(
         extraction_rows, expected_cines=10
     )
+    technical_path = (
+        extraction_root / "technical_disposition_manifest.restricted.csv"
+    )
+    production_stages.write_technical_disposition_manifest_no_clobber(
+        technical_path, []
+    )
+    technical_sha256 = (
+        production_stages.technical_disposition_manifest_sha256(technical_path)
+    )
+    technical_semantics = (
+        production_stages.validate_technical_disposition_manifest_rows(
+            extraction_rows, []
+        )
+    )
     _write_json(
         extraction_root / "dicom_extraction.summary.json",
         {
-            "schema_version": 1,
-            "artifact_type": "lvef_c3_batch_dicom_extraction_summary_v1",
-            "status": "PASS_DICOM_EXTRACTION",
+            "schema_version": 2,
+            "artifact_type": "lvef_c3_batch_dicom_extraction_summary_v2",
             **dicom_semantics,
             **extraction_semantics,
+            "technical_disposition_policy_version": (
+                production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+            ),
+            "technical_disposition_manifest_sha256": technical_sha256,
             "identifiers_emitted": False,
             "paths_emitted": False,
         },
@@ -706,21 +728,45 @@ def _materialize_production_preservation_inputs(
     _write_json(
         echoprime_root / "echoprime_pooling.summary.json",
         {
-            "schema_version": 1,
-            "artifact_type": "lvef_c3_batch_echoprime_pooling_summary_v1",
+            "schema_version": 2,
+            "artifact_type": "lvef_c3_batch_echoprime_pooling_summary_v2",
             "status": "PASS_ECHOPRIME_AND_POOLING",
             "n_clip_embeddings": 10,
             "n_pooled_studies": 5,
             "n_no_cine_studies": 0,
+            "n_new_no_cine_studies": 0,
+            "prespecified_no_cine_study_set_sha256": (
+                plan["batches"][0]["prespecified_no_cine_study_set_sha256"]
+            ),
+            "actual_no_cine_study_set_sha256": (
+                orchestration_core.canonical_json_sha256([])
+            ),
+            "all_no_cine_studies_prespecified": True,
+            "n_object_technical_dispositions": technical_semantics[
+                "n_object_technical_dispositions"
+            ],
+            "n_studies_affected_by_technical_disposition": technical_semantics[
+                "n_studies_affected_by_technical_disposition"
+            ],
+            "technical_disposition_counts_by_class": technical_semantics[
+                "technical_disposition_counts_by_class"
+            ],
+            "technical_disposition_policy_version": (
+                production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+            ),
+            "technical_disposition_manifest_sha256": technical_sha256,
+            "all_extraction_rows_resolved": True,
+            "all_successful_extractions_embedded": True,
+            "all_technical_dispositions_retained": True,
+            "object_substitution_count": 0,
+            "unaccounted_multiframe_objects": 0,
             "embedding_dimension": 512,
             "embedding_dtype": "float32",
             "all_finite": True,
             "encoder_only": True,
             "view_classifier_used": False,
             "pooling": "stable_clip_key_order_float64_mean_then_float32",
-            "checkpoint_sha256": hashlib.sha256(
-                integration.SYNTHETIC_CHECKPOINT_BYTES
-            ).hexdigest(),
+            "checkpoint_sha256": production_stages.CHECKPOINT_SHA256,
             "identifiers_emitted": False,
             "paths_emitted": False,
         },
@@ -759,6 +805,11 @@ def _materialize_production_preservation_inputs(
         batch_id=integration.SYNTHETIC_BATCH_ID,
         manifest_sha256=preservation.sha256_file(download_manifest),
     )
+    ledger_paths = {
+        "DOWNLOAD_VERIFIED": batch_root / "download_resume_ledger.restricted.json",
+        "EXTRACTION_COMPLETE": batch_root / "extraction_resume_ledger.restricted.json",
+        "STUDY_POOLING_COMPLETE": batch_root / "pooling_resume_ledger.restricted.json",
+    }
     for state, artifact in (
         ("DOWNLOAD_VERIFIED", download_manifest),
         ("DICOM_AUDIT_COMPLETE", extraction_root / "dicom_audit.restricted.csv"),
@@ -767,14 +818,14 @@ def _materialize_production_preservation_inputs(
         ("STUDY_POOLING_COMPLETE", echoprime_root / "study_embeddings.restricted.npz"),
     ):
         ledger = _transition_ledger(ledger, state, preservation.sha256_file(artifact))
-    ledger_path = batch_root / "download_resume_ledger.restricted.json"
-    _write_json(ledger_path, ledger)
+        if state in ledger_paths:
+            _write_json(ledger_paths[state], ledger)
     return {
         "production_root": production_root,
         "plan_path": plan_path,
         "environment_path": environment_path,
         "checkpoint_path": checkpoint_path,
-        "ledger_path": ledger_path,
+        "ledger_path": ledger_paths["STUDY_POOLING_COMPLETE"],
         "runtime_authority": runtime_authority,
         "output_root": batch_root / "preservation",
     }
@@ -792,15 +843,21 @@ def _synthetic_hooks(
         called("source_transfer")
         declared = _manifest_objects(context.manifest)
         workspace = tempfile.TemporaryDirectory(prefix="lvef-c3-synthetic-part10-")
-        download_root = Path(workspace.name) / "download"
-        extraction_root = Path(workspace.name) / "extraction"
+        workspace_root = Path(workspace.name).resolve()
+        download_root = workspace_root / "download"
+        extraction_root = workspace_root / "extraction"
         download_root.mkdir(mode=0o700)
         extraction_root.mkdir(mode=0o700)
         transferred: list[dict[str, Any]] = []
         for item in declared:
             scoped = dict(context.access_declared_object(item["source_object_key"]))
-            ordinal = int(Path(scoped["source_relative_path"]).stem.rsplit("_", 1)[1])
+            authority_relative = str(scoped["source_relative_path"])
+            ordinal = int(Path(authority_relative).stem.rsplit("_", 1)[1])
             payload = _minimal_part10_dicom_bytes(ordinal)
+            scoped["source_authority_relative_path"] = authority_relative
+            scoped["source_relative_path"] = (
+                f"{scoped['source_object_key']}.dcm"
+            )
             output = download_root / scoped["source_relative_path"]
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(payload)
@@ -1042,6 +1099,11 @@ def test_exact_five_canary_end_to_end_reuses_production_functions(
     sealed = _sealed_exact_five_manifest()
     plan = _bound_scheduler_plan(sealed)
     calls: dict[str, int] = {}
+    monkeypatch.setattr(
+        production_stages,
+        "CHECKPOINT_SHA256",
+        hashlib.sha256(integration.SYNTHETIC_CHECKPOINT_BYTES).hexdigest(),
+    )
     assert sealed["manifest"]["expected_object_count"] == 10
     assert sealed["manifest"]["expected_byte_total"] == 10 * SYNTHETIC_DICOM_SIZE
 
@@ -1163,6 +1225,29 @@ def test_exact_five_canary_end_to_end_reuses_production_functions(
     _assert_scope_and_seal_fail_closed_before_any_processing_hook()
     _assert_undeclared_access_and_stage_failure_block_successors_without_retry()
     _assert_frozen_dag_rejects_dynamic_overflow_duplicate_and_forbidden_roles()
+
+
+def test_canary_plan_has_explicit_empty_current_no_cine_authority() -> None:
+    production_plan, requirements = integration.build_canary_batch_plan(
+        _sealed_exact_five_manifest(), synthetic_authority=True
+    )
+    orchestration_core.validate_current_batch_plan_v3(
+        production_plan, requirements=requirements
+    )
+    empty_set_sha256 = orchestration_core.canonical_json_sha256([])
+    assert production_plan["cohort"]["expected_no_cine_studies"] == 0
+    assert (
+        production_plan["cohort"]["prespecified_no_cine_study_set_sha256"]
+        == empty_set_sha256
+    )
+    assert production_plan["batches"][0]["expected_no_cine_studies"] == 0
+    assert production_plan["batches"][0]["prespecified_no_cine_study_keys"] == []
+    assert (
+        production_plan["batches"][0][
+            "prespecified_no_cine_study_set_sha256"
+        ]
+        == empty_set_sha256
+    )
 
 
 def _assert_scope_and_seal_fail_closed_before_any_processing_hook() -> None:

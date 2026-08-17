@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -118,6 +119,9 @@ STUDY_MANIFEST_HEADER = (
     "embedding_sha256",
 )
 DISPOSITION_HEADER = ("subject_id", "study_id", "disposition")
+TECHNICAL_DISPOSITION_HEADER = (
+    production_stages.TECHNICAL_DISPOSITION_MANIFEST_HEADER
+)
 DICOM_RECOMPUTED_SUMMARY_KEYS = (
     "n_objects",
     "n_studies",
@@ -129,7 +133,21 @@ DICOM_RECOMPUTED_SUMMARY_KEYS = (
     "physical_source_keys_unique",
 )
 EXTRACTION_RECOMPUTED_SUMMARY_KEYS = (
+    "status",
+    "n_requested_cines",
     "n_extracted_clips",
+    "n_successfully_extracted_cines",
+    "n_successfully_extracted_clips",
+    "n_object_technical_dispositions",
+    "n_blocking_failures",
+    "n_studies_affected_by_technical_disposition",
+    "n_new_no_cine_studies",
+    "technical_disposition_counts_by_class",
+    "all_extraction_rows_resolved",
+    "all_successful_extractions_embeddable",
+    "all_technical_dispositions_retained",
+    "object_substitution_count",
+    "unaccounted_multiframe_objects",
     "n_studies_with_extracted_clips",
     "clip_keys_unique",
     "physical_source_keys_unique",
@@ -192,6 +210,128 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def stable_manifest_artifact_authority(path: Path) -> tuple[int, str]:
+    """Hash one manifest member through bound, no-follow parent/file fds."""
+
+    absolute = Path(os.path.abspath(path))
+    if not absolute.name:
+        raise BatchPreservationError(
+            "PRESERVATION_ARTIFACT_AUTHORITY_INVALID"
+        )
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+    def directory_identity(metadata: os.stat_result) -> tuple[int, ...]:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_uid,
+            metadata.st_gid,
+            metadata.st_nlink,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+
+    def open_parent() -> tuple[int, tuple[int, ...]]:
+        try:
+            descriptor = os.open(absolute.anchor, directory_flags)
+            for component in absolute.parts[1:-1]:
+                child = os.open(
+                    component, directory_flags, dir_fd=descriptor
+                )
+                os.close(descriptor)
+                descriptor = child
+            metadata = os.fstat(descriptor)
+        except OSError as exc:
+            try:
+                os.close(descriptor)
+            except (OSError, UnboundLocalError):
+                pass
+            raise BatchPreservationError(
+                "PRESERVATION_ARTIFACT_AUTHORITY_INVALID"
+            ) from exc
+        return descriptor, directory_identity(metadata)
+
+    def file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+        return (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_uid,
+            metadata.st_gid,
+            metadata.st_nlink,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+
+    parent_descriptor, parent_before = open_parent()
+    file_descriptor = -1
+    try:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        file_descriptor = os.open(
+            absolute.name, flags, dir_fd=parent_descriptor
+        )
+        before = os.fstat(file_descriptor)
+        visible_before = os.stat(
+            absolute.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or file_identity(before) != file_identity(visible_before)
+        ):
+            raise BatchPreservationError(
+                "PRESERVATION_ARTIFACT_AUTHORITY_INVALID"
+            )
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(file_descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        after = os.fstat(file_descriptor)
+        visible_after = os.stat(
+            absolute.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if (
+            file_identity(before) != file_identity(after)
+            or file_identity(before) != file_identity(visible_after)
+            or parent_before
+            != directory_identity(os.fstat(parent_descriptor))
+        ):
+            raise BatchPreservationError(
+                "PRESERVATION_ARTIFACT_AUTHORITY_INVALID"
+            )
+        # The bound parent must still be the parent reachable through the
+        # original no-follow component walk after the read.
+        rebound_descriptor, rebound_parent = open_parent()
+        os.close(rebound_descriptor)
+        if rebound_parent != parent_before:
+            raise BatchPreservationError(
+                "PRESERVATION_ARTIFACT_AUTHORITY_INVALID"
+            )
+        return before.st_size, digest.hexdigest()
+    except BatchPreservationError:
+        raise
+    except OSError as exc:
+        raise BatchPreservationError(
+            "PRESERVATION_ARTIFACT_AUTHORITY_INVALID"
+        ) from exc
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        os.close(parent_descriptor)
+
+
 def safe_relative(path: Path, root: Path) -> str:
     try:
         relative = path.relative_to(root).as_posix()
@@ -241,6 +381,8 @@ def validate_stage_csv_authority(
     clip_manifest_path: Path,
     study_manifest_path: Path,
     disposition_path: Path,
+    technical_disposition_path: Path,
+    clips_root: Path,
     expected_objects: int,
     expected_studies: int,
 ) -> dict[str, Any]:
@@ -252,6 +394,11 @@ def validate_stage_csv_authority(
     clip_rows = read_csv_exact(clip_manifest_path, CLIP_MANIFEST_HEADER)
     study_rows = read_csv_exact(study_manifest_path, STUDY_MANIFEST_HEADER)
     disposition_rows = read_csv_exact(disposition_path, DISPOSITION_HEADER)
+    technical_disposition_rows = (
+        production_stages.read_technical_disposition_manifest(
+            technical_disposition_path
+        )
+    )
 
     typed_dicom_rows: list[dict[str, Any]] = []
     for row in dicom_rows:
@@ -300,9 +447,29 @@ def validate_stage_csv_authority(
             )
         typed_extraction_rows.append(typed)
     try:
+        disposition_context = (
+            production_stages.context_from_completed_extraction_authority(
+                extraction_rows=typed_extraction_rows,
+                dicom_rows=typed_dicom_rows,
+                manifest_rows=technical_disposition_rows,
+                clips_root=clips_root,
+                existing_embedding_clip_keys=[
+                    str(row["clip_key"]) for row in clip_rows
+                ],
+            )
+        )
         extraction_semantics = production_stages.validate_production_extraction_rows(
             typed_extraction_rows,
             expected_cines=dicom_semantics["n_multiframe_candidates"],
+            disposition_context=disposition_context,
+            clips_root=clips_root,
+        )
+        technical_disposition_semantics = (
+            production_stages.validate_technical_disposition_manifest_rows(
+                typed_extraction_rows,
+                technical_disposition_rows,
+                context=disposition_context,
+            )
         )
     except production_stages.ProductionStageError as exc:
         raise BatchPreservationError("EXTRACTION_RECOMPUTATION_FAILED") from exc
@@ -337,15 +504,15 @@ def validate_stage_csv_authority(
         "clip_key",
         "physical_source_key",
     )
-    if len(extraction_rows) != len(clip_rows):
-        raise BatchPreservationError("EXTRACTION_CLIP_ROW_COUNT_MISMATCH")
     extraction_identity = {
-        tuple(str(row[field]) for field in identity_fields) for row in extraction_rows
+        tuple(str(raw[field]) for field in identity_fields)
+        for raw, typed in zip(extraction_rows, typed_extraction_rows)
+        if typed["write_ok"] is True
     }
     clip_identity = {
         tuple(str(row[field]) for field in identity_fields) for row in clip_rows
     }
-    if extraction_identity != clip_identity:
+    if len(extraction_identity) != len(clip_rows) or extraction_identity != clip_identity:
         raise BatchPreservationError("EXTRACTION_CLIP_IDENTITY_SET_MISMATCH")
 
     return {
@@ -354,8 +521,10 @@ def validate_stage_csv_authority(
         "clip_rows": clip_rows,
         "study_rows": study_rows,
         "disposition_rows": disposition_rows,
+        "technical_disposition_rows": technical_disposition_rows,
         "dicom_semantics": dicom_semantics,
         "extraction_semantics": extraction_semantics,
+        "technical_disposition_semantics": technical_disposition_semantics,
     }
 
 
@@ -365,6 +534,10 @@ def validate_recomputed_stage_summaries(
     dicom_semantics: Mapping[str, Any],
     extraction_semantics: Mapping[str, Any],
 ) -> None:
+    if set(dicom_summary) != set(
+        production_stages.DICOM_EXTRACTION_SUMMARY_KEYS_V2
+    ):
+        raise BatchPreservationError("DICOM_SUMMARY_SCHEMA_MISMATCH")
     if any(
         dicom_summary.get(key) != dicom_semantics.get(key)
         for key in DICOM_RECOMPUTED_SUMMARY_KEYS
@@ -375,6 +548,167 @@ def validate_recomputed_stage_summaries(
         for key in EXTRACTION_RECOMPUTED_SUMMARY_KEYS
     ):
         raise BatchPreservationError("EXTRACTION_SUMMARY_RECOMPUTATION_MISMATCH")
+
+
+def validate_technical_disposition_summary_bindings(
+    *,
+    dicom_summary: Mapping[str, Any],
+    embedding_summary: Mapping[str, Any],
+    extraction_semantics: Mapping[str, Any],
+    technical_semantics: Mapping[str, Any],
+    technical_manifest_path: Path,
+) -> None:
+    digest = production_stages.technical_disposition_manifest_sha256(
+        technical_manifest_path
+    )
+    common = {
+        "n_object_technical_dispositions": technical_semantics[
+            "n_object_technical_dispositions"
+        ],
+        "n_studies_affected_by_technical_disposition": technical_semantics[
+            "n_studies_affected_by_technical_disposition"
+        ],
+        "technical_disposition_counts_by_class": technical_semantics[
+            "technical_disposition_counts_by_class"
+        ],
+        "technical_disposition_policy_version": (
+            production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+        ),
+        "technical_disposition_manifest_sha256": digest,
+        "all_extraction_rows_resolved": True,
+        "all_technical_dispositions_retained": True,
+        "object_substitution_count": 0,
+        "unaccounted_multiframe_objects": 0,
+        "n_new_no_cine_studies": 0,
+    }
+    dicom_static = {
+        "successful_extraction_gate_scope": "SUCCESSFUL_EXTRACTIONS_ONLY",
+        "requested_cine_resolution_scope": (
+            "SUCCESSFUL_EXTRACTION_OR_APPROVED_OBJECT_TECHNICAL_DISPOSITION"
+        ),
+        "identifiers_emitted": False,
+        "paths_emitted": False,
+    }
+    embedding_static = {
+        "encoder_only": True,
+        "view_classifier_used": False,
+        "pooling": "stable_clip_key_order_float64_mean_then_float32",
+        "checkpoint_sha256": production_stages.CHECKPOINT_SHA256,
+        "identifiers_emitted": False,
+        "paths_emitted": False,
+    }
+    if (
+        set(dicom_summary)
+        != set(production_stages.DICOM_EXTRACTION_SUMMARY_KEYS_V2)
+        or dicom_summary.get("schema_version") != 2
+        or dicom_summary.get("artifact_type")
+        != "lvef_c3_batch_dicom_extraction_summary_v2"
+        or any(dicom_summary.get(key) != value for key, value in common.items())
+        or any(
+            dicom_summary.get(key) != value
+            for key, value in dicom_static.items()
+        )
+        or dicom_summary.get("n_successfully_extracted_cines")
+        != extraction_semantics["n_successfully_extracted_cines"]
+        or set(embedding_summary)
+        != set(production_stages.ECHOPRIME_SUMMARY_KEYS_V2)
+        or embedding_summary.get("schema_version") != 2
+        or embedding_summary.get("artifact_type")
+        != "lvef_c3_batch_echoprime_pooling_summary_v2"
+        or any(embedding_summary.get(key) != value for key, value in common.items())
+        or any(
+            embedding_summary.get(key) != value
+            for key, value in embedding_static.items()
+        )
+        or embedding_summary.get("all_successful_extractions_embedded") is not True
+        or embedding_summary.get("n_clip_embeddings")
+        != extraction_semantics["n_successfully_extracted_cines"]
+    ):
+        raise BatchPreservationError(
+            "TECHNICAL_DISPOSITION_STAGE_SUMMARY_BINDING_MISMATCH"
+        )
+
+
+def validate_prespecified_no_cine_authority(
+    *,
+    disposition_rows: Sequence[Mapping[str, Any]],
+    planned_batch: Mapping[str, Any],
+    embedding_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_keys = list(planned_batch.get("prespecified_no_cine_study_keys", ()))
+    expected = {
+        (str(row.get("subject_id")), str(row.get("study_id")))
+        for row in expected_keys
+        if isinstance(row, Mapping)
+    }
+    actual = {
+        (str(row.get("subject_id")), str(row.get("study_id")))
+        for row in disposition_rows
+        if row.get("disposition")
+        == "IMAGING_INELIGIBLE_NO_MULTIFRAME_CINE"
+    }
+    try:
+        actual_keys = [
+            {"subject_id": subject, "study_id": study}
+            for subject, study in sorted(
+                actual, key=lambda pair: (int(pair[0]), int(pair[1]))
+            )
+        ]
+    except (TypeError, ValueError) as exc:
+        raise BatchPreservationError(
+            "PRESPECIFIED_NO_CINE_IDENTITY_MISMATCH"
+        ) from exc
+    expected_sha = planned_batch.get(
+        "prespecified_no_cine_study_set_sha256"
+    )
+    actual_sha = core.canonical_json_sha256(actual_keys)
+    if (
+        len(expected) != planned_batch.get("expected_no_cine_studies")
+        or core.canonical_json_sha256(expected_keys) != expected_sha
+        or actual != expected
+        or embedding_summary.get("n_no_cine_studies") != len(actual)
+        or embedding_summary.get("n_new_no_cine_studies")
+        != len(actual - expected)
+        or embedding_summary.get("prespecified_no_cine_study_set_sha256")
+        != expected_sha
+        or embedding_summary.get("actual_no_cine_study_set_sha256")
+        != actual_sha
+        or embedding_summary.get("all_no_cine_studies_prespecified") is not True
+    ):
+        raise BatchPreservationError("PRESPECIFIED_NO_CINE_IDENTITY_MISMATCH")
+    return {
+        "n_no_cine_studies": len(actual),
+        "n_new_no_cine_studies": len(actual - expected),
+        "prespecified_no_cine_study_set_sha256": expected_sha,
+        "all_no_cine_studies_prespecified": True,
+    }
+
+
+def validate_preservation_disposition_accounting(
+    receipt: Mapping[str, Any]
+) -> None:
+    dispositions = receipt.get("n_object_technical_dispositions")
+    affected = receipt.get("n_studies_affected_by_technical_disposition")
+    successful = receipt.get("n_successfully_extracted_cines")
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (dispositions, affected, successful)
+        )
+        or affected > dispositions
+        or (affected == 0) is not (dispositions == 0)
+        or receipt.get("technical_disposition_counts_by_class")
+        != {
+            production_stages.OBJECT_TECHNICAL_DISPOSITION: dispositions
+        }
+        or receipt.get("n_multiframe_cines") != successful + dispositions
+        or receipt.get("n_extracted_clips") != successful
+        or receipt.get("n_unique_clip_keys") != successful
+        or receipt.get("n_clip_embeddings") != successful
+    ):
+        raise BatchPreservationError(
+            "PRESERVATION_TECHNICAL_DISPOSITION_ACCOUNTING_INVALID"
+        )
 
 
 def validate_embedding_array_authority(
@@ -480,10 +814,11 @@ def write_bytes_no_clobber(path: Path, body: bytes) -> None:
 
 
 def _artifact_record(path: Path, root: Path, role: str) -> dict[str, Any]:
+    size_bytes, digest = stable_manifest_artifact_authority(path)
     return {
         "relative_path": safe_relative(path, root),
-        "size_bytes": path.stat(follow_symlinks=False).st_size,
-        "sha256": sha256_file(path),
+        "size_bytes": size_bytes,
+        "sha256": digest,
         "role": role,
     }
 
@@ -715,7 +1050,9 @@ def resolve_preservation_runtime_authority(
     scoped = requirements is not None or expected_runtime_authority is not None
     if requirements is None and expected_runtime_authority is None:
         effective_requirements = core.production_requirements(contract)
-        plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+        plan_sha = core.validate_current_batch_plan_v3(
+            plan, requirements=effective_requirements
+        )
         runtime_authority = core.derive_expected_runtime_authority(
             plan,
             requirements=effective_requirements,
@@ -728,7 +1065,9 @@ def resolve_preservation_runtime_authority(
         raise BatchPreservationError("SCOPED_RUNTIME_AUTHORITY_ARGUMENTS_INCOMPLETE")
     else:
         effective_requirements = requirements
-        plan_sha = core.validate_batch_plan(plan, requirements=effective_requirements)
+        plan_sha = core.validate_current_batch_plan_v3(
+            plan, requirements=effective_requirements
+        )
         runtime_authority = core.validate_runtime_authority(expected_runtime_authority)
         if runtime_authority["batch_plan_sha256"] != plan_sha:
             raise BatchPreservationError("SCOPED_RUNTIME_BATCH_PLAN_MISMATCH")
@@ -808,11 +1147,14 @@ def preserve_batch(
     batch_root = production_root / "attempts" / attempt_id / "batches" / batch_id
     paths = {
         "download_ledger": batch_root / "download_resume_ledger.restricted.json",
+        "extraction_ledger": batch_root / "extraction_resume_ledger.restricted.json",
+        "pooling_ledger": batch_root / "pooling_resume_ledger.restricted.json",
         "state_input_ledger": input_ledger,
         "download_manifest": raw_root / "verified_download_manifest.restricted.csv",
         "dicom_summary": cache_batch_root / "dicom_extraction" / "dicom_extraction.summary.json",
         "dicom_audit": cache_batch_root / "dicom_extraction" / "dicom_audit.restricted.csv",
         "extraction_manifest": cache_batch_root / "dicom_extraction" / "extraction_manifest.restricted.csv",
+        "technical_disposition_manifest": cache_batch_root / "dicom_extraction" / "technical_disposition_manifest.restricted.csv",
         "clip_embeddings": batch_root / "echoprime" / "clip_embeddings.restricted.npz",
         "clip_manifest": batch_root / "echoprime" / "clip_manifest.restricted.csv",
         "study_embeddings": batch_root / "echoprime" / "study_embeddings.restricted.npz",
@@ -820,6 +1162,8 @@ def preserve_batch(
         "study_disposition": batch_root / "echoprime" / "study_disposition.restricted.csv",
         "embedding_summary": batch_root / "echoprime" / "echoprime_pooling.summary.json",
     }
+    if input_ledger != paths["pooling_ledger"]:
+        raise BatchPreservationError("PRESERVATION_INPUT_LEDGER_PATH_INVALID")
     effective_scheduler_runner = (
         scheduler_runner_path
         if scheduler_runner_path is not None
@@ -856,7 +1200,8 @@ def preserve_batch(
         _artifact_record(path, production_root, "embedding_and_pooling_retained")
         for path in _walk_regular(batch_root / "echoprime")
     )
-    records.append(_artifact_record(paths["download_ledger"], production_root, "download_ledger"))
+    for role in ("download_ledger", "extraction_ledger", "pooling_ledger"):
+        records.append(_artifact_record(paths[role], production_root, role))
     if len({item["relative_path"] for item in records}) != len(records):
         raise BatchPreservationError("DUPLICATE_PRESERVATION_PATH")
     download_rows = read_csv_exact(
@@ -908,7 +1253,10 @@ def preserve_batch(
         raise BatchPreservationError("STATE_LEDGER_NOT_POOLING_COMPLETE")
     if batch_ledger.get("download_manifest_sha256") != sha256_file(paths["download_manifest"]):
         raise BatchPreservationError("DOWNLOAD_LEDGER_MANIFEST_HASH_MISMATCH")
-    if dicom.get("status") != "PASS_DICOM_EXTRACTION" or embedding.get("status") != "PASS_ECHOPRIME_AND_POOLING":
+    if dicom.get("status") not in {
+        "PASS_EXTRACTION_ALL_OBJECTS_EMBEDDABLE",
+        "PASS_EXTRACTION_WITH_OBJECT_TECHNICAL_DISPOSITIONS",
+    } or embedding.get("status") != "PASS_ECHOPRIME_AND_POOLING":
         raise BatchPreservationError("STAGE_SUMMARY_NOT_PASS")
     if embedding.get("n_pooled_studies", -1) + embedding.get("n_no_cine_studies", -1) != batch["n_studies"]:
         raise BatchPreservationError("POOLING_SUMMARY_COUNT_MISMATCH")
@@ -920,15 +1268,32 @@ def preserve_batch(
         clip_manifest_path=paths["clip_manifest"],
         study_manifest_path=paths["study_manifest"],
         disposition_path=paths["study_disposition"],
+        technical_disposition_path=paths["technical_disposition_manifest"],
+        clips_root=clip_cache_root,
         expected_objects=batch["n_objects"],
         expected_studies=batch["n_studies"],
     )
     dicom_semantics = stage_csvs["dicom_semantics"]
     extraction_semantics = stage_csvs["extraction_semantics"]
+    technical_disposition_semantics = stage_csvs[
+        "technical_disposition_semantics"
+    ]
+    no_cine_semantics = validate_prespecified_no_cine_authority(
+        disposition_rows=stage_csvs["disposition_rows"],
+        planned_batch=batch,
+        embedding_summary=embedding,
+    )
     validate_recomputed_stage_summaries(
         dicom_summary=dicom,
         dicom_semantics=dicom_semantics,
         extraction_semantics=extraction_semantics,
+    )
+    validate_technical_disposition_summary_bindings(
+        dicom_summary=dicom,
+        embedding_summary=embedding,
+        extraction_semantics=extraction_semantics,
+        technical_semantics=technical_disposition_semantics,
+        technical_manifest_path=paths["technical_disposition_manifest"],
     )
     clip_manifest = pd.DataFrame(
         stage_csvs["clip_rows"], columns=CLIP_MANIFEST_HEADER
@@ -1014,9 +1379,13 @@ def preserve_batch(
     verified = read_csv_exact(manifest_path, MANIFEST_HEADER, delimiter="\t")
     for item in verified:
         artifact = production_root / item["relative_path"]
-        if artifact.is_symlink() or not artifact.is_file():
-            raise BatchPreservationError("SECOND_PASS_ARTIFACT_NOT_REGULAR")
-        if artifact.stat().st_size != int(item["size_bytes"]) or sha256_file(artifact) != item["sha256"]:
+        try:
+            size_bytes, digest = stable_manifest_artifact_authority(artifact)
+        except BatchPreservationError as exc:
+            raise BatchPreservationError(
+                "SECOND_PASS_ARTIFACT_NOT_REGULAR"
+            ) from exc
+        if size_bytes != int(item["size_bytes"]) or digest != item["sha256"]:
             raise BatchPreservationError("SECOND_PASS_ARTIFACT_HASH_MISMATCH")
     try:
         environment_authority = (
@@ -1063,8 +1432,8 @@ def preserve_batch(
         }
     )
     receipt = {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_batch_preservation_eligibility_receipt_v2",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_batch_preservation_eligibility_receipt_v3",
         "status": "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE",
         "batch_id": batch_id,
         "attempt_id": attempt_id,
@@ -1106,6 +1475,31 @@ def preserve_batch(
         "n_multiframe_cines": dicom_semantics["n_multiframe_candidates"],
         "n_single_frame_objects": dicom_semantics["n_single_frame"],
         "n_extracted_clips": extraction_semantics["n_extracted_clips"],
+        "n_successfully_extracted_cines": extraction_semantics[
+            "n_successfully_extracted_cines"
+        ],
+        "n_object_technical_dispositions": extraction_semantics[
+            "n_object_technical_dispositions"
+        ],
+        "n_blocking_failures": extraction_semantics["n_blocking_failures"],
+        "n_studies_affected_by_technical_disposition": extraction_semantics[
+            "n_studies_affected_by_technical_disposition"
+        ],
+        "n_new_no_cine_studies": no_cine_semantics[
+            "n_new_no_cine_studies"
+        ],
+        "technical_disposition_counts_by_class": extraction_semantics[
+            "technical_disposition_counts_by_class"
+        ],
+        "technical_disposition_policy_version": (
+            production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+        ),
+        "prespecified_no_cine_study_set_sha256": no_cine_semantics[
+            "prespecified_no_cine_study_set_sha256"
+        ],
+        "all_no_cine_studies_prespecified": no_cine_semantics[
+            "all_no_cine_studies_prespecified"
+        ],
         "n_unique_clip_keys": extraction_semantics["n_extracted_clips"],
         "n_clip_embeddings": embedding_array_semantics["n_clip_embeddings"],
         "n_pooled_studies": embedding_array_semantics["n_study_embeddings"],
@@ -1120,6 +1514,9 @@ def preserve_batch(
         "source_receipt_sha256": sha256_file(paths["download_ledger"]),
         "dicom_audit_sha256": sha256_file(paths["dicom_audit"]),
         "extraction_manifest_sha256": sha256_file(paths["extraction_manifest"]),
+        "technical_disposition_manifest_sha256": production_stages.technical_disposition_manifest_sha256(
+            paths["technical_disposition_manifest"]
+        ),
         "clip_manifest_sha256": sha256_file(paths["clip_manifest"]),
         "clip_embeddings_sha256": sha256_file(paths["clip_embeddings"]),
         "study_manifest_sha256": sha256_file(paths["study_manifest"]),
@@ -1135,9 +1532,26 @@ def preserve_batch(
         "preservation_gate_passed": True,
         "aggregate_safety_gate_passed": True,
         "aggregate_safety_gate_result": "PASS",
+        "all_extraction_rows_resolved": extraction_semantics[
+            "all_extraction_rows_resolved"
+        ],
+        "all_successful_extractions_embedded": (
+            embedding_array_semantics["n_clip_embeddings"]
+            == extraction_semantics["n_successfully_extracted_cines"]
+        ),
+        "all_technical_dispositions_retained": extraction_semantics[
+            "all_technical_dispositions_retained"
+        ],
+        "object_substitution_count": extraction_semantics[
+            "object_substitution_count"
+        ],
+        "unaccounted_multiframe_objects": extraction_semantics[
+            "unaccounted_multiframe_objects"
+        ],
         "raw_dicoms_retained": True,
         "extracted_cache_retired": False,
     }
+    validate_preservation_disposition_accounting(receipt)
     receipt_body = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if receipt_path.exists() or receipt_path.is_symlink():
         existing_receipt = load_json(receipt_path, "PRESERVATION_RECEIPT")
@@ -1148,6 +1562,7 @@ def preserve_batch(
         if existing_receipt != expected_recovery:
             raise BatchPreservationError("PRESERVATION_RECEIPT_RECOVERY_MISMATCH")
         receipt = existing_receipt
+        validate_preservation_disposition_accounting(receipt)
         receipt_body = receipt_path.read_bytes()
     else:
         write_bytes_no_clobber(receipt_path, receipt_body)

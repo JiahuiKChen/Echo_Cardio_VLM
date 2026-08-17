@@ -635,6 +635,24 @@ def _assert_materialization_result(result: Any) -> None:
     assert 1 <= result.manifest_byte_count <= 5_000_000_000
 
 
+def _assert_explicit_empty_no_cine_plan(plan_path: Path) -> None:
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    empty_set_sha256 = core.canonical_json_sha256([])
+    assert plan["schema_version"] == 3
+    assert plan["artifact_type"] == "lvef_c3_restricted_immutable_batch_plan_v3"
+    assert plan["cohort"]["expected_no_cine_studies"] == 0
+    assert (
+        plan["cohort"]["prespecified_no_cine_study_set_sha256"]
+        == empty_set_sha256
+    )
+    assert plan["batches"][0]["expected_no_cine_studies"] == 0
+    assert plan["batches"][0]["prespecified_no_cine_study_keys"] == []
+    assert (
+        plan["batches"][0]["prespecified_no_cine_study_set_sha256"]
+        == empty_set_sha256
+    )
+
+
 def _assert_missing_producer_fails(
     root: Path, *, relative_path: str
 ) -> None:
@@ -873,6 +891,9 @@ def test_exact_live_canary_cli_path_passes_in_synthetic_sandbox() -> None:
                         "manifest_byte_count": 15,
                     },
                 )()
+            )
+            _assert_explicit_empty_no_cine_plan(
+                private_root / "exact_five_batch_plan.restricted.json"
             )
 
             _assert_main_blocked(

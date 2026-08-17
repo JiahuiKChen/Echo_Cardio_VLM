@@ -66,6 +66,15 @@ EXPECTED_SELECTED_SOURCE_MANIFEST_SHA256 = (
 EXPECTED_CHECKPOINT_SHA256 = (
     "7ca32e8bfde248bd6d8c7e46fdb7440385169af4dc2f416b5de840bdc2e64f3b"
 )
+OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION = (
+    "source_signal_object_technical_disposition_v1"
+)
+OBJECT_TECHNICAL_DISPOSITION_POLICY_FILENAME = (
+    "lvef_c3_source_signal_object_technical_disposition_v1.json"
+)
+OBJECT_TECHNICAL_DISPOSITION_POLICY_SHA256 = (
+    "c561d96ef049f37f1f20454ec30150fb2aada8aeddbb920b65260100107d3b11"
+)
 EXPECTED_FULL_CONTRACT_ID = "lvef_multitask_c3_production_orchestration_v2"
 EXPECTED_FULL_PRODUCTION_ROOT = Path(
     "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2"
@@ -162,12 +171,24 @@ BATCH_KEYS = frozenset(
         "source_bytes",
         "study_membership_sha256",
         "source_membership_sha256",
+        "expected_no_cine_studies",
+        "prespecified_no_cine_study_keys",
+        "prespecified_no_cine_study_set_sha256",
         "studies",
         "objects",
     }
 )
+LEGACY_BATCH_KEYS_V2 = frozenset(
+    BATCH_KEYS
+    - {
+        "expected_no_cine_studies",
+        "prespecified_no_cine_study_keys",
+        "prespecified_no_cine_study_set_sha256",
+    }
+)
 LARGEST_BATCH_KEYS = frozenset({"batch_id", "n_objects", "source_bytes"})
 STUDY_ENTRY_KEYS = frozenset({"subject_id", "study_id", "split"})
+NO_CINE_STUDY_ENTRY_KEYS = frozenset({"subject_id", "study_id"})
 LEDGER_KEYS = frozenset(
     {
         "schema_version",
@@ -226,7 +247,7 @@ BODY_AUTHORIZATION_KEYS = frozenset(
         "scientific_actions_authorized",
     }
 )
-DIRECT_FULL_LAUNCH_KEYS = frozenset(
+LEGACY_DIRECT_FULL_LAUNCH_KEYS_V1 = frozenset(
     {
         "schema_version",
         "artifact_type",
@@ -251,6 +272,12 @@ DIRECT_FULL_LAUNCH_KEYS = frozenset(
         "model_fitting_authorized",
         "prediction_authorized",
         "confirmatory_performance_access_authorized",
+    }
+)
+DIRECT_FULL_LAUNCH_KEYS = frozenset(
+    {
+        *LEGACY_DIRECT_FULL_LAUNCH_KEYS_V1,
+        "prespecified_no_cine_study_set_sha256",
     }
 )
 RECOVERY_RECEIPT_KEYS = frozenset(
@@ -853,6 +880,108 @@ def validate_resume_ledger_schema(schema: Mapping[str, Any]) -> None:
         raise OrchestrationError("RESUME_LEDGER_SCHEMA_SEMANTICS_INVALID")
 
 
+def validate_object_technical_disposition_policy(
+    policy: Mapping[str, Any],
+) -> None:
+    """Validate the closed, outcome-independent v1 object policy."""
+
+    expected_keys = {
+        "artifact_type",
+        "closed_classifications",
+        "downstream_metric_authority",
+        "eligible_failure_substages",
+        "new_no_cine_studies_permitted",
+        "object_substitution_permitted",
+        "policy_version",
+        "prohibited_decision_inputs",
+        "r4d2c_provenance",
+        "required_authority_gates",
+        "required_row_authority",
+        "schema_version",
+        "source_metric_authority",
+        "status",
+        "technical_disposition",
+    }
+    if not isinstance(policy, Mapping) or set(policy) != expected_keys:
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_NOT_CLOSED")
+    sequence_fields = (
+        "closed_classifications",
+        "eligible_failure_substages",
+        "required_authority_gates",
+        "prohibited_decision_inputs",
+    )
+    if any(not isinstance(policy.get(key), list) for key in sequence_fields):
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_INVALID")
+    if (
+        policy.get("schema_version") != 1
+        or policy.get("artifact_type")
+        != "lvef_c3_object_technical_disposition_policy_v1"
+        or policy.get("policy_version")
+        != OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+        or policy.get("status") != "IMPLEMENTED_OWNER_GATED_UNAUTHORIZED"
+        or tuple(policy.get("closed_classifications", ()))
+        != (
+            "SUCCESSFUL_EXTRACTION",
+            "APPROVED_OBJECT_TECHNICAL_DISPOSITION",
+            "BLOCKING_FAILURE",
+        )
+        or tuple(policy.get("eligible_failure_substages", ()))
+        != ("SOURCE_SIGNAL_QUALITY_FAILURE",)
+        or policy.get("technical_disposition")
+        != "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR"
+        or policy.get("source_metric_authority")
+        != "ALL_EXACT_COUNT_GATE_PAIRS_WITH_AT_LEAST_ONE_FAILURE"
+        or policy.get("downstream_metric_authority") != "ALL_NOT_EVALUATED"
+        or policy.get("object_substitution_permitted") is not False
+        or policy.get("new_no_cine_studies_permitted") != 0
+    ):
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_INVALID")
+    if policy.get("required_row_authority") != {
+        "canonical_color_space": "RGB",
+        "decode_color_status": "PASS",
+        "fallback_status": "NOT_ATTEMPTED",
+        "failure_substage": "SOURCE_SIGNAL_QUALITY_FAILURE",
+        "mask_status": "FAILED",
+        "selected_preprocessing_path": "NOT_SELECTED",
+        "write_ok": False,
+    }:
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_INVALID")
+    if tuple(policy.get("required_authority_gates", ())) != (
+        "SELECTED_SOURCE_MEMBERSHIP",
+        "BATCH_PLAN_MEMBERSHIP",
+        "EXACT_DOWNLOAD_INTEGRITY",
+        "DICOM_HEADER_READABILITY",
+        "PIXEL_DECODE",
+        "RAW_DICOM_RETENTION",
+        "NPZ_ABSENCE",
+        "EMBEDDING_ABSENCE",
+        "OBJECT_SUBSTITUTION_FALSE",
+        "STUDY_SUCCESSFUL_CINE_COVERAGE",
+    ):
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_INVALID")
+    if tuple(policy.get("prohibited_decision_inputs", ())) != (
+        "R4D2C_REPLAY_CLASS",
+        "R4D2C_MECHANISM",
+        "ENDPOINT_LABELS",
+        "OUTCOMES",
+        "TARGET_VALUES",
+        "SPLIT_ROLES",
+        "MODEL_PREDICTIONS",
+        "VALIDATION_TEST_PERFORMANCE",
+    ):
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_INVALID")
+    if policy.get("r4d2c_provenance") != {
+        "aggregate_sha256": (
+            "8251c5f1eeaa89a0a09534be4dc3b4025617e8d65d5cbf6b8045f644e4e9112e"
+        ),
+        "binding": "PROVENANCE_ONLY_NOT_CLASSIFIER_INPUT",
+        "observation_sha256": (
+            "ce4354611ba16688137db57bdd5bc1e49ffa1b5ee2512560fd0db83d841963a0"
+        ),
+    }:
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_INVALID")
+
+
 def _validate_bound_control_schemas(
     contract: Mapping[str, Any], *, contract_path: Path
 ) -> None:
@@ -904,6 +1033,26 @@ def _validate_bound_control_schemas(
         if not isinstance(schema, Mapping):
             raise OrchestrationError("CONTROL_SCHEMA_NOT_MAPPING")
         validator(schema)
+    disposition = contract.get("object_technical_disposition")
+    if (
+        not isinstance(disposition, Mapping)
+        or set(disposition)
+        != {"policy_filename", "policy_sha256", "policy_version"}
+        or disposition.get("policy_filename")
+        != OBJECT_TECHNICAL_DISPOSITION_POLICY_FILENAME
+        or disposition.get("policy_version")
+        != OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+        or disposition.get("policy_sha256")
+        != OBJECT_TECHNICAL_DISPOSITION_POLICY_SHA256
+    ):
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_BINDING_INVALID")
+    policy_path = contract_path.parent / OBJECT_TECHNICAL_DISPOSITION_POLICY_FILENAME
+    if sha256_file(policy_path) != OBJECT_TECHNICAL_DISPOSITION_POLICY_SHA256:
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_HASH_MISMATCH")
+    policy = load_strict_json(policy_path)
+    if not isinstance(policy, Mapping):
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_NOT_MAPPING")
+    validate_object_technical_disposition_policy(policy)
 
 
 def load_orchestration_contract(path: Path) -> Mapping[str, Any]:
@@ -921,6 +1070,7 @@ def load_orchestration_contract(path: Path) -> Mapping[str, Any]:
         "state_machine",
         "cache_retirement",
         "embedding",
+        "object_technical_disposition",
         "authorization",
     }
     if set(contract) != expected_top:
@@ -1012,6 +1162,11 @@ def load_orchestration_contract(path: Path) -> Mapping[str, Any]:
             "clip_dtype",
             "encoder_only",
             "view_classifier_used",
+        },
+        "object_technical_disposition": {
+            "policy_filename",
+            "policy_sha256",
+            "policy_version",
         },
         "authorization": {
             "source_body_download",
@@ -1402,6 +1557,8 @@ def build_immutable_batch_plan(
     *,
     requirements: PlanRequirements,
     authority: Mapping[str, Any],
+    prespecified_no_cine_studies: Sequence[Mapping[str, Any]] = (),
+    _legacy_v2_historical: bool = False,
 ) -> dict[str, Any]:
     """Build a restricted deterministic plan from already-validated authorities."""
     normalized_authority = _validate_plan_authority(authority)
@@ -1431,6 +1588,45 @@ def build_immutable_batch_plan(
     selected.sort(key=lambda value: (int(value[0]), int(value[1])))
     if len(selected) != requirements.selected_studies or len(subjects) != requirements.selected_subjects:
         raise OrchestrationError("SELECTED_COHORT_COUNT_MISMATCH")
+
+    selected_ownership = {study: subject for subject, study in selected}
+    no_cine_keys: list[dict[str, str]] = []
+    no_cine_study_ids: set[str] = set()
+    for row in prespecified_no_cine_studies:
+        _require_exact_keys(
+            row, NO_CINE_STUDY_ENTRY_KEYS, "PRESPECIFIED_NO_CINE_SCHEMA_INVALID"
+        )
+        subject = _canonical_id(
+            row.get("subject_id"), "PRESPECIFIED_NO_CINE_SUBJECT_INVALID"
+        )
+        study = _canonical_id(
+            row.get("study_id"), "PRESPECIFIED_NO_CINE_STUDY_INVALID"
+        )
+        if selected_ownership.get(study) != subject or study in no_cine_study_ids:
+            raise OrchestrationError("PRESPECIFIED_NO_CINE_MEMBERSHIP_INVALID")
+        no_cine_study_ids.add(study)
+        no_cine_keys.append({"subject_id": subject, "study_id": study})
+    no_cine_keys.sort(key=lambda row: (int(row["subject_id"]), int(row["study_id"])))
+    production_scope = (
+        requirements.release == "mimic-iv-echo/1.0"
+        and requirements.selected_studies == EXPECTED_PRODUCTION["selected_studies"]
+        and requirements.selected_subjects == EXPECTED_PRODUCTION["selected_subjects"]
+        and requirements.normalized_source_objects
+        == EXPECTED_PRODUCTION["normalized_source_objects"]
+        and requirements.selected_source_bytes
+        == EXPECTED_PRODUCTION["selected_source_bytes"]
+        and requirements.batch_count == EXPECTED_PRODUCTION["batch_count"]
+        and requirements.contract_id == EXPECTED_FULL_CONTRACT_ID
+    )
+    if not isinstance(_legacy_v2_historical, bool):
+        raise OrchestrationError("LEGACY_PLAN_BUILD_BOUNDARY_INVALID")
+    # Full sequential is the sole reviewed fresh-production derivation route;
+    # generic/offline builders stay fail-closed without the restricted set.
+    if production_scope and len(no_cine_keys) != 5 and not _legacy_v2_historical:
+        raise OrchestrationError(
+            "PRESPECIFIED_NO_CINE_PRODUCTION_AUTHORITY_REQUIRED"
+        )
+    global_no_cine_set_sha256 = canonical_json_sha256(no_cine_keys)
 
     split_map: dict[str, str] = {}
     for row in split_rows:
@@ -1505,6 +1701,10 @@ def build_immutable_batch_plan(
         )
         if not batch_studies or not batch_objects:
             raise OrchestrationError("EMPTY_PRODUCTION_BATCH")
+        batch_study_ids = {row["study_id"] for row in batch_studies}
+        batch_no_cine_keys = [
+            row for row in no_cine_keys if row["study_id"] in batch_study_ids
+        ]
         batches.append(
             {
                 "batch_id": batch_id,
@@ -1515,6 +1715,11 @@ def build_immutable_batch_plan(
                 "source_bytes": sum(int(row["size_bytes"]) for row in batch_objects),
                 "study_membership_sha256": canonical_json_sha256(batch_studies),
                 "source_membership_sha256": canonical_json_sha256(batch_objects),
+                "expected_no_cine_studies": len(batch_no_cine_keys),
+                "prespecified_no_cine_study_keys": batch_no_cine_keys,
+                "prespecified_no_cine_study_set_sha256": canonical_json_sha256(
+                    batch_no_cine_keys
+                ),
                 "studies": batch_studies,
                 "objects": batch_objects,
             }
@@ -1526,8 +1731,8 @@ def build_immutable_batch_plan(
         ),
     )
     plan = {
-        "schema_version": 2,
-        "artifact_type": "lvef_c3_restricted_immutable_batch_plan_v2",
+        "schema_version": 3,
+        "artifact_type": "lvef_c3_restricted_immutable_batch_plan_v3",
         "contract_id": requirements.contract_id,
         "algorithm": "numeric_subject_then_numeric_study_contiguous_v1",
         "authority": normalized_authority,
@@ -1537,6 +1742,10 @@ def build_immutable_batch_plan(
             "selected_subjects": len(subjects),
             "normalized_source_objects": len(seen_keys),
             "selected_source_bytes": source_total,
+            "expected_no_cine_studies": len(no_cine_keys),
+            "prespecified_no_cine_study_set_sha256": (
+                global_no_cine_set_sha256
+            ),
         },
         "largest_batch": {
             "batch_id": largest_batch["batch_id"],
@@ -1545,7 +1754,18 @@ def build_immutable_batch_plan(
         },
         "batches": batches,
     }
-    validate_batch_plan(plan, requirements=requirements)
+    if _legacy_v2_historical:
+        plan["schema_version"] = 2
+        plan["artifact_type"] = "lvef_c3_restricted_immutable_batch_plan_v2"
+        plan["cohort"].pop("expected_no_cine_studies")
+        plan["cohort"].pop("prespecified_no_cine_study_set_sha256")
+        for batch in plan["batches"]:
+            batch.pop("expected_no_cine_studies")
+            batch.pop("prespecified_no_cine_study_keys")
+            batch.pop("prespecified_no_cine_study_set_sha256")
+        validate_batch_plan(plan, requirements=requirements)
+        return plan
+    validate_current_batch_plan_v3(plan, requirements=requirements)
     return plan
 
 
@@ -1553,23 +1773,51 @@ def validate_batch_plan(
     plan: Mapping[str, Any], *, requirements: PlanRequirements, expected_sha256: str | None = None
 ) -> str:
     _require_exact_keys(plan, PLAN_KEYS, "BATCH_PLAN_TOP_LEVEL_SCHEMA_INVALID")
+    identity = (plan.get("schema_version"), plan.get("artifact_type"))
+    current_v3 = identity == (3, "lvef_c3_restricted_immutable_batch_plan_v3")
+    legacy_v2 = identity == (2, "lvef_c3_restricted_immutable_batch_plan_v2")
     if (
-        plan.get("schema_version") != 2
-        or plan.get("artifact_type") != "lvef_c3_restricted_immutable_batch_plan_v2"
+        not (current_v3 or legacy_v2)
         or plan.get("contract_id") != requirements.contract_id
         or plan.get("algorithm") != "numeric_subject_then_numeric_study_contiguous_v1"
     ):
         raise OrchestrationError("BATCH_PLAN_IDENTITY_INVALID")
     _validate_plan_authority(plan["authority"])
     cohort = plan.get("cohort")
-    if cohort != {
+    legacy_cohort_keys = {
+        "release", "selected_studies", "selected_subjects",
+        "normalized_source_objects", "selected_source_bytes",
+    }
+    current_cohort_keys = {
+        *legacy_cohort_keys,
+        "expected_no_cine_studies",
+        "prespecified_no_cine_study_set_sha256",
+    }
+    if (
+        not isinstance(cohort, Mapping)
+        or set(cohort)
+        != (current_cohort_keys if current_v3 else legacy_cohort_keys)
+    ):
+        raise OrchestrationError("BATCH_PLAN_COHORT_CONSTANT_MISMATCH")
+    if any(cohort.get(key) != value for key, value in {
         "release": requirements.release,
         "selected_studies": requirements.selected_studies,
         "selected_subjects": requirements.selected_subjects,
         "normalized_source_objects": requirements.normalized_source_objects,
         "selected_source_bytes": requirements.selected_source_bytes,
-    }:
+    }.items()):
         raise OrchestrationError("BATCH_PLAN_COHORT_CONSTANT_MISMATCH")
+    if current_v3 and (
+        isinstance(cohort.get("expected_no_cine_studies"), bool)
+        or not isinstance(cohort.get("expected_no_cine_studies"), int)
+        or cohort["expected_no_cine_studies"] < 0
+        or cohort["expected_no_cine_studies"] > requirements.selected_studies
+        or SHA256_RE.fullmatch(
+            str(cohort.get("prespecified_no_cine_study_set_sha256"))
+        )
+        is None
+    ):
+        raise OrchestrationError("BATCH_PLAN_NO_CINE_AUTHORITY_INVALID")
     batches = plan.get("batches")
     if not isinstance(batches, list) or len(batches) != requirements.batch_count:
         raise OrchestrationError("BATCH_PLAN_COUNT_MISMATCH")
@@ -1579,8 +1827,13 @@ def validate_batch_plan(
     all_paths: set[str] = set()
     total_objects = 0
     total_bytes = 0
+    all_no_cine_keys: list[dict[str, str]] = []
     for ordinal, batch in enumerate(batches):
-        _require_exact_keys(batch, BATCH_KEYS, "BATCH_PLAN_BATCH_SCHEMA_INVALID")
+        _require_exact_keys(
+            batch,
+            BATCH_KEYS if current_v3 else LEGACY_BATCH_KEYS_V2,
+            "BATCH_PLAN_BATCH_SCHEMA_INVALID",
+        )
         expected_batch = f"c3_batch_{ordinal:03d}"
         if batch.get("batch_id") != expected_batch or batch.get("ordinal") != ordinal:
             raise OrchestrationError("BATCH_PLAN_ORDER_CHANGED")
@@ -1613,6 +1866,48 @@ def validate_batch_plan(
             all_studies.add(study)
         if len(batch_subjects) != len(studies) or len(batch_studies) != len(studies):
             raise OrchestrationError("BATCH_NOT_ONE_STUDY_PER_SUBJECT")
+        if current_v3:
+            expected_no_cine = batch.get("expected_no_cine_studies")
+            batch_no_cine = batch.get("prespecified_no_cine_study_keys")
+            if (
+                isinstance(expected_no_cine, bool)
+                or not isinstance(expected_no_cine, int)
+                or expected_no_cine < 0
+                or not isinstance(batch_no_cine, list)
+                or len(batch_no_cine) != expected_no_cine
+            ):
+                raise OrchestrationError("BATCH_NO_CINE_AUTHORITY_INVALID")
+            normalized_no_cine: list[dict[str, str]] = []
+            for row in batch_no_cine:
+                _require_exact_keys(
+                    row, NO_CINE_STUDY_ENTRY_KEYS, "BATCH_NO_CINE_SCHEMA_INVALID"
+                )
+                subject = _canonical_id(
+                    row["subject_id"], "BATCH_NO_CINE_SUBJECT_INVALID"
+                )
+                study = _canonical_id(
+                    row["study_id"], "BATCH_NO_CINE_STUDY_INVALID"
+                )
+                if ownership.get(study, (None,))[0] != subject:
+                    raise OrchestrationError("BATCH_NO_CINE_MEMBERSHIP_INVALID")
+                normalized_no_cine.append(
+                    {"subject_id": subject, "study_id": study}
+                )
+            if (
+                normalized_no_cine
+                != sorted(
+                    normalized_no_cine,
+                    key=lambda row: (
+                        int(row["subject_id"]), int(row["study_id"])
+                    ),
+                )
+                or len({row["study_id"] for row in normalized_no_cine})
+                != len(normalized_no_cine)
+                or batch.get("prespecified_no_cine_study_set_sha256")
+                != canonical_json_sha256(normalized_no_cine)
+            ):
+                raise OrchestrationError("BATCH_NO_CINE_AUTHORITY_INVALID")
+            all_no_cine_keys.extend(normalized_no_cine)
         if batch.get("study_membership_sha256") != canonical_json_sha256(studies):
             raise OrchestrationError("BATCH_STUDY_MEMBERSHIP_HASH_MISMATCH")
         object_bytes = 0
@@ -1656,6 +1951,16 @@ def validate_batch_plan(
         or total_bytes != requirements.selected_source_bytes
     ):
         raise OrchestrationError("BATCH_PLAN_TOTAL_MISMATCH")
+    if current_v3:
+        all_no_cine_keys.sort(
+            key=lambda row: (int(row["subject_id"]), int(row["study_id"]))
+        )
+        if (
+            len(all_no_cine_keys) != cohort["expected_no_cine_studies"]
+            or cohort["prespecified_no_cine_study_set_sha256"]
+            != canonical_json_sha256(all_no_cine_keys)
+        ):
+            raise OrchestrationError("BATCH_PLAN_NO_CINE_AUTHORITY_INVALID")
     _require_exact_keys(
         plan.get("largest_batch"),
         LARGEST_BATCH_KEYS,
@@ -1679,6 +1984,21 @@ def validate_batch_plan(
     ):
         raise OrchestrationError("BATCH_PLAN_SHA256_MISMATCH")
     return digest
+
+
+def validate_current_batch_plan_v3(
+    plan: Mapping[str, Any], *, requirements: PlanRequirements,
+    expected_sha256: str | None = None,
+) -> str:
+    if (
+        plan.get("schema_version") != 3
+        or plan.get("artifact_type")
+        != "lvef_c3_restricted_immutable_batch_plan_v3"
+    ):
+        raise OrchestrationError("BATCH_PLAN_CURRENT_VERSION_REQUIRED")
+    return validate_batch_plan(
+        plan, requirements=requirements, expected_sha256=expected_sha256
+    )
 
 
 def aggregate_batch_plan(plan: Mapping[str, Any], *, requirements: PlanRequirements) -> dict[str, Any]:
@@ -1748,7 +2068,7 @@ def derive_expected_runtime_authority(
     environment_receipt_sha256: str
 ) -> dict[str, str]:
     """Derive current authority from external files/arguments, never a ledger."""
-    plan_sha = validate_batch_plan(plan, requirements=requirements)
+    plan_sha = validate_current_batch_plan_v3(plan, requirements=requirements)
     plan_authority = validate_plan_authority_against_contract(
         plan["authority"], contract=contract, contract_path=contract_path
     )
@@ -1792,7 +2112,7 @@ def initialize_resume_ledger(
 ) -> dict[str, Any]:
     if not ATTEMPT_RE.fullmatch(attempt_id):
         raise OrchestrationError("ATTEMPT_ID_INVALID")
-    plan_sha = validate_batch_plan(plan, requirements=requirements)
+    plan_sha = validate_current_batch_plan_v3(plan, requirements=requirements)
     runtime = validate_runtime_authority(authority)
     if runtime["batch_plan_sha256"] != plan_sha:
         raise OrchestrationError("LEDGER_BATCH_PLAN_AUTHORITY_MISMATCH")
@@ -2362,12 +2682,33 @@ def validate_direct_full_download_scope(
 ) -> None:
     """Validate one batch against the single full-cohort launch authority."""
 
+    launch_identity = (
+        launch_authority.get("schema_version"),
+        launch_authority.get("artifact_type"),
+    )
+    legacy_launch_v1 = launch_identity == (
+        1, "lvef_c3_full_selected_cohort_launch_authority_v1"
+    )
+    current_launch_v2 = launch_identity == (
+        2, "lvef_c3_full_selected_cohort_launch_authority_v2"
+    )
+    if not (legacy_launch_v1 or current_launch_v2):
+        raise OrchestrationError("DIRECT_FULL_LAUNCH_AUTHORITY_VERSION_INVALID")
     _require_exact_keys(
         launch_authority,
-        DIRECT_FULL_LAUNCH_KEYS,
+        (
+            LEGACY_DIRECT_FULL_LAUNCH_KEYS_V1
+            if legacy_launch_v1
+            else DIRECT_FULL_LAUNCH_KEYS
+        ),
         "DIRECT_FULL_LAUNCH_AUTHORITY_SCHEMA_INVALID",
     )
     plan_sha = validate_batch_plan(plan, requirements=requirements)
+    plan_is_legacy_v2 = (
+        plan.get("schema_version"), plan.get("artifact_type")
+    ) == (2, "lvef_c3_restricted_immutable_batch_plan_v2")
+    if plan_is_legacy_v2 is not legacy_launch_v1:
+        raise OrchestrationError("DIRECT_FULL_AUTHORITY_GENERATION_MISMATCH")
     planned_ids = [str(row["batch_id"]) for row in plan["batches"]]
     if not isinstance(test_only_synthetic_full_scope, bool):
         raise OrchestrationError("DIRECT_FULL_TEST_BOUNDARY_INVALID")
@@ -2413,9 +2754,14 @@ def validate_direct_full_download_scope(
     if (
         (test_only_synthetic_full_scope and not synthetic_scope)
         or (not test_only_synthetic_full_scope and not production_scope)
-        or launch_authority.get("schema_version") != 1
+        or launch_authority.get("schema_version")
+        != (1 if legacy_launch_v1 else 2)
         or launch_authority.get("artifact_type")
-        != "lvef_c3_full_selected_cohort_launch_authority_v1"
+        != (
+            "lvef_c3_full_selected_cohort_launch_authority_v1"
+            if legacy_launch_v1
+            else "lvef_c3_full_selected_cohort_launch_authority_v2"
+        )
         or launch_authority.get("status")
         != "AUTHORIZED_FULL_SELECTED_COHORT_RECONSTRUCTION"
         or launch_authority.get("governing_commit")
@@ -2442,6 +2788,16 @@ def validate_direct_full_download_scope(
         or isinstance(launch_authority.get("expected_no_cine_studies"), bool)
         or launch_authority.get("expected_no_cine_studies")
         != (1 if test_only_synthetic_full_scope else 5)
+        or (
+            current_launch_v2
+            and launch_authority.get("expected_no_cine_studies")
+            != plan["cohort"]["expected_no_cine_studies"]
+        )
+        or (
+            current_launch_v2
+            and launch_authority.get("prespecified_no_cine_study_set_sha256")
+            != plan["cohort"]["prespecified_no_cine_study_set_sha256"]
+        )
         or launch_authority.get("maximum_scheduler_submissions") != 2
         or launch_authority.get("array_task_range")
         != f"1-{requirements.batch_count}"
@@ -3574,7 +3930,7 @@ def execute_exact_batch_download(
     test_only_synthetic_full_scope: bool = False,
 ) -> dict[str, Any]:
     """Execute one authorization-scoped exact batch; callers persist returned ledger."""
-    plan_sha = validate_batch_plan(plan, requirements=requirements)
+    plan_sha = validate_current_batch_plan_v3(plan, requirements=requirements)
     validate_resume_authority(
         ledger, expected_authority=expected_runtime_authority
     )

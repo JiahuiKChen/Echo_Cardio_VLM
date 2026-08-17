@@ -815,7 +815,9 @@ def load_and_validate_execution_authority(
         studies_per_full_batch=5, final_batch_studies=5,
         contract_id="lvef_multitask_c3_exact_five_canary_v1",
     )
-    plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=requirements
+    )
     if plan_sha != _sha(
         plan_binding.get("canonical_sha256"),
         "CANARY_EXECUTION_BATCH_PLAN_CANONICAL_SHA_INVALID",

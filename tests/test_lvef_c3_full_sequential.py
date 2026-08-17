@@ -114,8 +114,136 @@ def two_batch_plan() -> tuple[dict[str, Any], core.PlanRequirements]:
         split,
         requirements=requirements,
         authority=authority,
+        prespecified_no_cine_studies=[selected[-1]],
     )
     return plan, requirements
+
+
+def test_generic_production_builder_requires_restricted_no_cine_authority() -> None:
+    requirements = core.PlanRequirements(
+        release="mimic-iv-echo/1.0",
+        selected_studies=core.EXPECTED_PRODUCTION["selected_studies"],
+        selected_subjects=core.EXPECTED_PRODUCTION["selected_subjects"],
+        normalized_source_objects=core.EXPECTED_PRODUCTION[
+            "normalized_source_objects"
+        ],
+        selected_source_bytes=core.EXPECTED_PRODUCTION[
+            "selected_source_bytes"
+        ],
+        batch_count=core.EXPECTED_PRODUCTION["batch_count"],
+        studies_per_full_batch=core.EXPECTED_PRODUCTION[
+            "studies_per_full_batch"
+        ],
+        final_batch_studies=core.EXPECTED_PRODUCTION[
+            "final_batch_studies"
+        ],
+        contract_id=core.EXPECTED_FULL_CONTRACT_ID,
+    )
+    selected = [
+        {"subject_id": str(100_000 + index), "study_id": str(200_000 + index)}
+        for index in range(requirements.selected_studies)
+    ]
+    authority = {
+        key: (
+            "a" * 40
+            if key == "git_commit"
+            else hashlib.sha256(f"offline-{key}".encode()).hexdigest()
+        )
+        for key in core.PLAN_AUTHORITY_KEYS
+    }
+    with pytest.raises(core.OrchestrationError) as caught:
+        core.build_immutable_batch_plan(
+            selected,
+            [],
+            [],
+            requirements=requirements,
+            authority=authority,
+        )
+    assert str(caught.value) == (
+        "PRESPECIFIED_NO_CINE_PRODUCTION_AUTHORITY_REQUIRED"
+    )
+
+
+def _synthetic_full_launch(
+    plan: Mapping[str, Any], requirements: core.PlanRequirements
+) -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_full_selected_cohort_launch_authority_v2",
+        "status": "AUTHORIZED_FULL_SELECTED_COHORT_RECONSTRUCTION",
+        "governing_commit": plan["authority"]["git_commit"],
+        "batch_plan_sha256": core.canonical_json_sha256(plan),
+        "selected_manifest_sha256": plan["authority"]["selected_manifest_sha256"],
+        "selected_source_manifest_sha256": plan["authority"][
+            "selected_source_manifest_sha256"
+        ],
+        "split_map_sha256": plan["authority"]["split_map_sha256"],
+        "checkpoint_sha256": plan["authority"]["checkpoint_sha256"],
+        "selected_studies": requirements.selected_studies,
+        "selected_subjects": requirements.selected_subjects,
+        "normalized_source_objects": requirements.normalized_source_objects,
+        "selected_source_bytes": requirements.selected_source_bytes,
+        "batch_count": requirements.batch_count,
+        "expected_no_cine_studies": plan["cohort"][
+            "expected_no_cine_studies"
+        ],
+        "prespecified_no_cine_study_set_sha256": plan["cohort"][
+            "prespecified_no_cine_study_set_sha256"
+        ],
+        "maximum_scheduler_submissions": 2,
+        "array_task_range": f"1-{requirements.batch_count}",
+        "array_max_concurrency": 1,
+        "raw_dicom_deletion_authorized": False,
+        "extracted_cache_retirement_authorized_after_preservation": True,
+        "model_fitting_authorized": False,
+        "prediction_authorized": False,
+        "confirmatory_performance_access_authorized": False,
+    }
+
+
+def _successor_capacity_authority(
+    source_capacity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    increment = sequential.SUCCESSOR_INCREMENT_BYTES
+    reserve = sequential.SUCCESSOR_REQUIRED_RESERVE_BYTES
+    live_usage = 123_456_789
+    projected = live_usage + increment
+    return {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v1",
+        "status": "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE",
+        "source_capacity_authority_sha256": (
+            core.canonical_json_sha256(source_capacity)
+            if source_capacity is not None
+            else "a" * 64
+        ),
+        "frozen_projected_peak_bytes": (
+            sequential.FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES
+        ),
+        "frozen_original_current_usage_bytes": (
+            sequential.FROZEN_FULL_PLAN_ORIGINAL_CURRENT_USAGE_BYTES
+        ),
+        "successor_increment_bytes": increment,
+        "live_research_usage_bytes": live_usage,
+        "projected_total_research_usage_bytes": projected,
+        "research_quota_bytes": projected + reserve,
+        "quota_remaining_after_successor_bytes": reserve,
+        "research_filesystem_available_bytes": increment + reserve,
+        "physical_remaining_after_successor_bytes": reserve,
+        "research_file_slots_remaining": sequential.SUCCESSOR_REQUIRED_FILE_SLOTS,
+        "required_reserve_bytes": reserve,
+        "required_remaining_file_slots": sequential.SUCCESSOR_REQUIRED_FILE_SLOTS,
+        "active_extraction_caches": 0,
+        "preserved_terminal_failed_extraction_caches": 2,
+        "quota_reserve_gate_passed": True,
+        "physical_reserve_gate_passed": True,
+        "file_slot_gate_passed": True,
+        "terminal_failure_cache_gate_passed": True,
+        "cloud_requests": 0,
+        "scheduler_jobs_submitted": 0,
+        "dicom_body_reads": 0,
+        "writes_performed": 0,
+    }
 
 
 def _schema_faithful_scale_plan(
@@ -256,6 +384,7 @@ def _scoped_run(
         "crc32c_worker_sha256": "3" * 64,
         "crc32c_distribution_sha256": "4" * 64,
     }
+    launch = _synthetic_full_launch(plan, requirements)
     return sequential.FullRun(
         authority=SimpleNamespace(governing_commit="a" * 40),
         plan=plan,
@@ -268,8 +397,8 @@ def _scoped_run(
         production_root=root,
         attempt_root=attempt_root,
         plan_path=plan_path,
-        launch_authority={"status": "SYNTHETIC"},
-        launch_authority_sha256="5" * 64,
+        launch_authority=launch,
+        launch_authority_sha256=core.canonical_json_sha256(launch),
         scheduler_job_identity="synthetic-task",
     )
 
@@ -499,6 +628,24 @@ def test_malformed_or_nonprivate_foreign_failure_summary_remains_active() -> Non
             active=1, preserved_terminal_failed=0
         )
 
+        hardlink_root = production / "unsafe_hardlink_case"
+        hardlink_partial = (
+            hardlink_root
+            / "attempts"
+            / prior
+            / "extracted_cache"
+            / "c3_batch_001"
+            / "dicom_extraction.partial"
+        )
+        _write_terminal_dicom_failure(hardlink_partial)
+        hardlink_summary = hardlink_partial / "failure.summary.json"
+        os.link(hardlink_summary, hardlink_partial / "hardlinked-evidence.json")
+        assert sequential._extraction_cache_inventory(
+            hardlink_root, current_attempt_id=current
+        ) == sequential.ExtractionCacheInventory(
+            active=1, preserved_terminal_failed=0
+        )
+
         value.pop("unexpected")
         summary.write_text(json.dumps(value) + "\n", encoding="utf-8")
         os.chmod(summary, 0o644)
@@ -704,31 +851,7 @@ def test_direct_full_launch_scope_is_plan_exact_and_scientifically_closed() -> N
         authority={**plan["authority"], "batch_plan_sha256": plan_sha},
         batch_ids=["c3_batch_000"],
     )
-    launch = {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_full_selected_cohort_launch_authority_v1",
-        "status": "AUTHORIZED_FULL_SELECTED_COHORT_RECONSTRUCTION",
-        "governing_commit": plan["authority"]["git_commit"],
-        "batch_plan_sha256": plan_sha,
-        "selected_manifest_sha256": plan["authority"]["selected_manifest_sha256"],
-        "selected_source_manifest_sha256": plan["authority"]["selected_source_manifest_sha256"],
-        "split_map_sha256": plan["authority"]["split_map_sha256"],
-        "checkpoint_sha256": plan["authority"]["checkpoint_sha256"],
-        "selected_studies": 4,
-        "selected_subjects": 4,
-        "normalized_source_objects": 4,
-        "selected_source_bytes": requirements.selected_source_bytes,
-        "batch_count": 2,
-        "expected_no_cine_studies": 1,
-        "maximum_scheduler_submissions": 2,
-        "array_task_range": "1-2",
-        "array_max_concurrency": 1,
-        "raw_dicom_deletion_authorized": False,
-        "extracted_cache_retirement_authorized_after_preservation": True,
-        "model_fitting_authorized": False,
-        "prediction_authorized": False,
-        "confirmatory_performance_access_authorized": False,
-    }
+    launch = _synthetic_full_launch(plan, requirements)
     launch_sha = core.canonical_json_sha256(launch)
     with pytest.raises(core.OrchestrationError) as caught:
         core.validate_direct_full_download_scope(
@@ -780,14 +903,8 @@ def _claimed_run_fixture(
     sequential.FullRun, dict[str, Any], Path
 ]:
     plan, requirements = two_batch_plan()
-    initial = _scoped_run(root, plan, requirements)
-    launch = {"status": "SYNTHETIC_CLOSED_LAUNCH"}
-    run = replace(
-        initial,
-        launch_authority=launch,
-        launch_authority_sha256=core.canonical_json_sha256(launch),
-    )
-    capacity_value = {"status": "SYNTHETIC_CAPACITY_PASS"}
+    run = _scoped_run(root, plan, requirements)
+    capacity_value = _successor_capacity_authority()
     capacity_path = run.attempt_root / "full_capacity_receipt.restricted.json"
     sequential._write_private_json(
         run.attempt_root / "full_launch_authority.restricted.json",
@@ -954,7 +1071,7 @@ def test_adopted_claim_is_closed_and_binds_capacity_plan_and_runtime(
         assert sequential._adopt_claimed_run(
             scheduler_job_identity="8123456.1"
         ) is run
-    capacity_gate.assert_called_once_with(capacity_value)
+    capacity_gate.assert_not_called()
 
 
 def test_claim_tampering_fails_before_array_worker_effects(tmp_path: Path) -> None:
@@ -1733,24 +1850,18 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
     with tempfile.TemporaryDirectory() as raw_root:
         root = Path(raw_root).resolve()
         plan, requirements = two_batch_plan()
-        initial = _scoped_run(root, plan, requirements)
-        launch = {"status": "SYNTHETIC_CLOSED_LAUNCH"}
-        run = replace(
-            initial,
-            launch_authority=launch,
-            launch_authority_sha256=core.canonical_json_sha256(launch),
-        )
+        run = _scoped_run(root, plan, requirements)
         # The producer's no-clobber precondition begins with no attempt. The
         # helper was used only to build the deterministic in-memory run.
         shutil.rmtree(run.attempt_root)
         os.chmod(run.production_root / "attempts", 0o700)
-        capacity_value = {"status": "SYNTHETIC_CAPACITY_PASS"}
+        capacity_value = _successor_capacity_authority()
         with (
             mock.patch.object(sequential, "build_full_run", return_value=run),
             mock.patch.object(
                 sequential,
                 "preflight_full",
-                return_value={"capacity": capacity_value},
+                return_value={"successor_capacity": capacity_value},
             ),
         ):
             produced = sequential.claim_submission(
@@ -1820,7 +1931,7 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
         assert [call.args[0] for call in printer.call_args_list] == [
             "FULL_C3_MATERIALIZED_CLAIM_READBACK=PASS"
         ]
-        capacity_gate.assert_called_once_with(capacity_value)
+        capacity_gate.assert_not_called()
         for boundary in (
             process, dicom, gpu, cloud, writer, provider, science, cohort
         ):
@@ -1850,7 +1961,7 @@ def test_each_materialized_claim_file_tamper_fails_before_effects() -> None:
                     / "full_capacity_receipt.restricted.json"
                 )
                 _replace_private_json(capacity_path, {"status": "ALTERED"})
-                expected = "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+                expected = "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID"
             else:
                 claim = json.loads(claim_path.read_text(encoding="utf-8"))
                 _replace_private_json(claim_path, {**claim, "unexpected": 1})
@@ -1943,6 +2054,14 @@ def _aggregate_safe_preflight_report_fixture() -> dict[str, Any]:
                 "source_bytes": 1 if ordinal < 19 else 1_216_569_133_304,
             }
         )
+    capacity_value = {
+        "research_quota_remaining_bytes": 2_000_000_000_000,
+        "research_filesystem_available_bytes": 1_800_000_000_000,
+        "research_file_slots_remaining": 4_000_000,
+        "research_margin_beyond_200gb_reserve_bytes": 300_000_000_000,
+        "backed_quota_remaining_bytes": 20_000_000_000,
+        "backed_file_slots_remaining": 200_000,
+    }
     return {
         "status": "PASS_FULL_C3_NO_BODY_PREFLIGHT",
         "governing_commit": "a" * 40,
@@ -1954,20 +2073,16 @@ def _aggregate_safe_preflight_report_fixture() -> dict[str, Any]:
         "expected_study_embeddings": 4525,
         "expected_no_cine_studies": 5,
         "active_extraction_caches": 0,
-        "preserved_terminal_failed_extraction_caches": 1,
+        "preserved_terminal_failed_extraction_caches": 2,
         "storage_reserve": "PASS",
         "echoprime_runtime": "PASS",
         "crc32c_external_runtime": "PASS",
         "completed_canary_evidence": "PASS",
         "task_mappings": mappings,
-        "capacity": {
-            "research_quota_remaining_bytes": 2_000_000_000_000,
-            "research_filesystem_available_bytes": 1_800_000_000_000,
-            "research_file_slots_remaining": 4_000_000,
-            "research_margin_beyond_200gb_reserve_bytes": 300_000_000_000,
-            "backed_quota_remaining_bytes": 20_000_000_000,
-            "backed_file_slots_remaining": 200_000,
-        },
+        "capacity": capacity_value,
+        "successor_capacity": _successor_capacity_authority(
+            capacity_value
+        ),
         "bucket_listing_requests": 0,
         "cloud_requests": 0,
         "qsub_submissions": 0,
@@ -1996,7 +2111,7 @@ def test_preflight_report_is_complete_aggregate_safe_and_zero_effect() -> None:
     assert markers["FULL_C3_EXPECTED_NO_CINE_STUDIES"] == "5"
     assert markers[
         "FULL_C3_PRESERVED_TERMINAL_FAILED_EXTRACTION_CACHES"
-    ] == "1"
+    ] == "2"
     assert markers["ECHOPRIME_RUNTIME"] == "PASS"
     assert markers["CRC32C_EXTERNAL_RUNTIME"] == "PASS"
     assert markers["COMPLETED_CANARY_EVIDENCE"] == "PASS"

@@ -384,7 +384,9 @@ def _validate_context(
     ):
         _hash_regular_nofollow(path, digest, code)
     plan = core.load_strict_json(context.batch_plan_path)
-    plan_sha = core.validate_batch_plan(plan, requirements=requirements)
+    plan_sha = core.validate_current_batch_plan_v3(
+        plan, requirements=requirements
+    )
     if (
         plan_sha != context.batch_plan_sha256
         or context.runtime_authority["batch_plan_sha256"] != plan_sha
@@ -949,6 +951,8 @@ def run_canary_stage(
             verified_download_manifest=verified, download_root=raw_root / BATCH_ID / "objects",
             batch_output_root=cache_root, workers=4, batch_id=BATCH_ID,
             attempt_id=context.attempt_id, runtime_authority=context.runtime_authority,
+            planned_batch=plan["batches"][0],
+            embedding_output_root=batch_root / "echoprime",
         )
         stages.advance_stage_ledger(
             input_ledger=input_ledger,
@@ -981,10 +985,24 @@ def run_canary_stage(
             predecessor_transition_receipt=predecessor,
         )
         stages.validate_extraction_manifest_plan_membership(
-            extraction, plan["batches"][0]
+            extraction,
+            plan["batches"][0],
+            cache_root / "dicom_extraction"
+            / "technical_disposition_manifest.restricted.csv",
         )
         summary = dependency.echoprime(
             extraction_manifest=extraction, extraction_root=cache_root / "dicom_extraction" / "clips",
+            technical_disposition_manifest=(
+                cache_root / "dicom_extraction"
+                / "technical_disposition_manifest.restricted.csv"
+            ),
+            dicom_audit=cache_root / "dicom_extraction" / "dicom_audit.restricted.csv",
+            dicom_extraction_summary=(
+                cache_root / "dicom_extraction" / "dicom_extraction.summary.json"
+            ),
+            verified_download_manifest=(
+                raw_root / BATCH_ID / "verified_download_manifest.restricted.csv"
+            ),
             selected_batch_manifest=raw_root / BATCH_ID / "selected_batch.restricted.csv",
             checkpoint=context.checkpoint, environment_receipt=context.environment_receipt,
             orchestration_contract=context.contract_path, batch_plan=context.batch_plan_path,
