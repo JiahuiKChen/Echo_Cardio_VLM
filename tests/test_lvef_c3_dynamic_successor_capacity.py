@@ -539,7 +539,9 @@ def test_dynamic_old_larger_and_representative_1000gb_statuses_are_exact() -> No
         expected_receipt_payload=pending.receipt_payload,
         now_utc=CAPTURED_AT,
     )
-    assert pending_value["status"] == "ALLOCATION_NOT_YET_VISIBLE"
+    assert pending_value["status"] == (
+        "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE"
+    )
     assert pending_value["storage_allocation_visible"] is False
 
     for regressed in (
@@ -1702,6 +1704,12 @@ def test_successor_authority_and_future_claim_bind_exact_dynamic_receipt() -> No
             dynamic_capacity_receipt_sha256=hashlib.sha256(
                 capture.receipt_payload
             ).hexdigest(),
+            capacity_evidence_role="R5B_HISTORICAL",
+            capacity_gain_source="ALLOCATION",
+            raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+            raw_retirement_receipt_sha256=(
+                "NOT_APPLICABLE_CLEANUP_SKIPPED"
+            ),
             qsub_environment_sha256="9" * 64,
         )
         assert future_claim["dynamic_capacity_receipt_sha256"] == (
@@ -1736,7 +1744,12 @@ def test_claim_rejects_missing_mutated_stale_and_nonpass_fixed_pair_before_root(
                 _write_fixed_capture_pair(
                     run,
                     _capture(
-                        native_payload=_historical_native(),
+                        native_payload=_dynamic_native(
+                            research_quota_bytes=(
+                                HISTORICAL_RESEARCH_QUOTA_BYTES
+                            ),
+                            research_usage_bytes=LIVE_USAGE_BYTES,
+                        ),
                         now_utc=datetime.now(timezone.utc),
                     ),
                 )
@@ -2041,7 +2054,11 @@ def test_real_dynamic_seal_reuses_one_capture_in_full_no_body_preflight() -> Non
 
         probe.assert_called_once()
         preflight.assert_called_once()
-        assert preflight.call_args.kwargs["_validated_dynamic_capture"] is capture
+        admission = preflight.call_args.kwargs[
+            "_validated_capacity_admission"
+        ]
+        assert admission.capture is capture
+        assert admission.evidence_role == "R5B_HISTORICAL"
         assert production_validations == [capture, capture]
         call = probe.call_args.kwargs
         assert call["successor_attempt_root_absent"] is True
@@ -2103,6 +2120,12 @@ def test_real_dynamic_seal_reuses_one_capture_in_full_no_body_preflight() -> Non
             dynamic_capacity_receipt_sha256=result[
                 "restricted_receipt_sha256"
             ],
+            capacity_evidence_role="R5B_HISTORICAL",
+            capacity_gain_source="ALLOCATION",
+            raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+            raw_retirement_receipt_sha256=(
+                "NOT_APPLICABLE_CLEANUP_SKIPPED"
+            ),
             qsub_environment_sha256="9" * 64,
         )
         assert future_claim["dynamic_capacity_receipt_sha256"] == (
@@ -2234,9 +2257,13 @@ def test_pending_and_blocked_seals_never_reach_preflight_or_claim() -> None:
         (
             "ALLOCATION_NOT_YET_VISIBLE",
             lambda now: _capture(
-                native_payload=_historical_native(), now_utc=now
+                native_payload=_dynamic_native(
+                    research_quota_bytes=HISTORICAL_RESEARCH_QUOTA_BYTES,
+                    research_usage_bytes=LIVE_USAGE_BYTES,
+                ),
+                now_utc=now,
             ),
-            (0, 0, 0),
+            (92_578_972_844, 0, 0),
         ),
         (
             "BLOCKED_ADDITIONAL_STORAGE_REQUIRED",
@@ -2365,7 +2392,7 @@ def test_full_preflight_rechecks_root_and_claim_after_observation() -> None:
 def test_only_seal_live_probe_uses_observed_successor_absence_flags() -> None:
     preflight_source = inspect.getsource(sequential.preflight_full)
     assert "probe_dynamic_successor_capacity_observation" not in preflight_source
-    assert "_load_fixed_dynamic_capacity_capture" in preflight_source
+    assert "_load_fixed_capacity_admission" in preflight_source
 
     seal_source = inspect.getsource(
         sequential.run_dynamic_successor_capacity_seal

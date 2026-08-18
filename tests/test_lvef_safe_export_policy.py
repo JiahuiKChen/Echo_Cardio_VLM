@@ -372,7 +372,7 @@ def test_git_gate_accepts_only_reviewed_live_dependency_policy_addition() -> Non
         if item["dependency_id"] == "production_contract_and_callables"
     )
     policy_path = (
-        "configs/lvef_c3_source_signal_object_technical_disposition_v1.json"
+        "configs/lvef_c3_source_signal_object_technical_disposition_v2.json"
     )
     assert dependency["artifact_paths"].count(policy_path) == 1
 

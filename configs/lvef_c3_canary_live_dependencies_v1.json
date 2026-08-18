@@ -297,6 +297,7 @@
       "artifact_paths": [
         "configs/lvef_c3_orchestration_v2.yaml",
         "configs/lvef_c3_source_signal_object_technical_disposition_v1.json",
+        "configs/lvef_c3_source_signal_object_technical_disposition_v2.json",
         "scripts/lvef_c3_orchestration_core.py",
         "scripts/lvef_c3_production_stages.py",
         "scripts/preserve_lvef_c3_production_batch.py",

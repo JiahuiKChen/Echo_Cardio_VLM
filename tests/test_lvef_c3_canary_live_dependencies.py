@@ -238,10 +238,10 @@ def test_declared_producers_consumers_tracking_and_tests_are_real() -> None:
         for path in item["artifact_paths"]:
             candidate = ROOT / path
             assert candidate.is_file() and not candidate.is_symlink(), path
-            if path == (
-                "configs/"
-                "lvef_c3_source_signal_object_technical_disposition_v1.json"
-            ):
+            if path in {
+                "configs/lvef_c3_source_signal_object_technical_disposition_v1.json",
+                "configs/lvef_c3_source_signal_object_technical_disposition_v2.json",
+            }:
                 assert _tracked_or_pending_source(path), path
             else:
                 assert _tracked(path), path
@@ -291,6 +291,10 @@ def test_production_dependency_inventory_includes_disposition_policy() -> None:
     )
     assert (
         "configs/lvef_c3_source_signal_object_technical_disposition_v1.json"
+        in production["artifact_paths"]
+    )
+    assert (
+        "configs/lvef_c3_source_signal_object_technical_disposition_v2.json"
         in production["artifact_paths"]
     )
 

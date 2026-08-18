@@ -1071,6 +1071,12 @@ def _claimed_run_fixture(
         dynamic_capacity_receipt_sha256=hashlib.sha256(
             dynamic_capture.receipt_payload
         ).hexdigest(),
+        capacity_evidence_role="R5B_HISTORICAL",
+        capacity_gain_source="ALLOCATION",
+        raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+        raw_retirement_receipt_sha256=(
+            "NOT_APPLICABLE_CLEANUP_SKIPPED"
+        ),
         qsub_environment_sha256=qsub_environment_sha256,
     )
     claim_path = run.attempt_root / "full_submission_claim.restricted.json"
@@ -2037,7 +2043,17 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
             mock.patch.object(
                 sequential,
                 "preflight_full",
-                return_value={"successor_capacity": capacity_value},
+                return_value={
+                    "successor_capacity": capacity_value,
+                    "capacity_evidence_role": "R5B_HISTORICAL",
+                    "capacity_gain_source": "ALLOCATION",
+                    "raw_retirement_status": (
+                        "NOT_APPLICABLE_CLEANUP_SKIPPED"
+                    ),
+                    "raw_retirement_receipt_sha256": (
+                        "NOT_APPLICABLE_CLEANUP_SKIPPED"
+                    ),
+                },
             ),
         ):
             produced = sequential.claim_submission(

@@ -75,6 +75,15 @@ OBJECT_TECHNICAL_DISPOSITION_POLICY_FILENAME = (
 OBJECT_TECHNICAL_DISPOSITION_POLICY_SHA256 = (
     "c561d96ef049f37f1f20454ec30150fb2aada8aeddbb920b65260100107d3b11"
 )
+OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_VERSION = (
+    "source_signal_object_technical_disposition_v2"
+)
+OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_FILENAME = (
+    "lvef_c3_source_signal_object_technical_disposition_v2.json"
+)
+OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_SHA256 = (
+    "b6e0b313686ff85f472ca2afa64343087d386ea867f159827952bbaaf6119ca2"
+)
 EXPECTED_FULL_CONTRACT_ID = "lvef_multitask_c3_production_orchestration_v2"
 EXPECTED_FULL_PRODUCTION_ROOT = Path(
     "/restricted/projectnb/mimicecho/lvef_multitask_c3_v2"
@@ -980,6 +989,74 @@ def validate_object_technical_disposition_policy(
         ),
     }:
         raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_POLICY_INVALID")
+
+
+def validate_object_technical_disposition_policy_v2(
+    policy: Mapping[str, Any],
+) -> None:
+    """Validate the prospective v2 guardrail while preserving v1 semantics."""
+
+    v2_only = {
+        "batch_tolerance",
+        "foundation_policy_sha256",
+        "foundation_policy_version",
+    }
+    v1_keys = {
+        "artifact_type",
+        "closed_classifications",
+        "downstream_metric_authority",
+        "eligible_failure_substages",
+        "new_no_cine_studies_permitted",
+        "object_substitution_permitted",
+        "policy_version",
+        "prohibited_decision_inputs",
+        "r4d2c_provenance",
+        "required_authority_gates",
+        "required_row_authority",
+        "schema_version",
+        "source_metric_authority",
+        "status",
+        "technical_disposition",
+    }
+    if not isinstance(policy, Mapping) or set(policy) != v1_keys | v2_only:
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_V2_POLICY_NOT_CLOSED")
+    legacy_projection = {key: policy[key] for key in v1_keys}
+    legacy_projection.update(
+        {
+            "schema_version": 1,
+            "artifact_type": "lvef_c3_object_technical_disposition_policy_v1",
+            "policy_version": OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION,
+            "status": "IMPLEMENTED_OWNER_GATED_UNAUTHORIZED",
+        }
+    )
+    validate_object_technical_disposition_policy(legacy_projection)
+    if (
+        policy.get("schema_version") != 2
+        or policy.get("artifact_type")
+        != "lvef_c3_object_technical_disposition_policy_v2"
+        or policy.get("policy_version")
+        != OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_VERSION
+        or policy.get("status") != "OWNER_AUTHORIZED_PROSPECTIVE"
+        or policy.get("foundation_policy_version")
+        != OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+        or policy.get("foundation_policy_sha256")
+        != OBJECT_TECHNICAL_DISPOSITION_POLICY_SHA256
+        or policy.get("batch_tolerance")
+        != {
+            "absolute_disposition_limit": 10,
+            "blocking_failure_count_required": 0,
+            "comparison": (
+                "object_technical_disposition_count * 1000 <= "
+                "n_multiframe_candidates"
+            ),
+            "new_no_cine_studies_required": 0,
+            "object_substitution_count_required": 0,
+            "rate_limit_denominator": 1000,
+            "rate_limit_numerator": 1,
+            "unaccounted_multiframe_objects_required": 0,
+        }
+    ):
+        raise OrchestrationError("OBJECT_TECHNICAL_DISPOSITION_V2_POLICY_INVALID")
 
 
 def _validate_bound_control_schemas(

@@ -504,7 +504,12 @@ def test_mixed_success_and_source_failure_preserves_exact_substage_after_datafra
     expect_code(
         "EXTRACTION_TECHNICAL_DISPOSITION_CONTEXT_REQUIRED",
         lambda: stages.validate_production_extraction_rows(
-            [promoted, failed], expected_cines=2
+            [
+                promoted,
+                *(_extraction_row(f"padding-{index}") for index in range(998)),
+                failed,
+            ],
+            expected_cines=1000,
         ),
     )
 
@@ -1447,7 +1452,7 @@ def _batch_receipt(index: int) -> dict[str, object]:
             )
         },
         "technical_disposition_policy_version": (
-            "source_signal_object_technical_disposition_v1"
+            stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
         ),
         "technical_disposition_manifest_sha256": hashlib.sha256(
             f"technical-disposition-{index}".encode()

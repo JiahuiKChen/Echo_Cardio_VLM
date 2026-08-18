@@ -71,8 +71,13 @@ ALLOWED_FAILURE_SUBSTAGES = {
     "OUTPUT_WRITE_FAILURE",
 }
 OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION = (
+    "source_signal_object_technical_disposition_v2"
+)
+LEGACY_OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION = (
     "source_signal_object_technical_disposition_v1"
 )
+OBJECT_TECHNICAL_DISPOSITION_ABSOLUTE_LIMIT = 10
+OBJECT_TECHNICAL_DISPOSITION_RATE_DENOMINATOR = 1000
 OBJECT_TECHNICAL_DISPOSITION = (
     "SOURCE_SIGNAL_QUALITY_UNUSABLE_UNDER_FROZEN_PREPROCESSOR"
 )
@@ -1656,10 +1661,13 @@ def _validate_source_signal_quality_disposition_row(
         or source_key not in context.raw_retained_source_keys
         or clip_key not in context.npz_absent_clip_keys
         or clip_key not in context.embedding_absent_clip_keys
-        or studies.get(str(row.get("study_id")), 0) < 1
     ):
         raise ProductionStageError(
             "EXTRACTION_TECHNICAL_DISPOSITION_CONTEXT_INVALID"
+        )
+    if studies.get(str(row.get("study_id")), 0) < 1:
+        raise ProductionStageError(
+            "EXTRACTION_TECHNICAL_DISPOSITION_STUDY_ELIGIBILITY_FAILED"
         )
 
 
@@ -1701,6 +1709,17 @@ def validate_production_extraction_rows(
             raise ProductionStageError("EXTRACTION_FAILURE_SUBSTAGE_INVALID")
         if failure_substage != "SOURCE_SIGNAL_QUALITY_FAILURE":
             raise ProductionStageError(f"EXTRACTION_{failure_substage}")
+    if len(failed) > OBJECT_TECHNICAL_DISPOSITION_ABSOLUTE_LIMIT:
+        raise ProductionStageError(
+            "EXTRACTION_TECHNICAL_DISPOSITION_ABSOLUTE_LIMIT_EXCEEDED"
+        )
+    if (
+        len(failed) * OBJECT_TECHNICAL_DISPOSITION_RATE_DENOMINATOR
+        > expected_cines
+    ):
+        raise ProductionStageError(
+            "EXTRACTION_TECHNICAL_DISPOSITION_RATE_LIMIT_EXCEEDED"
+        )
     if failed and not isinstance(disposition_context, ExtractionDispositionContext):
         raise ProductionStageError(
             "EXTRACTION_TECHNICAL_DISPOSITION_CONTEXT_REQUIRED"
@@ -1956,7 +1975,7 @@ def build_extraction_disposition_context(
             )
         if success_counts.get(identity[1], 0) < 1:
             raise ProductionStageError(
-                "EXTRACTION_TECHNICAL_DISPOSITION_NEW_NO_CINE_STUDY"
+                "EXTRACTION_TECHNICAL_DISPOSITION_STUDY_ELIGIBILITY_FAILED"
             )
         approved.add(source_key)
         raw_retained.add(source_key)

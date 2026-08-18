@@ -187,9 +187,11 @@ CONTROL_HASH_REFRESH_JSON_PATHS = frozenset(
 LIVE_DEPENDENCY_CONTROL_PATH = "configs/lvef_c3_canary_live_dependencies_v1.json"
 REVIEWED_LIVE_DEPENDENCY_ID = "production_contract_and_callables"
 REVIEWED_LIVE_DEPENDENCY_ADDITION = (
+    "configs/lvef_c3_source_signal_object_technical_disposition_v2.json"
+)
+REVIEWED_LIVE_DEPENDENCY_PREDECESSOR = (
     "configs/lvef_c3_source_signal_object_technical_disposition_v1.json"
 )
-REVIEWED_LIVE_DEPENDENCY_PREDECESSOR = "configs/lvef_c3_orchestration_v2.yaml"
 
 
 def _assert_high_confidence_text_safety(

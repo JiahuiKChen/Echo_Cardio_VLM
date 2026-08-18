@@ -192,6 +192,34 @@ DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME = (
 DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME = (
     "dynamic_successor_capacity.aggregate_safe.json"
 )
+R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME = (
+    "r5e_pre_cleanup_dynamic_successor_capacity.restricted.json"
+)
+R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME = (
+    "r5e_pre_cleanup_dynamic_successor_capacity.aggregate_safe.json"
+)
+R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME = (
+    "r5e_post_cleanup_dynamic_successor_capacity.restricted.json"
+)
+R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME = (
+    "r5e_post_cleanup_dynamic_successor_capacity.aggregate_safe.json"
+)
+DYNAMIC_SUCCESSOR_ALLOWED_EVIDENCE_BASENAME_PAIRS = frozenset(
+    {
+        (
+            DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME,
+            DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME,
+        ),
+        (
+            R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        ),
+        (
+            R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        ),
+    }
+)
 
 DYNAMIC_SUCCESSOR_OBSERVATION_HASHED_KEYS = frozenset(
     {
@@ -3089,15 +3117,15 @@ def _validate_dynamic_successor_core(
         raise PostReallocationCapacityError(
             "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
         )
-    if not visible:
-        expected_status = DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
-        expected_reasons = [DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING]
-    elif blocked_reasons:
-        expected_status = DYNAMIC_SUCCESSOR_STATUS_BLOCKED
-        expected_reasons = sorted(blocked_reasons)
-    else:
+    if not blocked_reasons:
         expected_status = DYNAMIC_SUCCESSOR_STATUS_PASS
         expected_reasons = []
+    elif not visible:
+        expected_status = DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
+        expected_reasons = [DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING]
+    else:
+        expected_status = DYNAMIC_SUCCESSOR_STATUS_BLOCKED
+        expected_reasons = sorted(blocked_reasons)
     if value.get("status") != expected_status or reasons != expected_reasons:
         raise PostReallocationCapacityError(
             "DYNAMIC_CAPACITY_ARITHMETIC_INVALID"
@@ -3991,15 +4019,15 @@ def probe_dynamic_successor_capacity_observation(
     blocked_reasons: list[str] = []
     if not (quota_gate and physical_gate and file_gate):
         blocked_reasons.append("DYNAMIC_CAPACITY_INSUFFICIENT")
-    if not visible:
-        status = DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
-        reasons = [DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING]
-    elif blocked_reasons:
-        status = DYNAMIC_SUCCESSOR_STATUS_BLOCKED
-        reasons = sorted(blocked_reasons)
-    else:
+    if not blocked_reasons:
         status = DYNAMIC_SUCCESSOR_STATUS_PASS
         reasons = []
+    elif not visible:
+        status = DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
+        reasons = [DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING]
+    else:
+        status = DYNAMIC_SUCCESSOR_STATUS_BLOCKED
+        reasons = sorted(blocked_reasons)
     native_authority = {
         "path_sha256": _sha(str(authority.native_quota_path).encode()),
         "file_size_bytes": len(native_payload),
@@ -4207,11 +4235,9 @@ def publish_dynamic_successor_capacity_capture(
             "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
         )
     if (
-        restricted_receipt_path.name
-        != DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
-        or aggregate_summary_path.name
-        != DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
-    ):
+        restricted_receipt_path.name,
+        aggregate_summary_path.name,
+    ) not in DYNAMIC_SUCCESSOR_ALLOWED_EVIDENCE_BASENAME_PAIRS:
         raise PostReallocationCapacityError(
             "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
         )

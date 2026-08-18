@@ -1729,3 +1729,77 @@ export_profiles:
       observation_authority_sha256: string
       restricted_receipt_size_bytes: integer
       restricted_receipt_sha256: string
+
+  lvef_c3_older_raw_retirement_summary_json:
+    kind: json
+    extensions: [.json]
+    max_bytes: 65536
+    required_top_level_keys: &lvef_c3_older_raw_retirement_summary_keys
+      - schema_version
+      - artifact_type
+      - status
+      - governing_commit
+      - manifest_basename
+      - manifest_bytes
+      - manifest_sha256
+      - planned_delete_files
+      - planned_delete_bytes
+      - actual_deleted_files
+      - actual_deleted_bytes
+      - residual_target_files
+      - residual_target_bytes
+      - retained_files
+      - retained_bytes
+      - r4_metadata_stat_sha256
+      - older_npz_cache_retained
+      - canonical_source_deleted
+      - r4_attempt_immutable
+      - dicom_body_reads
+      - npz_body_reads
+      - cloud_requests
+      - qsub_submissions
+      - gpu_executions
+      - embedding_generations
+      - model_fitting
+      - prediction_generation
+      - confirmatory_performance_accesses
+      - identifiers_emitted
+      - paths_emitted
+      - receipt_basename
+      - receipt_bytes
+      - receipt_sha256
+    allowed_top_level_keys: *lvef_c3_older_raw_retirement_summary_keys
+    field_types:
+      schema_version: integer
+      artifact_type: string
+      status: string
+      governing_commit: string
+      manifest_basename: string
+      manifest_bytes: integer
+      manifest_sha256: string
+      planned_delete_files: integer
+      planned_delete_bytes: integer
+      actual_deleted_files: integer
+      actual_deleted_bytes: integer
+      residual_target_files: integer
+      residual_target_bytes: integer
+      retained_files: integer
+      retained_bytes: integer
+      r4_metadata_stat_sha256: string
+      older_npz_cache_retained: boolean
+      canonical_source_deleted: boolean
+      r4_attempt_immutable: boolean
+      dicom_body_reads: integer
+      npz_body_reads: integer
+      cloud_requests: integer
+      qsub_submissions: integer
+      gpu_executions: integer
+      embedding_generations: integer
+      model_fitting: integer
+      prediction_generation: integer
+      confirmatory_performance_accesses: integer
+      identifiers_emitted: boolean
+      paths_emitted: boolean
+      receipt_basename: string
+      receipt_bytes: integer
+      receipt_sha256: string

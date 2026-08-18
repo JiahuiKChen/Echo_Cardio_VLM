@@ -429,7 +429,7 @@ def validate_preservation_eligibility_receipt(
         is None
         or receipt.get("aggregate_safety_gate_result") != "PASS"
         or receipt.get("technical_disposition_policy_version")
-        != "source_signal_object_technical_disposition_v1"
+        != production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
         or receipt.get("extracted_cache_retired") is not False
     ):
         raise CacheRetirementError("PRESERVATION_AUTHORITY_INVALID")
@@ -474,6 +474,11 @@ def validate_preservation_eligibility_receipt(
         or receipt["n_multiframe_cines"]
         != receipt["n_successfully_extracted_cines"]
         + receipt["n_object_technical_dispositions"]
+        or receipt["n_object_technical_dispositions"]
+        > production_stages.OBJECT_TECHNICAL_DISPOSITION_ABSOLUTE_LIMIT
+        or receipt["n_object_technical_dispositions"]
+        * production_stages.OBJECT_TECHNICAL_DISPOSITION_RATE_DENOMINATOR
+        > receipt["n_multiframe_cines"]
         or receipt["n_successfully_extracted_cines"]
         != receipt["n_extracted_clips"]
         or receipt["n_successfully_extracted_cines"]

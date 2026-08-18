@@ -1462,7 +1462,7 @@ def _validate_cohort_receipt_fields(
         or receipt.get("object_substitution_count") != 0
         or receipt.get("unaccounted_multiframe_objects") != 0
         or receipt.get("technical_disposition_policy_version")
-        != "source_signal_object_technical_disposition_v1"
+        != production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
         or SHA256_RE.fullmatch(
             str(receipt.get("technical_disposition_manifest_set_sha256"))
         )
@@ -1649,7 +1649,10 @@ def _replay_batch_extraction_partition(
             or row["decode_color_status"] != "PASS"
             or row["canonical_color_space"] != "RGB"
             or row["technical_disposition_policy_version"]
-            != "source_signal_object_technical_disposition_v1"
+            not in {
+                production_stages.LEGACY_OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION,
+                production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION,
+            }
         ):
             raise ProductionFinalizationError(
                 "COHORT_EXTRACTION_PARTITION_MISMATCH"
@@ -2138,7 +2141,7 @@ def write_cohort_preservation_outputs(
             )
         },
         "technical_disposition_policy_version": (
-            "source_signal_object_technical_disposition_v1"
+            production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
         ),
         "technical_disposition_manifest_set_sha256": (
             technical_disposition_manifest_set_sha256
@@ -2467,7 +2470,7 @@ def _validate_current_receipt_v3(value: Mapping[str, Any]) -> None:
         or value.get("aggregate_safety_gate_result") != "PASS"
         or value.get("checkpoint_checksum") != value.get("checkpoint_sha256")
         or value.get("technical_disposition_policy_version")
-        != "source_signal_object_technical_disposition_v1"
+        != production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
     ):
         raise ProductionFinalizationError("BATCH_PROVENANCE_VALUE_INVALID")
     for key in (
@@ -2676,7 +2679,7 @@ def _validate_current_canary_eligibility_receipt_v3(
         or value.get("aggregate_safety_gate_result") != "PASS"
         or value.get("checkpoint_checksum") != value.get("checkpoint_sha256")
         or value.get("technical_disposition_policy_version")
-        != "source_signal_object_technical_disposition_v1"
+        != production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
     ):
         raise ProductionFinalizationError("CANARY_PROVENANCE_VALUE_INVALID")
     for key in HASH_KEYS - RETIREMENT_RECEIPT_KEYS:
@@ -2956,7 +2959,7 @@ def validate_closed_final_summary(value: Mapping[str, Any]) -> None:
         )
         is None
         or value.get("technical_disposition_policy_version")
-        != "source_signal_object_technical_disposition_v1"
+        != production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
         or any(
             isinstance(value.get(key), bool)
             or not isinstance(value.get(key), int)
@@ -3467,7 +3470,7 @@ def finalize_receipts(
             )
         },
         "technical_disposition_policy_version": (
-            "source_signal_object_technical_disposition_v1"
+            production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
         ),
         "technical_disposition_manifest_set_sha256": (
             disposition_manifest_set_sha256

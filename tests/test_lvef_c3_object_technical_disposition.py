@@ -187,7 +187,31 @@ def _context(rows: list[Mapping[str, Any]]) -> stages.ExtractionDispositionConte
     )
 
 
+def _tolerance_rows(
+    rows: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    failures = sum(row.get("write_ok") is not True for row in rows)
+    minimum = failures * 1000
+    if failures == 0 or len(rows) >= minimum:
+        return list(rows)
+    study_id = str(
+        next(
+            row["study_id"] for row in rows if row.get("write_ok") is True
+        )
+    )
+    return [
+        *rows,
+        *(
+            _successful_row(
+                f"tolerance-padding-{index}", study_id=study_id
+            )
+            for index in range(minimum - len(rows))
+        ),
+    ]
+
+
 def _validate(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    rows = _tolerance_rows(rows)
     return stages.validate_production_extraction_rows(
         rows,
         expected_cines=len(rows),
@@ -200,7 +224,9 @@ def _manifest_fixture() -> tuple[
     stages.ExtractionDispositionContext,
     list[dict[str, Any]],
 ]:
-    rows = [_successful_row("manifest-success"), _disposed_row("manifest-failure")]
+    rows = _tolerance_rows(
+        [_successful_row("manifest-success"), _disposed_row("manifest-failure")]
+    )
     context = _context(rows)
     manifest = stages.technical_disposition_manifest_rows(rows, context=context)
     return rows, context, manifest
@@ -536,6 +562,70 @@ def test_case_01_exact_batch3_pattern_is_one_disposition_and_one_affected_study(
     )
 
 
+def test_r5e_v2_ten_dispositions_pass_only_with_exact_rate_gate() -> None:
+    rows = [
+        _successful_row("ten-limit-success"),
+        *(_disposed_row(f"ten-limit-{index}") for index in range(10)),
+    ]
+    expanded = _tolerance_rows(rows)
+    assert len(expanded) == 10_000
+    summary = stages.validate_production_extraction_rows(
+        expanded,
+        expected_cines=10_000,
+        disposition_context=_context(expanded),
+    )
+    assert summary["n_object_technical_dispositions"] == 10
+    assert summary["n_successfully_extracted_cines"] == 9_990
+
+
+def test_r5e_v2_eleven_dispositions_and_rate_above_one_per_thousand_fail() -> None:
+    eleven = [_disposed_row(f"eleven-{index}") for index in range(11)]
+    _expect_code(
+        "EXTRACTION_TECHNICAL_DISPOSITION_ABSOLUTE_LIMIT_EXCEEDED",
+        lambda: stages.validate_production_extraction_rows(
+            eleven,
+            expected_cines=11,
+            disposition_context=_context(eleven),
+        ),
+    )
+    above_rate = [
+        *(_successful_row(f"rate-{index}") for index in range(998)),
+        _disposed_row("rate-failure"),
+    ]
+    _expect_code(
+        "EXTRACTION_TECHNICAL_DISPOSITION_RATE_LIMIT_EXCEEDED",
+        lambda: stages.validate_production_extraction_rows(
+            above_rate,
+            expected_cines=999,
+            disposition_context=_context(above_rate),
+        ),
+    )
+
+def test_r5e_v2_policy_is_closed_and_v1_policy_remains_byte_valid() -> None:
+    v1_path = (
+        ROOT / "configs" /
+        "lvef_c3_source_signal_object_technical_disposition_v1.json"
+    )
+    v2_path = (
+        ROOT / "configs" /
+        "lvef_c3_source_signal_object_technical_disposition_v2.json"
+    )
+    v1_payload = v1_path.read_bytes()
+    assert hashlib.sha256(v1_payload).hexdigest() == (
+        core.OBJECT_TECHNICAL_DISPOSITION_POLICY_SHA256
+    )
+    core.validate_object_technical_disposition_policy(
+        core.load_strict_json(v1_path)
+    )
+    v2_payload = v2_path.read_bytes()
+    assert hashlib.sha256(v2_payload).hexdigest() == (
+        core.OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_SHA256
+    )
+    core.validate_object_technical_disposition_policy_v2(
+        core.load_strict_json(v2_path)
+    )
+
+
 def test_case_02_zero_disposition_batches_emit_exact_one_key_zero_map() -> None:
     summary = _validate([_successful_row("zero")])
     assert summary["technical_disposition_counts_by_class"] == ZERO_DISPOSITION_MAP
@@ -585,7 +675,7 @@ def test_cases_03_to_05_study_coverage_is_current_and_per_affected_study() -> No
 
     no_coverage = [_successful_row("other", study_id="200002"), _disposed_row("lost")]
     _expect_code(
-        "EXTRACTION_TECHNICAL_DISPOSITION_CONTEXT_INVALID",
+        "EXTRACTION_TECHNICAL_DISPOSITION_STUDY_ELIGIBILITY_FAILED",
         lambda: _validate(no_coverage),
     )
 
@@ -740,10 +830,10 @@ def test_contextual_authority_mutations_fail_closed_before_disposition() -> None
         disposed = _disposed_row("authority-disposed")
         raw_payload = b"disposed-raw-A"
         disposed["source_sha256"] = hashlib.sha256(raw_payload).hexdigest()
-        rows = [success, disposed]
+        rows = _tolerance_rows([success, disposed])
         authority_relative_paths = [
-            _source_relative("authority-success"),
-            _source_relative("authority-disposed"),
+            _source_relative(f"authority-{index}")
+            for index in range(len(rows))
         ]
         planned_batch = {
             "n_objects": len(rows),
@@ -1028,7 +1118,9 @@ def test_case_19_technical_manifest_sha_is_bound_to_both_stage_summaries() -> No
             {
                 "schema_version": 2,
                 "artifact_type": "lvef_c3_batch_dicom_extraction_summary_v2",
-                "n_successfully_extracted_cines": 1,
+                "n_successfully_extracted_cines": extraction[
+                    "n_successfully_extracted_cines"
+                ],
                 "successful_extraction_gate_scope": (
                     "SUCCESSFUL_EXTRACTIONS_ONLY"
                 ),
@@ -1049,7 +1141,9 @@ def test_case_19_technical_manifest_sha_is_bound_to_both_stage_summaries() -> No
                 "schema_version": 2,
                 "artifact_type": "lvef_c3_batch_echoprime_pooling_summary_v2",
                 "all_successful_extractions_embedded": True,
-                "n_clip_embeddings": 1,
+                "n_clip_embeddings": extraction[
+                    "n_successfully_extracted_cines"
+                ],
                 "encoder_only": True,
                 "view_classifier_used": False,
                 "pooling": "stable_clip_key_order_float64_mean_then_float32",
@@ -1131,12 +1225,15 @@ def test_case_21_finalizer_aggregates_counts_and_exact_manifest_set_hash() -> No
     second.update(
         {
             "batch_id": "c3_batch_001",
-            "n_expected_objects": 2,
-            "expected_source_bytes": 2,
-            "n_download_verified": 2,
-            "n_dicom_readable": 2,
-            "n_multiframe_cines": 2,
-            "n_successfully_extracted_cines": 1,
+            "n_expected_objects": 1000,
+            "expected_source_bytes": 1000,
+            "n_download_verified": 1000,
+            "n_dicom_readable": 1000,
+            "n_multiframe_cines": 1000,
+            "n_extracted_clips": 999,
+            "n_unique_clip_keys": 999,
+            "n_clip_embeddings": 999,
+            "n_successfully_extracted_cines": 999,
             "n_object_technical_dispositions": 1,
             "n_studies_affected_by_technical_disposition": 1,
             "technical_disposition_counts_by_class": {DISPOSITION: 1},
@@ -1149,8 +1246,8 @@ def test_case_21_finalizer_aggregates_counts_and_exact_manifest_set_hash() -> No
         release="mimic-iv-echo/1.0",
         selected_studies=2,
         selected_subjects=2,
-        normalized_source_objects=3,
-        selected_source_bytes=3,
+        normalized_source_objects=1001,
+        selected_source_bytes=1001,
         batch_count=2,
         studies_per_full_batch=1,
         final_batch_studies=1,
@@ -1173,8 +1270,8 @@ def test_case_21_finalizer_aggregates_counts_and_exact_manifest_set_hash() -> No
             expected_no_cine_studies=0,
         )
     assert summary["production_batches"] == 2
-    assert summary["verified_source_objects"] == 3
-    assert summary["successfully_extracted_cines"] == 2
+    assert summary["verified_source_objects"] == 1001
+    assert summary["successfully_extracted_cines"] == 1000
     assert summary["object_technical_dispositions"] == 1
     assert summary["studies_affected_by_technical_disposition"] == 1
     assert summary["technical_disposition_counts_by_class"] == {DISPOSITION: 1}

@@ -45,6 +45,11 @@ PRODUCTION_ROOT = Path("/restricted/projectnb/mimicecho/lvef_multitask_c3_v2")
 DYNAMIC_CAPACITY_SAFE_EXPORT_POLICY_PATH = (
     REPOSITORY_ROOT / "configs/lvef_multitask_safe_export_policy.yaml"
 )
+OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_PATH = (
+    REPOSITORY_ROOT
+    / "configs"
+    / core.OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_FILENAME
+)
 DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME = (
     "full_dynamic_capacity_source.restricted.json"
 )
@@ -303,6 +308,15 @@ FULL_SUBMISSION_CLAIM_KEYS = frozenset(
 FRESH_FULL_SUBMISSION_CLAIM_V2_KEYS = frozenset(
     {*FULL_SUBMISSION_CLAIM_KEYS, "dynamic_capacity_receipt_sha256"}
 )
+FRESH_FULL_SUBMISSION_CLAIM_V3_KEYS = frozenset(
+    {
+        *FRESH_FULL_SUBMISSION_CLAIM_V2_KEYS,
+        "capacity_evidence_role",
+        "capacity_gain_source",
+        "raw_retirement_status",
+        "raw_retirement_receipt_sha256",
+    }
+)
 
 ORDERED_STAGES = (
     "DOWNLOAD",
@@ -344,6 +358,15 @@ class FullRun:
 class ExtractionCacheInventory:
     active: int
     preserved_terminal_failed: int
+
+
+@dataclass(frozen=True)
+class CapacityAdmission:
+    capture: capacity.DynamicSuccessorCapacityCapture
+    evidence_role: str
+    capacity_gain_source: str
+    raw_retirement_status: str
+    raw_retirement_receipt_sha256: str
 
 
 @dataclass(frozen=True)
@@ -2214,6 +2237,90 @@ def build_successor_capacity_authority(
     return value
 
 
+def _headroom_passes(
+    *, quota: int, usage: int, physical: int, file_slots: int
+) -> bool:
+    return (
+        quota - (usage + SUCCESSOR_INCREMENT_BYTES)
+        >= SUCCESSOR_REQUIRED_RESERVE_BYTES
+        and physical - SUCCESSOR_INCREMENT_BYTES
+        >= SUCCESSOR_REQUIRED_RESERVE_BYTES
+        and file_slots >= SUCCESSOR_REQUIRED_FILE_SLOTS
+    )
+
+
+def _capacity_gain_source(
+    observation: Mapping[str, Any],
+    *,
+    evidence_role: str,
+    pre_cleanup_observation: Mapping[str, Any] | None = None,
+) -> str:
+    if observation.get("status") != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+        return "NONE"
+    historical_quota = capacity.EXPECTED_RESEARCH_QUOTA_KIB * 1024
+    current_quota = int(observation["live_research_quota_bytes"])
+    if evidence_role in {"R5B_HISTORICAL", "R5E_PRE_CLEANUP"}:
+        return (
+            "ALLOCATION"
+            if current_quota > historical_quota
+            else "EXISTING_HEADROOM"
+        )
+    if evidence_role != "R5E_POST_CLEANUP" or pre_cleanup_observation is None:
+        _fail("FULL_SEQUENTIAL_CAPACITY_GAIN_SOURCE_INVALID")
+    if pre_cleanup_observation.get("status") == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+        _fail("FULL_SEQUENTIAL_CAPACITY_GAIN_SOURCE_INVALID")
+    allocation_alone = (
+        current_quota > historical_quota
+        and _headroom_passes(
+            quota=current_quota,
+            usage=int(pre_cleanup_observation["live_research_usage_bytes"]),
+            physical=int(
+                pre_cleanup_observation[
+                    "live_research_filesystem_available_bytes"
+                ]
+            ),
+            file_slots=int(pre_cleanup_observation["remaining_file_slots"]),
+        )
+    )
+    cleanup_alone = _headroom_passes(
+        quota=historical_quota,
+        usage=int(observation["live_research_usage_bytes"]),
+        physical=int(observation["live_research_filesystem_available_bytes"]),
+        file_slots=int(observation["remaining_file_slots"]),
+    )
+    if allocation_alone:
+        return "ALLOCATION"
+    if cleanup_alone:
+        return "CLEANUP"
+    return "BOTH"
+
+
+def _validate_capacity_admission(value: CapacityAdmission) -> None:
+    if not isinstance(value, CapacityAdmission):
+        _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
+    if value.evidence_role not in {
+        "R5B_HISTORICAL", "R5E_PRE_CLEANUP", "R5E_POST_CLEANUP"
+    }:
+        _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
+    if value.capacity_gain_source not in {
+        "ALLOCATION", "CLEANUP", "BOTH", "EXISTING_HEADROOM", "NONE"
+    }:
+        _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
+    if value.evidence_role == "R5E_POST_CLEANUP":
+        if (
+            value.raw_retirement_status
+            != "PASS_OLDER_RAW_DUPLICATES_RETIRED"
+            or SHA_RE.fullmatch(value.raw_retirement_receipt_sha256) is None
+        ):
+            _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
+    elif (
+        value.raw_retirement_status != "NOT_APPLICABLE_CLEANUP_SKIPPED"
+        or value.raw_retirement_receipt_sha256
+        != "NOT_APPLICABLE_CLEANUP_SKIPPED"
+    ):
+        _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
+
+
 def validate_installation() -> Mapping[str, Any]:
     required = (
         Path(__file__).resolve(),
@@ -2225,11 +2332,30 @@ def validate_installation() -> Mapping[str, Any]:
         SCRIPT_ROOT / "lvef_c3_production_stages.py",
         SCRIPT_ROOT / "preserve_lvef_c3_production_batch.py",
         SCRIPT_ROOT / "retire_lvef_c3_extracted_cache_v2.py",
+        SCRIPT_ROOT / "retire_lvef_c3_older_raw_duplicates.py",
         SCRIPT_ROOT / "finalize_lvef_c3_production.py",
         SCRIPT_ROOT / "replay_lvef_c3_failed_extraction_one_object.py",
+        OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_PATH,
     )
     if any(path.is_symlink() or not path.is_file() for path in required):
         _fail("FULL_SEQUENTIAL_TRACKED_CONTROL_MISSING")
+    policy_payload = minimal._read_regular(
+        OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_PATH
+    )
+    if (
+        hashlib.sha256(policy_payload).hexdigest()
+        != core.OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_SHA256
+    ):
+        _fail("FULL_SEQUENTIAL_TECHNICAL_DISPOSITION_V2_POLICY_INVALID")
+    try:
+        policy_value = core.load_strict_json(
+            OBJECT_TECHNICAL_DISPOSITION_POLICY_V2_PATH
+        )
+        core.validate_object_technical_disposition_policy_v2(policy_value)
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_TECHNICAL_DISPOSITION_V2_POLICY_INVALID"
+        ) from exc
     head = _current_commit()
     minimal._validate_two_runtime_installation(repository=REPOSITORY_ROOT)
     return {
@@ -2250,6 +2376,7 @@ def preflight_full(
     _validated_dynamic_capture: (
         capacity.DynamicSuccessorCapacityCapture | None
     ) = None,
+    _validated_capacity_admission: CapacityAdmission | None = None,
     _capture_reuse_token: object | None = None,
 ) -> Mapping[str, Any]:
     dependency = resolve_dependencies(dependencies)
@@ -2259,10 +2386,17 @@ def preflight_full(
     ):
         _fail("FULL_SEQUENTIAL_SYNTHETIC_CAPACITY_NOT_AUTHORIZED")
     if (
-        _validated_dynamic_capture is not None
+        (
+            _validated_dynamic_capture is not None
+            or _validated_capacity_admission is not None
+        )
         and (
             dependency.capacity_probe is not None
             or _capture_reuse_token is not _DYNAMIC_CAPTURE_REUSE_TOKEN
+            or (
+                _validated_dynamic_capture is not None
+                and _validated_capacity_admission is not None
+            )
         )
     ):
         _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID")
@@ -2294,13 +2428,39 @@ def preflight_full(
     if not attempt_absent or not claim_absent:
         _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
     try:
-        observed_capture = (
-            _validated_dynamic_capture
-            if _validated_dynamic_capture is not None
-            else dependency.capacity_probe()
-            if dependency.capacity_probe is not None
-            else _load_fixed_dynamic_capacity_capture(run)
-        )
+        if _validated_capacity_admission is not None:
+            admission = _validated_capacity_admission
+        elif _validated_dynamic_capture is not None:
+            admission = CapacityAdmission(
+                capture=_validated_dynamic_capture,
+                evidence_role="R5B_HISTORICAL",
+                capacity_gain_source=_capacity_gain_source(
+                    _validated_dynamic_capture.observation,
+                    evidence_role="R5B_HISTORICAL",
+                ),
+                raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+                raw_retirement_receipt_sha256=(
+                    "NOT_APPLICABLE_CLEANUP_SKIPPED"
+                ),
+            )
+        elif dependency.capacity_probe is not None:
+            synthetic_capture = dependency.capacity_probe()
+            admission = CapacityAdmission(
+                capture=synthetic_capture,
+                evidence_role="R5B_HISTORICAL",
+                capacity_gain_source=_capacity_gain_source(
+                    synthetic_capture.observation,
+                    evidence_role="R5B_HISTORICAL",
+                ),
+                raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+                raw_retirement_receipt_sha256=(
+                    "NOT_APPLICABLE_CLEANUP_SKIPPED"
+                ),
+            )
+        else:
+            admission = _load_fixed_capacity_admission(run)
+        _validate_capacity_admission(admission)
+        observed_capture = admission.capture
         if not isinstance(
             observed_capture, capacity.DynamicSuccessorCapacityCapture
         ):
@@ -2369,6 +2529,12 @@ def preflight_full(
         ],
         "capacity": observed_capacity,
         "successor_capacity": successor_capacity,
+        "capacity_evidence_role": admission.evidence_role,
+        "capacity_gain_source": admission.capacity_gain_source,
+        "raw_retirement_status": admission.raw_retirement_status,
+        "raw_retirement_receipt_sha256": (
+            admission.raw_retirement_receipt_sha256
+        ),
         "bucket_listing_requests": 0,
         "cloud_requests": 0,
         "qsub_submissions": 0,
@@ -2382,10 +2548,27 @@ def run_dynamic_successor_capacity_seal(
     *,
     capture: capacity.DynamicSuccessorCapacityCapture | None = None,
     dependencies: FullDependencies | None = None,
+    evidence_role: str = "R5B_HISTORICAL",
 ) -> Mapping[str, Any]:
     """Seal exactly one observation, then conditionally reuse it in preflight."""
 
     dependency = resolve_dependencies(dependencies)
+    evidence_names = {
+        "R5B_HISTORICAL": (
+            capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME,
+            capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME,
+        ),
+        "R5E_PRE_CLEANUP": (
+            capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        ),
+        "R5E_POST_CLEANUP": (
+            capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        ),
+    }
+    if evidence_role not in evidence_names:
+        _fail("FULL_SEQUENTIAL_CAPACITY_EVIDENCE_ROLE_INVALID")
     if (
         capture is not None
         and not dependency.test_only_synthetic_full_scope
@@ -2420,14 +2603,8 @@ def run_dynamic_successor_capacity_seal(
         )
     except capacity.PostReallocationCapacityError as exc:
         raise FullSequentialError(exc.code) from exc
-    restricted_receipt_path = (
-        evidence_root
-        / capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
-    )
-    aggregate_summary_path = (
-        evidence_root
-        / capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
-    )
+    restricted_receipt_path = evidence_root / evidence_names[evidence_role][0]
+    aggregate_summary_path = evidence_root / evidence_names[evidence_role][1]
     # Both fixed evidence-leaf collision gates precede the only live probe.
     # Any race after this gate is caught again by the O_EXCL publisher.
     if (
@@ -2440,6 +2617,35 @@ def run_dynamic_successor_capacity_seal(
     claim_absent = not os.path.lexists(claim_path)
     if not attempt_absent or not claim_absent:
         _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
+    retirement_status = "NOT_APPLICABLE_CLEANUP_SKIPPED"
+    retirement_sha = "NOT_APPLICABLE_CLEANUP_SKIPPED"
+    pre_cleanup_observation: Mapping[str, Any] | None = None
+    if evidence_role == "R5E_POST_CLEANUP":
+        try:
+            import retire_lvef_c3_older_raw_duplicates as older_raw
+
+            retired = older_raw.validate_retired_state(
+                expected_governing_commit=run.authority.governing_commit
+            )
+            pre_capture = _load_capacity_pair(
+                run,
+                restricted_basename=(
+                    capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+                ),
+                summary_basename=(
+                    capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+                ),
+                require_pass=False,
+            )
+        except Exception as exc:
+            raise FullSequentialError(
+                "FULL_SEQUENTIAL_OLDER_RAW_RETIREMENT_INVALID"
+            ) from exc
+        if pre_capture.observation.get("status") == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+            _fail("FULL_SEQUENTIAL_UNAUTHORIZED_CLEANUP_AFTER_CAPACITY_PASS")
+        retirement_status = str(retired["status"])
+        retirement_sha = str(retired["receipt_sha256"])
+        pre_cleanup_observation = pre_capture.observation
     try:
         observed_capture = capture or (
             capacity.probe_dynamic_successor_capacity_observation(
@@ -2502,10 +2708,23 @@ def run_dynamic_successor_capacity_seal(
         raise FullSequentialError(exc.code) from exc
 
     integrated: Mapping[str, Any] | None = None
+    gain_source = _capacity_gain_source(
+        observation,
+        evidence_role=evidence_role,
+        pre_cleanup_observation=pre_cleanup_observation,
+    )
+    admission = CapacityAdmission(
+        capture=observed_capture,
+        evidence_role=evidence_role,
+        capacity_gain_source=gain_source,
+        raw_retirement_status=retirement_status,
+        raw_retirement_receipt_sha256=retirement_sha,
+    )
+    _validate_capacity_admission(admission)
     if observation["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
         integrated = preflight_full(
             dependencies=replace(dependency, capacity_probe=None),
-            _validated_dynamic_capture=observed_capture,
+            _validated_capacity_admission=admission,
             _capture_reuse_token=_DYNAMIC_CAPTURE_REUSE_TOKEN,
         )
     return {
@@ -2514,6 +2733,10 @@ def run_dynamic_successor_capacity_seal(
         "storage_allocation_visible": observation[
             "storage_allocation_visible"
         ],
+        "capacity_evidence_role": evidence_role,
+        "capacity_gain_source": gain_source,
+        "raw_retirement_status": retirement_status,
+        "raw_retirement_receipt_sha256": retirement_sha,
         "minimum_additional_quota_bytes": observation[
             "minimum_additional_quota_bytes"
         ],
@@ -2562,6 +2785,10 @@ def format_dynamic_successor_capacity_seal_report(
         "status",
         "governing_commit",
         "storage_allocation_visible",
+        "capacity_evidence_role",
+        "capacity_gain_source",
+        "raw_retirement_status",
+        "raw_retirement_receipt_sha256",
         "minimum_additional_quota_bytes",
         "minimum_additional_physical_bytes",
         "minimum_additional_file_slots",
@@ -2597,6 +2824,15 @@ def format_dynamic_successor_capacity_seal_report(
     summary_payload = capacity._canonical(observation)
     if (
         value.get("status") != observation["status"]
+        or value.get("capacity_evidence_role") != "R5B_HISTORICAL"
+        or value.get("capacity_gain_source")
+        != _capacity_gain_source(
+            observation, evidence_role="R5B_HISTORICAL"
+        )
+        or value.get("raw_retirement_status")
+        != "NOT_APPLICABLE_CLEANUP_SKIPPED"
+        or value.get("raw_retirement_receipt_sha256")
+        != "NOT_APPLICABLE_CLEANUP_SKIPPED"
         or value.get("storage_allocation_visible")
         is not observation["storage_allocation_visible"]
         or value.get("restricted_receipt_basename")
@@ -2970,6 +3206,10 @@ def _expected_submission_claim(
     *,
     capacity_receipt_sha256: str,
     dynamic_capacity_receipt_sha256: str,
+    capacity_evidence_role: str,
+    capacity_gain_source: str,
+    raw_retirement_status: str,
+    raw_retirement_receipt_sha256: str,
     qsub_environment_sha256: str,
 ) -> dict[str, Any]:
     if (
@@ -2977,12 +3217,30 @@ def _expected_submission_claim(
         or SHA_RE.fullmatch(dynamic_capacity_receipt_sha256) is None
     ):
         _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+    if capacity_evidence_role not in {
+        "R5B_HISTORICAL", "R5E_PRE_CLEANUP", "R5E_POST_CLEANUP"
+    } or capacity_gain_source not in {
+        "ALLOCATION", "CLEANUP", "BOTH", "EXISTING_HEADROOM"
+    }:
+        _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+    if capacity_evidence_role == "R5E_POST_CLEANUP":
+        if (
+            raw_retirement_status != "PASS_OLDER_RAW_DUPLICATES_RETIRED"
+            or SHA_RE.fullmatch(raw_retirement_receipt_sha256) is None
+        ):
+            _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+    elif (
+        raw_retirement_status != "NOT_APPLICABLE_CLEANUP_SKIPPED"
+        or raw_retirement_receipt_sha256
+        != "NOT_APPLICABLE_CLEANUP_SKIPPED"
+    ):
+        _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
     qsub_environment_sha256 = _require_qsub_environment_sha256(
         qsub_environment_sha256
     )
     value = {
-        "schema_version": 2,
-        "artifact_type": "lvef_c3_full_submission_claim_v2",
+        "schema_version": 3,
+        "artifact_type": "lvef_c3_full_submission_claim_v3",
         "status": "PREPARED_TWO_SUBMISSION_FULL_RECONSTRUCTION",
         "governing_commit": run.authority.governing_commit,
         "attempt_id": run.attempt_id,
@@ -2998,6 +3256,10 @@ def _expected_submission_claim(
         "dynamic_capacity_receipt_sha256": (
             dynamic_capacity_receipt_sha256
         ),
+        "capacity_evidence_role": capacity_evidence_role,
+        "capacity_gain_source": capacity_gain_source,
+        "raw_retirement_status": raw_retirement_status,
+        "raw_retirement_receipt_sha256": raw_retirement_receipt_sha256,
         "qsub_environment_sha256": qsub_environment_sha256,
         "maximum_qsub_submissions": 2,
         "array_tasks": 19,
@@ -3015,7 +3277,7 @@ def _expected_submission_claim(
         "prediction_generation_before_claim": 0,
         "confirmatory_performance_access_before_claim": 0,
     }
-    if set(value) != FRESH_FULL_SUBMISSION_CLAIM_V2_KEYS:
+    if set(value) != FRESH_FULL_SUBMISSION_CLAIM_V3_KEYS:
         _fail("FULL_SEQUENTIAL_SUBMISSION_CLAIM_INTERNAL_INVALID")
     return value
 
@@ -3094,7 +3356,7 @@ def _load_bound_submission_environment_sha256(
         raise FullSequentialError(
             "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
         ) from exc
-    if set(claim) != FRESH_FULL_SUBMISSION_CLAIM_V2_KEYS:
+    if set(claim) != FRESH_FULL_SUBMISSION_CLAIM_V3_KEYS:
         _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
     observed = claim.get("qsub_environment_sha256")
     if not isinstance(observed, str) or SHA_RE.fullmatch(observed) is None:
@@ -3110,12 +3372,52 @@ def _load_bound_submission_environment_sha256(
             ) from exc
         if observed != expected_binding:
             _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+    capacity_evidence_role = claim.get("capacity_evidence_role")
+    capacity_gain_source = claim.get("capacity_gain_source")
+    raw_retirement_status = claim.get("raw_retirement_status")
+    raw_retirement_receipt_sha256 = claim.get(
+        "raw_retirement_receipt_sha256"
+    )
+    if run.requirements.contract_id != core.TEST_ONLY_FULL_CONTRACT_ID:
+        fixed_admission = _load_fixed_capacity_admission(
+            run, revalidate_retirement_state=False
+        )
+        if (
+            fixed_admission.capture.receipt_payload != dynamic_payload
+            or fixed_admission.evidence_role != capacity_evidence_role
+            or fixed_admission.capacity_gain_source != capacity_gain_source
+            or fixed_admission.raw_retirement_status != raw_retirement_status
+            or fixed_admission.raw_retirement_receipt_sha256
+            != raw_retirement_receipt_sha256
+        ):
+            _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+    if capacity_evidence_role == "R5E_POST_CLEANUP":
+        try:
+            import retire_lvef_c3_older_raw_duplicates as older_raw
+
+            retired = older_raw.validate_retirement_receipt_authority(
+                expected_governing_commit=run.authority.governing_commit
+            )
+        except Exception as exc:
+            raise FullSequentialError(
+                "FULL_SEQUENTIAL_OLDER_RAW_RETIREMENT_INVALID"
+            ) from exc
+        if (
+            retired.get("status") != raw_retirement_status
+            or retired.get("receipt_sha256")
+            != raw_retirement_receipt_sha256
+        ):
+            _fail("FULL_SEQUENTIAL_OLDER_RAW_RETIREMENT_INVALID")
     expected_claim = _expected_submission_claim(
         run,
         capacity_receipt_sha256=hashlib.sha256(capacity_payload).hexdigest(),
         dynamic_capacity_receipt_sha256=hashlib.sha256(
             dynamic_payload
         ).hexdigest(),
+        capacity_evidence_role=capacity_evidence_role,
+        capacity_gain_source=capacity_gain_source,
+        raw_retirement_status=raw_retirement_status,
+        raw_retirement_receipt_sha256=raw_retirement_receipt_sha256,
         qsub_environment_sha256=observed,
     )
     if claim != expected_claim:
@@ -3123,24 +3425,26 @@ def _load_bound_submission_environment_sha256(
     return observed
 
 
-def _load_fixed_dynamic_capacity_capture(
+def _load_capacity_pair(
     run: FullRun,
+    *,
+    restricted_basename: str,
+    summary_basename: str,
+    require_pass: bool = True,
 ) -> capacity.DynamicSuccessorCapacityCapture:
     owner_private = run.production_root / "owner_private"
     _validate_private_directory(owner_private)
     try:
         captured = capacity.load_dynamic_successor_capacity_capture(
             restricted_receipt_path=(
-                owner_private
-                / capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
+                owner_private / restricted_basename
             ),
             aggregate_summary_path=(
-                owner_private
-                / capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
+                owner_private / summary_basename
             ),
             expected_governing_commit=run.authority.governing_commit,
         )
-        if (
+        if require_pass and (
             captured.observation.get("status")
             != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
         ):
@@ -3156,6 +3460,131 @@ def _load_fixed_dynamic_capacity_capture(
     return captured
 
 
+def _load_fixed_capacity_admission(
+    run: FullRun, *, revalidate_retirement_state: bool = True
+) -> CapacityAdmission:
+    owner_private = run.production_root / "owner_private"
+    post_paths = (
+        owner_private / capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+        owner_private / capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+    )
+    pre_paths = (
+        owner_private / capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+        owner_private / capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+    )
+    post_present = tuple(os.path.lexists(path) for path in post_paths)
+    pre_present = tuple(os.path.lexists(path) for path in pre_paths)
+    if any(post_present):
+        if not all(post_present) or not all(pre_present):
+            _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_PAIR_INVALID")
+        pre = _load_capacity_pair(
+            run,
+            restricted_basename=pre_paths[0].name,
+            summary_basename=pre_paths[1].name,
+            require_pass=False,
+        )
+        post = _load_capacity_pair(
+            run,
+            restricted_basename=post_paths[0].name,
+            summary_basename=post_paths[1].name,
+        )
+        if pre.observation.get("status") == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+            _fail("FULL_SEQUENTIAL_UNAUTHORIZED_CLEANUP_AFTER_CAPACITY_PASS")
+        try:
+            import retire_lvef_c3_older_raw_duplicates as older_raw
+
+            validator = (
+                older_raw.validate_retired_state
+                if revalidate_retirement_state
+                else older_raw.validate_retirement_receipt_authority
+            )
+            retired = validator(
+                expected_governing_commit=run.authority.governing_commit
+            )
+        except Exception as exc:
+            raise FullSequentialError(
+                "FULL_SEQUENTIAL_OLDER_RAW_RETIREMENT_INVALID"
+            ) from exc
+        observed_pre_authority = {
+            "status": pre.observation.get("status"),
+            "receipt_basename": pre_paths[0].name,
+            "receipt_bytes": len(pre.receipt_payload),
+            "receipt_sha256": hashlib.sha256(
+                pre.receipt_payload
+            ).hexdigest(),
+            "summary_basename": pre_paths[1].name,
+            "summary_bytes": len(capacity._canonical(pre.observation)),
+            "summary_sha256": hashlib.sha256(
+                capacity._canonical(pre.observation)
+            ).hexdigest(),
+        }
+        if retired.get("pre_cleanup_capacity_authority") != (
+            observed_pre_authority
+        ):
+            _fail("FULL_SEQUENTIAL_OLDER_RAW_RETIREMENT_INVALID")
+        admission = CapacityAdmission(
+            capture=post,
+            evidence_role="R5E_POST_CLEANUP",
+            capacity_gain_source=_capacity_gain_source(
+                post.observation,
+                evidence_role="R5E_POST_CLEANUP",
+                pre_cleanup_observation=pre.observation,
+            ),
+            raw_retirement_status=str(retired["status"]),
+            raw_retirement_receipt_sha256=str(retired["receipt_sha256"]),
+        )
+    elif any(pre_present):
+        if not all(pre_present):
+            _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_PAIR_INVALID")
+        pre = _load_capacity_pair(
+            run,
+            restricted_basename=pre_paths[0].name,
+            summary_basename=pre_paths[1].name,
+        )
+        admission = CapacityAdmission(
+            capture=pre,
+            evidence_role="R5E_PRE_CLEANUP",
+            capacity_gain_source=_capacity_gain_source(
+                pre.observation, evidence_role="R5E_PRE_CLEANUP"
+            ),
+            raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+            raw_retirement_receipt_sha256=(
+                "NOT_APPLICABLE_CLEANUP_SKIPPED"
+            ),
+        )
+    else:
+        historical = _load_capacity_pair(
+            run,
+            restricted_basename=(
+                capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
+            ),
+            summary_basename=(
+                capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
+            ),
+        )
+        admission = CapacityAdmission(
+            capture=historical,
+            evidence_role="R5B_HISTORICAL",
+            capacity_gain_source=_capacity_gain_source(
+                historical.observation, evidence_role="R5B_HISTORICAL"
+            ),
+            raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+            raw_retirement_receipt_sha256=(
+                "NOT_APPLICABLE_CLEANUP_SKIPPED"
+            ),
+        )
+    _validate_capacity_admission(admission)
+    return admission
+
+
+def _load_fixed_dynamic_capacity_capture(
+    run: FullRun,
+) -> capacity.DynamicSuccessorCapacityCapture:
+    """Compatibility projection for maintained callers and tests."""
+
+    return _load_fixed_capacity_admission(run).capture
+
+
 def claim_submission(
     *, qsub_environment_sha256: str
 ) -> Mapping[str, Any]:
@@ -3165,9 +3594,10 @@ def claim_submission(
     run = build_full_run()
     if os.path.lexists(run.attempt_root):
         _fail("FULL_SEQUENTIAL_ATTEMPT_ALREADY_EXISTS")
-    dynamic_capture = _load_fixed_dynamic_capacity_capture(run)
+    admission = _load_fixed_capacity_admission(run)
+    dynamic_capture = admission.capture
     preflight = preflight_full(
-        _validated_dynamic_capture=dynamic_capture,
+        _validated_capacity_admission=admission,
         _capture_reuse_token=_DYNAMIC_CAPTURE_REUSE_TOKEN,
     )
     if os.path.lexists(run.attempt_root):
@@ -3211,6 +3641,12 @@ def claim_submission(
             dynamic_capacity_receipt_sha256=hashlib.sha256(
                 dynamic_payload
             ).hexdigest(),
+            capacity_evidence_role=preflight["capacity_evidence_role"],
+            capacity_gain_source=preflight["capacity_gain_source"],
+            raw_retirement_status=preflight["raw_retirement_status"],
+            raw_retirement_receipt_sha256=preflight[
+                "raw_retirement_receipt_sha256"
+            ],
             qsub_environment_sha256=qsub_environment_sha256,
         )
         _write_private_json(
@@ -3328,6 +3764,8 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--preflight-only", action="store_true")
     modes.add_argument("--preflight-report", action="store_true")
     modes.add_argument("--seal-dynamic-capacity", action="store_true")
+    modes.add_argument("--seal-r5e-pre-cleanup-capacity", action="store_true")
+    modes.add_argument("--seal-r5e-post-cleanup-capacity", action="store_true")
     modes.add_argument("--claim-submission", action="store_true")
     modes.add_argument("--validate-claimed-submission", action="store_true")
     modes.add_argument("--print-fixed-identity", action="store_true")
@@ -3364,6 +3802,69 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             print("\n".join(
                 format_dynamic_successor_capacity_seal_report(sealed)
             ))
+            if sealed["status"] != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+                return 78
+        elif (
+            args.seal_r5e_pre_cleanup_capacity
+            or args.seal_r5e_post_cleanup_capacity
+        ):
+            role = (
+                "R5E_PRE_CLEANUP"
+                if args.seal_r5e_pre_cleanup_capacity
+                else "R5E_POST_CLEANUP"
+            )
+            sealed = run_dynamic_successor_capacity_seal(
+                evidence_role=role
+            )
+            observation = sealed["observation"]
+            markers = (
+                f"R5E_CAPACITY_EVIDENCE_ROLE={role}",
+                f"CURRENT_CAPACITY_STATUS={sealed['status']}",
+                "STORAGE_ALLOCATION_VISIBLE="
+                + ("YES" if sealed["storage_allocation_visible"] else "NO"),
+                f"CAPACITY_GAIN_SOURCE={sealed['capacity_gain_source']}",
+                f"CURRENT_QUOTA_BYTES={observation['live_research_quota_bytes']}",
+                f"CURRENT_USAGE_BYTES={observation['live_research_usage_bytes']}",
+                "CURRENT_PHYSICAL_AVAILABLE_BYTES="
+                f"{observation['live_research_filesystem_available_bytes']}",
+                f"CURRENT_REMAINING_FILE_SLOTS={observation['remaining_file_slots']}",
+                "PROJECTED_FRESH_SUCCESSOR_PEAK_BYTES="
+                f"{observation['projected_fresh_successor_peak_bytes']}",
+                "QUOTA_MARGIN_BEYOND_200GB_RESERVE_BYTES="
+                f"{observation['quota_margin_beyond_reserve_bytes']}",
+                "PHYSICAL_MARGIN_BEYOND_200GB_RESERVE_BYTES="
+                f"{observation['physical_margin_beyond_reserve_bytes']}",
+                "FILE_SLOT_MARGIN_AFTER_DEMAND="
+                f"{observation['file_slot_margin_after_demand']}",
+                "MINIMUM_ADDITIONAL_QUOTA_BYTES="
+                f"{sealed['minimum_additional_quota_bytes']}",
+                "MINIMUM_ADDITIONAL_PHYSICAL_BYTES="
+                f"{sealed['minimum_additional_physical_bytes']}",
+                "MINIMUM_ADDITIONAL_FILE_SLOTS="
+                f"{sealed['minimum_additional_file_slots']}",
+                f"CAPACITY_RECEIPT_BASENAME={sealed['restricted_receipt_basename']}",
+                f"CAPACITY_RECEIPT_BYTES={sealed['restricted_receipt_bytes']}",
+                f"CAPACITY_RECEIPT_SHA256={sealed['restricted_receipt_sha256']}",
+                f"CAPACITY_SUMMARY_BASENAME={sealed['aggregate_summary_basename']}",
+                f"CAPACITY_SUMMARY_BYTES={sealed['aggregate_summary_bytes']}",
+                f"CAPACITY_SUMMARY_SHA256={sealed['aggregate_summary_sha256']}",
+                "INTEGRATED_NO_BODY_PREFLIGHT="
+                f"{sealed['integrated_no_body_preflight']}",
+                f"RAW_RETIREMENT_STATUS={sealed['raw_retirement_status']}",
+                "RAW_RETIREMENT_RECEIPT_SHA256="
+                f"{sealed['raw_retirement_receipt_sha256']}",
+                "SUCCESSOR_CLAIM_CREATED=NO",
+                "SUCCESSOR_ATTEMPT_ROOT_CREATED=NO",
+                "NEW_CLOUD_REQUESTS=0",
+                "NEW_DICOM_BODY_READS=0",
+                "NEW_GPU_EXECUTIONS=0",
+                "NEW_MODEL_FITTING=0",
+                "NEW_PREDICTION_GENERATION=0",
+                "CONFIRMATORY_PERFORMANCE_ACCESSED=NO",
+            )
+            if len(markers) != len({line.split("=", 1)[0] for line in markers}):
+                _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+            print("\n".join(markers))
             if sealed["status"] != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
                 return 78
         elif args.claim_submission:
