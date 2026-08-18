@@ -263,6 +263,63 @@ def _expect_one_of_codes(
         raise AssertionError(f"expected one of {sorted(codes)}")
 
 
+def test_r5e_r2_append_only_pair_is_current_bound_and_preserves_a85_pair() -> None:
+    capture = _capture(now_utc=CAPTURED_AT)
+    with tempfile.TemporaryDirectory() as temporary:
+        owner = Path(temporary).resolve() / "owner_private"
+        owner.mkdir(mode=0o700)
+        historical = (
+            owner / capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            owner / capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        )
+        for index, path in enumerate(historical):
+            path.write_bytes(f"historical-{index}\n".encode())
+            path.chmod(0o600)
+        historical_before = tuple(path.read_bytes() for path in historical)
+        restricted = (
+            owner / capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
+        )
+        summary = (
+            owner / capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
+        )
+        published = capacity.publish_dynamic_successor_capacity_capture(
+            capture,
+            restricted_receipt_path=restricted,
+            aggregate_summary_path=summary,
+            safe_export_policy_path=SAFE_EXPORT_POLICY,
+            now_utc=CAPTURED_AT,
+        )
+        assert published["restricted_receipt_basename"] == restricted.name
+        assert published["aggregate_summary_basename"] == summary.name
+        assert tuple(path.read_bytes() for path in historical) == historical_before
+        loaded = capacity.load_dynamic_successor_capacity_capture(
+            restricted_receipt_path=restricted,
+            aggregate_summary_path=summary,
+            expected_governing_commit=GOVERNING_COMMIT,
+            now_utc=CAPTURED_AT,
+        )
+        assert loaded.receipt_payload == capture.receipt_payload
+        _expect_code(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID",
+            lambda: capacity.load_dynamic_successor_capacity_capture(
+                restricted_receipt_path=restricted,
+                aggregate_summary_path=summary,
+                expected_governing_commit="b" * 40,
+                now_utc=CAPTURED_AT,
+            ),
+        )
+        _expect_code(
+            "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION",
+            lambda: capacity.publish_dynamic_successor_capacity_capture(
+                capture,
+                restricted_receipt_path=restricted,
+                aggregate_summary_path=summary,
+                safe_export_policy_path=SAFE_EXPORT_POLICY,
+                now_utc=CAPTURED_AT,
+            ),
+        )
+
+
 def _rebind_dynamic_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
     rebound = copy.deepcopy(receipt)
     command = rebound["commands"]["pquota"]

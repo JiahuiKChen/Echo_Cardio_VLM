@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass, replace
+import errno
 import hashlib
 import io
 import json
@@ -25,6 +26,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from typing import Any, Mapping, Sequence
 
@@ -48,6 +50,10 @@ R4_ATTEMPT_ID = "lvef_c3_full_38750555923b547c_c11e1313"
 OLDER_EXECUTION_COMMIT = "b805fd1a403b3ff0503d09bb79d35b01805dd765"
 R4_EXECUTION_COMMIT = "c11e1313999880881eb67f0269820361638fc8dc"
 TARGET_BATCHES = ("c3_batch_000", "c3_batch_001")
+OLDER_ARRAY_JOB_ID = "7183952"
+OLDER_FINALIZER_JOB_ID = "7183953"
+QUIESCENCE_STABILITY_INTERVAL_SECONDS = 0.10
+RAW_OBJECT_BASENAME_RE = re.compile(r"^[0-9a-f]{64}\.dcm$")
 EXPECTED_BATCH_COUNTS = {"c3_batch_000": 18_872, "c3_batch_001": 18_196}
 EXPECTED_BATCH_BYTES = {
     "c3_batch_000": 68_847_811_224,
@@ -1162,11 +1168,11 @@ def _pre_cleanup_capacity_authority(
         captured = capacity.load_dynamic_successor_capacity_capture(
             restricted_receipt_path=(
                 OWNER_PRIVATE_ROOT
-                / capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+                / capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
             ),
             aggregate_summary_path=(
                 OWNER_PRIVATE_ROOT
-                / capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+                / capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
             ),
             expected_governing_commit=governing_commit,
         )
@@ -1186,12 +1192,12 @@ def _pre_cleanup_capacity_authority(
     return {
         "status": status,
         "receipt_basename": (
-            capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
         ),
         "receipt_bytes": len(captured.receipt_payload),
         "receipt_sha256": _sha(captured.receipt_payload),
         "summary_basename": (
-            capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
         ),
         "summary_bytes": len(capacity._canonical(captured.observation)),
         "summary_sha256": _sha(capacity._canonical(captured.observation)),
@@ -1441,11 +1447,11 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
             capacity.DYNAMIC_SUCCESSOR_STATUS_BLOCKED,
         }
         or pre_cleanup_capacity.get("receipt_basename")
-        != capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+        != capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
         or type(pre_cleanup_capacity.get("receipt_bytes")) is not int
         or pre_cleanup_capacity["receipt_bytes"] < 1
         or pre_cleanup_capacity.get("summary_basename")
-        != capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+        != capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
         or type(pre_cleanup_capacity.get("summary_bytes")) is not int
         or pre_cleanup_capacity["summary_bytes"] < 1
         or any(
@@ -1693,7 +1699,7 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
     _validate_safe_export()
     if any(os.path.lexists(path) for path in (MANIFEST_PATH, RECEIPT_PATH, SUMMARY_PATH)):
         _fail("OLDER_RAW_EVIDENCE_COLLISION")
-    _quiescent()
+    quiescence = _quiescent()
     manifest = _derive_manifest(governing_commit)
     _validate_manifest(manifest)
     payload = _canonical(manifest)
@@ -1711,74 +1717,331 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
         "r4_copy_authority": "PASS",
         "r4_metadata_sha256": EXPECTED_R4_METADATA_SHA256,
         "diagnostic_source_hold": 0,
-        "active_references": 0,
+        "target_leaves": len(TARGET_BATCHES),
+        "stable_target_leaves": quiescence["stable_target_leaves"],
+        "same_user_processes_observed": quiescence[
+            "same_user_processes_observed"
+        ],
+        "candidate_processes": quiescence["candidate_processes"],
+        "vanished_processes": quiescence["vanished_processes"],
+        "unrelated_inaccessible_processes": quiescence[
+            "unrelated_inaccessible_processes"
+        ],
+        "candidate_inaccessible_processes": quiescence[
+            "candidate_inaccessible_processes"
+        ],
+        "confirmed_target_references": quiescence[
+            "confirmed_target_references"
+        ],
+        "matching_scheduler_jobs": quiescence[
+            "matching_scheduler_jobs"
+        ],
+        "active_references": quiescence["confirmed_target_references"],
         "dicom_body_reads": 0,
         "npz_body_reads": 0,
         "destructive_operations": 0,
     }
 
 
-def _quiescent() -> None:
+def _local_tag(element: ET.Element) -> str:
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def _candidate_tokens(target_leaves: Sequence[Path]) -> tuple[str, ...]:
+    return tuple(
+        value.lower()
+        for value in (
+            OLDER_ATTEMPT_ID,
+            *TARGET_BATCHES,
+            *(str(path) for path in target_leaves),
+            Path(__file__).name,
+            "lvef_c3_full_sequential.py",
+            "lvef_c3_production_stages.py",
+        )
+    )
+
+
+def _under_target(value: str, target_leaves: Sequence[Path]) -> bool:
+    if value.endswith(" (deleted)"):
+        value = value[:-10]
+    if not value.startswith("/"):
+        return False
+    observed = Path(os.path.abspath(value))
+    return any(observed == leaf or leaf in observed.parents for leaf in target_leaves)
+
+
+def _inspect_proc_references(
+    process_id: int,
+    *,
+    target_leaves: Sequence[Path],
+    required: bool,
+) -> str:
+    """Classify one candidate/unknown process without exporting its metadata."""
+
+    try:
+        references = [os.readlink(f"/proc/{process_id}/cwd")]
+        with os.scandir(f"/proc/{process_id}/fd") as descriptors:
+            for descriptor in descriptors:
+                try:
+                    references.append(os.readlink(descriptor.path))
+                except OSError as exc:
+                    if exc.errno in {errno.ENOENT, errno.ESRCH}:
+                        continue
+                    if exc.errno in {errno.EACCES, errno.EPERM}:
+                        if required:
+                            return "CANDIDATE_PROC_AUTHORITY_INACCESSIBLE_BLOCKING"
+                        return "UNRELATED_PROCESS_PROC_INACCESSIBLE_NONBLOCKING"
+                    raise
+    except OSError as exc:
+        if exc.errno in {errno.ENOENT, errno.ESRCH}:
+            return "PROCESS_EXITED_DURING_SCAN_NONBLOCKING"
+        if exc.errno in {errno.EACCES, errno.EPERM}:
+            return (
+                "CANDIDATE_PROC_AUTHORITY_INACCESSIBLE_BLOCKING"
+                if required
+                else "UNRELATED_PROCESS_PROC_INACCESSIBLE_NONBLOCKING"
+            )
+        raise OlderRawRetirementError(
+            "OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID"
+        ) from exc
+    if any(_under_target(value, target_leaves) for value in references):
+        return "MATCHING_TARGET_REFERENCE_BLOCKING"
+    return "UNRELATED_PROCESS_INSPECTED_NONBLOCKING"
+
+
+def _target_leaf_snapshot(
+    older_root: Path, leaf: Path, *, batch_id: str
+) -> dict[str, Any]:
+    """Return an exact metadata-only snapshot of one fixed raw leaf."""
+
+    try:
+        older_info = os.lstat(older_root)
+        if (
+            stat.S_ISLNK(older_info.st_mode)
+            or not stat.S_ISDIR(older_info.st_mode)
+            or older_info.st_uid != os.geteuid()
+        ):
+            _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+        current = older_root
+        for component in leaf.relative_to(older_root).parts:
+            current = current / component
+            component_info = os.lstat(current)
+            if (
+                stat.S_ISLNK(component_info.st_mode)
+                or not stat.S_ISDIR(component_info.st_mode)
+                or component_info.st_uid != os.geteuid()
+                or component_info.st_dev != older_info.st_dev
+                or os.path.ismount(current)
+            ):
+                _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+        leaf_info = os.lstat(leaf)
+        if (
+            stat.S_ISLNK(leaf_info.st_mode)
+            or not stat.S_ISDIR(leaf_info.st_mode)
+            or leaf_info.st_uid != os.geteuid()
+            or leaf_info.st_dev != older_info.st_dev
+            or stat.S_IMODE(leaf_info.st_mode) not in {0o700, 0o2700}
+            or os.path.ismount(leaf)
+        ):
+            _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+        names: list[str] = []
+        metadata: list[dict[str, int | str]] = []
+        total_bytes = 0
+        with os.scandir(leaf) as directory:
+            for entry in directory:
+                info = entry.stat(follow_symlinks=False)
+                if (
+                    entry.name.startswith(".nfs")
+                    or ".partial" in entry.name
+                    or RAW_OBJECT_BASENAME_RE.fullmatch(entry.name) is None
+                    or entry.is_symlink()
+                    or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_dev != leaf_info.st_dev
+                ):
+                    _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+                names.append(entry.name)
+                total_bytes += info.st_size
+                metadata.append({
+                    "name": entry.name,
+                    "device": info.st_dev,
+                    "inode": info.st_ino,
+                    "mode": stat.S_IMODE(info.st_mode),
+                    "uid": info.st_uid,
+                    "gid": info.st_gid,
+                    "nlink": info.st_nlink,
+                    "size": info.st_size,
+                    "mtime_ns": info.st_mtime_ns,
+                    "ctime_ns": info.st_ctime_ns,
+                })
+    except OlderRawRetirementError:
+        raise
+    except OSError as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_LEAF_AUTHORITY_INVALID"
+        ) from exc
+    names.sort()
+    metadata.sort(key=lambda row: str(row["name"]))
+    if (
+        len(names) != EXPECTED_BATCH_COUNTS[batch_id]
+        or total_bytes != EXPECTED_BATCH_BYTES[batch_id]
+    ):
+        _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+    return {
+        "batch_id": batch_id,
+        "file_count": len(names),
+        "total_bytes": total_bytes,
+        "directory_count": 1,
+        "relative_name_projection_sha256": core.canonical_json_sha256(names),
+        "metadata_projection_sha256": core.canonical_json_sha256(metadata),
+        "leaf_device": leaf_info.st_dev,
+        "leaf_inode": leaf_info.st_ino,
+        "leaf_mode": stat.S_IMODE(leaf_info.st_mode),
+        "leaf_uid": leaf_info.st_uid,
+        "leaf_gid": leaf_info.st_gid,
+        "leaf_nlink": leaf_info.st_nlink,
+        "leaf_size": leaf_info.st_size,
+        "leaf_mtime_ns": leaf_info.st_mtime_ns,
+        "leaf_ctime_ns": leaf_info.st_ctime_ns,
+        "symlink_entries": 0,
+        "nonregular_entries": 0,
+        "partial_entries": 0,
+        "nfs_entries": 0,
+        "unexpected_entries": 0,
+    }
+
+
+def _stable_target_leaf_authority(
+    *, sleeper: Any = time.sleep
+) -> tuple[dict[str, Any], ...]:
+    older_root = PRODUCTION_ROOT / "attempts" / OLDER_ATTEMPT_ID
+    leaves = _target_leaves(older_root)
+    first = tuple(
+        _target_leaf_snapshot(older_root, leaf, batch_id=batch)
+        for batch, leaf in zip(TARGET_BATCHES, leaves, strict=True)
+    )
+    sleeper(QUIESCENCE_STABILITY_INTERVAL_SECONDS)
+    second = tuple(
+        _target_leaf_snapshot(older_root, leaf, batch_id=batch)
+        for batch, leaf in zip(TARGET_BATCHES, leaves, strict=True)
+    )
+    if first != second:
+        _fail("OLDER_RAW_TARGET_LEAF_UNSTABLE")
+    return second
+
+
+def _quiescent() -> Mapping[str, int]:
+    """Prove only that no live authority is using either fixed raw leaf."""
+
+    user = os.environ.get("USER")
+    if not isinstance(user, str) or not user:
+        _fail("OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID")
+    older_root = PRODUCTION_ROOT / "attempts" / OLDER_ATTEMPT_ID
+    target_leaves = tuple(Path(os.path.abspath(path)) for path in _target_leaves(older_root))
+    tokens = _candidate_tokens(target_leaves)
     qstat = subprocess.run(
-        [str(QSTAT), "-xml", "-u", os.environ["USER"]],
+        [str(QSTAT), "-xml", "-u", user],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         check=False,
     )
     if qstat.returncode != 0 or qstat.stderr:
         _fail("OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID")
+    matching_jobs = 0
     try:
-        root = ET.fromstring(qstat.stdout)
-        names = [
-            element.text or "" for element in root.iter()
-            if element.tag.rsplit("}", 1)[-1] == "JB_name"
-        ]
+        qstat_root = ET.fromstring(qstat.stdout)
+        for job in qstat_root.iter():
+            if _local_tag(job) != "job_list":
+                continue
+            fields = {
+                _local_tag(child): child.text or ""
+                for child in list(job)
+            }
+            job_number = fields.get("JB_job_number", "")
+            job_name = fields.get("JB_name", "").lower()
+            if (
+                job_number in {OLDER_ARRAY_JOB_ID, OLDER_FINALIZER_JOB_ID}
+                or any(token in job_name for token in tokens)
+            ):
+                matching_jobs += 1
     except ET.ParseError as exc:
-        raise OlderRawRetirementError("OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID") from exc
-    if any(re.search(r"(?:lvef|echo|echoprime|replay|c3_)", name, re.I) for name in names):
+        raise OlderRawRetirementError(
+            "OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID"
+        ) from exc
+    if matching_jobs:
         _fail("OLDER_RAW_ACTIVE_JOB_EXISTS")
+
     ps = subprocess.run(
-        ["/bin/ps", "-u", os.environ["USER"], "-o", "pid=,args="],
+        [
+            "/bin/ps", "-u", user, "-o",
+            "pid=,state=,lstart=,args=",
+        ],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         check=False,
     )
     if ps.returncode != 0 or ps.stderr:
         _fail("OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID")
-    active = []
-    process_ids: list[int] = []
-    for line in ps.stdout.decode(errors="replace").splitlines():
-        parts = line.strip().split(None, 1)
+    counts = {
+        "same_user_processes_observed": 0,
+        "candidate_processes": 0,
+        "vanished_processes": 0,
+        "unrelated_inaccessible_processes": 0,
+        "candidate_inaccessible_processes": 0,
+        "confirmed_target_references": 0,
+        "matching_scheduler_jobs": 0,
+        "stable_target_leaves": 0,
+    }
+    try:
+        process_lines = ps.stdout.decode("utf-8", errors="strict").splitlines()
+    except UnicodeDecodeError as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID"
+        ) from exc
+    for line in process_lines:
+        fields = line.strip().split(None, 7)
+        if not fields:
+            continue
         try:
-            process_id = int(parts[0]) if parts else -1
+            process_id = int(fields[0])
         except ValueError:
             _fail("OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID")
-        if (
-            len(parts) == 2
-            and process_id != os.getpid()
-            and re.search(r"(?:lvef|echoprime|replay_lvef|full_sequential)", parts[1], re.I)
-        ):
-            active.append(parts[1])
-        if process_id > 0 and process_id != os.getpid():
-            process_ids.append(process_id)
-    if active:
-        _fail("OLDER_RAW_ACTIVE_PROCESS_EXISTS")
-    attempt_roots = tuple(
-        Path(os.path.abspath(PRODUCTION_ROOT / "attempts" / attempt_id))
-        for attempt_id in (OLDER_ATTEMPT_ID, R4_ATTEMPT_ID)
-    )
-    for process_id in process_ids:
-        try:
-            raw_cwd = os.readlink(f"/proc/{process_id}/cwd")
-        except FileNotFoundError:
+        if process_id <= 0 or process_id == os.getpid():
             continue
-        except OSError as exc:
-            raise OlderRawRetirementError(
-                "OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID"
-            ) from exc
-        if raw_cwd.endswith(" (deleted)"):
-            raw_cwd = raw_cwd[:-10]
-        cwd = Path(os.path.abspath(raw_cwd))
-        if any(cwd == root or root in cwd.parents for root in attempt_roots):
+        counts["same_user_processes_observed"] += 1
+        state = fields[1] if len(fields) > 1 else ""
+        if len(fields) < 7 or not state:
+            _fail("OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID")
+        command = fields[7] if len(fields) == 8 else ""
+        command_lower = command.lower()
+        candidate = bool(command) and any(token in command_lower for token in tokens)
+        unknown = not command
+        if candidate:
+            counts["candidate_processes"] += 1
+        if state.startswith("Z"):
+            continue
+        if not candidate and not unknown:
+            # A clear nonmatching command snapshot is sufficient; optional
+            # per-process procfs completeness is deliberately not required.
+            continue
+        disposition = _inspect_proc_references(
+            process_id,
+            target_leaves=target_leaves,
+            required=True,
+        )
+        if disposition == "PROCESS_EXITED_DURING_SCAN_NONBLOCKING":
+            counts["vanished_processes"] += 1
+        elif disposition == "MATCHING_TARGET_REFERENCE_BLOCKING":
+            counts["confirmed_target_references"] += 1
             _fail("OLDER_RAW_ACTIVE_PROCESS_EXISTS")
+        elif disposition == "CANDIDATE_PROC_AUTHORITY_INACCESSIBLE_BLOCKING":
+            counts["candidate_inaccessible_processes"] += 1
+            if unknown:
+                _fail("OLDER_RAW_UNKNOWN_PROCESS_SCOPE")
+            _fail("OLDER_RAW_CANDIDATE_PROC_AUTHORITY_INACCESSIBLE")
+    snapshots = _stable_target_leaf_authority()
+    counts["stable_target_leaves"] = len(snapshots)
+    return counts
 
 
 def _validate_leaf_from_manifest(
@@ -2024,7 +2287,6 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
     if manifest.get("governing_commit") != governing_commit:
         _fail("OLDER_RAW_GOVERNING_COMMIT_INVALID")
     _validate_safe_export()
-    _quiescent()
     rederived = _derive_manifest(str(manifest["governing_commit"]))
     if _canonical(rederived) != manifest_payload:
         _fail("OLDER_RAW_MANIFEST_REDERIVATION_MISMATCH")
@@ -2035,11 +2297,10 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
     }
     eligible: list[tuple[str, Path]] = []
     for batch, leaf in zip(TARGET_BATCHES, _target_leaves(older_root), strict=True):
-        try:
-            _validate_leaf_from_manifest(older_root, leaf, by_batch[batch])
-        except OlderRawRetirementError:
-            continue
+        _validate_leaf_from_manifest(older_root, leaf, by_batch[batch])
         eligible.append((batch, leaf))
+    if tuple(batch for batch, _leaf in eligible) != TARGET_BATCHES:
+        _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
     for _batch, leaf in eligible:
         try:
             shutil.rmtree(leaf)

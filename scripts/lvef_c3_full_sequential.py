@@ -2259,7 +2259,9 @@ def _capacity_gain_source(
         return "NONE"
     historical_quota = capacity.EXPECTED_RESEARCH_QUOTA_KIB * 1024
     current_quota = int(observation["live_research_quota_bytes"])
-    if evidence_role in {"R5B_HISTORICAL", "R5E_PRE_CLEANUP"}:
+    if evidence_role in {
+        "R5B_HISTORICAL", "R5E_PRE_CLEANUP", "R5E_R2_PRE_ACTION"
+    }:
         return (
             "ALLOCATION"
             if current_quota > historical_quota
@@ -2299,7 +2301,8 @@ def _validate_capacity_admission(value: CapacityAdmission) -> None:
     if not isinstance(value, CapacityAdmission):
         _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
     if value.evidence_role not in {
-        "R5B_HISTORICAL", "R5E_PRE_CLEANUP", "R5E_POST_CLEANUP"
+        "R5B_HISTORICAL", "R5E_PRE_CLEANUP", "R5E_R2_PRE_ACTION",
+        "R5E_POST_CLEANUP",
     }:
         _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
     if value.capacity_gain_source not in {
@@ -2311,6 +2314,18 @@ def _validate_capacity_admission(value: CapacityAdmission) -> None:
             value.raw_retirement_status
             != "PASS_OLDER_RAW_DUPLICATES_RETIRED"
             or SHA_RE.fullmatch(value.raw_retirement_receipt_sha256) is None
+        ):
+            _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
+    elif value.evidence_role == "R5E_R2_PRE_ACTION":
+        expected = (
+            "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
+            if value.capture.observation.get("status")
+            == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+            else "NOT_APPLICABLE_CLEANUP_SKIPPED"
+        )
+        if (
+            value.raw_retirement_status != expected
+            or value.raw_retirement_receipt_sha256 != expected
         ):
             _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
     elif (
@@ -2562,6 +2577,10 @@ def run_dynamic_successor_capacity_seal(
             capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
             capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
         ),
+        "R5E_R2_PRE_ACTION": (
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME,
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME,
+        ),
         "R5E_POST_CLEANUP": (
             capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
             capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
@@ -2630,10 +2649,10 @@ def run_dynamic_successor_capacity_seal(
             pre_capture = _load_capacity_pair(
                 run,
                 restricted_basename=(
-                    capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+                    capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
                 ),
                 summary_basename=(
-                    capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+                    capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
                 ),
                 require_pass=False,
             )
@@ -2688,6 +2707,13 @@ def run_dynamic_successor_capacity_seal(
             or observation["successor_claim_absent"] is not True
         ):
             _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
+        if (
+            evidence_role == "R5E_R2_PRE_ACTION"
+            and observation["status"]
+            == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+        ):
+            retirement_status = "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
+            retirement_sha = "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
         if (
             os.path.lexists(run.attempt_root)
             or os.path.lexists(
@@ -3218,7 +3244,8 @@ def _expected_submission_claim(
     ):
         _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
     if capacity_evidence_role not in {
-        "R5B_HISTORICAL", "R5E_PRE_CLEANUP", "R5E_POST_CLEANUP"
+        "R5B_HISTORICAL", "R5E_R2_PRE_ACTION",
+        "R5E_POST_CLEANUP",
     } or capacity_gain_source not in {
         "ALLOCATION", "CLEANUP", "BOTH", "EXISTING_HEADROOM"
     }:
@@ -3227,6 +3254,14 @@ def _expected_submission_claim(
         if (
             raw_retirement_status != "PASS_OLDER_RAW_DUPLICATES_RETIRED"
             or SHA_RE.fullmatch(raw_retirement_receipt_sha256) is None
+        ):
+            _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+    elif capacity_evidence_role == "R5E_R2_PRE_ACTION":
+        if (
+            raw_retirement_status
+            != "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
+            or raw_retirement_receipt_sha256
+            != "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
         ):
             _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
     elif (
@@ -3378,7 +3413,21 @@ def _load_bound_submission_environment_sha256(
     raw_retirement_receipt_sha256 = claim.get(
         "raw_retirement_receipt_sha256"
     )
-    if run.requirements.contract_id != core.TEST_ONLY_FULL_CONTRACT_ID:
+    if (
+        getattr(
+            run.requirements, "contract_id", core.TEST_ONLY_FULL_CONTRACT_ID
+        )
+        != core.TEST_ONLY_FULL_CONTRACT_ID
+        and capacity_evidence_role
+        not in {"R5E_R2_PRE_ACTION", "R5E_POST_CLEANUP"}
+    ):
+        _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+    if (
+        getattr(
+            run.requirements, "contract_id", core.TEST_ONLY_FULL_CONTRACT_ID
+        )
+        != core.TEST_ONLY_FULL_CONTRACT_ID
+    ):
         fixed_admission = _load_fixed_capacity_admission(
             run, revalidate_retirement_state=False
         )
@@ -3469,8 +3518,10 @@ def _load_fixed_capacity_admission(
         owner_private / capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
     )
     pre_paths = (
-        owner_private / capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
-        owner_private / capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        owner_private
+        / capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME,
+        owner_private
+        / capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME,
     )
     post_present = tuple(os.path.lexists(path) for path in post_paths)
     pre_present = tuple(os.path.lexists(path) for path in pre_paths)
@@ -3543,13 +3594,15 @@ def _load_fixed_capacity_admission(
         )
         admission = CapacityAdmission(
             capture=pre,
-            evidence_role="R5E_PRE_CLEANUP",
+            evidence_role="R5E_R2_PRE_ACTION",
             capacity_gain_source=_capacity_gain_source(
-                pre.observation, evidence_role="R5E_PRE_CLEANUP"
+                pre.observation, evidence_role="R5E_R2_PRE_ACTION"
             ),
-            raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+            raw_retirement_status=(
+                "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
+            ),
             raw_retirement_receipt_sha256=(
-                "NOT_APPLICABLE_CLEANUP_SKIPPED"
+                "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
             ),
         )
     else:
@@ -3595,6 +3648,15 @@ def claim_submission(
     if os.path.lexists(run.attempt_root):
         _fail("FULL_SEQUENTIAL_ATTEMPT_ALREADY_EXISTS")
     admission = _load_fixed_capacity_admission(run)
+    if (
+        getattr(
+            run.requirements, "contract_id", core.TEST_ONLY_FULL_CONTRACT_ID
+        )
+        != core.TEST_ONLY_FULL_CONTRACT_ID
+        and admission.evidence_role
+        not in {"R5E_R2_PRE_ACTION", "R5E_POST_CLEANUP"}
+    ):
+        _fail("FULL_SEQUENTIAL_CAPACITY_EVIDENCE_ROLE_INVALID")
     dynamic_capture = admission.capture
     preflight = preflight_full(
         _validated_capacity_admission=admission,
@@ -3765,6 +3827,7 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--preflight-report", action="store_true")
     modes.add_argument("--seal-dynamic-capacity", action="store_true")
     modes.add_argument("--seal-r5e-pre-cleanup-capacity", action="store_true")
+    modes.add_argument("--seal-r5e-r2-pre-action-capacity", action="store_true")
     modes.add_argument("--seal-r5e-post-cleanup-capacity", action="store_true")
     modes.add_argument("--claim-submission", action="store_true")
     modes.add_argument("--validate-claimed-submission", action="store_true")
@@ -3806,12 +3869,17 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
                 return 78
         elif (
             args.seal_r5e_pre_cleanup_capacity
+            or args.seal_r5e_r2_pre_action_capacity
             or args.seal_r5e_post_cleanup_capacity
         ):
             role = (
                 "R5E_PRE_CLEANUP"
                 if args.seal_r5e_pre_cleanup_capacity
-                else "R5E_POST_CLEANUP"
+                else (
+                    "R5E_R2_PRE_ACTION"
+                    if args.seal_r5e_r2_pre_action_capacity
+                    else "R5E_POST_CLEANUP"
+                )
             )
             sealed = run_dynamic_successor_capacity_seal(
                 evidence_role=role

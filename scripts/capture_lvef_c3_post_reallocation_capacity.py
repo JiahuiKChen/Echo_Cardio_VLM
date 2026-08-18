@@ -198,6 +198,12 @@ R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME = (
 R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME = (
     "r5e_pre_cleanup_dynamic_successor_capacity.aggregate_safe.json"
 )
+R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME = (
+    "r5e_r2_pre_action_dynamic_successor_capacity.restricted.json"
+)
+R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME = (
+    "r5e_r2_pre_action_dynamic_successor_capacity.aggregate_safe.json"
+)
 R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME = (
     "r5e_post_cleanup_dynamic_successor_capacity.restricted.json"
 )
@@ -213,6 +219,10 @@ DYNAMIC_SUCCESSOR_ALLOWED_EVIDENCE_BASENAME_PAIRS = frozenset(
         (
             R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
             R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        ),
+        (
+            R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME,
+            R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME,
         ),
         (
             R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,

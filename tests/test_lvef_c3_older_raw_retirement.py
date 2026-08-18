@@ -6,6 +6,7 @@ import ast
 import csv
 import copy
 from dataclasses import replace
+import errno
 import hashlib
 import inspect
 import io
@@ -305,6 +306,18 @@ def test_r5e_destructive_reachability_has_no_caller_target() -> None:
     assert tuple(
         inspect.signature(raw_retirement.execute_exact_retirement).parameters
     ) == ("governing_commit",)
+    executor = source[
+        source.index("def execute_exact_retirement("):
+        source.index("def validate_retirement_receipt_authority(")
+    ]
+    validation_gate = executor.index(
+        "if tuple(batch for batch, _leaf in eligible) != TARGET_BATCHES:"
+    )
+    first_delete = executor.index("shutil.rmtree(leaf)")
+    assert validation_gate < first_delete
+    assert "except OlderRawRetirementError" not in executor[
+        executor.index("eligible: list"):first_delete
+    ]
 
 
 def test_r5e_r1_deletion_is_unreachable_before_manifest_seal() -> None:
@@ -394,29 +407,300 @@ def test_r5e_quiescence_fails_closed_when_process_inventory_fails() -> None:
         )
 
 
-def test_r5e_quiescence_rejects_generic_process_cwd_in_attempt() -> None:
+def test_r5e_r2_quiescence_classifies_target_processes_and_unrelated_scope() -> None:
     completed_qstat = SimpleNamespace(
         returncode=0, stderr=b"", stdout=b"<job_info></job_info>"
     )
-    completed_ps = SimpleNamespace(
-        returncode=0, stderr=b"", stdout=b"4242 /bin/zsh\n"
+    process_prefix = b"4242 S Mon Jan 1 00:00:00 2026 "
+    stable = ({"batch_id": "c3_batch_000"}, {"batch_id": "c3_batch_001"})
+    cases = (
+        (
+            process_prefix + b"python retire_lvef_c3_older_raw_duplicates.py\n",
+            "MATCHING_TARGET_REFERENCE_BLOCKING",
+            "OLDER_RAW_ACTIVE_PROCESS_EXISTS",
+        ),
+        (
+            process_prefix + b"python retire_lvef_c3_older_raw_duplicates.py\n",
+            "CANDIDATE_PROC_AUTHORITY_INACCESSIBLE_BLOCKING",
+            "OLDER_RAW_CANDIDATE_PROC_AUTHORITY_INACCESSIBLE",
+        ),
+        (
+            b"4242 S Mon Jan 1 00:00:00 2026\n",
+            "CANDIDATE_PROC_AUTHORITY_INACCESSIBLE_BLOCKING",
+            "OLDER_RAW_UNKNOWN_PROCESS_SCOPE",
+        ),
     )
-    cwd = (
-        raw_retirement.PRODUCTION_ROOT
-        / "attempts"
-        / raw_retirement.OLDER_ATTEMPT_ID
-        / "raw"
+    for ps_stdout, disposition, expected in cases:
+        completed_ps = SimpleNamespace(
+            returncode=0, stderr=b"", stdout=ps_stdout
+        )
+        with (
+            mock.patch.object(
+                raw_retirement.subprocess,
+                "run",
+                side_effect=(completed_qstat, completed_ps),
+            ),
+            mock.patch.object(
+                raw_retirement,
+                "_inspect_proc_references",
+                return_value=disposition,
+            ),
+            mock.patch.object(
+                raw_retirement,
+                "_stable_target_leaf_authority",
+                return_value=stable,
+            ),
+            mock.patch.dict(os.environ, {"USER": "synthetic"}),
+        ):
+            _expect(expected, raw_retirement._quiescent)
+
+    unrelated_ps = SimpleNamespace(
+        returncode=0,
+        stderr=b"",
+        stdout=process_prefix + b"/bin/zsh -l\n",
     )
     with (
         mock.patch.object(
             raw_retirement.subprocess,
             "run",
-            side_effect=(completed_qstat, completed_ps),
+            side_effect=(completed_qstat, unrelated_ps),
         ),
-        mock.patch.object(raw_retirement.os, "readlink", return_value=str(cwd)),
+        mock.patch.object(
+            raw_retirement,
+            "_inspect_proc_references",
+            side_effect=AssertionError("unrelated procfs must not be required"),
+        ) as inspect_proc,
+        mock.patch.object(
+            raw_retirement,
+            "_stable_target_leaf_authority",
+            return_value=stable,
+        ),
         mock.patch.dict(os.environ, {"USER": "synthetic"}),
     ):
-        _expect("OLDER_RAW_ACTIVE_PROCESS_EXISTS", raw_retirement._quiescent)
+        result = raw_retirement._quiescent()
+    inspect_proc.assert_not_called()
+    assert result == {
+        "same_user_processes_observed": 1,
+        "candidate_processes": 0,
+        "vanished_processes": 0,
+        "unrelated_inaccessible_processes": 0,
+        "candidate_inaccessible_processes": 0,
+        "confirmed_target_references": 0,
+        "matching_scheduler_jobs": 0,
+        "stable_target_leaves": 2,
+    }
+
+    vanished_ps = SimpleNamespace(
+        returncode=0,
+        stderr=b"",
+        stdout=(
+            process_prefix
+            + b"python retire_lvef_c3_older_raw_duplicates.py\n"
+            + b"4243 Z Mon Jan 1 00:00:00 2026 /bin/zombie\n"
+        ),
+    )
+    with (
+        mock.patch.object(
+            raw_retirement.subprocess,
+            "run",
+            side_effect=(completed_qstat, vanished_ps),
+        ),
+        mock.patch.object(
+            raw_retirement,
+            "_inspect_proc_references",
+            return_value="PROCESS_EXITED_DURING_SCAN_NONBLOCKING",
+        ),
+        mock.patch.object(
+            raw_retirement,
+            "_stable_target_leaf_authority",
+            return_value=stable,
+        ),
+        mock.patch.dict(os.environ, {"USER": "synthetic"}),
+    ):
+        result = raw_retirement._quiescent()
+    assert result["same_user_processes_observed"] == 2
+    assert result["candidate_processes"] == 1
+    assert result["vanished_processes"] == 1
+    assert result["confirmed_target_references"] == 0
+
+
+def test_r5e_r2_quiescence_closed_proc_dispositions_and_scheduler_block() -> None:
+    target = Path("/restricted/projectnb/mimicecho/target")
+    exited = FileNotFoundError(errno.ENOENT, "gone")
+    inaccessible = PermissionError(errno.EACCES, "private")
+    for error, required, expected in (
+        (exited, True, "PROCESS_EXITED_DURING_SCAN_NONBLOCKING"),
+        (
+            inaccessible,
+            True,
+            "CANDIDATE_PROC_AUTHORITY_INACCESSIBLE_BLOCKING",
+        ),
+        (
+            inaccessible,
+            False,
+            "UNRELATED_PROCESS_PROC_INACCESSIBLE_NONBLOCKING",
+        ),
+    ):
+        with mock.patch.object(raw_retirement.os, "readlink", side_effect=error):
+            assert raw_retirement._inspect_proc_references(
+                42, target_leaves=(target,), required=required
+            ) == expected
+
+    qstat = SimpleNamespace(
+        returncode=0,
+        stderr=b"",
+        stdout=(
+            b"<job_info><job_list><JB_job_number>7183952</JB_job_number>"
+            b"<JB_name>unrelated</JB_name></job_list></job_info>"
+        ),
+    )
+    with (
+        mock.patch.object(raw_retirement.subprocess, "run", return_value=qstat),
+        mock.patch.dict(os.environ, {"USER": "synthetic"}),
+    ):
+        _expect("OLDER_RAW_ACTIVE_JOB_EXISTS", raw_retirement._quiescent)
+
+
+def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve()
+        older = (
+            production
+            / "attempts"
+            / raw_retirement.OLDER_ATTEMPT_ID
+        )
+        leaves = raw_retirement._target_leaves(older)
+        for index, leaf in enumerate(leaves):
+            leaf.mkdir(parents=True)
+            leaf.chmod(0o700)
+            _private_file(leaf / (f"{index + 1:064x}.dcm"), b"abc")
+        counts = {batch: 1 for batch in raw_retirement.TARGET_BATCHES}
+        sizes = {batch: 3 for batch in raw_retirement.TARGET_BATCHES}
+        with (
+            mock.patch.object(raw_retirement, "PRODUCTION_ROOT", production),
+            mock.patch.object(raw_retirement, "EXPECTED_BATCH_COUNTS", counts),
+            mock.patch.object(raw_retirement, "EXPECTED_BATCH_BYTES", sizes),
+        ):
+            opened = mock.Mock(side_effect=AssertionError("body open forbidden"))
+            with mock.patch("builtins.open", opened):
+                authority = raw_retirement._stable_target_leaf_authority(
+                    sleeper=lambda _seconds: None
+                )
+            opened.assert_not_called()
+            assert len(authority) == 2
+            assert all(row["file_count"] == 1 for row in authority)
+
+            first = raw_retirement._target_leaf_snapshot(
+                older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
+            )
+            changed = {**first, "metadata_projection_sha256": "0" * 64}
+            with mock.patch.object(
+                raw_retirement,
+                "_target_leaf_snapshot",
+                side_effect=(first, authority[1], changed, authority[1]),
+            ):
+                _expect(
+                    "OLDER_RAW_TARGET_LEAF_UNSTABLE",
+                    lambda: raw_retirement._stable_target_leaf_authority(
+                        sleeper=lambda _seconds: None
+                    ),
+                )
+
+            anomaly = leaves[0] / ".nfs0001"
+            _private_file(anomaly, b"x")
+            _expect(
+                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                lambda: raw_retirement._target_leaf_snapshot(
+                    older,
+                    leaves[0],
+                    batch_id=raw_retirement.TARGET_BATCHES[0],
+                ),
+            )
+            anomaly.unlink()
+
+            partial = leaves[0] / ("2" * 64 + ".dcm.partial")
+            _private_file(partial, b"x")
+            _expect(
+                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                lambda: raw_retirement._target_leaf_snapshot(
+                    older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
+                ),
+            )
+            partial.unlink()
+
+            symlink = leaves[0] / ("3" * 64 + ".dcm")
+            symlink.symlink_to("1".zfill(64) + ".dcm")
+            _expect(
+                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                lambda: raw_retirement._target_leaf_snapshot(
+                    older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
+                ),
+            )
+            symlink.unlink()
+
+            source = leaves[0] / (f"{1:064x}.dcm")
+            hardlink = leaves[0] / ("4" * 64 + ".dcm")
+            os.link(source, hardlink)
+            _expect(
+                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                lambda: raw_retirement._target_leaf_snapshot(
+                    older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
+                ),
+            )
+            hardlink.unlink()
+
+            fifo = leaves[0] / ("5" * 64 + ".dcm")
+            os.mkfifo(fifo, 0o600)
+            _expect(
+                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                lambda: raw_retirement._target_leaf_snapshot(
+                    older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
+                ),
+            )
+            fifo.unlink()
+
+            with mock.patch.object(
+                raw_retirement.os.path, "ismount", return_value=True
+            ):
+                _expect(
+                    "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                    lambda: raw_retirement._target_leaf_snapshot(
+                        older,
+                        leaves[0],
+                        batch_id=raw_retirement.TARGET_BATCHES[0],
+                    ),
+                )
+
+            socket_entry = SimpleNamespace(
+                name="6" * 64 + ".dcm",
+                path=str(leaves[0] / ("6" * 64 + ".dcm")),
+                is_symlink=lambda: False,
+                stat=lambda follow_symlinks=False: SimpleNamespace(
+                    st_mode=stat.S_IFSOCK | 0o600,
+                    st_uid=os.geteuid(),
+                    st_nlink=1,
+                    st_dev=os.lstat(leaves[0]).st_dev,
+                    st_size=0,
+                    st_ino=1,
+                    st_gid=os.getegid(),
+                    st_mtime_ns=1,
+                    st_ctime_ns=1,
+                ),
+            )
+            directory = mock.MagicMock()
+            directory.__enter__.return_value = iter((socket_entry,))
+            directory.__exit__.return_value = False
+            with mock.patch.object(
+                raw_retirement.os, "scandir", return_value=directory
+            ):
+                _expect(
+                    "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                    lambda: raw_retirement._target_leaf_snapshot(
+                        older,
+                        leaves[0],
+                        batch_id=raw_retirement.TARGET_BATCHES[0],
+                    ),
+                )
 
 
 def test_r5e_retained_role_classifier_is_closed_and_body_roles_are_exact() -> None:
@@ -523,11 +807,11 @@ def test_r5e_capacity_gain_classification_is_exact() -> None:
         "remaining_file_slots": sequential.SUCCESSOR_REQUIRED_FILE_SLOTS,
     }
     assert sequential._capacity_gain_source(
-        base, evidence_role="R5E_PRE_CLEANUP"
+        base, evidence_role="R5E_R2_PRE_ACTION"
     ) == "EXISTING_HEADROOM"
     allocation = {**base, "live_research_quota_bytes": historical + 10**12}
     assert sequential._capacity_gain_source(
-        allocation, evidence_role="R5E_PRE_CLEANUP"
+        allocation, evidence_role="R5E_R2_PRE_ACTION"
     ) == "ALLOCATION"
     blocked_pre = {
         **base,
@@ -544,7 +828,7 @@ def test_r5e_capacity_gain_classification_is_exact() -> None:
         pre_cleanup_observation=blocked_pre,
     ) == "CLEANUP"
     assert sequential._capacity_gain_source(
-        blocked_pre, evidence_role="R5E_PRE_CLEANUP"
+        blocked_pre, evidence_role="R5E_R2_PRE_ACTION"
     ) == "NONE"
 
 
@@ -582,6 +866,33 @@ def test_r5e_claim_v3_binds_capacity_role_and_retirement_receipt() -> None:
     assert claim["schema_version"] == 3
     assert claim["raw_retirement_receipt_sha256"] == "1" * 64
     assert claim["capacity_gain_source"] == "CLEANUP"
+    pre_action_claim = sequential._expected_submission_claim(
+        run,
+        capacity_receipt_sha256="e" * 64,
+        dynamic_capacity_receipt_sha256="f" * 64,
+        capacity_evidence_role="R5E_R2_PRE_ACTION",
+        capacity_gain_source="ALLOCATION",
+        raw_retirement_status="NOT_APPLICABLE_CAPACITY_ALREADY_PASSING",
+        raw_retirement_receipt_sha256=(
+            "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
+        ),
+        qsub_environment_sha256="2" * 64,
+    )
+    assert pre_action_claim["capacity_evidence_role"] == "R5E_R2_PRE_ACTION"
+    assert "post_cleanup_capacity_evidence_role" not in pre_action_claim
+    _expect(
+        "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID",
+        lambda: sequential._expected_submission_claim(
+            run,
+            capacity_receipt_sha256="e" * 64,
+            dynamic_capacity_receipt_sha256="f" * 64,
+            capacity_evidence_role="R5E_PRE_CLEANUP",
+            capacity_gain_source="ALLOCATION",
+            raw_retirement_status="NOT_APPLICABLE_CLEANUP_SKIPPED",
+            raw_retirement_receipt_sha256="NOT_APPLICABLE_CLEANUP_SKIPPED",
+            qsub_environment_sha256="2" * 64,
+        ),
+    )
     _expect(
         "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID",
         lambda: sequential._expected_submission_claim(
@@ -599,17 +910,27 @@ def test_r5e_claim_v3_binds_capacity_role_and_retirement_receipt() -> None:
     )
 
 
-def test_r5e_capacity_publisher_allows_only_fixed_pre_and_post_pairs() -> None:
+def test_r5e_capacity_publisher_keeps_historical_pairs_and_adds_r2_pair() -> None:
     allowed = capacity.DYNAMIC_SUCCESSOR_ALLOWED_EVIDENCE_BASENAME_PAIRS
     assert (
         capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
         capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
     ) in allowed
     assert (
+        capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME,
+        capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME,
+    ) in allowed
+    assert (
         capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
         capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
     ) in allowed
-    assert len(allowed) == 3
+    assert len(allowed) == 4
+    parser = sequential._parser()
+    parsed = parser.parse_args(["--seal-r5e-r2-pre-action-capacity"])
+    assert parsed.seal_r5e_r2_pre_action_capacity is True
+    assert "restricted_receipt_path" not in inspect.signature(
+        sequential.run_dynamic_successor_capacity_seal
+    ).parameters
 
 
 def test_r5e_cleanup_requires_the_exact_failed_pre_cleanup_capacity_pair() -> None:
@@ -638,7 +959,7 @@ def test_r5e_cleanup_requires_the_exact_failed_pre_cleanup_capacity_pair() -> No
         blocked.receipt_payload
     ).hexdigest()
     assert loader.call_args.kwargs["restricted_receipt_path"].name == (
-        capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+        capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
     )
 
     passed = copy.deepcopy(blocked.observation)
@@ -686,12 +1007,12 @@ def test_r5e_post_capacity_admission_requires_pre_failure_and_cleanup_receipt() 
     pre_authority = {
         "status": blocked["status"],
         "receipt_basename": (
-            capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
         ),
         "receipt_bytes": len(pre.receipt_payload),
         "receipt_sha256": hashlib.sha256(pre.receipt_payload).hexdigest(),
         "summary_basename": (
-            capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
         ),
         "summary_bytes": len(capacity._canonical(pre.observation)),
         "summary_sha256": hashlib.sha256(
@@ -703,8 +1024,8 @@ def test_r5e_post_capacity_admission_requires_pre_failure_and_cleanup_receipt() 
         owner = production / "owner_private"
         owner.mkdir(mode=0o700)
         for basename in (
-            capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
-            capacity.R5E_PRE_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME,
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME,
             capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
             capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
         ):
@@ -742,7 +1063,7 @@ def test_r5e_post_capacity_admission_requires_pre_failure_and_cleanup_receipt() 
         assert admission.raw_retirement_receipt_sha256 == "d" * 64
         assert pass_requirements == [
             (
-                capacity.R5E_PRE_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+                capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME,
                 False,
             ),
             (
@@ -793,6 +1114,52 @@ def test_r5e_post_capacity_admission_requires_pre_failure_and_cleanup_receipt() 
                 "FULL_SEQUENTIAL_OLDER_RAW_RETIREMENT_INVALID",
                 lambda: sequential._load_fixed_capacity_admission(run),
             )
+
+
+def test_r5e_r2_pre_action_is_the_only_no_cleanup_current_role() -> None:
+    observation = {
+        "status": capacity.DYNAMIC_SUCCESSOR_STATUS_PASS,
+        "live_research_quota_bytes": capacity.EXPECTED_RESEARCH_QUOTA_KIB
+        * 1024
+        + 10**12,
+        "live_research_usage_bytes": 1,
+        "live_research_filesystem_available_bytes": (
+            sequential.SUCCESSOR_INCREMENT_BYTES
+            + sequential.SUCCESSOR_REQUIRED_RESERVE_BYTES
+        ),
+        "remaining_file_slots": sequential.SUCCESSOR_REQUIRED_FILE_SLOTS,
+    }
+    captured = capacity.DynamicSuccessorCapacityCapture({}, b"r2", observation)
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve()
+        owner = production / "owner_private"
+        owner.mkdir(mode=0o700)
+        for basename in (
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME,
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME,
+        ):
+            _private_file(owner / basename, b"sealed")
+        run = SimpleNamespace(
+            production_root=production,
+            authority=SimpleNamespace(governing_commit="c" * 40),
+        )
+        with mock.patch.object(
+            sequential, "_load_capacity_pair", return_value=captured
+        ) as loader:
+            admission = sequential._load_fixed_capacity_admission(run)
+    assert admission.evidence_role == "R5E_R2_PRE_ACTION"
+    assert admission.capacity_gain_source == "ALLOCATION"
+    assert admission.raw_retirement_status == (
+        "NOT_APPLICABLE_CAPACITY_ALREADY_PASSING"
+    )
+    assert loader.call_args.kwargs == {
+        "restricted_basename": (
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
+        ),
+        "summary_basename": (
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
+        ),
+    }
 
 
 def test_r5e_retirement_module_never_opens_dicom_or_npz_payloads() -> None:
