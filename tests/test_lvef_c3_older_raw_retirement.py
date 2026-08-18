@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ast
+import csv
 import copy
+from dataclasses import replace
 import hashlib
 import inspect
+import io
 import os
 from pathlib import Path
 import stat
@@ -39,6 +42,79 @@ def _private_file(path: Path, payload: bytes) -> None:
     os.chmod(path, 0o600)
 
 
+def _download_rows() -> tuple[list[dict[str, str]], dict[str, dict[str, object]]]:
+    rows = [
+        {
+            "subject_id": "11",
+            "study_id": "21",
+            "source_relative_path": "files/p11/s21/a.dcm",
+            "download_ok": "true",
+            "observed_sha256": "c" * 64,
+            "physical_source_key": "a" * 64,
+        },
+        {
+            "subject_id": "12",
+            "study_id": "22",
+            "source_relative_path": "files/p12/s22/b.dcm",
+            "download_ok": "true",
+            "observed_sha256": "d" * 64,
+            "physical_source_key": "b" * 64,
+        },
+    ]
+    expected = {
+        row["physical_source_key"]: {
+            "source_object_key": row["physical_source_key"],
+            "subject_id": row["subject_id"],
+            "study_id": row["study_id"],
+            "source_relative_path": row["source_relative_path"],
+        }
+        for row in rows
+    }
+    return rows, expected
+
+
+def _download_payload(
+    rows: list[dict[str, str]],
+    *,
+    header: tuple[str, ...] | None = None,
+) -> bytes:
+    columns = header or raw_retirement.VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([row.get(key, "") for key in columns])
+    return output.getvalue().encode("utf-8")
+
+
+def _parse_download_fixture(
+    payload: bytes,
+    expected: dict[str, dict[str, object]],
+    *,
+    role: str = "OLDER_BATCH_1",
+    expected_attempt_id: str | None = None,
+    expected_batch_id: str | None = None,
+):
+    base = raw_retirement.VERIFIED_DOWNLOAD_MANIFEST_ROLES[role]
+    schema = replace(
+        base,
+        expected_row_count=len(expected),
+        manifest_bytes=len(payload),
+        manifest_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    with mock.patch.dict(
+        raw_retirement.VERIFIED_DOWNLOAD_MANIFEST_ROLES,
+        {role: schema},
+    ):
+        return raw_retirement._validate_verified_download_manifest_payload(
+            payload,
+            schema=schema,
+            expected_attempt_id=expected_attempt_id or schema.attempt_id,
+            expected_batch_id=expected_batch_id or schema.batch_id,
+            expected=expected,
+        )
+
+
 def test_r5e_retirement_scope_and_constants_are_exact() -> None:
     assert raw_retirement.TARGET_BATCHES == (
         "c3_batch_000", "c3_batch_001"
@@ -57,6 +133,158 @@ def test_r5e_retirement_scope_and_constants_are_exact() -> None:
     )
 
 
+def test_r5e_r1_four_manifest_role_registry_is_exact_and_closed() -> None:
+    roles = raw_retirement.VERIFIED_DOWNLOAD_MANIFEST_ROLES
+    assert tuple(roles) == (
+        "OLDER_BATCH_1", "OLDER_BATCH_2", "R4_BATCH_1", "R4_BATCH_2"
+    )
+    assert [roles[key].expected_row_count for key in roles] == [
+        18_872, 18_196, 18_872, 18_196
+    ]
+    assert [roles[key].manifest_bytes for key in roles] == [
+        3_793_361, 3_657_485, 3_793_361, 3_657_485
+    ]
+    assert [roles[key].manifest_sha256 for key in roles] == [
+        "80aa064d5da8c28b9193410497a721923f47605a0a86124e6c89988bea1bfb2e",
+        "01162bbe350af5c53e8c8e644127eea06bdcd47c6f874b3f765d006129218ffb",
+        "80aa064d5da8c28b9193410497a721923f47605a0a86124e6c89988bea1bfb2e",
+        "01162bbe350af5c53e8c8e644127eea06bdcd47c6f874b3f765d006129218ffb",
+    ]
+    assert all(
+        item.ordered_header
+        == raw_retirement.VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1
+        and item.allowed_download_ok_token == "true"
+        and item.source_relative_path_convention
+        == "PLANNED_SOURCE_AUTHORITY_LOCATOR_V1"
+        for item in roles.values()
+    )
+    assert sum(
+        roles[key].expected_row_count
+        for key in ("OLDER_BATCH_1", "OLDER_BATCH_2")
+    ) == raw_retirement.EXPECTED_DELETE_FILES
+    assert sum(raw_retirement.EXPECTED_BATCH_BYTES.values()) == (
+        raw_retirement.EXPECTED_DELETE_BYTES
+    )
+
+    rows, expected = _download_rows()
+    payload = _download_payload(rows)
+    for role, authority in roles.items():
+        manifest, digest = _parse_download_fixture(
+            payload,
+            expected,
+            role=role,
+            expected_attempt_id=authority.attempt_id,
+            expected_batch_id=authority.batch_id,
+        )
+        assert set(manifest) == set(expected)
+        assert digest == hashlib.sha256(payload).hexdigest()
+
+
+def test_r5e_r1_exact_historical_source_locator_projection_passes() -> None:
+    rows, expected = _download_rows()
+    payload = _download_payload(rows)
+    manifest, digest = _parse_download_fixture(payload, expected)
+    assert set(manifest) == set(expected)
+    assert digest == hashlib.sha256(payload).hexdigest()
+
+    physical_locator = copy.deepcopy(rows)
+    physical_locator[0]["source_relative_path"] = (
+        physical_locator[0]["physical_source_key"] + ".dcm"
+    )
+    changed = _download_payload(physical_locator)
+    _expect(
+        "OLDER_RAW_DOWNLOAD_MANIFEST_SOURCE_PATH_INVALID",
+        lambda: _parse_download_fixture(changed, expected),
+    )
+
+
+def test_r5e_r1_manifest_role_cannot_be_applied_cross_artifact() -> None:
+    rows, expected = _download_rows()
+    payload = _download_payload(rows)
+    _expect(
+        "OLDER_RAW_DOWNLOAD_MANIFEST_ROLE_SCHEMA_INVALID",
+        lambda: _parse_download_fixture(
+            payload,
+            expected,
+            role="R4_BATCH_1",
+            expected_attempt_id=raw_retirement.OLDER_ATTEMPT_ID,
+            expected_batch_id="c3_batch_000",
+        ),
+    )
+    _expect(
+        "OLDER_RAW_DOWNLOAD_MANIFEST_ROLE_SCHEMA_INVALID",
+        lambda: raw_retirement._verified_download_manifest_role(
+            attempt_id=raw_retirement.OLDER_ATTEMPT_ID,
+            batch_id="c3_batch_002",
+        ),
+    )
+
+
+def test_r5e_r1_manifest_header_width_and_row_count_fail_closed() -> None:
+    rows, expected = _download_rows()
+    header = raw_retirement.VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1
+    for changed_header in (
+        header[:-1],
+        (*header, "extra"),
+        (header[1], header[0], *header[2:]),
+        (*header[:-1], header[-2]),
+    ):
+        payload = _download_payload(rows, header=changed_header)
+        _expect(
+            "OLDER_RAW_DOWNLOAD_MANIFEST_HEADER_INVALID",
+            lambda payload=payload: _parse_download_fixture(payload, expected),
+        )
+    full = _download_payload(rows).decode("utf-8").splitlines()
+    extra = ("\n".join([full[0], full[1] + ",unexpected", full[2]]) + "\n").encode()
+    missing = ("\n".join([full[0], full[1].rsplit(",", 1)[0], full[2]]) + "\n").encode()
+    blank = ("\n".join([full[0], full[1], "", full[2]]) + "\n").encode()
+    for payload in (extra, missing, blank):
+        _expect(
+            "OLDER_RAW_DOWNLOAD_MANIFEST_ROW_WIDTH_INVALID",
+            lambda payload=payload: _parse_download_fixture(payload, expected),
+        )
+    short = _download_payload(rows[:1])
+    _expect(
+        "OLDER_RAW_DOWNLOAD_MANIFEST_ROW_COUNT_INVALID",
+        lambda: _parse_download_fixture(short, expected),
+    )
+
+
+def test_r5e_r1_manifest_row_authorities_fail_closed() -> None:
+    rows, expected = _download_rows()
+    cases = []
+    duplicate = copy.deepcopy(rows)
+    duplicate[1]["physical_source_key"] = duplicate[0]["physical_source_key"]
+    cases.append((duplicate, "OLDER_RAW_DOWNLOAD_MANIFEST_DUPLICATE_KEY"))
+    for token in ("True", "true ", " true"):
+        changed = copy.deepcopy(rows)
+        changed[0]["download_ok"] = token
+        cases.append((changed, "OLDER_RAW_DOWNLOAD_MANIFEST_STATUS_INVALID"))
+    substituted = copy.deepcopy(rows)
+    substituted[0]["physical_source_key"] = "e" * 64
+    cases.append(
+        (substituted, "OLDER_RAW_DOWNLOAD_MANIFEST_PLAN_MEMBERSHIP_INVALID")
+    )
+    for field in ("subject_id", "study_id"):
+        changed = copy.deepcopy(rows)
+        changed[0][field] = "999"
+        cases.append((changed, "OLDER_RAW_DOWNLOAD_MANIFEST_OWNERSHIP_INVALID"))
+    changed_path = copy.deepcopy(rows)
+    changed_path[0]["source_relative_path"] += " "
+    cases.append(
+        (changed_path, "OLDER_RAW_DOWNLOAD_MANIFEST_SOURCE_PATH_INVALID")
+    )
+    changed_sha = copy.deepcopy(rows)
+    changed_sha[0]["observed_sha256"] = "x" * 64
+    cases.append((changed_sha, "OLDER_RAW_DOWNLOAD_MANIFEST_SHA_INVALID"))
+    for changed, code in cases:
+        payload = _download_payload(changed)
+        _expect(
+            code,
+            lambda payload=payload: _parse_download_fixture(payload, expected),
+        )
+
+
 def test_r5e_destructive_reachability_has_no_caller_target() -> None:
     source = (SCRIPTS / "retire_lvef_c3_older_raw_duplicates.py").read_text()
     tree = ast.parse(source)
@@ -72,7 +300,30 @@ def test_r5e_destructive_reachability_has_no_caller_target() -> None:
     assert "--target" not in parser_source
     assert "--root" not in parser_source
     assert "--glob" not in parser_source
+    assert "--schema" not in parser_source
     assert "Path(args" not in parser_source
+    assert tuple(
+        inspect.signature(raw_retirement.execute_exact_retirement).parameters
+    ) == ("governing_commit",)
+
+
+def test_r5e_r1_deletion_is_unreachable_before_manifest_seal() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        evidence = Path(temporary).resolve()
+        with (
+            mock.patch.object(raw_retirement, "MANIFEST_PATH", evidence / "manifest"),
+            mock.patch.object(raw_retirement, "RECEIPT_PATH", evidence / "receipt"),
+            mock.patch.object(raw_retirement, "SUMMARY_PATH", evidence / "summary"),
+            mock.patch.object(raw_retirement, "_current_commit", return_value="a" * 40),
+            mock.patch.object(raw_retirement.shutil, "rmtree") as destructive,
+        ):
+            _expect(
+                "OLDER_RAW_CONTROL_READ_INVALID",
+                lambda: raw_retirement.execute_exact_retirement(
+                    governing_commit="a" * 40
+                ),
+            )
+        destructive.assert_not_called()
 
 
 def test_r5e_leaf_membership_is_exact_and_rejects_unsafe_entries() -> None:

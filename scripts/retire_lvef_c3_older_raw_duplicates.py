@@ -123,6 +123,8 @@ BATCH_AUTHORITY_KEYS = frozenset({
     "source_membership_sha256", "older_plan_sha256", "r4_plan_sha256",
     "older_download_manifest_sha256", "r4_download_manifest_sha256",
     "older_download_ledger_sha256", "r4_download_ledger_sha256",
+    "older_download_manifest_role", "r4_download_manifest_role",
+    "download_manifest_canonical_projection",
 })
 RETAINED_ROLE_NAMES = (
     "RAW_DICOM_PAYLOAD",
@@ -191,8 +193,20 @@ class OlderRawRetirementError(RuntimeError):
         self.code = code
 
 
+class OlderRawDownloadManifestError(OlderRawRetirementError):
+    """Closed manifest failure that carries only an aggregate-safe role."""
+
+    def __init__(self, code: str, role: str):
+        super().__init__(code)
+        self.role = role
+
+
 def _fail(code: str) -> None:
     raise OlderRawRetirementError(code)
+
+
+def _manifest_fail(role: str, code: str) -> None:
+    raise OlderRawDownloadManifestError(code, role)
 
 
 def _pairs(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
@@ -619,6 +633,192 @@ class PlanBundle:
     authority: r3e.OriginalAttemptAuthority
 
 
+@dataclass(frozen=True)
+class VerifiedDownloadManifestRole:
+    """Exact producer-era schema for one immutable manifest artifact."""
+
+    role: str
+    attempt_id: str
+    batch_id: str
+    producer_schema: str
+    ordered_header: tuple[str, ...]
+    allowed_download_ok_token: str
+    source_relative_path_convention: str
+    expected_row_count: int
+    manifest_bytes: int
+    manifest_sha256: str
+
+
+VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1 = (
+    "subject_id",
+    "study_id",
+    "source_relative_path",
+    "download_ok",
+    "observed_sha256",
+    "physical_source_key",
+)
+VERIFIED_DOWNLOAD_CANONICAL_PROJECTION_V1 = (
+    "PLAN_SUBJECT_STUDY_PHYSICAL_KEY_PLANNED_SOURCE_LOCATOR_"
+    "SUCCESS_OBSERVED_SHA256_V1"
+)
+VERIFIED_DOWNLOAD_MANIFEST_ROLES = {
+    "OLDER_BATCH_1": VerifiedDownloadManifestRole(
+        role="OLDER_BATCH_1",
+        attempt_id=OLDER_ATTEMPT_ID,
+        batch_id="c3_batch_000",
+        producer_schema="B805_CORE_VERIFIED_DOWNLOAD_MANIFEST_V1",
+        ordered_header=VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1,
+        allowed_download_ok_token="true",
+        source_relative_path_convention="PLANNED_SOURCE_AUTHORITY_LOCATOR_V1",
+        expected_row_count=18_872,
+        manifest_bytes=3_793_361,
+        manifest_sha256=(
+            "80aa064d5da8c28b9193410497a721923f47605a0a86124e6c89988bea1bfb2e"
+        ),
+    ),
+    "OLDER_BATCH_2": VerifiedDownloadManifestRole(
+        role="OLDER_BATCH_2",
+        attempt_id=OLDER_ATTEMPT_ID,
+        batch_id="c3_batch_001",
+        producer_schema="B805_CORE_VERIFIED_DOWNLOAD_MANIFEST_V1",
+        ordered_header=VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1,
+        allowed_download_ok_token="true",
+        source_relative_path_convention="PLANNED_SOURCE_AUTHORITY_LOCATOR_V1",
+        expected_row_count=18_196,
+        manifest_bytes=3_657_485,
+        manifest_sha256=(
+            "01162bbe350af5c53e8c8e644127eea06bdcd47c6f874b3f765d006129218ffb"
+        ),
+    ),
+    "R4_BATCH_1": VerifiedDownloadManifestRole(
+        role="R4_BATCH_1",
+        attempt_id=R4_ATTEMPT_ID,
+        batch_id="c3_batch_000",
+        producer_schema="C11E_CORE_VERIFIED_DOWNLOAD_MANIFEST_V1",
+        ordered_header=VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1,
+        allowed_download_ok_token="true",
+        source_relative_path_convention="PLANNED_SOURCE_AUTHORITY_LOCATOR_V1",
+        expected_row_count=18_872,
+        manifest_bytes=3_793_361,
+        manifest_sha256=(
+            "80aa064d5da8c28b9193410497a721923f47605a0a86124e6c89988bea1bfb2e"
+        ),
+    ),
+    "R4_BATCH_2": VerifiedDownloadManifestRole(
+        role="R4_BATCH_2",
+        attempt_id=R4_ATTEMPT_ID,
+        batch_id="c3_batch_001",
+        producer_schema="C11E_CORE_VERIFIED_DOWNLOAD_MANIFEST_V1",
+        ordered_header=VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1,
+        allowed_download_ok_token="true",
+        source_relative_path_convention="PLANNED_SOURCE_AUTHORITY_LOCATOR_V1",
+        expected_row_count=18_196,
+        manifest_bytes=3_657_485,
+        manifest_sha256=(
+            "01162bbe350af5c53e8c8e644127eea06bdcd47c6f874b3f765d006129218ffb"
+        ),
+    ),
+}
+
+
+def _verified_download_manifest_role(
+    *, attempt_id: str, batch_id: str
+) -> VerifiedDownloadManifestRole:
+    observed = [
+        item
+        for item in VERIFIED_DOWNLOAD_MANIFEST_ROLES.values()
+        if item.attempt_id == attempt_id and item.batch_id == batch_id
+    ]
+    if len(observed) != 1:
+        _fail("OLDER_RAW_DOWNLOAD_MANIFEST_ROLE_SCHEMA_INVALID")
+    return observed[0]
+
+
+def _validate_verified_download_manifest_payload(
+    payload: bytes,
+    *,
+    schema: VerifiedDownloadManifestRole,
+    expected_attempt_id: str,
+    expected_batch_id: str,
+    expected: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Mapping[str, str]], str]:
+    """Validate and project one exact fixed manifest without body access."""
+
+    role = schema.role
+    registered = VERIFIED_DOWNLOAD_MANIFEST_ROLES.get(role)
+    if (
+        registered is None
+        or schema != registered
+        or schema.attempt_id != expected_attempt_id
+        or schema.batch_id != expected_batch_id
+        or schema.ordered_header != VERIFIED_DOWNLOAD_MANIFEST_HEADER_V1
+        or schema.allowed_download_ok_token != "true"
+        or schema.source_relative_path_convention
+        != "PLANNED_SOURCE_AUTHORITY_LOCATOR_V1"
+        or schema.expected_row_count != len(expected)
+        or schema.manifest_bytes != len(payload)
+        or SHA_RE.fullmatch(schema.manifest_sha256) is None
+        or _sha(payload) != schema.manifest_sha256
+    ):
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_ROLE_SCHEMA_INVALID")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OlderRawDownloadManifestError(
+            "OLDER_RAW_DOWNLOAD_MANIFEST_ENCODING_INVALID", role
+        ) from exc
+    if text.startswith("\ufeff"):
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_ENCODING_INVALID")
+    try:
+        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    except csv.Error as exc:
+        raise OlderRawDownloadManifestError(
+            "OLDER_RAW_DOWNLOAD_MANIFEST_ROW_WIDTH_INVALID", role
+        ) from exc
+    if not rows:
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_HEADER_INVALID")
+    header = tuple(rows[0])
+    if len(header) != len(set(header)) or header != schema.ordered_header:
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_HEADER_INVALID")
+    body = rows[1:]
+    if any(
+        len(row) != len(header) or not row or all(value == "" for value in row)
+        for row in body
+    ):
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_ROW_WIDTH_INVALID")
+    if len(body) != schema.expected_row_count:
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_ROW_COUNT_INVALID")
+    projected = [dict(zip(header, row, strict=True)) for row in body]
+    keys = [item["physical_source_key"] for item in projected]
+    if len(keys) != len(set(keys)):
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_DUPLICATE_KEY")
+    manifest: dict[str, Mapping[str, str]] = {}
+    for item in projected:
+        key = item["physical_source_key"]
+        if item["download_ok"] != schema.allowed_download_ok_token:
+            _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_STATUS_INVALID")
+        plan_row = expected.get(key)
+        if plan_row is None:
+            _manifest_fail(
+                role, "OLDER_RAW_DOWNLOAD_MANIFEST_PLAN_MEMBERSHIP_INVALID"
+            )
+        if (
+            item["subject_id"] != str(plan_row["subject_id"])
+            or item["study_id"] != str(plan_row["study_id"])
+        ):
+            _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_OWNERSHIP_INVALID")
+        if item["source_relative_path"] != str(
+            plan_row["source_relative_path"]
+        ):
+            _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_SOURCE_PATH_INVALID")
+        if SHA_RE.fullmatch(item["observed_sha256"]) is None:
+            _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_SHA_INVALID")
+        manifest[key] = item
+    if set(manifest) != set(expected):
+        _manifest_fail(role, "OLDER_RAW_DOWNLOAD_MANIFEST_OBJECT_SET_INVALID")
+    return manifest, _sha(payload)
+
+
 def _load_plan_bundle(
     attempt_root: Path, *, authority: r3e.OriginalAttemptAuthority
 ) -> PlanBundle:
@@ -705,7 +905,7 @@ def _receipt_authority(
 
 def _validate_attempt_batch(
     attempt_root: Path, bundle: PlanBundle, batch_id: str
-) -> tuple[dict[str, dict[str, Any]], str, str]:
+) -> tuple[dict[str, dict[str, Any]], str, str, str]:
     planned = _batch(bundle.plan, batch_id)
     objects = list(planned["objects"])
     expected = {str(item["source_object_key"]): item for item in objects}
@@ -713,29 +913,22 @@ def _validate_attempt_batch(
         _fail("OLDER_RAW_BATCH_AUTHORITY_INVALID")
     raw = attempt_root / "raw" / batch_id
     manifest_path = raw / "verified_download_manifest.restricted.csv"
+    schema = _verified_download_manifest_role(
+        attempt_id=bundle.authority.attempt_id, batch_id=batch_id
+    )
     try:
-        manifest_rows, manifest_sha = r3e._read_csv_exact_with_sha256(
-            manifest_path, r3e.VERIFIED_DOWNLOAD_MANIFEST_HEADER
-        )
+        manifest_payload = _read_private(manifest_path)
     except Exception as exc:
-        raise OlderRawRetirementError("OLDER_RAW_DOWNLOAD_MANIFEST_INVALID") from exc
-    manifest: dict[str, Mapping[str, str]] = {}
-    for item in manifest_rows:
-        key = str(item.get("physical_source_key"))
-        plan_row = expected.get(key)
-        if (
-            key in manifest
-            or plan_row is None
-            or item.get("download_ok", "").lower() != "true"
-            or item.get("subject_id") != str(plan_row["subject_id"])
-            or item.get("study_id") != str(plan_row["study_id"])
-            or item.get("source_relative_path") != f"{key}.dcm"
-            or SHA_RE.fullmatch(str(item.get("observed_sha256"))) is None
-        ):
-            _fail("OLDER_RAW_DOWNLOAD_MANIFEST_INVALID")
-        manifest[key] = item
-    if set(manifest) != set(expected):
-        _fail("OLDER_RAW_DOWNLOAD_MANIFEST_INVALID")
+        raise OlderRawDownloadManifestError(
+            "OLDER_RAW_DOWNLOAD_MANIFEST_FILE_INVALID", schema.role
+        ) from exc
+    manifest, manifest_sha = _validate_verified_download_manifest_payload(
+        manifest_payload,
+        schema=schema,
+        expected_attempt_id=bundle.authority.attempt_id,
+        expected_batch_id=batch_id,
+        expected=expected,
+    )
     ledger_path = attempt_root / "batches" / batch_id / "download_resume_ledger.restricted.json"
     ledger, ledger_payload = _read_json(ledger_path)
     runtime = core.validate_runtime_authority(
@@ -835,7 +1028,7 @@ def _validate_attempt_batch(
         != int(planned["source_bytes"])
     ):
         _fail("OLDER_RAW_BATCH_AUTHORITY_INVALID")
-    return entries, manifest_sha, _sha(ledger_payload)
+    return entries, manifest_sha, _sha(ledger_payload), schema.role
 
 
 def _diagnostic_root() -> Path:
@@ -1045,12 +1238,18 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
         )
         if any(older_batch[field] != r4_batch[field] for field in projection_fields):
             _fail("OLDER_RAW_CROSS_ATTEMPT_BATCH_MISMATCH")
-        older_entries, older_manifest_sha, older_ledger_sha = _validate_attempt_batch(
-            older_root, older_bundle, batch_id
-        )
-        r4_entries, r4_manifest_sha, r4_ledger_sha = _validate_attempt_batch(
-            r4_root, r4_bundle, batch_id
-        )
+        (
+            older_entries,
+            older_manifest_sha,
+            older_ledger_sha,
+            older_manifest_role,
+        ) = _validate_attempt_batch(older_root, older_bundle, batch_id)
+        (
+            r4_entries,
+            r4_manifest_sha,
+            r4_ledger_sha,
+            r4_manifest_role,
+        ) = _validate_attempt_batch(r4_root, r4_bundle, batch_id)
         if set(older_entries) != set(r4_entries):
             _fail("OLDER_RAW_CROSS_ATTEMPT_OBJECT_MISMATCH")
         for key in sorted(older_entries):
@@ -1089,6 +1288,11 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
                 "r4_download_manifest_sha256": r4_manifest_sha,
                 "older_download_ledger_sha256": older_ledger_sha,
                 "r4_download_ledger_sha256": r4_ledger_sha,
+                "older_download_manifest_role": older_manifest_role,
+                "r4_download_manifest_role": r4_manifest_role,
+                "download_manifest_canonical_projection": (
+                    VERIFIED_DOWNLOAD_CANONICAL_PROJECTION_V1
+                ),
             }
         )
     if (
@@ -1451,6 +1655,14 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
     for ordinal, batch_id in enumerate(TARGET_BATCHES):
         authority = batch_authorities[ordinal]
         batch_targets = [item for item in targets if item["batch_id"] == batch_id]
+        sha_fields = BATCH_AUTHORITY_KEYS - {
+            "batch_id",
+            "n_objects",
+            "source_bytes",
+            "older_download_manifest_role",
+            "r4_download_manifest_role",
+            "download_manifest_canonical_projection",
+        }
         if (
             not isinstance(authority, Mapping)
             or set(authority) != BATCH_AUTHORITY_KEYS
@@ -1460,10 +1672,16 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
             or len(batch_targets) != EXPECTED_BATCH_COUNTS[batch_id]
             or sum(item["size_bytes"] for item in batch_targets)
             != EXPECTED_BATCH_BYTES[batch_id]
+            or authority.get("older_download_manifest_role")
+            != f"OLDER_BATCH_{ordinal + 1}"
+            or authority.get("r4_download_manifest_role")
+            != f"R4_BATCH_{ordinal + 1}"
+            or authority.get("download_manifest_canonical_projection")
+            != VERIFIED_DOWNLOAD_CANONICAL_PROJECTION_V1
             or any(
                 not isinstance(authority.get(key), str)
                 or SHA_RE.fullmatch(authority[key]) is None
-                for key in BATCH_AUTHORITY_KEYS - {"batch_id", "n_objects", "source_bytes"}
+                for key in sha_fields
             )
         ):
             _fail("OLDER_RAW_MANIFEST_SCHEMA_INVALID")
@@ -1475,6 +1693,7 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
     _validate_safe_export()
     if any(os.path.lexists(path) for path in (MANIFEST_PATH, RECEIPT_PATH, SUMMARY_PATH)):
         _fail("OLDER_RAW_EVIDENCE_COLLISION")
+    _quiescent()
     manifest = _derive_manifest(governing_commit)
     _validate_manifest(manifest)
     payload = _canonical(manifest)
@@ -1486,6 +1705,16 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
         "manifest_sha256": _sha(payload),
         "planned_delete_files": EXPECTED_DELETE_FILES,
         "planned_delete_bytes": EXPECTED_DELETE_BYTES,
+        "expected_retained_files": EXPECTED_RETAINED_FILES,
+        "expected_retained_bytes": EXPECTED_RETAINED_BYTES,
+        "four_manifest_authority": "PASS",
+        "r4_copy_authority": "PASS",
+        "r4_metadata_sha256": EXPECTED_R4_METADATA_SHA256,
+        "diagnostic_source_hold": 0,
+        "active_references": 0,
+        "dicom_body_reads": 0,
+        "npz_body_reads": 0,
+        "destructive_operations": 0,
     }
 
 
@@ -1783,14 +2012,16 @@ def _validate_safe_export(payload: bytes | None = None) -> None:
         ) from exc
 
 
-def execute_exact_retirement() -> Mapping[str, Any]:
+def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
     """Execute the sole fixed raw-leaf retirement once."""
 
+    if governing_commit != _current_commit():
+        _fail("OLDER_RAW_GOVERNING_COMMIT_INVALID")
     if os.path.lexists(RECEIPT_PATH) or os.path.lexists(SUMMARY_PATH):
         _fail("OLDER_RAW_EXECUTION_ALREADY_CONSUMED")
     manifest, manifest_payload = _read_json(MANIFEST_PATH)
     _validate_manifest(manifest)
-    if manifest.get("governing_commit") != _current_commit():
+    if manifest.get("governing_commit") != governing_commit:
         _fail("OLDER_RAW_GOVERNING_COMMIT_INVALID")
     _validate_safe_export()
     _quiescent()
@@ -2015,9 +2246,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 governing_commit=args.governing_commit
             )
         elif args.execute_exact_older_raw_retirement:
-            if args.governing_commit is not None:
-                _fail("OLDER_RAW_CALLER_OVERRIDE_PROHIBITED")
-            result = execute_exact_retirement()
+            if not args.governing_commit:
+                _fail("OLDER_RAW_GOVERNING_COMMIT_INVALID")
+            result = execute_exact_retirement(
+                governing_commit=args.governing_commit
+            )
         else:
             if args.governing_commit is not None:
                 _fail("OLDER_RAW_CALLER_OVERRIDE_PROHIBITED")
@@ -2029,6 +2262,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except OlderRawRetirementError as exc:
         code = exc.code if SAFE_CODE_RE.fullmatch(exc.code) else "OLDER_RAW_UNCLASSIFIED_FAILURE"
         print("OLDER_RAW_RETIREMENT_STATUS=FAILED")
+        if (
+            isinstance(exc, OlderRawDownloadManifestError)
+            and exc.role in VERIFIED_DOWNLOAD_MANIFEST_ROLES
+        ):
+            print(f"OLDER_RAW_RETIREMENT_FAILURE_ROLE={exc.role}")
         print(f"OLDER_RAW_RETIREMENT_FAILURE_CODE={code}")
         return 78
     except BaseException:
