@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Mapping
 from unittest import mock
@@ -50,6 +51,8 @@ import lvef_c3_full_scheduler as scheduler
 import lvef_c3_orchestration_core as core
 import lvef_c3_production_stages as stages
 import preserve_lvef_c3_production_batch as preservation
+
+capacity = sequential.capacity
 
 
 def two_batch_plan() -> tuple[dict[str, Any], core.PlanRequirements]:
@@ -201,21 +204,156 @@ def _synthetic_full_launch(
     }
 
 
+def _dynamic_capacity_capture(
+    *, governing_commit: str = "a" * 40
+) -> capacity.DynamicSuccessorCapacityCapture:
+    """Return one closed synthetic dynamic receipt without production I/O."""
+
+    temporary = tempfile.TemporaryDirectory()
+    root = Path(temporary.name).resolve()
+    tools = root / "tools"
+    research = root / "research"
+    backed = root / "backed"
+    tools.mkdir(mode=0o700)
+    research.mkdir(mode=0o700)
+    backed.mkdir(mode=0o700)
+    for name in ("pquota", "findmnt", "df"):
+        executable = tools / name
+        executable.write_bytes(b"#!/bin/sh\nexit 97\n")
+        executable.chmod(0o700)
+    native = tools / "project.quota"
+    research_quota = 3_093_796_556_800
+    research_usage = 527_008_808_960
+    backed_quota = 53_687_091_200
+    backed_usage = 10_946_789_376
+    native.write_bytes(
+        (
+            "rproject_mimicecho root FILESET "
+            f"{backed_usage // 1024} {backed_quota // 1024} "
+            "0 0 none | 47379 1638400 0 0 none\n"
+            "rprojectnb_mimicecho root FILESET "
+            f"{research_usage // 1024} {research_quota // 1024} "
+            "0 0 none | 501481 33554432 0 0 none\n"
+        ).encode("ascii")
+    )
+    native.chmod(0o600)
+    authority = capacity.CurrentCanaryHeadroomAuthority(
+        native_quota_path=native,
+        pquota_path=tools / "pquota",
+        findmnt_path=tools / "findmnt",
+        df_path=tools / "df",
+        research_path=research,
+        backed_path=backed,
+    )
+
+    def runner(argv: list[str], **_kwargs: Any) -> Any:
+        command = Path(argv[0]).name
+        if command == "pquota":
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+        target = Path(argv[3] if command == "findmnt" else argv[-1])
+        role = "research" if target == research else "backed"
+        source = f"synthetic:/{role}"
+        if command == "findmnt":
+            stdout = json.dumps(
+                {
+                    "filesystems": [
+                        {
+                            "source": source,
+                            "target": str(target),
+                            "fstype": "syntheticfs",
+                            "options": "rw",
+                            "fsroot": "/",
+                        }
+                    ]
+                }
+            ).encode()
+        else:
+            available = 1_800_000_000_000 if role == "research" else 20_000_000_000
+            stdout = (
+                "Filesystem 1B-blocks Used Avail Mounted on\n"
+                f"{source} {available + 1} 1 {available} {target}\n"
+            ).encode()
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
+
+    def path_identity(path: Path) -> Mapping[str, Any]:
+        role = path.name
+        return {
+            "path_sha256": hashlib.sha256(str(path).encode()).hexdigest(),
+            "resolved_path_sha256": hashlib.sha256(
+                str(path.resolve(strict=True)).encode()
+            ).hexdigest(),
+            "device": 101 if role == "research" else 202,
+            "inode": 303 if role == "research" else 404,
+            "is_symlink": False,
+        }
+
+    try:
+        with mock.patch.object(
+            capacity, "_path_identity", side_effect=path_identity
+        ):
+            return capacity.probe_dynamic_successor_capacity_observation(
+                governing_commit=governing_commit,
+                active_extraction_caches=0,
+                preserved_terminal_failed_extraction_caches=2,
+                successor_attempt_root_absent=True,
+                successor_claim_absent=True,
+                authority=authority,
+                process_runner=runner,
+                now_utc=datetime.now(timezone.utc),
+            )
+    finally:
+        temporary.cleanup()
+
+
 def _successor_capacity_authority(
     source_capacity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     increment = sequential.SUCCESSOR_INCREMENT_BYTES
     reserve = sequential.SUCCESSOR_REQUIRED_RESERVE_BYTES
-    live_usage = 123_456_789
+    live_usage = (
+        int(source_capacity["live_research_usage_bytes"])
+        if source_capacity is not None
+        and "live_research_usage_bytes" in source_capacity
+        else 123_456_789
+    )
     projected = live_usage + increment
+    research_quota = (
+        int(source_capacity["live_research_quota_bytes"])
+        if source_capacity is not None
+        and "live_research_quota_bytes" in source_capacity
+        else projected + reserve
+    )
+    physical_available = (
+        int(source_capacity["live_research_filesystem_available_bytes"])
+        if source_capacity is not None
+        and "live_research_filesystem_available_bytes" in source_capacity
+        else increment + reserve
+    )
+    file_slots = (
+        int(source_capacity["remaining_file_slots"])
+        if source_capacity is not None and "remaining_file_slots" in source_capacity
+        else sequential.SUCCESSOR_REQUIRED_FILE_SLOTS
+    )
     return {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v2",
         "status": "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE",
         "source_capacity_authority_sha256": (
             core.canonical_json_sha256(source_capacity)
             if source_capacity is not None
             else "a" * 64
+        ),
+        "source_dynamic_receipt_bytes": (
+            int(source_capacity["restricted_receipt_size_bytes"])
+            if source_capacity is not None
+            and "restricted_receipt_size_bytes" in source_capacity
+            else 1_024
+        ),
+        "source_dynamic_receipt_sha256": (
+            str(source_capacity["restricted_receipt_sha256"])
+            if source_capacity is not None
+            and "restricted_receipt_sha256" in source_capacity
+            else "b" * 64
         ),
         "frozen_projected_peak_bytes": (
             sequential.FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES
@@ -226,11 +364,11 @@ def _successor_capacity_authority(
         "successor_increment_bytes": increment,
         "live_research_usage_bytes": live_usage,
         "projected_total_research_usage_bytes": projected,
-        "research_quota_bytes": projected + reserve,
-        "quota_remaining_after_successor_bytes": reserve,
-        "research_filesystem_available_bytes": increment + reserve,
-        "physical_remaining_after_successor_bytes": reserve,
-        "research_file_slots_remaining": sequential.SUCCESSOR_REQUIRED_FILE_SLOTS,
+        "research_quota_bytes": research_quota,
+        "quota_remaining_after_successor_bytes": research_quota - projected,
+        "research_filesystem_available_bytes": physical_available,
+        "physical_remaining_after_successor_bytes": physical_available - increment,
+        "research_file_slots_remaining": file_slots,
         "required_reserve_bytes": reserve,
         "required_remaining_file_slots": sequential.SUCCESSOR_REQUIRED_FILE_SLOTS,
         "active_extraction_caches": 0,
@@ -904,8 +1042,16 @@ def _claimed_run_fixture(
 ]:
     plan, requirements = two_batch_plan()
     run = _scoped_run(root, plan, requirements)
-    capacity_value = _successor_capacity_authority()
+    dynamic_capture = _dynamic_capacity_capture(
+        governing_commit=run.authority.governing_commit
+    )
+    capacity_value = _successor_capacity_authority(
+        dynamic_capture.observation
+    )
     capacity_path = run.attempt_root / "full_capacity_receipt.restricted.json"
+    dynamic_path = (
+        run.attempt_root / sequential.DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME
+    )
     sequential._write_private_json(
         run.attempt_root / "full_launch_authority.restricted.json",
         run.launch_authority,
@@ -914,9 +1060,17 @@ def _claimed_run_fixture(
     sequential._write_private_json(
         capacity_path, capacity_value, attempt_id=run.attempt_id
     )
+    capacity.write_dynamic_successor_capacity_receipt_payload(
+        dynamic_path,
+        dynamic_capture.receipt_payload,
+        expected_governing_commit=run.authority.governing_commit,
+    )
     claim = sequential._expected_submission_claim(
         run,
         capacity_receipt_sha256=core.sha256_file(capacity_path),
+        dynamic_capacity_receipt_sha256=hashlib.sha256(
+            dynamic_capture.receipt_payload
+        ).hexdigest(),
         qsub_environment_sha256=qsub_environment_sha256,
     )
     claim_path = run.attempt_root / "full_submission_claim.restricted.json"
@@ -1855,9 +2009,31 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
         # helper was used only to build the deterministic in-memory run.
         shutil.rmtree(run.attempt_root)
         os.chmod(run.production_root / "attempts", 0o700)
-        capacity_value = _successor_capacity_authority()
+        dynamic_capture = _dynamic_capacity_capture(
+            governing_commit=run.authority.governing_commit
+        )
+        capacity_value = _successor_capacity_authority(
+            dynamic_capture.observation
+        )
+        owner_private = run.production_root / "owner_private"
+        owner_private.mkdir(mode=0o700)
+        _write_private_payload(
+            owner_private
+            / capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME,
+            dynamic_capture.receipt_payload,
+        )
+        _write_private_payload(
+            owner_private
+            / capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME,
+            capacity._canonical(dynamic_capture.observation),
+        )
         with (
             mock.patch.object(sequential, "build_full_run", return_value=run),
+            mock.patch.object(
+                capacity,
+                "validate_production_dynamic_successor_capacity_capture",
+                return_value=dynamic_capture,
+            ),
             mock.patch.object(
                 sequential,
                 "preflight_full",
@@ -1873,6 +2049,7 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
             for name in (
                 "full_batch_plan.restricted.json",
                 "full_launch_authority.restricted.json",
+                sequential.DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME,
                 "full_capacity_receipt.restricted.json",
                 "full_submission_claim.restricted.json",
             )
@@ -1940,7 +2117,7 @@ def test_materialized_claim_readback_cli_is_same_path_and_zero_effect() -> None:
 
 
 def test_each_materialized_claim_file_tamper_fails_before_effects() -> None:
-    for role in ("plan", "launch", "capacity", "claim"):
+    for role in ("plan", "launch", "dynamic", "capacity", "claim"):
         with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root).resolve()
             run, _, claim_path = _claimed_run_fixture(root)
@@ -1955,6 +2132,14 @@ def test_each_materialized_claim_file_tamper_fails_before_effects() -> None:
                 )
                 _replace_private_json(launch_path, {"status": "ALTERED"})
                 expected = "FULL_SEQUENTIAL_PREPARED_AUTHORITY_MISMATCH"
+            elif role == "dynamic":
+                dynamic_path = (
+                    run.attempt_root
+                    / sequential.DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME
+                )
+                payload = dynamic_path.read_bytes()
+                _write_private_payload(dynamic_path, b"!" + payload[1:])
+                expected = "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID"
             elif role == "capacity":
                 capacity_path = (
                     run.attempt_root
@@ -2020,6 +2205,7 @@ def test_canary_evidence_drift_stops_preflight_before_runtime_or_capacity(
     dependencies = sequential.FullDependencies(
         environment_validator=forbidden("environment"),
         capacity_probe=forbidden("capacity"),
+        test_only_synthetic_full_scope=True,
     )
     with (
         mock.patch.object(
@@ -2054,14 +2240,7 @@ def _aggregate_safe_preflight_report_fixture() -> dict[str, Any]:
                 "source_bytes": 1 if ordinal < 19 else 1_216_569_133_304,
             }
         )
-    capacity_value = {
-        "research_quota_remaining_bytes": 2_000_000_000_000,
-        "research_filesystem_available_bytes": 1_800_000_000_000,
-        "research_file_slots_remaining": 4_000_000,
-        "research_margin_beyond_200gb_reserve_bytes": 300_000_000_000,
-        "backed_quota_remaining_bytes": 20_000_000_000,
-        "backed_file_slots_remaining": 200_000,
-    }
+    capacity_value = _dynamic_capacity_capture().observation
     return {
         "status": "PASS_FULL_C3_NO_BODY_PREFLIGHT",
         "governing_commit": "a" * 40,

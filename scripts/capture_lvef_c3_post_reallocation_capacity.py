@@ -151,6 +151,253 @@ FULL_HEADROOM_KEYS = frozenset(
         "writes_performed",
     }
 )
+
+# The historical Phase 1E-F receipt above deliberately remains bound to the
+# exact allocation that existed when it was captured.  Fresh-successor
+# admission is a different authority: it is expected to observe a changed
+# research allocation and therefore has its own closed schema and validator.
+# Never use these dynamic constants to reinterpret a historical receipt.
+DYNAMIC_SUCCESSOR_OBSERVATION_TYPE = (
+    "lvef_c3_dynamic_successor_capacity_observation_v1"
+)
+DYNAMIC_SUCCESSOR_RECEIPT_TYPE = (
+    "lvef_c3_dynamic_successor_capacity_receipt_v1"
+)
+DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING = "ALLOCATION_NOT_YET_VISIBLE"
+DYNAMIC_SUCCESSOR_STATUS_BLOCKED = "BLOCKED_ADDITIONAL_STORAGE_REQUIRED"
+DYNAMIC_SUCCESSOR_STATUS_PASS = "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE"
+DYNAMIC_SUCCESSOR_STATUSES = frozenset(
+    {
+        DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING,
+        DYNAMIC_SUCCESSOR_STATUS_BLOCKED,
+        DYNAMIC_SUCCESSOR_STATUS_PASS,
+    }
+)
+DYNAMIC_SUCCESSOR_INCREMENT_BYTES = 1_459_366_720_684
+DYNAMIC_SUCCESSOR_QUOTA_RESERVE_BYTES = 200_000_000_000
+DYNAMIC_SUCCESSOR_PHYSICAL_RESERVE_BYTES = 200_000_000_000
+DYNAMIC_SUCCESSOR_REQUIRED_FILE_SLOTS = 3_500_000
+DYNAMIC_SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES = 2
+DYNAMIC_SUCCESSOR_MAXIMUM_AGE_SECONDS = 15 * 60
+DYNAMIC_SUCCESSOR_MAXIMUM_FUTURE_SKEW_SECONDS = 5
+DYNAMIC_SUCCESSOR_MOUNT_STATUS = (
+    "PASS_RESEARCH_BACKED_DISTINCT_NO_SYMLINK_NO_BIND"
+)
+DYNAMIC_SUCCESSOR_SAFE_EXPORT_PROFILE = (
+    "lvef_c3_dynamic_successor_capacity_summary_json"
+)
+DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME = (
+    "dynamic_successor_capacity.restricted.json"
+)
+DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME = (
+    "dynamic_successor_capacity.aggregate_safe.json"
+)
+
+DYNAMIC_SUCCESSOR_OBSERVATION_HASHED_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "blocking_reason_codes",
+        "governing_commit",
+        "captured_at_utc",
+        "command_authority_sha256",
+        "native_quota_authority_sha256",
+        "mount_authority_sha256",
+        "mount_authority_status",
+        "pquota_display_crosscheck",
+        "pquota_executable_authority_status",
+        "live_research_quota_bytes",
+        "live_research_usage_bytes",
+        "live_research_file_quota",
+        "live_research_files_used",
+        "live_research_filesystem_available_bytes",
+        "backed_quota_bytes",
+        "backed_usage_bytes",
+        "backed_file_quota",
+        "backed_files_used",
+        "backed_tier_gate_passed",
+        "historical_pre_allocation_research_quota_bytes",
+        "historical_pre_allocation_research_file_quota",
+        "fresh_successor_increment_bytes",
+        "required_quota_reserve_bytes",
+        "required_physical_reserve_bytes",
+        "required_remaining_file_slots",
+        "projected_fresh_successor_peak_bytes",
+        "quota_slack_after_peak_bytes",
+        "physical_slack_after_peak_bytes",
+        "quota_margin_beyond_reserve_bytes",
+        "physical_margin_beyond_reserve_bytes",
+        "remaining_file_slots",
+        "file_slot_margin_after_demand",
+        "active_extraction_caches",
+        "preserved_terminal_failed_extraction_caches",
+        "successor_attempt_root_absent",
+        "successor_claim_absent",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "cache_inventory_gate_passed",
+        "successor_collision_gate_passed",
+        "minimum_additional_quota_bytes",
+        "minimum_additional_physical_bytes",
+        "minimum_additional_file_slots",
+        "storage_allocation_visible",
+        "underlying_filesystem_expansion_appears_necessary",
+        "native_quota_authority_read_only",
+        "cloud_requests",
+        "qsub_submissions",
+        "dicom_body_reads",
+        "npz_body_reads",
+        "gpu_executions",
+        "echoprime_executions",
+        "embedding_generations",
+        "model_fitting",
+        "prediction_generation",
+        "confirmatory_performance_accesses",
+        "files_moved",
+        "files_deleted",
+        "writes_performed",
+    }
+)
+DYNAMIC_SUCCESSOR_OBSERVATION_KEYS = frozenset(
+    {
+        *DYNAMIC_SUCCESSOR_OBSERVATION_HASHED_KEYS,
+        "observation_authority_sha256",
+        "restricted_receipt_size_bytes",
+        "restricted_receipt_sha256",
+    }
+)
+DYNAMIC_SUCCESSOR_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "governing_commit",
+        "captured_at_utc",
+        "capture_identity",
+        "native_quota_authority",
+        "commands",
+        "paths",
+        "observation_authority",
+        "observation_authority_sha256",
+    }
+)
+DYNAMIC_SUCCESSOR_CAPTURE_IDENTITY_KEYS = frozenset(
+    {"effective_uid", "effective_username_sha256", "hostname_sha256"}
+)
+DYNAMIC_SUCCESSOR_NATIVE_AUTHORITY_KEYS = frozenset(
+    {
+        "path_sha256",
+        "file_size_bytes",
+        "file_sha256",
+        "record_unit",
+        "bytes_per_kib",
+        "rows",
+    }
+)
+DYNAMIC_SUCCESSOR_NATIVE_ROW_KEYS = frozenset(
+    {
+        "native_name_sha256",
+        "fileset_name_sha256",
+        "usage_kib",
+        "quota_kib",
+        "files_used",
+        "file_quota",
+        "raw_row_sha256",
+    }
+)
+DYNAMIC_SUCCESSOR_PATH_KEYS = frozenset({"identities", "mounts", "df"})
+DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS = frozenset(
+    {
+        "cloud_requests",
+        "qsub_submissions",
+        "dicom_body_reads",
+        "npz_body_reads",
+        "gpu_executions",
+        "echoprime_executions",
+        "embedding_generations",
+        "model_fitting",
+        "prediction_generation",
+        "confirmatory_performance_accesses",
+        "files_moved",
+        "files_deleted",
+        "writes_performed",
+    }
+)
+DYNAMIC_SUCCESSOR_SAFE_FIELD_TYPES = MappingProxyType({
+    **{
+        key: "integer"
+        for key in {
+            "schema_version",
+            "live_research_quota_bytes",
+            "live_research_usage_bytes",
+            "live_research_file_quota",
+            "live_research_files_used",
+            "live_research_filesystem_available_bytes",
+            "backed_quota_bytes",
+            "backed_usage_bytes",
+            "backed_file_quota",
+            "backed_files_used",
+            "historical_pre_allocation_research_quota_bytes",
+            "historical_pre_allocation_research_file_quota",
+            "fresh_successor_increment_bytes",
+            "required_quota_reserve_bytes",
+            "required_physical_reserve_bytes",
+            "required_remaining_file_slots",
+            "projected_fresh_successor_peak_bytes",
+            "quota_slack_after_peak_bytes",
+            "physical_slack_after_peak_bytes",
+            "quota_margin_beyond_reserve_bytes",
+            "physical_margin_beyond_reserve_bytes",
+            "remaining_file_slots",
+            "file_slot_margin_after_demand",
+            "active_extraction_caches",
+            "preserved_terminal_failed_extraction_caches",
+            "minimum_additional_quota_bytes",
+            "minimum_additional_physical_bytes",
+            "minimum_additional_file_slots",
+            "restricted_receipt_size_bytes",
+            *DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS,
+        }
+    },
+    **{
+        key: "boolean"
+        for key in {
+            "backed_tier_gate_passed",
+            "successor_attempt_root_absent",
+            "successor_claim_absent",
+            "quota_reserve_gate_passed",
+            "physical_reserve_gate_passed",
+            "file_slot_gate_passed",
+            "cache_inventory_gate_passed",
+            "successor_collision_gate_passed",
+            "storage_allocation_visible",
+            "underlying_filesystem_expansion_appears_necessary",
+            "native_quota_authority_read_only",
+        }
+    },
+    **{
+        key: "string"
+        for key in {
+            "artifact_type",
+            "status",
+            "governing_commit",
+            "captured_at_utc",
+            "command_authority_sha256",
+            "native_quota_authority_sha256",
+            "mount_authority_sha256",
+            "mount_authority_status",
+            "pquota_display_crosscheck",
+            "pquota_executable_authority_status",
+            "observation_authority_sha256",
+            "restricted_receipt_sha256",
+        }
+    },
+    "blocking_reason_codes": "array",
+})
+if set(DYNAMIC_SUCCESSOR_SAFE_FIELD_TYPES) != DYNAMIC_SUCCESSOR_OBSERVATION_KEYS:
+    raise RuntimeError("DYNAMIC_SUCCESSOR_SAFE_FIELD_TYPE_REGISTRY_INVALID")
 PRIOR_CAPACITY_AUTHORITIES = {
     "phase1ee_parent_capacity": (
         2_257,
@@ -331,6 +578,15 @@ class CurrentCanaryHeadroomAuthority:
     df_path: Path
     research_path: Path
     backed_path: Path
+
+
+@dataclass(frozen=True)
+class DynamicSuccessorCapacityCapture:
+    """One internally bound dynamic receipt and aggregate-safe observation."""
+
+    receipt: Mapping[str, Any]
+    receipt_payload: bytes
+    observation: Mapping[str, Any]
 
 
 DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY = CurrentCanaryHeadroomAuthority(
@@ -616,6 +872,598 @@ def _write_new(path: Path, payload: bytes, *, private: bool) -> None:
             os.close(descriptor)
 
 
+def _dynamic_identity(item: os.stat_result) -> tuple[int, ...]:
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+def _dynamic_parent_stable_identity(item: os.stat_result) -> tuple[int, ...]:
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+    )
+
+
+def _dynamic_leaf_stable_identity(item: os.stat_result) -> tuple[int, ...]:
+    """Return fields that must agree between an open leaf and its name.
+
+    APFS can expose slightly different sub-second timestamp values through an
+    open descriptor and a pathname immediately after a write.  The immutable
+    binding is therefore the device/inode plus the closed owner, mode, link,
+    and byte-count fields; the payload itself is read back through the same
+    descriptor and compared exactly.
+    """
+
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+    )
+
+
+def _open_dynamic_owner_private_directory(path: Path) -> tuple[int, os.stat_result]:
+    """Open every directory component with O_NOFOLLOW and bind visibility."""
+
+    if (
+        not isinstance(path, Path)
+        or not path.is_absolute()
+        or Path(os.path.abspath(path)) != path
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_DIRECTORY")
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    descriptor = os.open(
+        path.anchor,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    try:
+        for component in path.parts[1:]:
+            opened = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = opened
+        bound = os.fstat(descriptor)
+        visible = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(bound.st_mode)
+            or stat.S_ISLNK(visible.st_mode)
+            or _dynamic_identity(bound) != _dynamic_identity(visible)
+            or bound.st_uid != os.geteuid()
+            or stat.S_IMODE(bound.st_mode) not in {0o700, 0o2700}
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        return descriptor, bound
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _require_dynamic_visible_parent(
+    parent_fd: int,
+    parent_path: Path,
+    *,
+    original: os.stat_result,
+) -> os.stat_result:
+    """Rebind a held owner-private parent fd to its fixed visible name."""
+
+    current = os.fstat(parent_fd)
+    visible = os.stat(parent_path, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or stat.S_ISLNK(visible.st_mode)
+        or current.st_uid != os.geteuid()
+        or stat.S_IMODE(current.st_mode) not in {0o700, 0o2700}
+        or _dynamic_parent_stable_identity(current)
+        != _dynamic_parent_stable_identity(visible)
+        or _dynamic_parent_stable_identity(current)
+        != _dynamic_parent_stable_identity(original)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+        )
+    return current
+
+
+def _read_dynamic_owner_private_regular_at(
+    parent_fd: int,
+    parent_path: Path,
+    parent_original: os.stat_result,
+    name: str,
+    *,
+    maximum: int,
+    expected_identity: tuple[int, ...] | None = None,
+) -> tuple[bytes, tuple[int, ...]]:
+    """Read a private regular leaf relative to one already-bound parent."""
+
+    leaf_fd = -1
+    try:
+        _require_dynamic_visible_parent(
+            parent_fd, parent_path, original=parent_original
+        )
+        leaf_before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        # The nonblocking flag prevents a raced FIFO replacement from hanging
+        # between the metadata probe and open.
+        leaf_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(leaf_fd)
+        if (
+            not stat.S_ISREG(leaf_before.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or _dynamic_identity(leaf_before) != _dynamic_identity(opened)
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_nlink != 1
+            or opened.st_size < 1
+            or opened.st_size > maximum
+            or opened.st_dev != parent_original.st_dev
+            or (
+                expected_identity is not None
+                and _dynamic_leaf_stable_identity(opened)
+                != expected_identity
+            )
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        payload = b""
+        while len(payload) <= maximum:
+            block = os.read(
+                leaf_fd, min(1_048_576, maximum + 1 - len(payload))
+            )
+            if not block:
+                break
+            payload += block
+        leaf_after = os.fstat(leaf_fd)
+        visible_after = os.stat(
+            name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        _require_dynamic_visible_parent(
+            parent_fd, parent_path, original=parent_original
+        )
+        if (
+            len(payload) != opened.st_size
+            or _dynamic_identity(opened) != _dynamic_identity(leaf_after)
+            or _dynamic_identity(opened) != _dynamic_identity(visible_after)
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+            )
+        return payload, _dynamic_leaf_stable_identity(opened)
+    except PostReallocationCapacityError:
+        raise
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    finally:
+        if leaf_fd >= 0:
+            os.close(leaf_fd)
+
+
+def _read_dynamic_owner_private_regular(
+    path: Path,
+    *,
+    maximum: int,
+) -> bytes:
+    """Read one new dynamic artifact through a bound parent and leaf fd."""
+
+    parent_fd = -1
+    try:
+        parent_fd, parent_before = _open_dynamic_owner_private_directory(
+            path.parent
+        )
+        payload, _ = _read_dynamic_owner_private_regular_at(
+            parent_fd,
+            path.parent,
+            parent_before,
+            path.name,
+            maximum=maximum,
+        )
+        return payload
+    except PostReallocationCapacityError:
+        raise
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def _write_dynamic_owner_private_new_at(
+    parent_fd: int,
+    parent_path: Path,
+    parent_original: os.stat_result,
+    name: str,
+    payload: bytes,
+) -> tuple[int, ...]:
+    """Create and exactly read back one leaf under a held parent fd."""
+
+    leaf_fd = -1
+    try:
+        _require_dynamic_visible_parent(
+            parent_fd, parent_path, original=parent_original
+        )
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
+            )
+        try:
+            leaf_fd = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
+        except FileExistsError as exc:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
+            ) from exc
+        created = os.fstat(leaf_fd)
+        if (
+            not stat.S_ISREG(created.st_mode)
+            or created.st_uid != os.geteuid()
+            or stat.S_IMODE(created.st_mode) != 0o600
+            or created.st_nlink != 1
+            or created.st_size != 0
+            or created.st_dev != parent_original.st_dev
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        offset = 0
+        while offset < len(payload):
+            written = os.write(leaf_fd, payload[offset:])
+            if written < 1:
+                raise OSError("short dynamic capacity write")
+            offset += written
+        os.fsync(leaf_fd)
+        written_stat = os.fstat(leaf_fd)
+        visible = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        readback = b""
+        read_offset = 0
+        while len(readback) < len(payload):
+            block = os.pread(
+                leaf_fd,
+                min(1_048_576, len(payload) - len(readback)),
+                read_offset,
+            )
+            if not block:
+                break
+            readback += block
+            read_offset += len(block)
+        _require_dynamic_visible_parent(
+            parent_fd, parent_path, original=parent_original
+        )
+        if (
+            not stat.S_ISREG(written_stat.st_mode)
+            or written_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(written_stat.st_mode) != 0o600
+            or written_stat.st_nlink != 1
+            or written_stat.st_size != len(payload)
+            or _dynamic_leaf_stable_identity(written_stat)
+            != _dynamic_leaf_stable_identity(visible)
+            or readback != payload
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+            )
+        os.fsync(parent_fd)
+        _require_dynamic_visible_parent(
+            parent_fd, parent_path, original=parent_original
+        )
+        return _dynamic_leaf_stable_identity(written_stat)
+    except PostReallocationCapacityError:
+        raise
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    finally:
+        if leaf_fd >= 0:
+            os.close(leaf_fd)
+
+
+def _write_dynamic_owner_private_new(path: Path, payload: bytes) -> None:
+    """Create one new 0600/nlink-one artifact relative to a bound parent."""
+
+    parent_fd = -1
+    try:
+        parent_fd, parent_before = _open_dynamic_owner_private_directory(
+            path.parent
+        )
+        identity = _write_dynamic_owner_private_new_at(
+            parent_fd, path.parent, parent_before, path.name, payload
+        )
+        reopened, _ = _read_dynamic_owner_private_regular_at(
+            parent_fd,
+            path.parent,
+            parent_before,
+            path.name,
+            maximum=max(len(payload), 1),
+            expected_identity=identity,
+        )
+        if reopened != payload:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+            )
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def _read_dynamic_owner_private_pair_at(
+    parent_fd: int,
+    parent_path: Path,
+    parent_original: os.stat_result,
+    restricted_receipt_name: str,
+    aggregate_summary_name: str,
+    *,
+    expected_identities: Mapping[str, tuple[int, ...]] | None = None,
+) -> tuple[bytes, bytes]:
+    """Hold and double-read both sealed leaves in one directory snapshot."""
+
+    names_and_maxima = (
+        (restricted_receipt_name, 16_000_000),
+        (aggregate_summary_name, 1_000_000),
+    )
+    leaf_fds: dict[str, int] = {}
+    opened_stats: dict[str, os.stat_result] = {}
+    try:
+        _require_dynamic_visible_parent(
+            parent_fd, parent_path, original=parent_original
+        )
+        parent_snapshot = os.fstat(parent_fd)
+        for name, maximum in names_and_maxima:
+            before = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False
+            )
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            leaf_fds[name] = descriptor
+            opened = os.fstat(descriptor)
+            opened_stats[name] = opened
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or not stat.S_ISREG(opened.st_mode)
+                or _dynamic_identity(before) != _dynamic_identity(opened)
+                or opened.st_uid != os.geteuid()
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or opened.st_nlink != 1
+                or opened.st_size < 1
+                or opened.st_size > maximum
+                or opened.st_dev != parent_original.st_dev
+                or (
+                    expected_identities is not None
+                    and _dynamic_leaf_stable_identity(opened)
+                    != expected_identities[name]
+                )
+            ):
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                )
+
+        payloads: dict[str, bytes] = {}
+        for name, _maximum in names_and_maxima:
+            descriptor = leaf_fds[name]
+            expected_size = opened_stats[name].st_size
+            blocks: list[bytes] = []
+            remaining = expected_size
+            while remaining:
+                block = os.read(descriptor, min(remaining, 1_048_576))
+                if not block:
+                    raise PostReallocationCapacityError(
+                        "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+                    )
+                blocks.append(block)
+                remaining -= len(block)
+            payloads[name] = b"".join(blocks)
+
+        # A second descriptor-bound read after both initial reads catches an
+        # in-place, same-size rewrite of the first leaf while the second leaf
+        # was being consumed.
+        for name, _maximum in names_and_maxima:
+            descriptor = leaf_fds[name]
+            expected_size = opened_stats[name].st_size
+            second = b""
+            offset = 0
+            while len(second) < expected_size:
+                block = os.pread(
+                    descriptor,
+                    min(1_048_576, expected_size - len(second)),
+                    offset,
+                )
+                if not block:
+                    break
+                second += block
+                offset += len(block)
+            after = os.fstat(descriptor)
+            visible = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False
+            )
+            if (
+                second != payloads[name]
+                or _dynamic_identity(opened_stats[name])
+                != _dynamic_identity(after)
+                or _dynamic_identity(after) != _dynamic_identity(visible)
+            ):
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+                )
+
+        # Do not finalize either leaf until both second reads have completed.
+        # The receipt may otherwise be rewritten while the summary's second
+        # read is in progress, after the receipt's per-leaf check.  Both fds
+        # remain open, so rebind every full mutable identity to its original
+        # descriptor and visible fixed name in one final pair-wide pass.
+        for name, _maximum in names_and_maxima:
+            final = os.fstat(leaf_fds[name])
+            visible = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False
+            )
+            if (
+                _dynamic_identity(opened_stats[name])
+                != _dynamic_identity(final)
+                or _dynamic_identity(final) != _dynamic_identity(visible)
+            ):
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+                )
+        parent_after = os.fstat(parent_fd)
+        parent_visible = os.stat(parent_path, follow_symlinks=False)
+        if (
+            _dynamic_identity(parent_snapshot)
+            != _dynamic_identity(parent_after)
+            or _dynamic_identity(parent_after)
+            != _dynamic_identity(parent_visible)
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+            )
+        return (
+            payloads[restricted_receipt_name],
+            payloads[aggregate_summary_name],
+        )
+    except PostReallocationCapacityError:
+        raise
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    finally:
+        for descriptor in leaf_fds.values():
+            os.close(descriptor)
+
+
+def _write_dynamic_owner_private_pair(
+    restricted_receipt_path: Path,
+    receipt_payload: bytes,
+    aggregate_summary_path: Path,
+    summary_payload: bytes,
+) -> tuple[bytes, bytes]:
+    """Publish and reopen both leaves under one continuously bound parent."""
+
+    if restricted_receipt_path.parent != aggregate_summary_path.parent:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    parent_path = restricted_receipt_path.parent
+    parent_fd = -1
+    try:
+        parent_fd, parent_before = _open_dynamic_owner_private_directory(
+            parent_path
+        )
+        for name in (
+            restricted_receipt_path.name,
+            aggregate_summary_path.name,
+        ):
+            try:
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
+            )
+        receipt_identity = _write_dynamic_owner_private_new_at(
+            parent_fd,
+            parent_path,
+            parent_before,
+            restricted_receipt_path.name,
+            receipt_payload,
+        )
+        # A replacement of the fixed parent between leaf publications is
+        # rejected before the second O_EXCL write.
+        _require_dynamic_visible_parent(
+            parent_fd, parent_path, original=parent_before
+        )
+        summary_identity = _write_dynamic_owner_private_new_at(
+            parent_fd,
+            parent_path,
+            parent_before,
+            aggregate_summary_path.name,
+            summary_payload,
+        )
+        reopened_receipt, reopened_summary = (
+            _read_dynamic_owner_private_pair_at(
+            parent_fd,
+            parent_path,
+            parent_before,
+            restricted_receipt_path.name,
+            aggregate_summary_path.name,
+            expected_identities={
+                restricted_receipt_path.name: receipt_identity,
+                aggregate_summary_path.name: summary_identity,
+            },
+            )
+        )
+        return reopened_receipt, reopened_summary
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def _read_dynamic_owner_private_pair(
+    restricted_receipt_path: Path,
+    aggregate_summary_path: Path,
+) -> tuple[bytes, bytes]:
+    """Read both sealed leaves through one continuously bound parent fd."""
+
+    if restricted_receipt_path.parent != aggregate_summary_path.parent:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    parent_path = restricted_receipt_path.parent
+    parent_fd = -1
+    try:
+        parent_fd, parent_before = _open_dynamic_owner_private_directory(
+            parent_path
+        )
+        return _read_dynamic_owner_private_pair_at(
+            parent_fd,
+            parent_path,
+            parent_before,
+            restricted_receipt_path.name,
+            aggregate_summary_path.name,
+        )
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
 def _mkdir_private(path: Path) -> None:
     if path.exists() or path.is_symlink():
         raise PostReallocationCapacityError("OUTPUT_DIRECTORY_COLLISION")
@@ -869,7 +1717,11 @@ def _capture_capacity_commands(
     return dict(records)
 
 
-def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]:
+def _parse_native_quota_rows(
+    payload: bytes,
+) -> Mapping[str, Mapping[str, int | str]]:
+    """Parse the fixed native quota row shape without allocation policy."""
+
     observed: dict[str, Mapping[str, int | str]] = {}
     principal_fileset_rows = 0
     try:
@@ -933,6 +1785,13 @@ def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]
         raise PostReallocationCapacityError(
             "NATIVE_QUOTA_USAGE_EXCEEDS_ALLOCATION"
         )
+    return observed
+
+
+def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]:
+    """Preserve the exact historical allocation-bound parser contract."""
+
+    observed = _parse_native_quota_rows(payload)
     if (
         observed["research"]["quota_kib"] != EXPECTED_RESEARCH_QUOTA_KIB
         or observed["backed"]["quota_kib"] != EXPECTED_BACKED_QUOTA_KIB
@@ -940,6 +1799,37 @@ def _parse_native_quota(payload: bytes) -> Mapping[str, Mapping[str, int | str]]
         or observed["backed"]["file_quota"] != EXPECTED_BACKED_FILE_QUOTA
     ):
         raise PostReallocationCapacityError("NATIVE_QUOTA_ALLOCATION_UNEXPECTED")
+    return observed
+
+
+def _parse_dynamic_native_quota(
+    payload: bytes,
+) -> Mapping[str, Mapping[str, int | str]]:
+    """Parse a current allocation without weakening the historical wrapper."""
+
+    try:
+        observed = _parse_native_quota_rows(payload)
+    except PostReallocationCapacityError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID"
+        ) from exc
+    research_quota = int(observed["research"]["quota_kib"])
+    research_file_quota = int(observed["research"]["file_quota"])
+    if (
+        research_quota < EXPECTED_RESEARCH_QUOTA_KIB
+        or research_file_quota < EXPECTED_RESEARCH_FILE_QUOTA
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_ALLOCATION_REGRESSION"
+        )
+    if (
+        int(observed["backed"]["quota_kib"]) != EXPECTED_BACKED_QUOTA_KIB
+        or int(observed["backed"]["file_quota"])
+        != EXPECTED_BACKED_FILE_QUOTA
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_BACKED_TIER_CHANGED"
+        )
     return observed
 
 
@@ -1921,6 +2811,1630 @@ def probe_current_full_headroom(
             "writes_performed": 0,
         }
     )
+
+
+def _dynamic_capture_time(
+    value: datetime | None,
+) -> tuple[datetime, str]:
+    observed = value or datetime.now(timezone.utc)
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    normalized = observed.astimezone(timezone.utc).replace(microsecond=0)
+    return normalized, normalized.isoformat().replace("+00:00", "Z")
+
+
+def _validate_dynamic_capture_time(
+    value: object,
+    *,
+    now_utc: datetime | None,
+) -> None:
+    if not isinstance(value, str) or re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+        value,
+    ) is None:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    try:
+        captured = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    now, _ = _dynamic_capture_time(now_utc)
+    age = (now - captured).total_seconds()
+    if (
+        age > DYNAMIC_SUCCESSOR_MAXIMUM_AGE_SECONDS
+        or age < -DYNAMIC_SUCCESSOR_MAXIMUM_FUTURE_SKEW_SECONDS
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_STALE"
+        )
+
+
+def _dynamic_core_sha256(value: Mapping[str, Any]) -> str:
+    if set(value) != DYNAMIC_SUCCESSOR_OBSERVATION_HASHED_KEYS:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    return _sha(_canonical(value))
+
+
+def _validate_dynamic_successor_core(
+    value: Mapping[str, Any],
+    *,
+    expected_governing_commit: str | None,
+    now_utc: datetime | None,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != DYNAMIC_SUCCESSOR_OBSERVATION_HASHED_KEYS
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    governing_commit = value.get("governing_commit")
+    if (
+        type(governing_commit) is not str
+        or COMMIT_RE.fullmatch(governing_commit) is None
+        or (
+            expected_governing_commit is not None
+            and governing_commit != expected_governing_commit
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    _validate_dynamic_capture_time(
+        value.get("captured_at_utc"), now_utc=now_utc
+    )
+    signed_integer_fields = {
+        "quota_slack_after_peak_bytes",
+        "physical_slack_after_peak_bytes",
+        "quota_margin_beyond_reserve_bytes",
+        "physical_margin_beyond_reserve_bytes",
+        "file_slot_margin_after_demand",
+    }
+    nonnegative_integer_fields = {
+        "live_research_quota_bytes",
+        "live_research_usage_bytes",
+        "live_research_file_quota",
+        "live_research_files_used",
+        "live_research_filesystem_available_bytes",
+        "backed_quota_bytes",
+        "backed_usage_bytes",
+        "backed_file_quota",
+        "backed_files_used",
+        "historical_pre_allocation_research_quota_bytes",
+        "historical_pre_allocation_research_file_quota",
+        "fresh_successor_increment_bytes",
+        "required_quota_reserve_bytes",
+        "required_physical_reserve_bytes",
+        "required_remaining_file_slots",
+        "projected_fresh_successor_peak_bytes",
+        "remaining_file_slots",
+        "active_extraction_caches",
+        "preserved_terminal_failed_extraction_caches",
+        "minimum_additional_quota_bytes",
+        "minimum_additional_physical_bytes",
+        "minimum_additional_file_slots",
+        *DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS,
+    }
+    boolean_fields = {
+        "backed_tier_gate_passed",
+        "successor_attempt_root_absent",
+        "successor_claim_absent",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "cache_inventory_gate_passed",
+        "successor_collision_gate_passed",
+        "storage_allocation_visible",
+        "underlying_filesystem_expansion_appears_necessary",
+        "native_quota_authority_read_only",
+    }
+    if (
+        any(
+            type(value.get(field)) is not int or int(value[field]) < 0
+            for field in nonnegative_integer_fields
+        )
+        or any(type(value.get(field)) is not int for field in signed_integer_fields)
+        or any(type(value.get(field)) is not bool for field in boolean_fields)
+        or any(value.get(field) != 0 for field in DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS)
+        or value.get("schema_version") != 1
+        or value.get("artifact_type") != DYNAMIC_SUCCESSOR_OBSERVATION_TYPE
+        or value.get("status") not in DYNAMIC_SUCCESSOR_STATUSES
+        or value.get("mount_authority_status") != DYNAMIC_SUCCESSOR_MOUNT_STATUS
+        or value.get("pquota_display_crosscheck")
+        not in {DISPLAY_CROSSCHECK_PASS, DISPLAY_CROSSCHECK_UNAVAILABLE}
+        or value.get("pquota_executable_authority_status")
+        not in {"PASS_TRUSTED_ROOT_CONTROLLED", "UNAVAILABLE_NONBLOCKING"}
+        or value.get("native_quota_authority_read_only") is not True
+        or any(
+            type(value.get(field)) is not str
+            or SHA256_RE.fullmatch(value[field]) is None
+            for field in (
+                "command_authority_sha256",
+                "native_quota_authority_sha256",
+                "mount_authority_sha256",
+            )
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    reasons = value.get("blocking_reason_codes")
+    if (
+        not isinstance(reasons, list)
+        or len(reasons) != len(set(reasons))
+        or any(
+            type(reason) is not str
+            or re.fullmatch(r"[A-Z][A-Z0-9_]{1,127}", reason) is None
+            for reason in reasons
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+
+    research_quota = int(value["live_research_quota_bytes"])
+    research_usage = int(value["live_research_usage_bytes"])
+    research_file_quota = int(value["live_research_file_quota"])
+    research_files_used = int(value["live_research_files_used"])
+    backed_quota = int(value["backed_quota_bytes"])
+    backed_usage = int(value["backed_usage_bytes"])
+    backed_file_quota = int(value["backed_file_quota"])
+    backed_files_used = int(value["backed_files_used"])
+    historical_quota = EXPECTED_RESEARCH_QUOTA_KIB * 1024
+    if (
+        research_quota < historical_quota
+        or research_file_quota < EXPECTED_RESEARCH_FILE_QUOTA
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_ALLOCATION_REGRESSION"
+        )
+    if (
+        backed_quota != EXPECTED_BACKED_QUOTA_KIB * 1024
+        or backed_file_quota != EXPECTED_BACKED_FILE_QUOTA
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_BACKED_TIER_CHANGED"
+        )
+    if (
+        research_quota <= 0
+        or research_file_quota <= 0
+        or research_usage > research_quota
+        or research_files_used > research_file_quota
+        or backed_usage > backed_quota
+        or backed_files_used > backed_file_quota
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_ARITHMETIC_INVALID"
+        )
+    projected = research_usage + DYNAMIC_SUCCESSOR_INCREMENT_BYTES
+    quota_slack = research_quota - projected
+    physical_slack = (
+        int(value["live_research_filesystem_available_bytes"])
+        - DYNAMIC_SUCCESSOR_INCREMENT_BYTES
+    )
+    quota_margin = quota_slack - DYNAMIC_SUCCESSOR_QUOTA_RESERVE_BYTES
+    physical_margin = (
+        physical_slack - DYNAMIC_SUCCESSOR_PHYSICAL_RESERVE_BYTES
+    )
+    remaining_slots = research_file_quota - research_files_used
+    slot_margin = remaining_slots - DYNAMIC_SUCCESSOR_REQUIRED_FILE_SLOTS
+    quota_gate = quota_margin >= 0
+    physical_gate = physical_margin >= 0
+    file_gate = slot_margin >= 0
+    cache_gate = (
+        value["active_extraction_caches"] == 0
+        and value["preserved_terminal_failed_extraction_caches"]
+        == DYNAMIC_SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+    )
+    collision_gate = (
+        value["successor_attempt_root_absent"] is True
+        and value["successor_claim_absent"] is True
+    )
+    visible = research_quota > historical_quota
+    derived: dict[str, Any] = {
+        "historical_pre_allocation_research_quota_bytes": historical_quota,
+        "historical_pre_allocation_research_file_quota": (
+            EXPECTED_RESEARCH_FILE_QUOTA
+        ),
+        "fresh_successor_increment_bytes": DYNAMIC_SUCCESSOR_INCREMENT_BYTES,
+        "required_quota_reserve_bytes": (
+            DYNAMIC_SUCCESSOR_QUOTA_RESERVE_BYTES
+        ),
+        "required_physical_reserve_bytes": (
+            DYNAMIC_SUCCESSOR_PHYSICAL_RESERVE_BYTES
+        ),
+        "required_remaining_file_slots": (
+            DYNAMIC_SUCCESSOR_REQUIRED_FILE_SLOTS
+        ),
+        "projected_fresh_successor_peak_bytes": projected,
+        "quota_slack_after_peak_bytes": quota_slack,
+        "physical_slack_after_peak_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "remaining_file_slots": remaining_slots,
+        "file_slot_margin_after_demand": slot_margin,
+        "quota_reserve_gate_passed": quota_gate,
+        "physical_reserve_gate_passed": physical_gate,
+        "file_slot_gate_passed": file_gate,
+        "cache_inventory_gate_passed": cache_gate,
+        "successor_collision_gate_passed": collision_gate,
+        "minimum_additional_quota_bytes": max(0, -quota_margin),
+        "minimum_additional_physical_bytes": max(0, -physical_margin),
+        "minimum_additional_file_slots": max(0, -slot_margin),
+        "storage_allocation_visible": visible,
+        "underlying_filesystem_expansion_appears_necessary": (
+            physical_margin < 0
+        ),
+        "backed_tier_gate_passed": True,
+    }
+    if any(value.get(field) != expected for field, expected in derived.items()):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_ARITHMETIC_INVALID"
+        )
+    blocked_reasons: list[str] = []
+    if not (quota_gate and physical_gate and file_gate):
+        blocked_reasons.append("DYNAMIC_CAPACITY_INSUFFICIENT")
+    if not cache_gate:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_CACHE_INVENTORY_INVALID"
+        )
+    if not collision_gate:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
+        )
+    if not visible:
+        expected_status = DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
+        expected_reasons = [DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING]
+    elif blocked_reasons:
+        expected_status = DYNAMIC_SUCCESSOR_STATUS_BLOCKED
+        expected_reasons = sorted(blocked_reasons)
+    else:
+        expected_status = DYNAMIC_SUCCESSOR_STATUS_PASS
+        expected_reasons = []
+    if value.get("status") != expected_status or reasons != expected_reasons:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_ARITHMETIC_INVALID"
+        )
+    return dict(value)
+
+
+def _validate_dynamic_native_authority(
+    value: object,
+) -> Mapping[str, Mapping[str, Any]]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != DYNAMIC_SUCCESSOR_NATIVE_AUTHORITY_KEYS
+        or type(value.get("path_sha256")) is not str
+        or SHA256_RE.fullmatch(value["path_sha256"]) is None
+        or type(value.get("file_size_bytes")) is not int
+        or value["file_size_bytes"] < 1
+        or type(value.get("file_sha256")) is not str
+        or SHA256_RE.fullmatch(value["file_sha256"]) is None
+        or value.get("record_unit") != "KIB"
+        or value.get("bytes_per_kib") != 1024
+        or not isinstance(value.get("rows"), Mapping)
+        or set(value["rows"]) != {"backed", "research"}
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    rows = value["rows"]
+    for role in ("backed", "research"):
+        row = rows[role]
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != DYNAMIC_SUCCESSOR_NATIVE_ROW_KEYS
+            or any(
+                type(row.get(field)) is not str
+                or SHA256_RE.fullmatch(row[field]) is None
+                for field in (
+                    "native_name_sha256",
+                    "fileset_name_sha256",
+                    "raw_row_sha256",
+                )
+            )
+            or row.get("native_name_sha256")
+            != _sha(EXPECTED_NATIVE_ROWS[role].encode())
+            or row.get("fileset_name_sha256")
+            != _sha(EXPECTED_NATIVE_FILESET_FIELD.encode())
+            or any(
+                type(row.get(field)) is not int or row[field] < 0
+                for field in (
+                    "usage_kib", "quota_kib", "files_used", "file_quota"
+                )
+            )
+            or row["usage_kib"] > row["quota_kib"]
+            or row["files_used"] > row["file_quota"]
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+    if (
+        rows["research"]["quota_kib"] < EXPECTED_RESEARCH_QUOTA_KIB
+        or rows["research"]["file_quota"] < EXPECTED_RESEARCH_FILE_QUOTA
+        or rows["backed"]["quota_kib"] != EXPECTED_BACKED_QUOTA_KIB
+        or rows["backed"]["file_quota"] != EXPECTED_BACKED_FILE_QUOTA
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    return rows
+
+
+def _validate_dynamic_paths(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != DYNAMIC_SUCCESSOR_PATH_KEYS:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    identities = value["identities"]
+    mounts = value["mounts"]
+    dfs = value["df"]
+    if any(
+        not isinstance(item, Mapping) or set(item) != {"backed", "research"}
+        for item in (identities, mounts, dfs)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    for role in ("backed", "research"):
+        identity = identities[role]
+        mount = mounts[role]
+        df_value = dfs[role]
+        if (
+            not isinstance(identity, Mapping)
+            or set(identity)
+            != {
+                "path_sha256", "resolved_path_sha256", "device", "inode",
+                "is_symlink",
+            }
+            or identity.get("is_symlink") is not False
+            or any(
+                type(identity.get(field)) is not str
+                or SHA256_RE.fullmatch(identity[field]) is None
+                for field in ("path_sha256", "resolved_path_sha256")
+            )
+            or any(
+                type(identity.get(field)) is not int or identity[field] < 0
+                for field in ("device", "inode")
+            )
+            or not isinstance(mount, Mapping)
+            or set(mount)
+            != {
+                "source_sha256", "target_sha256", "fsroot_sha256",
+                "identity_sha256", "source", "target", "fsroot", "fstype",
+                "bind",
+            }
+            or mount.get("fsroot") != "/"
+            or mount.get("bind") is not False
+            or any(type(mount.get(field)) is not str or not mount[field]
+                   for field in ("source", "target", "fstype"))
+            or any(
+                type(mount.get(field)) is not str
+                or SHA256_RE.fullmatch(mount[field]) is None
+                for field in (
+                    "source_sha256", "target_sha256", "fsroot_sha256",
+                    "identity_sha256",
+                )
+            )
+            or mount["source_sha256"] != _sha(mount["source"].encode())
+            or mount["target_sha256"] != _sha(mount["target"].encode())
+            or mount["fsroot_sha256"] != _sha(b"/")
+            or mount["identity_sha256"]
+            != _sha(_canonical({
+                "source": mount["source"],
+                "target": mount["target"],
+                "fstype": mount["fstype"],
+                "fsroot": mount["fsroot"],
+            }))
+            or not isinstance(df_value, Mapping)
+            or set(df_value) != {"total", "used", "available"}
+            or any(
+                type(df_value.get(field)) is not int or df_value[field] < 0
+                for field in ("total", "used", "available")
+            )
+            or df_value["used"] + df_value["available"] > df_value["total"]
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+    if (
+        mounts["research"]["source"] == mounts["backed"]["source"]
+        or mounts["research"]["target"] == mounts["backed"]["target"]
+        or identities["research"]["device"] == identities["backed"]["device"]
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+
+
+def _validate_dynamic_commands(
+    value: object,
+    *,
+    paths: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != CAPACITY_COMMAND_ROLES:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    executable_authorities: dict[str, tuple[str, int, str]] = {}
+    for role, specification in CAPACITY_COMMAND_REGISTRY.items():
+        item = value[role]
+        base_keys = {
+            "role", "argv", "argv_sha256", "executable_sha256",
+            "executable_size_bytes", "exit_status", "stdout_bytes",
+            "stdout_sha256", "stdout_text", "stderr_bytes", "stderr_sha256",
+        }
+        expected_keys = base_keys | (
+            {"availability_status", "availability_reason"}
+            if role == "pquota" else set()
+        )
+        if not isinstance(item, Mapping) or set(item) != expected_keys:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        argv = item.get("argv")
+        if (
+            item.get("role") != role
+            or not isinstance(argv, list)
+            or not argv
+            or any(type(part) is not str or not part for part in argv)
+            or item.get("argv_sha256")
+            != _sha(json.dumps(argv, separators=(",", ":")).encode())
+            or not PurePosixPath(argv[0]).is_absolute()
+            or PurePosixPath(argv[0]).name != specification.command_kind
+            or type(item.get("executable_size_bytes")) is not int
+            or item["executable_size_bytes"] < 1
+            or type(item.get("executable_sha256")) is not str
+            or SHA256_RE.fullmatch(item["executable_sha256"]) is None
+            or type(item.get("exit_status")) is not int
+            or type(item.get("stdout_text")) is not str
+            or type(item.get("stdout_bytes")) is not int
+            or item["stdout_bytes"] != len(item["stdout_text"].encode())
+            or item.get("stdout_sha256")
+            != _sha(item["stdout_text"].encode())
+            or type(item.get("stderr_bytes")) is not int
+            or item["stderr_bytes"] < 0
+            or type(item.get("stderr_sha256")) is not str
+            or SHA256_RE.fullmatch(item["stderr_sha256"]) is None
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        executable_authority = (
+            argv[0],
+            item["executable_size_bytes"],
+            item["executable_sha256"],
+        )
+        prior_executable_authority = executable_authorities.setdefault(
+            specification.command_kind, executable_authority
+        )
+        if prior_executable_authority != executable_authority:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        if role == "pquota":
+            availability = item.get("availability_status")
+            reason = item.get("availability_reason")
+            unavailable_reason_valid = (
+                (reason == "COMMAND_NONZERO_EXIT" and item["exit_status"] != 0)
+                or (
+                    reason == "COMMAND_STDERR_PRESENT"
+                    and item["exit_status"] == 0
+                    and item["stderr_bytes"] > 0
+                )
+                or (
+                    reason in {
+                        "COMMAND_OUTPUT_OVERSIZED",
+                        "COMMAND_OUTPUT_NOT_UTF8",
+                    }
+                    and item["exit_status"] == 0
+                    and item["stderr_bytes"] == 0
+                    and item["stdout_bytes"] == 0
+                    and item["stdout_sha256"] == _sha(b"")
+                    and item["stdout_text"] == ""
+                )
+            )
+            if (
+                argv[1:] != ["-u", EXPECTED_QUOTA_PRINCIPAL]
+                or availability not in {"AVAILABLE", "UNAVAILABLE_NONBLOCKING"}
+                or reason not in {
+                    "AVAILABLE",
+                    "COMMAND_NONZERO_EXIT",
+                    "COMMAND_STDERR_PRESENT",
+                    "COMMAND_OUTPUT_OVERSIZED",
+                    "COMMAND_OUTPUT_NOT_UTF8",
+                }
+                or (
+                    availability == "AVAILABLE"
+                    and (
+                        reason != "AVAILABLE"
+                        or item["exit_status"] != 0
+                        or item["stderr_bytes"] != 0
+                    )
+                )
+                or (
+                    availability == "UNAVAILABLE_NONBLOCKING"
+                    and not unavailable_reason_valid
+                )
+            ):
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                )
+        else:
+            target_role = "research" if role.startswith("research_") else "backed"
+            if specification.command_kind == "findmnt":
+                valid_tail = (
+                    len(argv) == 6
+                    and argv[1:3] == ["--json", "--target"]
+                    and argv[4:] == [
+                        "--output", "SOURCE,TARGET,FSTYPE,OPTIONS,FSROOT"
+                    ]
+                )
+                target_value = argv[3] if len(argv) == 6 else ""
+            else:
+                valid_tail = (
+                    len(argv) == 4
+                    and argv[1:3]
+                    == ["-B1", "--output=source,size,used,avail,target"]
+                )
+                target_value = argv[3] if len(argv) == 4 else ""
+            if (
+                item["exit_status"] != 0
+                or item["stderr_bytes"] != 0
+                or item["stderr_sha256"] != _sha(b"")
+                or not valid_tail
+                or _sha(target_value.encode())
+                != paths["identities"][target_role]["path_sha256"]
+            ):
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                )
+            try:
+                if specification.command_kind == "findmnt":
+                    reparsed = _parse_findmnt(
+                        item["stdout_text"], Path(target_value)
+                    )
+                    if reparsed != paths["mounts"][target_role]:
+                        raise PostReallocationCapacityError(
+                            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                        )
+                else:
+                    reparsed = _parse_df(
+                        item["stdout_text"], paths["mounts"][target_role]
+                    )
+                    if reparsed != paths["df"][target_role]:
+                        raise PostReallocationCapacityError(
+                            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                        )
+            except PostReallocationCapacityError as exc:
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                ) from exc
+    return value
+
+
+def validate_dynamic_successor_capacity_receipt(
+    value: Mapping[str, Any],
+    *,
+    expected_governing_commit: str | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate one restricted detailed dynamic-capacity receipt."""
+
+    if not isinstance(value, Mapping) or set(value) != DYNAMIC_SUCCESSOR_RECEIPT_KEYS:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    identity = value.get("capture_identity")
+    if (
+        value.get("schema_version") != 1
+        or value.get("artifact_type") != DYNAMIC_SUCCESSOR_RECEIPT_TYPE
+        or value.get("status") not in DYNAMIC_SUCCESSOR_STATUSES
+        or not isinstance(identity, Mapping)
+        or set(identity) != DYNAMIC_SUCCESSOR_CAPTURE_IDENTITY_KEYS
+        or type(identity.get("effective_uid")) is not int
+        or identity["effective_uid"] < 0
+        or any(
+            type(identity.get(field)) is not str
+            or SHA256_RE.fullmatch(identity[field]) is None
+            for field in ("effective_username_sha256", "hostname_sha256")
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    paths = value.get("paths")
+    _validate_dynamic_paths(paths)
+    commands = _validate_dynamic_commands(value.get("commands"), paths=paths)
+    rows = _validate_dynamic_native_authority(
+        value.get("native_quota_authority")
+    )
+    core_value = value.get("observation_authority")
+    if not isinstance(core_value, Mapping):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    core = _validate_dynamic_successor_core(
+        core_value,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
+    )
+    core_sha = _dynamic_core_sha256(core)
+    display_command = commands[
+        CAPACITY_COMMAND_CONSUMER_ROLES["pquota_display"]
+    ]
+    display = _parse_pquota(
+        display_command["stdout_text"],
+        rows,
+        command_available=(
+            display_command.get("availability_status") == "AVAILABLE"
+        ),
+    )
+    if display["status"] == DISPLAY_CROSSCHECK_FAIL:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_DISPLAY_CONTRADICTION"
+        )
+    if (
+        value.get("status") != core["status"]
+        or value.get("governing_commit") != core["governing_commit"]
+        or value.get("captured_at_utc") != core["captured_at_utc"]
+        or value.get("observation_authority_sha256") != core_sha
+        or core["command_authority_sha256"] != _sha(_canonical(commands))
+        or core["native_quota_authority_sha256"]
+        != _sha(_canonical(value["native_quota_authority"]))
+        or core["mount_authority_sha256"] != _sha(_canonical(paths))
+        or core["pquota_display_crosscheck"] != display["status"]
+        or core["pquota_executable_authority_status"]
+        != (
+            "PASS_TRUSTED_ROOT_CONTROLLED"
+            if display_command.get("availability_status") == "AVAILABLE"
+            else "UNAVAILABLE_NONBLOCKING"
+        )
+        or core["live_research_quota_bytes"]
+        != int(rows["research"]["quota_kib"]) * 1024
+        or core["live_research_usage_bytes"]
+        != int(rows["research"]["usage_kib"]) * 1024
+        or core["live_research_file_quota"]
+        != int(rows["research"]["file_quota"])
+        or core["live_research_files_used"]
+        != int(rows["research"]["files_used"])
+        or core["live_research_filesystem_available_bytes"]
+        != int(paths["df"]["research"]["available"])
+        or core["backed_quota_bytes"]
+        != int(rows["backed"]["quota_kib"]) * 1024
+        or core["backed_usage_bytes"]
+        != int(rows["backed"]["usage_kib"]) * 1024
+        or core["backed_file_quota"]
+        != int(rows["backed"]["file_quota"])
+        or core["backed_files_used"]
+        != int(rows["backed"]["files_used"])
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+        )
+    return dict(value)
+
+
+def validate_dynamic_successor_capacity_observation(
+    value: Mapping[str, Any],
+    *,
+    expected_governing_commit: str | None = None,
+    expected_receipt_payload: bytes | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate one aggregate-safe observation and optional receipt binding."""
+
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != DYNAMIC_SUCCESSOR_OBSERVATION_KEYS
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    core = {
+        key: value[key] for key in DYNAMIC_SUCCESSOR_OBSERVATION_HASHED_KEYS
+    }
+    _validate_dynamic_successor_core(
+        core,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
+    )
+    if (
+        type(value.get("observation_authority_sha256")) is not str
+        or value["observation_authority_sha256"] != _dynamic_core_sha256(core)
+        or type(value.get("restricted_receipt_size_bytes")) is not int
+        or value["restricted_receipt_size_bytes"] < 1
+        or type(value.get("restricted_receipt_sha256")) is not str
+        or SHA256_RE.fullmatch(value["restricted_receipt_sha256"]) is None
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+        )
+    if expected_receipt_payload is not None:
+        if (
+            not isinstance(expected_receipt_payload, bytes)
+            or len(expected_receipt_payload)
+            != value["restricted_receipt_size_bytes"]
+            or _sha(expected_receipt_payload)
+            != value["restricted_receipt_sha256"]
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+            )
+        try:
+            receipt = json.loads(
+                expected_receipt_payload.decode("utf-8"),
+                object_pairs_hook=_strict_pairs,
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            ) from exc
+        if (
+            not isinstance(receipt, Mapping)
+            or expected_receipt_payload != _canonical(receipt)
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        validate_dynamic_successor_capacity_receipt(
+            receipt,
+            expected_governing_commit=expected_governing_commit,
+            now_utc=now_utc,
+        )
+        if (
+            receipt["observation_authority"] != core
+            or receipt["observation_authority_sha256"]
+            != value["observation_authority_sha256"]
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+            )
+    return dict(value)
+
+
+def validate_production_dynamic_successor_capacity_capture(
+    capture: DynamicSuccessorCapacityCapture,
+    *,
+    expected_governing_commit: str,
+    now_utc: datetime | None = None,
+) -> DynamicSuccessorCapacityCapture:
+    """Require a generic sealed capture to name the exact SCC authorities.
+
+    Synthetic authorities remain useful for dependency-light tests, but they
+    may never authorize the fixed production seal consumed by full-C3.  This
+    check is metadata/control-only: it does not rerun a capacity command or
+    reinterpret the captured quota rows.
+    """
+
+    if not isinstance(capture, DynamicSuccessorCapacityCapture):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    receipt_payload = capture.receipt_payload
+    if (
+        not isinstance(receipt_payload, bytes)
+        or receipt_payload != _canonical(capture.receipt)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    receipt = validate_dynamic_successor_capacity_receipt(
+        capture.receipt,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
+    )
+    observation = validate_dynamic_successor_capacity_observation(
+        capture.observation,
+        expected_governing_commit=expected_governing_commit,
+        expected_receipt_payload=receipt_payload,
+        now_utc=now_utc,
+    )
+    authority = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
+    commands = receipt["commands"]
+    paths = receipt["paths"]
+    identity = receipt["capture_identity"]
+    try:
+        username = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    expected_path_by_role = {
+        "research": authority.research_path,
+        "backed": authority.backed_path,
+    }
+    expected_executable_by_kind = {
+        "pquota": authority.pquota_path,
+        "findmnt": authority.findmnt_path,
+        "df": authority.df_path,
+    }
+    static_valid = (
+        identity["effective_uid"] == os.geteuid()
+        and identity["effective_username_sha256"]
+        == _sha(username.encode())
+        and receipt["native_quota_authority"]["path_sha256"]
+        == _sha(str(authority.native_quota_path).encode())
+        and commands["pquota"]["executable_size_bytes"]
+        == EXPECTED_PQUOTA_SIZE_BYTES
+        and commands["pquota"]["executable_sha256"]
+        == EXPECTED_PQUOTA_SHA256
+    )
+    for role, specification in CAPACITY_COMMAND_REGISTRY.items():
+        expected_argv = [
+            str(expected_executable_by_kind[specification.command_kind]),
+            *specification.argv_tail,
+        ]
+        if commands[role]["argv"] != expected_argv:
+            static_valid = False
+    for role, expected_path in expected_path_by_role.items():
+        expected_text = str(expected_path)
+        path_identity = paths["identities"][role]
+        if (
+            path_identity["path_sha256"] != _sha(expected_text.encode())
+        ):
+            static_valid = False
+    if not static_valid:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    try:
+        if _validate_current_canary_headroom_authority(authority) is not True:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        for role, specification in CAPACITY_COMMAND_REGISTRY.items():
+            executable_path = expected_executable_by_kind[
+                specification.command_kind
+            ]
+            executable_payload = _read_regular(
+                executable_path, maximum=256_000_000
+            )
+            if (
+                commands[role]["executable_size_bytes"]
+                != len(executable_payload)
+                or commands[role]["executable_sha256"]
+                != _sha(executable_payload)
+            ):
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                )
+        for role, expected_path in expected_path_by_role.items():
+            if paths["identities"][role] != _path_identity(expected_path):
+                raise PostReallocationCapacityError(
+                    "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                )
+        _validate_pquota_restricted_mount_reconciliation(
+            native=receipt["native_quota_authority"]["rows"],
+            paths=paths["identities"],
+            mounts=paths["mounts"],
+        )
+    except (OSError, PostReallocationCapacityError) as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    return DynamicSuccessorCapacityCapture(
+        receipt=dict(receipt),
+        receipt_payload=receipt_payload,
+        observation=dict(observation),
+    )
+
+
+def probe_dynamic_successor_capacity_observation(
+    *,
+    governing_commit: str,
+    active_extraction_caches: int,
+    preserved_terminal_failed_extraction_caches: int,
+    successor_attempt_root_absent: bool,
+    successor_claim_absent: bool,
+    authority: CurrentCanaryHeadroomAuthority = (
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
+    ),
+    process_runner: Callable[..., Any] | None = None,
+    now_utc: datetime | None = None,
+) -> DynamicSuccessorCapacityCapture:
+    """Capture one fresh dynamic successor observation without side effects."""
+
+    if (
+        type(governing_commit) is not str
+        or COMMIT_RE.fullmatch(governing_commit) is None
+        or type(active_extraction_caches) is not int
+        or active_extraction_caches < 0
+        or type(preserved_terminal_failed_extraction_caches) is not int
+        or preserved_terminal_failed_extraction_caches < 0
+        or type(successor_attempt_root_absent) is not bool
+        or type(successor_claim_absent) is not bool
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_CACHE_INVENTORY_INVALID"
+        )
+    if (
+        active_extraction_caches != 0
+        or preserved_terminal_failed_extraction_caches
+        != DYNAMIC_SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_CACHE_INVENTORY_INVALID"
+        )
+    if not successor_attempt_root_absent or not successor_claim_absent:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
+        )
+    if (
+        authority == DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
+        and process_runner is not None
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_MOUNT_AUTHORITY_INVALID"
+        )
+    captured, captured_text = _dynamic_capture_time(now_utc)
+    production_candidate = authority == DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
+    permitted_native_uids = {0} if production_candidate else {0, os.geteuid()}
+    try:
+        _no_symlink_ancestors(
+            authority.native_quota_path, "DYNAMIC_NATIVE_QUOTA_AUTHORITY"
+        )
+        native_metadata = os.lstat(authority.native_quota_path)
+        if (
+            stat.S_ISLNK(native_metadata.st_mode)
+            or not stat.S_ISREG(native_metadata.st_mode)
+            or native_metadata.st_uid not in permitted_native_uids
+            or stat.S_IMODE(native_metadata.st_mode) & 0o022
+        ):
+            raise OSError("native authority invalid")
+    except (AttributeError, OSError, PostReallocationCapacityError) as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID"
+        ) from exc
+    try:
+        production = _validate_current_canary_headroom_authority(authority)
+    except (PostReallocationCapacityError, OSError) as exc:
+        pquota_invalid = (
+            isinstance(exc, PostReallocationCapacityError)
+            and exc.code
+            == "CURRENT_CANARY_HEADROOM_PQUOTA_AUTHORITY_MISMATCH"
+        )
+        try:
+            _no_symlink_ancestors(
+                authority.pquota_path, "DYNAMIC_PQUOTA_AUTHORITY"
+            )
+            pquota_metadata = os.lstat(authority.pquota_path)
+            if (
+                stat.S_ISLNK(pquota_metadata.st_mode)
+                or not stat.S_ISREG(pquota_metadata.st_mode)
+                or pquota_metadata.st_uid not in permitted_native_uids
+                or stat.S_IMODE(pquota_metadata.st_mode) & 0o022
+                or not stat.S_IMODE(pquota_metadata.st_mode) & 0o111
+                or (
+                    production_candidate
+                    and (
+                        pquota_metadata.st_size
+                        != EXPECTED_PQUOTA_SIZE_BYTES
+                        or _sha(
+                            _read_regular(
+                                authority.pquota_path,
+                                maximum=256_000_000,
+                            )
+                        )
+                        != EXPECTED_PQUOTA_SHA256
+                    )
+                )
+            ):
+                pquota_invalid = True
+        except (OSError, PostReallocationCapacityError):
+            pquota_invalid = True
+        raise PostReallocationCapacityError(
+            (
+                "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID"
+                if pquota_invalid
+                else "DYNAMIC_CAPACITY_MOUNT_AUTHORITY_INVALID"
+            )
+        ) from exc
+    permitted_owner_uids = (
+        frozenset({0}) if production else frozenset({0, os.geteuid()})
+    )
+    commands: dict[str, Mapping[str, Any]] = {}
+    for specification in CAPACITY_COMMAND_SPECS:
+        try:
+            argv = _current_canary_command_argv(specification, authority)
+            if specification.logical_role == "pquota":
+                record = _run_current_canary_pquota(
+                    specification, argv, process_runner=process_runner
+                )
+            else:
+                record = _run(
+                    specification,
+                    argv,
+                    process_runner=process_runner,
+                    permitted_owner_uids=permitted_owner_uids,
+                )
+            commands[specification.logical_role] = dict(record)
+        except (PostReallocationCapacityError, OSError) as exc:
+            code = (
+                "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID"
+                if specification.logical_role == "pquota"
+                else "DYNAMIC_CAPACITY_MOUNT_AUTHORITY_INVALID"
+            )
+            raise PostReallocationCapacityError(code) from exc
+    if set(commands) != CAPACITY_COMMAND_ROLES:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID"
+        )
+
+    try:
+        native_payload = _read_regular(
+            authority.native_quota_path, maximum=64_000_000
+        )
+        native = _parse_dynamic_native_quota(native_payload)
+    except PostReallocationCapacityError as exc:
+        if exc.code in {
+            "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID",
+            "DYNAMIC_CAPACITY_ALLOCATION_REGRESSION",
+            "DYNAMIC_CAPACITY_BACKED_TIER_CHANGED",
+        }:
+            raise
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID"
+        ) from exc
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_NATIVE_QUOTA_INVALID"
+        ) from exc
+    try:
+        identities = {
+            "research": _path_identity(authority.research_path),
+            "backed": _path_identity(authority.backed_path),
+        }
+        mounts = {
+            "research": _parse_findmnt(
+                commands[
+                    CAPACITY_COMMAND_CONSUMER_ROLES["research_mount"]
+                ]["stdout_text"],
+                authority.research_path,
+            ),
+            "backed": _parse_findmnt(
+                commands[
+                    CAPACITY_COMMAND_CONSUMER_ROLES["backed_mount"]
+                ]["stdout_text"],
+                authority.backed_path,
+            ),
+        }
+        if production:
+            _validate_pquota_restricted_mount_reconciliation(
+                native=native, paths=identities, mounts=mounts
+            )
+        elif any(
+            identities[role]["is_symlink"] is not False
+            or mounts[role]["bind"] is not False
+            or mounts[role]["fsroot"] != "/"
+            or native[role]["native_name_sha256"]
+            != _sha(EXPECTED_NATIVE_ROWS[role].encode())
+            for role in ("research", "backed")
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_MOUNT_AUTHORITY_INVALID"
+            )
+        if (
+            mounts["research"]["source"] == mounts["backed"]["source"]
+            or mounts["research"]["target"] == mounts["backed"]["target"]
+            or identities["research"]["device"]
+            == identities["backed"]["device"]
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_MOUNT_AUTHORITY_INVALID"
+            )
+        dfs = {
+            role: _parse_df(
+                commands[
+                    CAPACITY_COMMAND_CONSUMER_ROLES[f"{role}_df"]
+                ]["stdout_text"],
+                mounts[role],
+            )
+            for role in ("research", "backed")
+        }
+    except (PostReallocationCapacityError, OSError) as exc:
+        if (
+            isinstance(exc, PostReallocationCapacityError)
+            and exc.code == "DYNAMIC_CAPACITY_MOUNT_AUTHORITY_INVALID"
+        ):
+            raise
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_MOUNT_AUTHORITY_INVALID"
+        ) from exc
+    display_record = commands[
+        CAPACITY_COMMAND_CONSUMER_ROLES["pquota_display"]
+    ]
+    display = _parse_pquota(
+        display_record["stdout_text"],
+        native,
+        command_available=(
+            display_record.get("availability_status") == "AVAILABLE"
+        ),
+    )
+    if display["status"] == DISPLAY_CROSSCHECK_FAIL:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_DISPLAY_CONTRADICTION"
+        )
+
+    paths = {"identities": identities, "mounts": mounts, "df": dfs}
+    research_quota = int(native["research"]["quota_kib"]) * 1024
+    research_usage = int(native["research"]["usage_kib"]) * 1024
+    research_file_quota = int(native["research"]["file_quota"])
+    research_files_used = int(native["research"]["files_used"])
+    physical_available = int(dfs["research"]["available"])
+    projected = research_usage + DYNAMIC_SUCCESSOR_INCREMENT_BYTES
+    quota_slack = research_quota - projected
+    physical_slack = physical_available - DYNAMIC_SUCCESSOR_INCREMENT_BYTES
+    quota_margin = quota_slack - DYNAMIC_SUCCESSOR_QUOTA_RESERVE_BYTES
+    physical_margin = (
+        physical_slack - DYNAMIC_SUCCESSOR_PHYSICAL_RESERVE_BYTES
+    )
+    remaining_slots = research_file_quota - research_files_used
+    slot_margin = remaining_slots - DYNAMIC_SUCCESSOR_REQUIRED_FILE_SLOTS
+    quota_gate = quota_margin >= 0
+    physical_gate = physical_margin >= 0
+    file_gate = slot_margin >= 0
+    cache_gate = (
+        active_extraction_caches == 0
+        and preserved_terminal_failed_extraction_caches
+        == DYNAMIC_SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+    )
+    collision_gate = successor_attempt_root_absent and successor_claim_absent
+    visible = research_quota > EXPECTED_RESEARCH_QUOTA_KIB * 1024
+    blocked_reasons: list[str] = []
+    if not (quota_gate and physical_gate and file_gate):
+        blocked_reasons.append("DYNAMIC_CAPACITY_INSUFFICIENT")
+    if not visible:
+        status = DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
+        reasons = [DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING]
+    elif blocked_reasons:
+        status = DYNAMIC_SUCCESSOR_STATUS_BLOCKED
+        reasons = sorted(blocked_reasons)
+    else:
+        status = DYNAMIC_SUCCESSOR_STATUS_PASS
+        reasons = []
+    native_authority = {
+        "path_sha256": _sha(str(authority.native_quota_path).encode()),
+        "file_size_bytes": len(native_payload),
+        "file_sha256": _sha(native_payload),
+        "record_unit": "KIB",
+        "bytes_per_kib": 1024,
+        "rows": native,
+    }
+    core: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": DYNAMIC_SUCCESSOR_OBSERVATION_TYPE,
+        "status": status,
+        "blocking_reason_codes": reasons,
+        "governing_commit": governing_commit,
+        "captured_at_utc": captured_text,
+        "command_authority_sha256": _sha(_canonical(commands)),
+        "native_quota_authority_sha256": _sha(_canonical(native_authority)),
+        "mount_authority_sha256": _sha(_canonical(paths)),
+        "mount_authority_status": DYNAMIC_SUCCESSOR_MOUNT_STATUS,
+        "pquota_display_crosscheck": display["status"],
+        "pquota_executable_authority_status": (
+            "PASS_TRUSTED_ROOT_CONTROLLED"
+            if display_record.get("availability_status") == "AVAILABLE"
+            else "UNAVAILABLE_NONBLOCKING"
+        ),
+        "live_research_quota_bytes": research_quota,
+        "live_research_usage_bytes": research_usage,
+        "live_research_file_quota": research_file_quota,
+        "live_research_files_used": research_files_used,
+        "live_research_filesystem_available_bytes": physical_available,
+        "backed_quota_bytes": int(native["backed"]["quota_kib"]) * 1024,
+        "backed_usage_bytes": int(native["backed"]["usage_kib"]) * 1024,
+        "backed_file_quota": int(native["backed"]["file_quota"]),
+        "backed_files_used": int(native["backed"]["files_used"]),
+        "backed_tier_gate_passed": True,
+        "historical_pre_allocation_research_quota_bytes": (
+            EXPECTED_RESEARCH_QUOTA_KIB * 1024
+        ),
+        "historical_pre_allocation_research_file_quota": (
+            EXPECTED_RESEARCH_FILE_QUOTA
+        ),
+        "fresh_successor_increment_bytes": DYNAMIC_SUCCESSOR_INCREMENT_BYTES,
+        "required_quota_reserve_bytes": (
+            DYNAMIC_SUCCESSOR_QUOTA_RESERVE_BYTES
+        ),
+        "required_physical_reserve_bytes": (
+            DYNAMIC_SUCCESSOR_PHYSICAL_RESERVE_BYTES
+        ),
+        "required_remaining_file_slots": DYNAMIC_SUCCESSOR_REQUIRED_FILE_SLOTS,
+        "projected_fresh_successor_peak_bytes": projected,
+        "quota_slack_after_peak_bytes": quota_slack,
+        "physical_slack_after_peak_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "remaining_file_slots": remaining_slots,
+        "file_slot_margin_after_demand": slot_margin,
+        "active_extraction_caches": active_extraction_caches,
+        "preserved_terminal_failed_extraction_caches": (
+            preserved_terminal_failed_extraction_caches
+        ),
+        "successor_attempt_root_absent": successor_attempt_root_absent,
+        "successor_claim_absent": successor_claim_absent,
+        "quota_reserve_gate_passed": quota_gate,
+        "physical_reserve_gate_passed": physical_gate,
+        "file_slot_gate_passed": file_gate,
+        "cache_inventory_gate_passed": cache_gate,
+        "successor_collision_gate_passed": collision_gate,
+        "minimum_additional_quota_bytes": max(0, -quota_margin),
+        "minimum_additional_physical_bytes": max(0, -physical_margin),
+        "minimum_additional_file_slots": max(0, -slot_margin),
+        "storage_allocation_visible": visible,
+        "underlying_filesystem_expansion_appears_necessary": (
+            physical_margin < 0
+        ),
+        "native_quota_authority_read_only": True,
+        **{key: 0 for key in DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS},
+    }
+    _validate_dynamic_successor_core(
+        core,
+        expected_governing_commit=governing_commit,
+        now_utc=captured,
+    )
+    core_sha = _dynamic_core_sha256(core)
+    try:
+        username = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": DYNAMIC_SUCCESSOR_RECEIPT_TYPE,
+        "status": status,
+        "governing_commit": governing_commit,
+        "captured_at_utc": captured_text,
+        "capture_identity": {
+            "effective_uid": os.geteuid(),
+            "effective_username_sha256": _sha(username.encode()),
+            "hostname_sha256": _sha(socket.gethostname().encode()),
+        },
+        "native_quota_authority": native_authority,
+        "commands": commands,
+        "paths": paths,
+        "observation_authority": core,
+        "observation_authority_sha256": core_sha,
+    }
+    validate_dynamic_successor_capacity_receipt(
+        receipt,
+        expected_governing_commit=governing_commit,
+        now_utc=captured,
+    )
+    receipt_payload = _canonical(receipt)
+    observation = {
+        **core,
+        "observation_authority_sha256": core_sha,
+        "restricted_receipt_size_bytes": len(receipt_payload),
+        "restricted_receipt_sha256": _sha(receipt_payload),
+    }
+    validate_dynamic_successor_capacity_observation(
+        observation,
+        expected_governing_commit=governing_commit,
+        expected_receipt_payload=receipt_payload,
+        now_utc=captured,
+    )
+    return DynamicSuccessorCapacityCapture(
+        receipt=receipt,
+        receipt_payload=receipt_payload,
+        observation=observation,
+    )
+
+
+def validate_dynamic_successor_capacity_safe_export_policy(
+    safe_export_policy_path: Path,
+) -> Mapping[str, Any]:
+    """Load the closed policy and require the dynamic summary profile."""
+
+    try:
+        analysis_modes = importlib.import_module(
+            "lvef_multitask_analysis_modes"
+        )
+        policy, _ = analysis_modes.load_policy(safe_export_policy_path)
+    except Exception as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    profiles = policy.get("export_profiles")
+    if (
+        not isinstance(profiles, Mapping)
+        or DYNAMIC_SUCCESSOR_SAFE_EXPORT_PROFILE not in profiles
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    profile = profiles[DYNAMIC_SUCCESSOR_SAFE_EXPORT_PROFILE]
+    if (
+        not isinstance(profile, Mapping)
+        or set(profile)
+        != {
+            "kind", "extensions", "max_bytes", "required_top_level_keys",
+            "allowed_top_level_keys", "field_types",
+        }
+        or profile.get("kind") != "json"
+        or profile.get("extensions") != [".json"]
+        or profile.get("max_bytes") != 65_536
+        or not isinstance(profile.get("required_top_level_keys"), list)
+        or set(profile["required_top_level_keys"])
+        != DYNAMIC_SUCCESSOR_OBSERVATION_KEYS
+        or len(profile["required_top_level_keys"])
+        != len(DYNAMIC_SUCCESSOR_OBSERVATION_KEYS)
+        or not isinstance(profile.get("allowed_top_level_keys"), list)
+        or set(profile["allowed_top_level_keys"])
+        != DYNAMIC_SUCCESSOR_OBSERVATION_KEYS
+        or len(profile["allowed_top_level_keys"])
+        != len(DYNAMIC_SUCCESSOR_OBSERVATION_KEYS)
+        or profile.get("field_types")
+        != dict(DYNAMIC_SUCCESSOR_SAFE_FIELD_TYPES)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    return policy
+
+
+def publish_dynamic_successor_capacity_capture(
+    capture: DynamicSuccessorCapacityCapture,
+    *,
+    restricted_receipt_path: Path,
+    aggregate_summary_path: Path,
+    safe_export_policy_path: Path,
+    now_utc: datetime | None = None,
+) -> Mapping[str, Any]:
+    """Publish one prevalidated no-clobber receipt/summary pair."""
+
+    if not isinstance(capture, DynamicSuccessorCapacityCapture):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    if any(
+        not isinstance(path, Path)
+        or not path.is_absolute()
+        or os.path.lexists(path)
+        for path in (restricted_receipt_path, aggregate_summary_path)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_SUCCESSOR_COLLISION"
+        )
+    if (
+        restricted_receipt_path.name
+        != DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
+        or aggregate_summary_path.name
+        != DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    receipt = validate_dynamic_successor_capacity_receipt(
+        capture.receipt,
+        expected_governing_commit=capture.observation.get("governing_commit"),
+        now_utc=now_utc,
+    )
+    receipt_payload = capture.receipt_payload
+    if (
+        not isinstance(receipt_payload, bytes)
+        or receipt_payload != _canonical(receipt)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+        )
+    observation = validate_dynamic_successor_capacity_observation(
+        capture.observation,
+        expected_governing_commit=receipt["governing_commit"],
+        expected_receipt_payload=receipt_payload,
+        now_utc=now_utc,
+    )
+    summary_payload = _canonical(observation)
+    try:
+        analysis_modes = importlib.import_module(
+            "lvef_multitask_analysis_modes"
+        )
+        policy = validate_dynamic_successor_capacity_safe_export_policy(
+            safe_export_policy_path
+        )
+        analysis_modes.validate_candidate_bytes(
+            summary_payload,
+            filename=aggregate_summary_path.name,
+            profile_name=DYNAMIC_SUCCESSOR_SAFE_EXPORT_PROFILE,
+            policy=policy,
+        )
+    except Exception as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    if restricted_receipt_path.parent != aggregate_summary_path.parent:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    output_parent = restricted_receipt_path.parent
+    if not os.path.lexists(output_parent):
+        _mkdir_private(output_parent)
+    else:
+        _no_symlink_ancestors(
+            output_parent / ".dynamic_capacity_parent_probe", "OUTPUT"
+        )
+        parent_metadata = os.lstat(output_parent)
+        if (
+            stat.S_ISLNK(parent_metadata.st_mode)
+            or not stat.S_ISDIR(parent_metadata.st_mode)
+            or parent_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_metadata.st_mode) not in {0o700, 0o2700}
+        ):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+    # Both collisions and safe-export validation have completed before the
+    # first evidence write.  These two owner-authorized evidence files are not
+    # effects of the read-only observation represented by writes_performed=0.
+    reopened_receipt, reopened_summary = _write_dynamic_owner_private_pair(
+        restricted_receipt_path,
+        receipt_payload,
+        aggregate_summary_path,
+        summary_payload,
+    )
+    if reopened_receipt != receipt_payload or reopened_summary != summary_payload:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+        )
+    validate_dynamic_successor_capacity_observation(
+        json.loads(
+            reopened_summary.decode("utf-8"), object_pairs_hook=_strict_pairs
+        ),
+        expected_governing_commit=receipt["governing_commit"],
+        expected_receipt_payload=reopened_receipt,
+        now_utc=now_utc,
+    )
+    return {
+        "status": observation["status"],
+        "restricted_receipt_basename": restricted_receipt_path.name,
+        "restricted_receipt_bytes": len(receipt_payload),
+        "restricted_receipt_sha256": _sha(receipt_payload),
+        "aggregate_summary_basename": aggregate_summary_path.name,
+        "aggregate_summary_bytes": len(summary_payload),
+        "aggregate_summary_sha256": _sha(summary_payload),
+        "observation": observation,
+        "evidence_files_written": 2,
+    }
+
+
+def load_dynamic_successor_capacity_capture(
+    *,
+    restricted_receipt_path: Path,
+    aggregate_summary_path: Path,
+    expected_governing_commit: str,
+    now_utc: datetime | None = None,
+) -> DynamicSuccessorCapacityCapture:
+    """Reopen and rebind one fixed owner-private dynamic capture pair."""
+
+    try:
+        receipt_payload, summary_payload = _read_dynamic_owner_private_pair(
+            restricted_receipt_path,
+            aggregate_summary_path,
+        )
+        receipt = json.loads(
+            receipt_payload.decode("utf-8"), object_pairs_hook=_strict_pairs
+        )
+        observation = json.loads(
+            summary_payload.decode("utf-8"), object_pairs_hook=_strict_pairs
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    if (
+        not isinstance(receipt, Mapping)
+        or not isinstance(observation, Mapping)
+        or receipt_payload != _canonical(receipt)
+        or summary_payload != _canonical(observation)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    validate_dynamic_successor_capacity_receipt(
+        receipt,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
+    )
+    validate_dynamic_successor_capacity_observation(
+        observation,
+        expected_governing_commit=expected_governing_commit,
+        expected_receipt_payload=receipt_payload,
+        now_utc=now_utc,
+    )
+    return DynamicSuccessorCapacityCapture(
+        receipt=dict(receipt),
+        receipt_payload=receipt_payload,
+        observation=dict(observation),
+    )
+
+
+def write_dynamic_successor_capacity_receipt_payload(
+    path: Path,
+    payload: bytes,
+    *,
+    expected_governing_commit: str,
+    now_utc: datetime | None = None,
+) -> Mapping[str, Any]:
+    """Persist one already-sealed receipt byte-for-byte under a fresh attempt."""
+
+    try:
+        value = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_strict_pairs
+        )
+    except (AttributeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    if not isinstance(value, Mapping) or payload != _canonical(value):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    receipt = validate_dynamic_successor_capacity_receipt(
+        value,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
+    )
+    _write_dynamic_owner_private_new(path, payload)
+    if _read_dynamic_owner_private_regular(path, maximum=16_000_000) != payload:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+        )
+    return receipt
+
+
+def load_dynamic_successor_capacity_receipt_payload(
+    path: Path,
+    *,
+    expected_governing_commit: str,
+    now_utc: datetime | None = None,
+) -> tuple[Mapping[str, Any], bytes]:
+    """Strictly reopen one persisted dynamic receipt without a FIFO/hardlink seam."""
+
+    payload = _read_dynamic_owner_private_regular(
+        path, maximum=16_000_000
+    )
+    try:
+        value = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_strict_pairs
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        ) from exc
+    if not isinstance(value, Mapping) or payload != _canonical(value):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    if now_utc is None:
+        captured_text = value.get("captured_at_utc")
+        if not isinstance(captured_text, str):
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            )
+        try:
+            now_utc = datetime.fromisoformat(
+                captured_text.replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+            ) from exc
+    receipt = validate_dynamic_successor_capacity_receipt(
+        value,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
+    )
+    return receipt, payload
 
 
 def _validate_prior(

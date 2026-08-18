@@ -1452,7 +1452,10 @@ def test_capture_contract_has_no_storage_inventory_cloud_or_scheduler_path() -> 
     wrapper = (ROOT / "scripts" / "scc_capture_lvef_c3_post_reallocation_capacity.sh").read_text()
     assert "objects.list" not in source
     assert "alt=media" not in source
-    assert "qsub" not in source
+    # Aggregate-safe zero-effect fields may name qsub, but the capture module
+    # must never contain a qsub executable or command literal.
+    assert '"qsub"' not in source
+    assert "'qsub'" not in source
     assert " du " not in wrapper
     assert "find " not in wrapper
     assert "pquota" in source and "findmnt" in source and "df" in source

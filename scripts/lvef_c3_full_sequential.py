@@ -42,6 +42,12 @@ import validate_lvef_c3_prior_batch_finalization as prior_gate
 EXPECTED_BRANCH = "codex/lvef-multitask-revalidation"
 CONTRACT_PATH = REPOSITORY_ROOT / "configs/lvef_c3_orchestration_v2.yaml"
 PRODUCTION_ROOT = Path("/restricted/projectnb/mimicecho/lvef_multitask_c3_v2")
+DYNAMIC_CAPACITY_SAFE_EXPORT_POLICY_PATH = (
+    REPOSITORY_ROOT / "configs/lvef_multitask_safe_export_policy.yaml"
+)
+DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME = (
+    "full_dynamic_capacity_source.restricted.json"
+)
 ARRAY_RUNNER_PATH = SCRIPT_ROOT / "scc_run_lvef_c3_full_sequential.sh"
 STATE_MACHINE_PATH = REPOSITORY_ROOT / "configs/lvef_c3_state_machine_v2.json"
 RESUME_LEDGER_PATH = REPOSITORY_ROOT / "configs/lvef_c3_resume_ledger_v2.json"
@@ -60,12 +66,15 @@ SUCCESSOR_INCREMENT_BYTES = 1_459_366_720_684
 SUCCESSOR_REQUIRED_RESERVE_BYTES = 200_000_000_000
 SUCCESSOR_REQUIRED_FILE_SLOTS = 3_500_000
 SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES = 2
+_DYNAMIC_CAPTURE_REUSE_TOKEN = object()
 SUCCESSOR_CAPACITY_KEYS = frozenset(
     {
         "schema_version",
         "artifact_type",
         "status",
         "source_capacity_authority_sha256",
+        "source_dynamic_receipt_bytes",
+        "source_dynamic_receipt_sha256",
         "frozen_projected_peak_bytes",
         "frozen_original_current_usage_bytes",
         "successor_increment_bytes",
@@ -288,6 +297,13 @@ FULL_SUBMISSION_CLAIM_KEYS = frozenset(
     }
 )
 
+# Historical R3E/R4D2C replay imports ``FULL_SUBMISSION_CLAIM_KEYS`` directly;
+# that frozen v1 contract therefore remains byte-for-byte stable.  Only a
+# newly materialized full successor may use this distinct v2 claim schema.
+FRESH_FULL_SUBMISSION_CLAIM_V2_KEYS = frozenset(
+    {*FULL_SUBMISSION_CLAIM_KEYS, "dynamic_capacity_receipt_sha256"}
+)
+
 ORDERED_STAGES = (
     "DOWNLOAD",
     "DICOM_EXTRACTION",
@@ -343,7 +359,9 @@ class FullDependencies:
     token_provider_factory: Callable[[minimal.LiveAuthority], Any] | None = None
     transport_factory: Callable[[], Any] | None = None
     digest_provider_factory: Callable[[minimal.LiveAuthority], Any] | None = None
-    capacity_probe: Callable[[], Mapping[str, Any]] | None = None
+    capacity_probe: Callable[
+        [], capacity.DynamicSuccessorCapacityCapture
+    ] | None = None
     environment_validator: Callable[..., Mapping[str, Any]] | None = None
     test_only_synthetic_full_scope: bool = False
     extraction_workers: int = 4
@@ -2038,15 +2056,20 @@ def validate_successor_capacity_authority(
         "writes_performed",
     )
     if (
-        value.get("schema_version") != 1
+        value.get("schema_version") != 2
         or value.get("artifact_type")
-        != "lvef_c3_fresh_successor_capacity_authority_v1"
+        != "lvef_c3_fresh_successor_capacity_authority_v2"
         or value.get("status")
         != "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE"
         or SHA_RE.fullmatch(
             str(value.get("source_capacity_authority_sha256"))
         )
         is None
+        or not isinstance(value.get("source_dynamic_receipt_bytes"), int)
+        or isinstance(value.get("source_dynamic_receipt_bytes"), bool)
+        or value["source_dynamic_receipt_bytes"] < 1
+        or not isinstance(value.get("source_dynamic_receipt_sha256"), str)
+        or SHA_RE.fullmatch(value["source_dynamic_receipt_sha256"]) is None
         or any(
             isinstance(value.get(key), bool)
             or not isinstance(value.get(key), int)
@@ -2104,31 +2127,54 @@ def validate_successor_capacity_authority(
 
 
 def build_successor_capacity_authority(
-    observed_capacity: Mapping[str, Any],
+    observed_capture: capacity.DynamicSuccessorCapacityCapture,
     cache_inventory: ExtractionCacheInventory,
 ) -> dict[str, Any]:
     try:
-        capacity.validate_current_full_headroom(observed_capacity)
+        if not isinstance(
+            observed_capture, capacity.DynamicSuccessorCapacityCapture
+        ):
+            raise TypeError("dynamic capture required")
+        observed_capacity = observed_capture.observation
+        capacity.validate_dynamic_successor_capacity_observation(
+            observed_capacity,
+            expected_receipt_payload=observed_capture.receipt_payload,
+        )
     except Exception as exc:
         raise FullSequentialError(
             "FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID"
         ) from exc
-    live_usage = int(observed_capacity["research_usage_bytes"])
-    research_quota = int(observed_capacity["research_quota_bytes"])
+    if observed_capacity.get("status") != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_NOT_PASS")
+    live_usage = int(observed_capacity["live_research_usage_bytes"])
+    research_quota = int(observed_capacity["live_research_quota_bytes"])
     physical_available = int(
-        observed_capacity["research_filesystem_available_bytes"]
+        observed_capacity["live_research_filesystem_available_bytes"]
     )
-    file_slots = int(observed_capacity["research_file_slots_remaining"])
+    file_slots = int(observed_capacity["remaining_file_slots"])
+    if (
+        cache_inventory.active
+        != observed_capacity["active_extraction_caches"]
+        or cache_inventory.preserved_terminal_failed
+        != observed_capacity["preserved_terminal_failed_extraction_caches"]
+    ):
+        _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID")
     projected_total = live_usage + SUCCESSOR_INCREMENT_BYTES
     quota_remaining = research_quota - projected_total
     physical_remaining = physical_available - SUCCESSOR_INCREMENT_BYTES
     value = {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v2",
         "status": "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE",
         "source_capacity_authority_sha256": core.canonical_json_sha256(
             observed_capacity
         ),
+        "source_dynamic_receipt_bytes": observed_capacity[
+            "restricted_receipt_size_bytes"
+        ],
+        "source_dynamic_receipt_sha256": observed_capacity[
+            "restricted_receipt_sha256"
+        ],
         "frozen_projected_peak_bytes": FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES,
         "frozen_original_current_usage_bytes": (
             FROZEN_FULL_PLAN_ORIGINAL_CURRENT_USAGE_BYTES
@@ -2175,6 +2221,7 @@ def validate_installation() -> Mapping[str, Any]:
         SCRIPT_ROOT / "scc_run_lvef_c3_full_finalizer.sh",
         SCRIPT_ROOT / "scc_submit_lvef_c3_full_sequential.sh",
         SCRIPT_ROOT / "lvef_c3_orchestration_core.py",
+        SCRIPT_ROOT / "capture_lvef_c3_post_reallocation_capacity.py",
         SCRIPT_ROOT / "lvef_c3_production_stages.py",
         SCRIPT_ROOT / "preserve_lvef_c3_production_batch.py",
         SCRIPT_ROOT / "retire_lvef_c3_extracted_cache_v2.py",
@@ -2198,9 +2245,27 @@ def validate_installation() -> Mapping[str, Any]:
 
 
 def preflight_full(
-    *, dependencies: FullDependencies | None = None
+    *,
+    dependencies: FullDependencies | None = None,
+    _validated_dynamic_capture: (
+        capacity.DynamicSuccessorCapacityCapture | None
+    ) = None,
+    _capture_reuse_token: object | None = None,
 ) -> Mapping[str, Any]:
     dependency = resolve_dependencies(dependencies)
+    if (
+        dependency.capacity_probe is not None
+        and not dependency.test_only_synthetic_full_scope
+    ):
+        _fail("FULL_SEQUENTIAL_SYNTHETIC_CAPACITY_NOT_AUTHORIZED")
+    if (
+        _validated_dynamic_capture is not None
+        and (
+            dependency.capacity_probe is not None
+            or _capture_reuse_token is not _DYNAMIC_CAPTURE_REUSE_TOKEN
+        )
+    ):
+        _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID")
     installation = validate_installation()
     run = build_full_run()
     if os.path.lexists(run.attempt_root):
@@ -2213,19 +2278,61 @@ def preflight_full(
         ),
         scientific_governing_commit=run.authority.governing_commit,
     )
-    observed_capacity = dict(
-        dependency.capacity_probe()
-        if dependency.capacity_probe is not None
-        else capacity.probe_current_full_headroom()
-    )
-    capacity.validate_current_full_headroom(observed_capacity)
     cache_inventory = _extraction_cache_inventory(
         run.production_root, current_attempt_id=run.attempt_id
     )
     if cache_inventory.active != 0:
         _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
+    if (
+        cache_inventory.preserved_terminal_failed
+        != SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+    ):
+        _fail("FULL_SEQUENTIAL_TERMINAL_FAILURE_CACHE_AUTHORITY_INVALID")
+    claim_path = run.attempt_root / "full_submission_claim.restricted.json"
+    attempt_absent = not os.path.lexists(run.attempt_root)
+    claim_absent = not os.path.lexists(claim_path)
+    if not attempt_absent or not claim_absent:
+        _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
+    try:
+        observed_capture = (
+            _validated_dynamic_capture
+            if _validated_dynamic_capture is not None
+            else dependency.capacity_probe()
+            if dependency.capacity_probe is not None
+            else _load_fixed_dynamic_capacity_capture(run)
+        )
+        if not isinstance(
+            observed_capture, capacity.DynamicSuccessorCapacityCapture
+        ):
+            _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID")
+        if not dependency.test_only_synthetic_full_scope:
+            observed_capture = (
+                capacity.validate_production_dynamic_successor_capacity_capture(
+                    observed_capture,
+                    expected_governing_commit=(
+                        run.authority.governing_commit
+                    ),
+                )
+            )
+        observed_capacity = dict(observed_capture.observation)
+        capacity.validate_dynamic_successor_capacity_observation(
+            observed_capacity,
+            expected_governing_commit=run.authority.governing_commit,
+            expected_receipt_payload=observed_capture.receipt_payload,
+        )
+    except capacity.PostReallocationCapacityError as exc:
+        raise FullSequentialError(exc.code) from exc
+    if observed_capacity.get("status") != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_NOT_PASS")
+    if (
+        os.path.lexists(run.attempt_root)
+        or os.path.lexists(claim_path)
+        or observed_capacity["successor_attempt_root_absent"] is not True
+        or observed_capacity["successor_claim_absent"] is not True
+    ):
+        _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
     successor_capacity = build_successor_capacity_authority(
-        observed_capacity, cache_inventory
+        observed_capture, cache_inventory
     )
     aggregate = core.aggregate_batch_plan(
         run.plan, requirements=run.requirements
@@ -2271,6 +2378,424 @@ def preflight_full(
     }
 
 
+def run_dynamic_successor_capacity_seal(
+    *,
+    capture: capacity.DynamicSuccessorCapacityCapture | None = None,
+    dependencies: FullDependencies | None = None,
+) -> Mapping[str, Any]:
+    """Seal exactly one observation, then conditionally reuse it in preflight."""
+
+    dependency = resolve_dependencies(dependencies)
+    if (
+        capture is not None
+        and not dependency.test_only_synthetic_full_scope
+    ):
+        _fail("FULL_SEQUENTIAL_SYNTHETIC_CAPACITY_NOT_AUTHORIZED")
+    installation = validate_installation()
+    run = build_full_run()
+    if os.path.lexists(run.attempt_root):
+        _fail("FULL_SEQUENTIAL_ATTEMPT_ALREADY_EXISTS")
+    _validate_completed_canary_evidence()
+    dependency.environment_validator(
+        run.authority.environment_receipt,
+        expected_environment_receipt_sha256=(
+            run.runtime_authority["environment_receipt_sha256"]
+        ),
+        scientific_governing_commit=run.authority.governing_commit,
+    )
+    cache_inventory = _extraction_cache_inventory(
+        run.production_root, current_attempt_id=run.attempt_id
+    )
+    if (
+        cache_inventory.active != 0
+        or cache_inventory.preserved_terminal_failed
+        != SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+    ):
+        _fail("DYNAMIC_CAPACITY_CACHE_INVENTORY_INVALID")
+    evidence_root = run.production_root / "owner_private"
+    _validate_private_directory(evidence_root)
+    try:
+        capacity.validate_dynamic_successor_capacity_safe_export_policy(
+            DYNAMIC_CAPACITY_SAFE_EXPORT_POLICY_PATH
+        )
+    except capacity.PostReallocationCapacityError as exc:
+        raise FullSequentialError(exc.code) from exc
+    restricted_receipt_path = (
+        evidence_root
+        / capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
+    )
+    aggregate_summary_path = (
+        evidence_root
+        / capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
+    )
+    # Both fixed evidence-leaf collision gates precede the only live probe.
+    # Any race after this gate is caught again by the O_EXCL publisher.
+    if (
+        os.path.lexists(restricted_receipt_path)
+        or os.path.lexists(aggregate_summary_path)
+    ):
+        _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
+    claim_path = run.attempt_root / "full_submission_claim.restricted.json"
+    attempt_absent = not os.path.lexists(run.attempt_root)
+    claim_absent = not os.path.lexists(claim_path)
+    if not attempt_absent or not claim_absent:
+        _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
+    try:
+        observed_capture = capture or (
+            capacity.probe_dynamic_successor_capacity_observation(
+                governing_commit=run.authority.governing_commit,
+                active_extraction_caches=cache_inventory.active,
+                preserved_terminal_failed_extraction_caches=(
+                    cache_inventory.preserved_terminal_failed
+                ),
+                successor_attempt_root_absent=attempt_absent,
+                successor_claim_absent=claim_absent,
+            )
+        )
+        if not isinstance(
+            observed_capture, capacity.DynamicSuccessorCapacityCapture
+        ):
+            _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID")
+        if not dependency.test_only_synthetic_full_scope:
+            observed_capture = (
+                capacity.validate_production_dynamic_successor_capacity_capture(
+                    observed_capture,
+                    expected_governing_commit=(
+                        run.authority.governing_commit
+                    ),
+                )
+            )
+        observation = capacity.validate_dynamic_successor_capacity_observation(
+            observed_capture.observation,
+            expected_governing_commit=run.authority.governing_commit,
+            expected_receipt_payload=observed_capture.receipt_payload,
+        )
+        if (
+            observation["active_extraction_caches"]
+            != cache_inventory.active
+            or observation["preserved_terminal_failed_extraction_caches"]
+            != cache_inventory.preserved_terminal_failed
+        ):
+            _fail("DYNAMIC_CAPACITY_CACHE_INVENTORY_INVALID")
+        if (
+            observation["successor_attempt_root_absent"] is not True
+            or observation["successor_claim_absent"] is not True
+        ):
+            _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
+        if (
+            os.path.lexists(run.attempt_root)
+            or os.path.lexists(
+                run.attempt_root
+                / "full_submission_claim.restricted.json"
+            )
+            or os.path.lexists(restricted_receipt_path)
+            or os.path.lexists(aggregate_summary_path)
+        ):
+            _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
+        artifacts = capacity.publish_dynamic_successor_capacity_capture(
+            observed_capture,
+            restricted_receipt_path=restricted_receipt_path,
+            aggregate_summary_path=aggregate_summary_path,
+            safe_export_policy_path=DYNAMIC_CAPACITY_SAFE_EXPORT_POLICY_PATH,
+        )
+    except capacity.PostReallocationCapacityError as exc:
+        raise FullSequentialError(exc.code) from exc
+
+    integrated: Mapping[str, Any] | None = None
+    if observation["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+        integrated = preflight_full(
+            dependencies=replace(dependency, capacity_probe=None),
+            _validated_dynamic_capture=observed_capture,
+            _capture_reuse_token=_DYNAMIC_CAPTURE_REUSE_TOKEN,
+        )
+    return {
+        "status": observation["status"],
+        "governing_commit": installation["governing_commit"],
+        "storage_allocation_visible": observation[
+            "storage_allocation_visible"
+        ],
+        "minimum_additional_quota_bytes": observation[
+            "minimum_additional_quota_bytes"
+        ],
+        "minimum_additional_physical_bytes": observation[
+            "minimum_additional_physical_bytes"
+        ],
+        "minimum_additional_file_slots": observation[
+            "minimum_additional_file_slots"
+        ],
+        "restricted_receipt_basename": artifacts[
+            "restricted_receipt_basename"
+        ],
+        "restricted_receipt_bytes": artifacts["restricted_receipt_bytes"],
+        "restricted_receipt_sha256": artifacts[
+            "restricted_receipt_sha256"
+        ],
+        "aggregate_summary_basename": artifacts[
+            "aggregate_summary_basename"
+        ],
+        "aggregate_summary_bytes": artifacts["aggregate_summary_bytes"],
+        "aggregate_summary_sha256": artifacts["aggregate_summary_sha256"],
+        "integrated_no_body_preflight": (
+            "PASS" if integrated is not None else "NOT_RUN"
+        ),
+        "integrated_preflight": integrated,
+        "observation": observation,
+        "successor_attempt_root_absent": observation[
+            "successor_attempt_root_absent"
+        ],
+        "successor_claim_absent": observation["successor_claim_absent"],
+        **{
+            key: observation[key]
+            for key in capacity.DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS
+        },
+        "writes_performed_by_observation": 0,
+        "evidence_files_written": 2,
+    }
+
+
+def format_dynamic_successor_capacity_seal_report(
+    value: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Project the sealed dynamic result to closed aggregate-safe markers."""
+
+    expected_keys = {
+        "status",
+        "governing_commit",
+        "storage_allocation_visible",
+        "minimum_additional_quota_bytes",
+        "minimum_additional_physical_bytes",
+        "minimum_additional_file_slots",
+        "restricted_receipt_basename",
+        "restricted_receipt_bytes",
+        "restricted_receipt_sha256",
+        "aggregate_summary_basename",
+        "aggregate_summary_bytes",
+        "aggregate_summary_sha256",
+        "integrated_no_body_preflight",
+        "integrated_preflight",
+        "observation",
+        "successor_attempt_root_absent",
+        "successor_claim_absent",
+        "writes_performed_by_observation",
+        "evidence_files_written",
+        *capacity.DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS,
+    }
+    if not isinstance(value, Mapping) or set(value) != expected_keys:
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+    observation = value.get("observation")
+    if not isinstance(observation, Mapping):
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+    try:
+        capacity.validate_dynamic_successor_capacity_observation(
+            observation,
+            expected_governing_commit=value.get("governing_commit"),
+        )
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID"
+        ) from exc
+    summary_payload = capacity._canonical(observation)
+    if (
+        value.get("status") != observation["status"]
+        or value.get("storage_allocation_visible")
+        is not observation["storage_allocation_visible"]
+        or value.get("restricted_receipt_basename")
+        != capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
+        or value.get("aggregate_summary_basename")
+        != capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
+        or value.get("restricted_receipt_bytes")
+        != observation["restricted_receipt_size_bytes"]
+        or value.get("restricted_receipt_sha256")
+        != observation["restricted_receipt_sha256"]
+        or value.get("minimum_additional_quota_bytes")
+        != observation["minimum_additional_quota_bytes"]
+        or value.get("minimum_additional_physical_bytes")
+        != observation["minimum_additional_physical_bytes"]
+        or value.get("minimum_additional_file_slots")
+        != observation["minimum_additional_file_slots"]
+        or value.get("successor_attempt_root_absent")
+        is not observation["successor_attempt_root_absent"]
+        or value.get("successor_claim_absent")
+        is not observation["successor_claim_absent"]
+        or value.get("aggregate_summary_bytes") != len(summary_payload)
+        or value.get("aggregate_summary_sha256")
+        != hashlib.sha256(summary_payload).hexdigest()
+        or any(value.get(key) != 0 for key in capacity.DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS)
+        or value.get("writes_performed_by_observation") != 0
+        or value.get("evidence_files_written") != 2
+    ):
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+    expected_integrated = (
+        "PASS"
+        if observation["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+        else "NOT_RUN"
+    )
+    integrated = value.get("integrated_preflight")
+    if value.get("integrated_no_body_preflight") != expected_integrated:
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+    if expected_integrated == "PASS":
+        if (
+            not isinstance(integrated, Mapping)
+            or integrated.get("governing_commit")
+            != value.get("governing_commit")
+            or integrated.get("capacity") != observation
+        ):
+            _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+        try:
+            format_preflight_report(integrated)
+        except Exception as exc:
+            raise FullSequentialError(
+                "FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID"
+            ) from exc
+    elif integrated is not None:
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+    next_action = {
+        capacity.DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING: (
+            "WAIT_FOR_STORAGE_ALLOCATION_VISIBILITY"
+        ),
+        capacity.DYNAMIC_SUCCESSOR_STATUS_BLOCKED: (
+            "SATISFY_REPORTED_CAPACITY_MINIMUMS"
+        ),
+        capacity.DYNAMIC_SUCCESSOR_STATUS_PASS: (
+            "REVIEW_SEPARATE_FRESH_SUCCESSOR_AUTHORIZATION"
+        ),
+    }[observation["status"]]
+    fields = (
+        (
+            "R5B_R1_STARTING_COMMIT",
+            "738195d1fa4ae4e2a23bbd9482b5acd008317eb4",
+        ),
+        ("R5B_R1_ENDING_COMMIT", value["governing_commit"]),
+        ("STATIC_CAPACITY_INCOMPATIBILITY", "CONFIRMED"),
+        ("HISTORICAL_STATIC_CAPACITY_PATH_UNCHANGED", "YES"),
+        ("DYNAMIC_SUCCESSOR_CAPACITY_AUTHORITY", "PASS"),
+        ("HARD_CODED_ANTICIPATED_QUOTA_ADDED", "NO"),
+        ("CURRENT_CAPACITY_STATUS", observation["status"]),
+        ("CURRENT_QUOTA_BYTES", observation["live_research_quota_bytes"]),
+        ("CURRENT_USAGE_BYTES", observation["live_research_usage_bytes"]),
+        (
+            "CURRENT_PHYSICAL_AVAILABLE_BYTES",
+            observation["live_research_filesystem_available_bytes"],
+        ),
+        ("CURRENT_REMAINING_FILE_SLOTS", observation["remaining_file_slots"]),
+        (
+            "FRESH_SUCCESSOR_INCREMENT_BYTES",
+            observation["fresh_successor_increment_bytes"],
+        ),
+        (
+            "QUOTA_MARGIN_BEYOND_200GB_RESERVE_BYTES",
+            observation["quota_margin_beyond_reserve_bytes"],
+        ),
+        (
+            "PHYSICAL_MARGIN_BEYOND_200GB_RESERVE_BYTES",
+            observation["physical_margin_beyond_reserve_bytes"],
+        ),
+        ("SCC_INTEGRATED_NO_BODY_ACCEPTANCE", expected_integrated),
+        ("R5D_RETIREMENT_ROUTE", "CLOSED_COMPLEXITY_DISPROPORTIONATE"),
+        ("PREFIX_ADOPTION_IMPLEMENTED", "NO"),
+        ("CROSS_ATTEMPT_RECOVERY_IMPLEMENTED", "NO"),
+        ("DYNAMIC_SUCCESSOR_CAPACITY_STATUS", observation["status"]),
+        (
+            "STORAGE_ALLOCATION_VISIBLE",
+            "YES" if observation["storage_allocation_visible"] else "NO",
+        ),
+        ("LIVE_RESEARCH_QUOTA_BYTES", observation["live_research_quota_bytes"]),
+        ("LIVE_RESEARCH_USAGE_BYTES", observation["live_research_usage_bytes"]),
+        ("LIVE_RESEARCH_FILE_QUOTA", observation["live_research_file_quota"]),
+        ("LIVE_RESEARCH_FILES_USED", observation["live_research_files_used"]),
+        (
+            "LIVE_RESEARCH_FILESYSTEM_AVAILABLE_BYTES",
+            observation["live_research_filesystem_available_bytes"],
+        ),
+        (
+            "PROJECTED_FRESH_SUCCESSOR_PEAK_BYTES",
+            observation["projected_fresh_successor_peak_bytes"],
+        ),
+        ("QUOTA_SLACK_AFTER_PEAK_BYTES", observation["quota_slack_after_peak_bytes"]),
+        (
+            "PHYSICAL_SLACK_AFTER_PEAK_BYTES",
+            observation["physical_slack_after_peak_bytes"],
+        ),
+        (
+            "QUOTA_MARGIN_BEYOND_RESERVE_BYTES",
+            observation["quota_margin_beyond_reserve_bytes"],
+        ),
+        (
+            "PHYSICAL_MARGIN_BEYOND_RESERVE_BYTES",
+            observation["physical_margin_beyond_reserve_bytes"],
+        ),
+        ("REMAINING_FILE_SLOTS", observation["remaining_file_slots"]),
+        (
+            "FILE_SLOT_MARGIN_AFTER_DEMAND",
+            observation["file_slot_margin_after_demand"],
+        ),
+        (
+            "MINIMUM_ADDITIONAL_QUOTA_BYTES",
+            observation["minimum_additional_quota_bytes"],
+        ),
+        (
+            "MINIMUM_ADDITIONAL_PHYSICAL_BYTES",
+            observation["minimum_additional_physical_bytes"],
+        ),
+        (
+            "MINIMUM_ADDITIONAL_FILE_SLOTS",
+            observation["minimum_additional_file_slots"],
+        ),
+        ("ACTIVE_EXTRACTION_CACHES", observation["active_extraction_caches"]),
+        (
+            "PRESERVED_TERMINAL_FAILED_EXTRACTION_CACHES",
+            observation["preserved_terminal_failed_extraction_caches"],
+        ),
+        ("SUCCESSOR_ATTEMPT_ROOT_ABSENT", "YES"),
+        ("SUCCESSOR_CLAIM_ABSENT", "YES"),
+        ("SUCCESSOR_ATTEMPT_ROOT_CREATED", "NO"),
+        ("SUCCESSOR_CLAIM_CREATED", "NO"),
+        ("CAPACITY_RECEIPT_BASENAME", value["restricted_receipt_basename"]),
+        ("CAPACITY_RECEIPT_BYTES", value["restricted_receipt_bytes"]),
+        ("CAPACITY_RECEIPT_SHA256", value["restricted_receipt_sha256"]),
+        ("CAPACITY_SUMMARY_BASENAME", value["aggregate_summary_basename"]),
+        ("CAPACITY_SUMMARY_BYTES", value["aggregate_summary_bytes"]),
+        ("CAPACITY_SUMMARY_SHA256", value["aggregate_summary_sha256"]),
+        ("INTEGRATED_NO_BODY_PREFLIGHT", expected_integrated),
+        ("NEW_CLOUD_REQUESTS", 0),
+        ("NEW_QSUB_SUBMISSIONS", 0),
+        ("NEW_DICOM_BODY_READS", 0),
+        ("NEW_NPZ_BODY_READS", 0),
+        ("NEW_GPU_EXECUTIONS", 0),
+        ("NEW_ECHOPRIME_EXECUTIONS", 0),
+        ("NEW_EMBEDDING_GENERATIONS", 0),
+        ("NEW_MODEL_FITTING", 0),
+        ("NEW_PREDICTION_GENERATION", 0),
+        ("NEW_CONFIRMATORY_PERFORMANCE_ACCESSES", 0),
+        ("NEW_FILES_MOVED", 0),
+        ("NEW_FILES_DELETED", 0),
+        ("NEW_WRITES_PERFORMED_BY_OBSERVATION", 0),
+        ("EVIDENCE_FILES_WRITTEN", 2),
+        ("CONFIRMATORY_PERFORMANCE_ACCESSED", "NO"),
+        (
+            "FULL_C3_STATUS",
+            "NO_GO_PENDING_DYNAMIC_CAPACITY_SEAL_AND_"
+            "SEPARATE_SUCCESSOR_AUTHORIZATION",
+        ),
+        ("EXACT_NEXT_ACTION", next_action),
+        ("CLOUD_REQUESTS", 0),
+        ("QSUB_SUBMISSIONS", 0),
+        ("DICOM_BODY_READS", 0),
+        ("NPZ_BODY_READS", 0),
+        ("GPU_EXECUTIONS", 0),
+        ("ECHOPRIME_EXECUTIONS", 0),
+        ("EMBEDDING_GENERATIONS", 0),
+        ("MODEL_FITTING", 0),
+        ("PREDICTION_GENERATION", 0),
+        ("CONFIRMATORY_PERFORMANCE_ACCESSES", 0),
+        ("FILES_MOVED", 0),
+        ("FILES_DELETED", 0),
+    )
+    if len(fields) != len({name for name, _ in fields}):
+        _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_REPORT_INVALID")
+    return tuple(f"{name}={item}" for name, item in fields)
+
+
 def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
     """Return the closed aggregate-safe no-body acceptance marker surface."""
 
@@ -2313,7 +2838,10 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
     if not isinstance(capacity_value, Mapping):
         _fail("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID")
     try:
-        capacity.validate_current_full_headroom(capacity_value)
+        capacity.validate_dynamic_successor_capacity_observation(
+            capacity_value,
+            expected_governing_commit=governing_commit,
+        )
     except Exception as exc:
         raise FullSequentialError("FULL_SEQUENTIAL_PREFLIGHT_REPORT_INVALID") from exc
     successor_capacity = value.get("successor_capacity")
@@ -2328,6 +2856,10 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
     if (
         successor_capacity.get("source_capacity_authority_sha256")
         != core.canonical_json_sha256(capacity_value)
+        or successor_capacity.get("source_dynamic_receipt_bytes")
+        != capacity_value.get("restricted_receipt_size_bytes")
+        or successor_capacity.get("source_dynamic_receipt_sha256")
+        != capacity_value.get("restricted_receipt_sha256")
         or successor_capacity.get("preserved_terminal_failed_extraction_caches")
         != preserved_failed_caches
     ):
@@ -2403,17 +2935,17 @@ def format_preflight_report(value: Mapping[str, Any]) -> tuple[str, ...]:
         "FULL_C3_TASK_MAPPING_VALIDATION=PASS",
         "FULL_C3_TASK_MAPPINGS=19",
         "FULL_C3_RESEARCH_QUOTA_REMAINING_BYTES="
-        f"{capacity_value['research_quota_remaining_bytes']}",
+        f"{capacity_value['live_research_quota_bytes'] - capacity_value['live_research_usage_bytes']}",
         "FULL_C3_RESEARCH_FILESYSTEM_AVAILABLE_BYTES="
-        f"{capacity_value['research_filesystem_available_bytes']}",
+        f"{capacity_value['live_research_filesystem_available_bytes']}",
         "FULL_C3_RESEARCH_FILE_SLOTS_REMAINING="
-        f"{capacity_value['research_file_slots_remaining']}",
+        f"{capacity_value['remaining_file_slots']}",
         "FULL_C3_RESEARCH_MARGIN_BEYOND_200GB_RESERVE_BYTES="
-        f"{capacity_value['research_margin_beyond_200gb_reserve_bytes']}",
+        f"{capacity_value['quota_margin_beyond_reserve_bytes']}",
         "FULL_C3_BACKED_QUOTA_REMAINING_BYTES="
-        f"{capacity_value['backed_quota_remaining_bytes']}",
+        f"{capacity_value['backed_quota_bytes'] - capacity_value['backed_usage_bytes']}",
         "FULL_C3_BACKED_FILE_SLOTS_REMAINING="
-        f"{capacity_value['backed_file_slots_remaining']}",
+        f"{capacity_value['backed_file_quota'] - capacity_value['backed_files_used']}",
         *mapping_lines,
         "BUCKET_LISTING_REQUESTS=0",
         "CLOUD_REQUESTS=0",
@@ -2437,16 +2969,20 @@ def _expected_submission_claim(
     run: FullRun,
     *,
     capacity_receipt_sha256: str,
+    dynamic_capacity_receipt_sha256: str,
     qsub_environment_sha256: str,
 ) -> dict[str, Any]:
-    if SHA_RE.fullmatch(capacity_receipt_sha256) is None:
+    if (
+        SHA_RE.fullmatch(capacity_receipt_sha256) is None
+        or SHA_RE.fullmatch(dynamic_capacity_receipt_sha256) is None
+    ):
         _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
     qsub_environment_sha256 = _require_qsub_environment_sha256(
         qsub_environment_sha256
     )
     value = {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_full_submission_claim_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_full_submission_claim_v2",
         "status": "PREPARED_TWO_SUBMISSION_FULL_RECONSTRUCTION",
         "governing_commit": run.authority.governing_commit,
         "attempt_id": run.attempt_id,
@@ -2459,6 +2995,9 @@ def _expected_submission_claim(
         ),
         "launch_authority_sha256": run.launch_authority_sha256,
         "capacity_receipt_sha256": capacity_receipt_sha256,
+        "dynamic_capacity_receipt_sha256": (
+            dynamic_capacity_receipt_sha256
+        ),
         "qsub_environment_sha256": qsub_environment_sha256,
         "maximum_qsub_submissions": 2,
         "array_tasks": 19,
@@ -2476,7 +3015,7 @@ def _expected_submission_claim(
         "prediction_generation_before_claim": 0,
         "confirmatory_performance_access_before_claim": 0,
     }
-    if set(value) != FULL_SUBMISSION_CLAIM_KEYS:
+    if set(value) != FRESH_FULL_SUBMISSION_CLAIM_V2_KEYS:
         _fail("FULL_SEQUENTIAL_SUBMISSION_CLAIM_INTERNAL_INVALID")
     return value
 
@@ -2491,11 +3030,58 @@ def _load_bound_submission_environment_sha256(
     capacity_path = (
         run.attempt_root / "full_capacity_receipt.restricted.json"
     )
+    dynamic_path = (
+        run.attempt_root / DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME
+    )
     try:
         capacity_value, capacity_payload = _load_owner_private_json(
             capacity_path
         )
         validate_successor_capacity_authority(capacity_value)
+        dynamic_value, dynamic_payload = (
+            capacity.load_dynamic_successor_capacity_receipt_payload(
+                dynamic_path,
+                expected_governing_commit=(
+                    run.authority.governing_commit
+                ),
+            )
+        )
+        captured_time = datetime.fromisoformat(
+            dynamic_value["captured_at_utc"].replace("Z", "+00:00")
+        )
+        capacity.validate_dynamic_successor_capacity_receipt(
+            dynamic_value,
+            expected_governing_commit=run.authority.governing_commit,
+            now_utc=captured_time,
+        )
+        dynamic_core = dynamic_value["observation_authority"]
+        dynamic_observation = {
+            **dynamic_core,
+            "observation_authority_sha256": dynamic_value[
+                "observation_authority_sha256"
+            ],
+            "restricted_receipt_size_bytes": len(dynamic_payload),
+            "restricted_receipt_sha256": hashlib.sha256(
+                dynamic_payload
+            ).hexdigest(),
+        }
+        capacity.validate_dynamic_successor_capacity_observation(
+            dynamic_observation,
+            expected_governing_commit=run.authority.governing_commit,
+            expected_receipt_payload=dynamic_payload,
+            now_utc=captured_time,
+        )
+        if (
+            dynamic_observation["status"]
+            != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+            or capacity_value["source_capacity_authority_sha256"]
+            != core.canonical_json_sha256(dynamic_observation)
+            or capacity_value["source_dynamic_receipt_bytes"]
+            != len(dynamic_payload)
+            or capacity_value["source_dynamic_receipt_sha256"]
+            != hashlib.sha256(dynamic_payload).hexdigest()
+        ):
+            raise ValueError("dynamic capacity binding mismatch")
     except Exception as exc:
         raise FullSequentialError(
             "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID"
@@ -2508,7 +3094,7 @@ def _load_bound_submission_environment_sha256(
         raise FullSequentialError(
             "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
         ) from exc
-    if set(claim) != FULL_SUBMISSION_CLAIM_KEYS:
+    if set(claim) != FRESH_FULL_SUBMISSION_CLAIM_V2_KEYS:
         _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
     observed = claim.get("qsub_environment_sha256")
     if not isinstance(observed, str) or SHA_RE.fullmatch(observed) is None:
@@ -2527,11 +3113,47 @@ def _load_bound_submission_environment_sha256(
     expected_claim = _expected_submission_claim(
         run,
         capacity_receipt_sha256=hashlib.sha256(capacity_payload).hexdigest(),
+        dynamic_capacity_receipt_sha256=hashlib.sha256(
+            dynamic_payload
+        ).hexdigest(),
         qsub_environment_sha256=observed,
     )
     if claim != expected_claim:
         _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
     return observed
+
+
+def _load_fixed_dynamic_capacity_capture(
+    run: FullRun,
+) -> capacity.DynamicSuccessorCapacityCapture:
+    owner_private = run.production_root / "owner_private"
+    _validate_private_directory(owner_private)
+    try:
+        captured = capacity.load_dynamic_successor_capacity_capture(
+            restricted_receipt_path=(
+                owner_private
+                / capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
+            ),
+            aggregate_summary_path=(
+                owner_private
+                / capacity.DYNAMIC_SUCCESSOR_AGGREGATE_SUMMARY_BASENAME
+            ),
+            expected_governing_commit=run.authority.governing_commit,
+        )
+        if (
+            captured.observation.get("status")
+            != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+        ):
+            _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_NOT_PASS")
+        captured = (
+            capacity.validate_production_dynamic_successor_capacity_capture(
+                captured,
+                expected_governing_commit=run.authority.governing_commit,
+            )
+        )
+    except capacity.PostReallocationCapacityError as exc:
+        raise FullSequentialError(exc.code) from exc
+    return captured
 
 
 def claim_submission(
@@ -2540,10 +3162,16 @@ def claim_submission(
     qsub_environment_sha256 = _require_qsub_environment_sha256(
         qsub_environment_sha256
     )
-    preflight = preflight_full()
     run = build_full_run()
     if os.path.lexists(run.attempt_root):
         _fail("FULL_SEQUENTIAL_ATTEMPT_ALREADY_EXISTS")
+    dynamic_capture = _load_fixed_dynamic_capacity_capture(run)
+    preflight = preflight_full(
+        _validated_dynamic_capture=dynamic_capture,
+        _capture_reuse_token=_DYNAMIC_CAPTURE_REUSE_TOKEN,
+    )
+    if os.path.lexists(run.attempt_root):
+        _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
     _ensure_private_directory(run.production_root)
     _ensure_private_directory(run.production_root / "attempts")
     _ensure_private_directory(run.attempt_root)
@@ -2554,6 +3182,22 @@ def claim_submission(
             run.launch_authority,
             attempt_id=run.attempt_id,
         )
+        dynamic_path = (
+            run.attempt_root / DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME
+        )
+        capacity.write_dynamic_successor_capacity_receipt_payload(
+            dynamic_path,
+            dynamic_capture.receipt_payload,
+            expected_governing_commit=run.authority.governing_commit,
+        )
+        _, dynamic_payload = (
+            capacity.load_dynamic_successor_capacity_receipt_payload(
+                dynamic_path,
+                expected_governing_commit=run.authority.governing_commit,
+            )
+        )
+        if dynamic_payload != dynamic_capture.receipt_payload:
+            _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
         _write_private_json(
             run.attempt_root / "full_capacity_receipt.restricted.json",
             preflight["successor_capacity"],
@@ -2564,6 +3208,9 @@ def claim_submission(
             capacity_receipt_sha256=core.sha256_file(
                 run.attempt_root / "full_capacity_receipt.restricted.json"
             ),
+            dynamic_capacity_receipt_sha256=hashlib.sha256(
+                dynamic_payload
+            ).hexdigest(),
             qsub_environment_sha256=qsub_environment_sha256,
         )
         _write_private_json(
@@ -2680,6 +3327,7 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--validate-installation", action="store_true")
     modes.add_argument("--preflight-only", action="store_true")
     modes.add_argument("--preflight-report", action="store_true")
+    modes.add_argument("--seal-dynamic-capacity", action="store_true")
     modes.add_argument("--claim-submission", action="store_true")
     modes.add_argument("--validate-claimed-submission", action="store_true")
     modes.add_argument("--print-fixed-identity", action="store_true")
@@ -2711,6 +3359,13 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             print("FULL_C3_NO_BODY_PREFLIGHT=PASS")
         elif args.preflight_report:
             print("\n".join(format_preflight_report(preflight_full())))
+        elif args.seal_dynamic_capacity:
+            sealed = run_dynamic_successor_capacity_seal()
+            print("\n".join(
+                format_dynamic_successor_capacity_seal_report(sealed)
+            ))
+            if sealed["status"] != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+                return 78
         elif args.claim_submission:
             claim_submission(
                 qsub_environment_sha256=qsub_environment_sha256

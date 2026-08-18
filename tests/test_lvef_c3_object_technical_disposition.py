@@ -280,10 +280,12 @@ def _capacity_authority() -> dict[str, Any]:
     live = 123_456_789
     projected = live + increment
     return {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v1",
+        "schema_version": 2,
+        "artifact_type": "lvef_c3_fresh_successor_capacity_authority_v2",
         "status": "PASS_FRESH_SUCCESSOR_WITH_200GB_RESERVE",
         "source_capacity_authority_sha256": "a" * 64,
+        "source_dynamic_receipt_bytes": 1_024,
+        "source_dynamic_receipt_sha256": "b" * 64,
         "frozen_projected_peak_bytes": sequential.FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES,
         "frozen_original_current_usage_bytes": (
             sequential.FROZEN_FULL_PLAN_ORIGINAL_CURRENT_USAGE_BYTES
