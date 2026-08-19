@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass, replace
+from datetime import datetime
 import errno
 import hashlib
 import io
@@ -54,6 +55,16 @@ OLDER_ARRAY_JOB_ID = "7183952"
 OLDER_FINALIZER_JOB_ID = "7183953"
 QUIESCENCE_STABILITY_INTERVAL_SECONDS = 0.10
 RAW_OBJECT_BASENAME_RE = re.compile(r"^[0-9a-f]{64}\.dcm$")
+PLANNED_DOWNLOAD_PARTIAL_RE = re.compile(
+    rf"^(?P<source_key>[0-9a-f]{{64}})\.{re.escape(OLDER_ATTEMPT_ID)}\.partial$"
+)
+TRANSITION_RECEIPT_BASENAMES = (
+    "download_start_transition.restricted.json",
+    "download_verified_transition.restricted.json",
+)
+R5E_R2_PRE_ACTION_GOVERNING_COMMIT = (
+    "f201e22cce760402814be76e25899c0ba10bdfbd"
+)
 EXPECTED_BATCH_COUNTS = {"c3_batch_000": 18_872, "c3_batch_001": 18_196}
 EXPECTED_BATCH_BYTES = {
     "c3_batch_000": 68_847_811_224,
@@ -134,6 +145,7 @@ BATCH_AUTHORITY_KEYS = frozenset({
 })
 RETAINED_ROLE_NAMES = (
     "RAW_DICOM_PAYLOAD",
+    "PRESERVED_DOWNLOAD_PARTIALS",
     "EXTRACTED_NPZ_CACHE",
     "CLIP_EMBEDDINGS",
     "STUDY_EMBEDDINGS",
@@ -184,6 +196,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SAFE_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,127}$")
 QSTAT = Path("/usr/local/ogs-ge2011.11.p1/sge_root/bin/linux-x64/qstat")
+MOUNTINFO_PATH = Path("/proc/self/mountinfo")
 EXPECTED_BRANCH = "codex/lvef-multitask-revalidation"
 SAFE_EXPORT_POLICY_PATH = (
     REPOSITORY_ROOT / "configs/lvef_multitask_safe_export_policy.yaml"
@@ -213,6 +226,66 @@ def _fail(code: str) -> None:
 
 def _manifest_fail(role: str, code: str) -> None:
     raise OlderRawDownloadManifestError(code, role)
+
+
+def _mountinfo_mountpoints() -> frozenset[Path]:
+    """Read kernel mount topology and decode its fixed octal path escapes."""
+
+    if sys.platform == "darwin":
+        return frozenset()
+    if not sys.platform.startswith("linux"):
+        _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(MOUNTINFO_PATH, flags)
+        try:
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                block = os.read(fd, 1024 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                if total > 16 * 1024 * 1024:
+                    _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+                chunks.append(block)
+        finally:
+            os.close(fd)
+        text = b"".join(chunks).decode("utf-8", errors="strict")
+    except OlderRawRetirementError:
+        raise
+    except (OSError, UnicodeDecodeError) as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID"
+        ) from exc
+
+    escapes = {"040": " ", "011": "\t", "012": "\n", "134": "\\"}
+    mountpoints: set[Path] = set()
+    try:
+        for line in text.splitlines():
+            left, separator, _right = line.partition(" - ")
+            fields = left.split(" ")
+            if not separator or len(fields) < 6:
+                _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+            encoded = fields[4]
+
+            def replace_escape(match: re.Match[str]) -> str:
+                value = escapes.get(match.group(1))
+                if value is None:
+                    _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+                return value
+
+            decoded = re.sub(r"\\([0-9]{3})", replace_escape, encoded)
+            if not decoded.startswith("/"):
+                _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+            mountpoints.add(Path(os.path.abspath(decoded)))
+    except OlderRawRetirementError:
+        raise
+    except (IndexError, ValueError) as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID"
+        ) from exc
+    return frozenset(mountpoints)
 
 
 def _pairs(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
@@ -430,6 +503,14 @@ def _retained_role(relative_path: str) -> str:
     name = path.name.lower()
     if name.endswith(".dcm"):
         return "RAW_DICOM_PAYLOAD"
+    if (
+        len(parts) >= 4
+        and parts[0] == "raw"
+        and parts[1] in TARGET_BATCHES
+        and parts[2] == "partials"
+        and PLANNED_DOWNLOAD_PARTIAL_RE.fullmatch(name) is not None
+    ):
+        return "PRESERVED_DOWNLOAD_PARTIALS"
     if name.endswith(".npz"):
         if "clip_embeddings" in name:
             return "CLIP_EMBEDDINGS"
@@ -539,7 +620,8 @@ def _retained_evidence_authority(
     }
     control_rows: list[tuple[str, str, int, str]] = []
     body_roles = {
-        "RAW_DICOM_PAYLOAD", "EXTRACTED_NPZ_CACHE",
+        "RAW_DICOM_PAYLOAD", "PRESERVED_DOWNLOAD_PARTIALS",
+        "EXTRACTED_NPZ_CACHE",
         "CLIP_EMBEDDINGS", "STUDY_EMBEDDINGS",
     }
     for row in files:
@@ -909,6 +991,451 @@ def _receipt_authority(
     return local_sha
 
 
+def _raw_object_leaf_authority(
+    attempt_root: Path,
+    leaf: Path,
+    *,
+    batch_id: str,
+    expected_sizes: Mapping[str, int] | None,
+    expected_relative_paths: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Close one raw-object leaf recursively without opening an object body."""
+
+    if batch_id not in TARGET_BATCHES:
+        _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+    attempt_root = Path(os.path.abspath(attempt_root))
+    leaf = Path(os.path.abspath(leaf))
+    try:
+        relative_leaf = leaf.relative_to(attempt_root)
+        if any(
+            mountpoint == attempt_root or attempt_root in mountpoint.parents
+            for mountpoint in _mountinfo_mountpoints()
+        ):
+            _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+        attempt_info = os.lstat(attempt_root)
+        if (
+            stat.S_ISLNK(attempt_info.st_mode)
+            or not stat.S_ISDIR(attempt_info.st_mode)
+            or attempt_info.st_uid != os.geteuid()
+        ):
+            _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+        current = attempt_root
+        for component in relative_leaf.parts:
+            current = current / component
+            info = os.lstat(current)
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_dev != attempt_info.st_dev
+                or os.path.ismount(current)
+            ):
+                _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+        leaf_info = os.lstat(leaf)
+        if stat.S_IMODE(leaf_info.st_mode) not in {0o700, 0o2700}:
+            _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+
+        entries: dict[str, dict[str, Any]] = {}
+        metadata: list[dict[str, int | str]] = []
+        directory_rows: list[tuple[str, int, int, int, int]] = []
+        seen_inodes: set[tuple[int, int]] = set()
+        for current_name, names, files in os.walk(
+            leaf, topdown=True, followlinks=False
+        ):
+            current_path = Path(current_name)
+            current_info = os.lstat(current_path)
+            if (
+                stat.S_ISLNK(current_info.st_mode)
+                or not stat.S_ISDIR(current_info.st_mode)
+                or current_info.st_uid != os.geteuid()
+                or current_info.st_dev != leaf_info.st_dev
+                or stat.S_IMODE(current_info.st_mode) not in {0o700, 0o2700}
+                or (current_path != leaf and os.path.ismount(current_path))
+            ):
+                _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+            if current_path != leaf:
+                directory_rows.append(
+                    (
+                        current_path.relative_to(leaf).as_posix(),
+                        stat.S_IMODE(current_info.st_mode),
+                        current_info.st_uid,
+                        current_info.st_gid,
+                        current_info.st_ino,
+                    )
+                )
+            names[:] = sorted(names)
+            for name in names:
+                directory = current_path / name
+                directory_info = os.lstat(directory)
+                if name.startswith(".nfs") or ".partial" in name:
+                    _fail("OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY")
+                if stat.S_ISLNK(directory_info.st_mode):
+                    _fail("OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY")
+                if (
+                    not stat.S_ISDIR(directory_info.st_mode)
+                    or directory_info.st_uid != os.geteuid()
+                    or directory_info.st_dev != leaf_info.st_dev
+                    or stat.S_IMODE(directory_info.st_mode)
+                    not in {0o700, 0o2700}
+                    or os.path.ismount(directory)
+                ):
+                    _fail("OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID")
+            for name in sorted(files):
+                path = current_path / name
+                info = os.lstat(path)
+                identity = (info.st_dev, info.st_ino)
+                if name.startswith(".nfs") or ".partial" in name:
+                    _fail("OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY")
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_dev != leaf_info.st_dev
+                    or identity in seen_inodes
+                ):
+                    _fail("OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY")
+                match = RAW_OBJECT_BASENAME_RE.fullmatch(name)
+                if match is None:
+                    _fail("OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID")
+                source_key = name[:-4]
+                if source_key in entries:
+                    _fail("OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID")
+                seen_inodes.add(identity)
+                relative_path = path.relative_to(attempt_root).as_posix()
+                leaf_relative_path = path.relative_to(leaf).as_posix()
+                entries[source_key] = {
+                    "path": path,
+                    "relative_path": relative_path,
+                    "leaf_relative_path": leaf_relative_path,
+                    "size_bytes": info.st_size,
+                    "info": info,
+                }
+                metadata.append(
+                    {
+                        "relative_path": leaf_relative_path,
+                        "device": info.st_dev,
+                        "inode": info.st_ino,
+                        "mode": stat.S_IMODE(info.st_mode),
+                        "uid": info.st_uid,
+                        "gid": info.st_gid,
+                        "nlink": info.st_nlink,
+                        "size": info.st_size,
+                        "mtime_ns": info.st_mtime_ns,
+                        "ctime_ns": info.st_ctime_ns,
+                    }
+                )
+    except OlderRawRetirementError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID"
+        ) from exc
+
+    if expected_sizes is not None:
+        expected_keys = set(expected_sizes)
+        if set(entries) != expected_keys:
+            _fail("OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID")
+        if any(
+            type(expected_sizes[key]) is not int
+            or entries[key]["size_bytes"] != expected_sizes[key]
+            for key in expected_keys
+        ):
+            _fail("OLDER_RAW_OBJECT_LEAF_BYTES_INVALID")
+    else:
+        if len(entries) != EXPECTED_BATCH_COUNTS[batch_id]:
+            _fail("OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID")
+        if sum(item["size_bytes"] for item in entries.values()) != (
+            EXPECTED_BATCH_BYTES[batch_id]
+        ):
+            _fail("OLDER_RAW_OBJECT_LEAF_BYTES_INVALID")
+    if expected_relative_paths is not None and any(
+        entries.get(key, {}).get("relative_path") != relative
+        for key, relative in expected_relative_paths.items()
+    ):
+        _fail("OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID")
+
+    ordered_paths = sorted(
+        item["leaf_relative_path"] for item in entries.values()
+    )
+    metadata.sort(key=lambda row: str(row["relative_path"]))
+    directory_rows.sort()
+    return {
+        "batch_id": batch_id,
+        "entries": entries,
+        "file_count": len(entries),
+        "total_bytes": sum(item["size_bytes"] for item in entries.values()),
+        "directory_count": len(directory_rows) + 1,
+        "relative_path_projection_sha256": core.canonical_json_sha256(
+            ordered_paths
+        ),
+        "metadata_projection_sha256": core.canonical_json_sha256(metadata),
+        "directory_projection_sha256": core.canonical_json_sha256(
+            directory_rows
+        ),
+        "leaf_device": leaf_info.st_dev,
+        "leaf_inode": leaf_info.st_ino,
+        "leaf_mode": stat.S_IMODE(leaf_info.st_mode),
+        "leaf_uid": leaf_info.st_uid,
+        "leaf_gid": leaf_info.st_gid,
+        "leaf_nlink": leaf_info.st_nlink,
+        "leaf_size": leaf_info.st_size,
+        "leaf_mtime_ns": leaf_info.st_mtime_ns,
+        "leaf_ctime_ns": leaf_info.st_ctime_ns,
+    }
+
+
+def _retained_receipt_tree_authority(
+    attempt_root: Path,
+    receipts_root: Path,
+    *,
+    batch_id: str,
+    attempt_id: str,
+    expected_receipt_names: set[str],
+    ledger_batch: Mapping[str, Any],
+    runtime_authority: Mapping[str, Any],
+    launch_authority: Mapping[str, Any],
+    download_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Validate required receipts plus the two sealed producer transitions."""
+
+    try:
+        root_info = os.lstat(receipts_root)
+        attempt_info = os.lstat(attempt_root)
+        if (
+            stat.S_ISLNK(root_info.st_mode)
+            or not stat.S_ISDIR(root_info.st_mode)
+            or root_info.st_uid != os.geteuid()
+            or root_info.st_dev != attempt_info.st_dev
+            or os.path.ismount(receipts_root)
+        ):
+            _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+        observed: dict[str, tuple[Path, os.stat_result]] = {}
+        for entry in os.scandir(receipts_root):
+            info = entry.stat(follow_symlinks=False)
+            if (
+                entry.is_symlink()
+                or not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_dev != root_info.st_dev
+            ):
+                code = (
+                    "OLDER_RAW_REQUIRED_RECEIPT_INVALID"
+                    if entry.name in expected_receipt_names
+                    else "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED"
+                )
+                _fail(code)
+            observed[entry.name] = (Path(entry.path), info)
+    except OlderRawRetirementError:
+        raise
+    except OSError as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED"
+        ) from exc
+
+    observed_names = set(observed)
+    missing = expected_receipt_names - observed_names
+    if missing:
+        _fail("OLDER_RAW_REQUIRED_RECEIPT_MISSING")
+    auxiliary_names = observed_names - expected_receipt_names
+    allowed_auxiliary = set(TRANSITION_RECEIPT_BASENAMES)
+    if auxiliary_names != allowed_auxiliary:
+        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+    if ledger_batch.get("download_recovery_receipts"):
+        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+
+    events = ledger_batch.get("events")
+    if not isinstance(events, list):
+        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+    start_events = [
+        event
+        for event in events
+        if isinstance(event, Mapping)
+        and event.get("from_state") == "PLANNED"
+        and event.get("to_state") == "DOWNLOAD_IN_PROGRESS"
+    ]
+    if len(start_events) != 1:
+        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+    specifications = (
+        (
+            TRANSITION_RECEIPT_BASENAMES[0],
+            "PLANNED",
+            "DOWNLOAD_IN_PROGRESS",
+            core.canonical_json_sha256(launch_authority),
+            [runtime_authority["batch_plan_sha256"]],
+        ),
+        (
+            TRANSITION_RECEIPT_BASENAMES[1],
+            "DOWNLOAD_IN_PROGRESS",
+            "DOWNLOAD_VERIFIED",
+            download_manifest_sha256,
+            [
+                start_events[0]["receipt_sha256"],
+                *sorted(ledger_batch["download_verification_receipts"].values()),
+            ],
+        ),
+    )
+    auxiliary_bytes = 0
+    for basename, from_state, to_state, output_sha, expected_inputs in specifications:
+        matching_events = [
+            event
+            for event in events
+            if isinstance(event, Mapping)
+            and event.get("from_state") == from_state
+            and event.get("to_state") == to_state
+        ]
+        if len(matching_events) != 1:
+            _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+        try:
+            receipt, payload = _read_json(
+                observed[basename][0], maximum=r3e.MAXIMUM_RECEIPT_BYTES
+            )
+            canonical_authority = core.validate_runtime_authority(
+                receipt["authority"]
+            )
+        except Exception as exc:
+            raise OlderRawRetirementError(
+                "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED"
+            ) from exc
+        if (
+            set(receipt) != core.RECEIPT_KEYS
+            or receipt.get("schema_version") != 2
+            or receipt.get("receipt_type") != "lvef_c3_state_transition_v2"
+            or receipt.get("status") != "PASS"
+            or receipt.get("attempt_id") != attempt_id
+            or receipt.get("batch_id") != batch_id
+            or receipt.get("from_state") != from_state
+            or receipt.get("to_state") != to_state
+            or receipt.get("input_receipt_sha256") != expected_inputs
+            or canonical_authority != runtime_authority
+            or core.canonical_json_bytes(receipt) != payload
+            or _sha(payload) != matching_events[0].get("receipt_sha256")
+            or receipt.get("output_manifest_sha256") != output_sha
+        ):
+            _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+        auxiliary_bytes += len(payload)
+    return {
+        "required_receipt_files": len(expected_receipt_names),
+        "auxiliary_receipt_files": len(allowed_auxiliary),
+        "auxiliary_receipt_bytes": auxiliary_bytes,
+    }
+
+
+def _partial_tree_authority(
+    attempt_root: Path,
+    partials_root: Path,
+    *,
+    batch_id: str,
+    attempt_id: str,
+    expected_source_keys: set[str],
+) -> dict[str, Any]:
+    """Validate a preserved sibling partial tree without opening any file."""
+
+    if not os.path.lexists(partials_root):
+        return {"file_count": 0, "total_bytes": 0, "directory_count": 0}
+    planned = re.compile(
+        rf"^(?P<source_key>[0-9a-f]{{64}})\.{re.escape(attempt_id)}\.partial$"
+    )
+    try:
+        root_info = os.lstat(partials_root)
+        attempt_info = os.lstat(attempt_root)
+        expected_root = attempt_root / "raw" / batch_id / "partials"
+        try:
+            mountpoints = _mountinfo_mountpoints()
+        except OlderRawRetirementError as exc:
+            raise OlderRawRetirementError(
+                "OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID"
+            ) from exc
+        if any(
+            mountpoint == attempt_root or attempt_root in mountpoint.parents
+            for mountpoint in mountpoints
+        ):
+            _fail("OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID")
+        if (
+            partials_root != expected_root
+            or stat.S_ISLNK(root_info.st_mode)
+            or not stat.S_ISDIR(root_info.st_mode)
+            or root_info.st_uid != os.geteuid()
+            or root_info.st_dev != attempt_info.st_dev
+            or stat.S_IMODE(root_info.st_mode) not in {0o700, 0o2700}
+            or os.path.ismount(partials_root)
+        ):
+            _fail("OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID")
+        file_count = 0
+        total_bytes = 0
+        directory_count = 1
+        seen_inodes: set[tuple[int, int]] = set()
+        seen_keys: set[str] = set()
+        for current_name, names, files in os.walk(
+            partials_root, topdown=True, followlinks=False
+        ):
+            current = Path(current_name)
+            info = os.lstat(current)
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_dev != root_info.st_dev
+                or stat.S_IMODE(info.st_mode) not in {0o700, 0o2700}
+                or (current != partials_root and os.path.ismount(current))
+            ):
+                _fail("OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID")
+            names[:] = sorted(names)
+            for name in names:
+                directory = current / name
+                directory_info = os.lstat(directory)
+                if (
+                    name.startswith(".nfs")
+                    or ".partial" in name
+                    or stat.S_ISLNK(directory_info.st_mode)
+                    or not stat.S_ISDIR(directory_info.st_mode)
+                    or directory_info.st_uid != os.geteuid()
+                    or directory_info.st_dev != root_info.st_dev
+                    or stat.S_IMODE(directory_info.st_mode)
+                    not in {0o700, 0o2700}
+                    or os.path.ismount(directory)
+                ):
+                    _fail("OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID")
+                directory_count += 1
+            for name in sorted(files):
+                path = current / name
+                file_info = os.lstat(path)
+                identity = (file_info.st_dev, file_info.st_ino)
+                match = planned.fullmatch(name)
+                if (
+                    name.startswith(".nfs")
+                    or match is None
+                    or match.group("source_key") not in expected_source_keys
+                    or match.group("source_key") in seen_keys
+                    or stat.S_ISLNK(file_info.st_mode)
+                    or not stat.S_ISREG(file_info.st_mode)
+                    or file_info.st_uid != os.geteuid()
+                    or file_info.st_nlink != 1
+                    or stat.S_IMODE(file_info.st_mode) != 0o600
+                    or file_info.st_dev != root_info.st_dev
+                    or identity in seen_inodes
+                ):
+                    _fail("OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID")
+                seen_keys.add(match.group("source_key"))
+                seen_inodes.add(identity)
+                file_count += 1
+                total_bytes += file_info.st_size
+    except OlderRawRetirementError:
+        raise
+    except OSError as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID"
+        ) from exc
+    return {
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+        "directory_count": directory_count,
+    }
+
+
 def _validate_attempt_batch(
     attempt_root: Path, bundle: PlanBundle, batch_id: str
 ) -> tuple[dict[str, dict[str, Any]], str, str, str]:
@@ -963,16 +1490,31 @@ def _validate_attempt_batch(
     objects_root = raw / "objects"
     receipts_root = raw / "receipts"
     partials_root = raw / "partials"
-    expected_object_names = {f"{key}.dcm" for key in expected}
     expected_receipt_names = {f"{key}.verification.json" for key in expected}
-    try:
-        object_names = {entry.name for entry in os.scandir(objects_root)}
-        receipt_names = {entry.name for entry in os.scandir(receipts_root)}
-        partial_names = {entry.name for entry in os.scandir(partials_root)} if partials_root.is_dir() else set()
-    except OSError as exc:
-        raise OlderRawRetirementError("OLDER_RAW_LEAF_INVENTORY_INVALID") from exc
-    if object_names != expected_object_names or receipt_names != expected_receipt_names or partial_names:
-        _fail("OLDER_RAW_LEAF_INVENTORY_INVALID")
+    leaf_authority = _raw_object_leaf_authority(
+        attempt_root,
+        objects_root,
+        batch_id=batch_id,
+        expected_sizes={key: int(row["size_bytes"]) for key, row in expected.items()},
+    )
+    _retained_receipt_tree_authority(
+        attempt_root,
+        receipts_root,
+        batch_id=batch_id,
+        attempt_id=bundle.authority.attempt_id,
+        expected_receipt_names=expected_receipt_names,
+        ledger_batch=ledger_batch,
+        runtime_authority=runtime,
+        launch_authority=bundle.launch,
+        download_manifest_sha256=manifest_sha,
+    )
+    _partial_tree_authority(
+        attempt_root,
+        partials_root,
+        batch_id=batch_id,
+        attempt_id=bundle.authority.attempt_id,
+        expected_source_keys=set(expected),
+    )
     try:
         mount_authority = r3e.validate_current_mount_authority(
             attempt_root, objects_root
@@ -981,34 +1523,33 @@ def _validate_attempt_batch(
         raise OlderRawRetirementError(
             "OLDER_RAW_CURRENT_MOUNT_AUTHORITY_INVALID"
         ) from exc
-    root_device = os.lstat(attempt_root).st_dev
     entries: dict[str, dict[str, Any]] = {}
     for key in sorted(expected):
         row = expected[key]
-        path = objects_root / f"{key}.dcm"
+        observed = leaf_authority["entries"][key]
+        path = observed["path"]
         receipt_path = receipts_root / f"{key}.verification.json"
-        info = os.lstat(path)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_nlink != 1
-            or info.st_dev != root_device
-            or info.st_size != int(row["size_bytes"])
-        ):
-            _fail("OLDER_RAW_OBJECT_IDENTITY_INVALID")
-        receipt, receipt_payload = _read_json(receipt_path, maximum=r3e.MAXIMUM_RECEIPT_BYTES)
-        receipt_sha = _sha(receipt_payload)
-        if receipt_map.get(key) != receipt_sha:
-            _fail("OLDER_RAW_DOWNLOAD_RECEIPT_INVALID")
-        local_sha = _receipt_authority(
-            receipt,
-            row=row,
-            info=info,
-            mount_authority=mount_authority,
-            authority=bundle.authority,
-        )
+        info = observed["info"]
+        try:
+            receipt, receipt_payload = _read_json(
+                receipt_path, maximum=r3e.MAXIMUM_RECEIPT_BYTES
+            )
+            receipt_sha = _sha(receipt_payload)
+            if receipt_map.get(key) != receipt_sha:
+                _fail("OLDER_RAW_REQUIRED_RECEIPT_INVALID")
+            local_sha = _receipt_authority(
+                receipt,
+                row=row,
+                info=info,
+                mount_authority=mount_authority,
+                authority=bundle.authority,
+            )
+        except OlderRawRetirementError as exc:
+            if exc.code == "OLDER_RAW_REQUIRED_RECEIPT_INVALID":
+                raise
+            raise OlderRawRetirementError(
+                "OLDER_RAW_REQUIRED_RECEIPT_INVALID"
+            ) from exc
         if manifest[key]["observed_sha256"] != local_sha:
             _fail("OLDER_RAW_LOCAL_SHA_MISMATCH")
         entries[key] = {
@@ -1055,7 +1596,10 @@ def _diagnostic_root() -> Path:
 
 
 def _diagnostic_evidence_authority(
-    diagnostic_root: Path, preflight: Any
+    diagnostic_root: Path,
+    *,
+    source_object_key: str,
+    source_local_sha256: str,
 ) -> dict[str, Any]:
     """Bind the four preserved R3E artifacts without opening the NPZ body."""
 
@@ -1116,11 +1660,12 @@ def _diagnostic_evidence_authority(
         r"repaired_extraction/clips/([0-9a-f]{2})/([0-9a-f]{64})\.npz",
         relative.as_posix(),
     )
-    source_key = str(preflight.planned_object.get("source_object_key"))
-    local_sha = str(preflight.local_sha256)
+    source_key = str(source_object_key)
+    local_sha = str(source_local_sha256)
     if (
         match is None
         or match.group(1) != match.group(2)[:2]
+        or match.group(2) != source_key
         or not stat.S_ISREG(npz_info.st_mode)
         or stat.S_ISLNK(npz_info.st_mode)
         or npz_info.st_uid != os.geteuid()
@@ -1157,27 +1702,64 @@ def _diagnostic_evidence_authority(
     }
 
 
+def _diagnostic_authority_from_sealed_manifest(
+    diagnostic_root: Path, manifest: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Revalidate retained diagnostics without reaching a retired raw source."""
+
+    sealed = manifest.get("diagnostic_evidence_authority")
+    if not isinstance(sealed, Mapping):
+        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
+    observed = _diagnostic_evidence_authority(
+        diagnostic_root,
+        source_object_key=str(sealed.get("source_object_key")),
+        source_local_sha256=str(sealed.get("source_local_sha256")),
+    )
+    if observed != sealed:
+        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
+    return observed
+
+
 def _target_leaves(attempt_root: Path) -> tuple[Path, ...]:
     return tuple(attempt_root / "raw" / batch / "objects" for batch in TARGET_BATCHES)
 
 
-def _pre_cleanup_capacity_authority(
-    governing_commit: str,
-) -> dict[str, Any]:
+def _partial_trees(attempt_root: Path) -> tuple[Path, ...]:
+    return tuple(attempt_root / "raw" / batch / "partials" for batch in TARGET_BATCHES)
+
+
+def _pre_cleanup_capacity_authority() -> dict[str, Any]:
+    """Load the frozen f201e22 observation as historical cleanup evidence."""
+
     try:
+        receipt_path = (
+            OWNER_PRIVATE_ROOT
+            / capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
+        )
+        sealed_receipt, _sealed_payload = _read_json(receipt_path)
+        captured_at = sealed_receipt.get("captured_at_utc")
+        if (
+            sealed_receipt.get("governing_commit")
+            != R5E_R2_PRE_ACTION_GOVERNING_COMMIT
+            or not isinstance(captured_at, str)
+        ):
+            _fail("OLDER_RAW_PRE_CLEANUP_CAPACITY_AUTHORITY_INVALID")
+        historical_now = datetime.fromisoformat(
+            captured_at.replace("Z", "+00:00")
+        )
         captured = capacity.load_dynamic_successor_capacity_capture(
-            restricted_receipt_path=(
-                OWNER_PRIVATE_ROOT
-                / capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
-            ),
+            restricted_receipt_path=receipt_path,
             aggregate_summary_path=(
                 OWNER_PRIVATE_ROOT
                 / capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
             ),
-            expected_governing_commit=governing_commit,
+            expected_governing_commit=R5E_R2_PRE_ACTION_GOVERNING_COMMIT,
+            now_utc=historical_now,
         )
         captured = capacity.validate_production_dynamic_successor_capacity_capture(
-            captured, expected_governing_commit=governing_commit
+            captured,
+            expected_governing_commit=R5E_R2_PRE_ACTION_GOVERNING_COMMIT,
+            now_utc=historical_now,
         )
     except Exception as exc:
         raise OlderRawRetirementError(
@@ -1209,7 +1791,7 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
         _fail("OLDER_RAW_GOVERNING_COMMIT_INVALID")
     older_root = PRODUCTION_ROOT / "attempts" / OLDER_ATTEMPT_ID
     r4_root = PRODUCTION_ROOT / "attempts" / R4_ATTEMPT_ID
-    pre_cleanup_capacity = _pre_cleanup_capacity_authority(governing_commit)
+    pre_cleanup_capacity = _pre_cleanup_capacity_authority()
     try:
         older_inventory, _older_identity = (
             r3e.validate_immutable_legacy_attempt_effective_privacy(
@@ -1324,7 +1906,9 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
     ):
         _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
     diagnostic_authority = _diagnostic_evidence_authority(
-        diagnostic, preflight
+        diagnostic,
+        source_object_key=diagnostic_key,
+        source_local_sha256=str(preflight.local_sha256),
     )
     leaves = _target_leaves(older_root)
     retained = _retained_evidence_authority(
@@ -1394,6 +1978,22 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
         "identifiers_emitted": False,
         "paths_emitted": False,
     }
+
+
+def _target_relative_path_is_safe(
+    value: Any, *, batch_id: str, source_key: str
+) -> bool:
+    if not isinstance(value, str):
+        return False
+    path = PurePosixPath(value)
+    prefix = ("raw", batch_id, "objects")
+    return (
+        not path.is_absolute()
+        and ".." not in path.parts
+        and len(path.parts) >= 4
+        and tuple(path.parts[:3]) == prefix
+        and path.name == f"{source_key}.dcm"
+    )
 
 
 def _validate_manifest(value: Mapping[str, Any]) -> None:
@@ -1624,10 +2224,12 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
             or not generation.isdigit()
             or str(int(generation)) != generation
             or int(generation) <= 0
-            or relative != f"raw/{batch_id}/objects/{source_key}.dcm"
-            or r4_relative != relative
-            or PurePosixPath(relative).is_absolute()
-            or ".." in PurePosixPath(relative).parts
+            or not _target_relative_path_is_safe(
+                relative, batch_id=str(batch_id), source_key=source_key
+            )
+            or not _target_relative_path_is_safe(
+                r4_relative, batch_id=str(batch_id), source_key=source_key
+            )
             or item.get("md5_base64") != canonical_md5
             or item.get("crc32c_base64") != canonical_crc
             or any(
@@ -1650,6 +2252,18 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
         observed_keys.add(source_key)
         expected_order.append((batch_id, source_key))
     if expected_order != sorted(expected_order):
+        _fail("OLDER_RAW_MANIFEST_SCHEMA_INVALID")
+    diagnostic_targets = [
+        item
+        for item in targets
+        if item["source_object_key"]
+        == diagnostic_authority.get("source_object_key")
+    ]
+    if (
+        len(diagnostic_targets) != 1
+        or diagnostic_targets[0]["local_sha256"]
+        != diagnostic_authority.get("source_local_sha256")
+    ):
         _fail("OLDER_RAW_MANIFEST_SCHEMA_INVALID")
     if value.get("target_set_sha256") != core.canonical_json_sha256(
         [
@@ -1814,97 +2428,32 @@ def _target_leaf_snapshot(
 ) -> dict[str, Any]:
     """Return an exact metadata-only snapshot of one fixed raw leaf."""
 
-    try:
-        older_info = os.lstat(older_root)
-        if (
-            stat.S_ISLNK(older_info.st_mode)
-            or not stat.S_ISDIR(older_info.st_mode)
-            or older_info.st_uid != os.geteuid()
-        ):
-            _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
-        current = older_root
-        for component in leaf.relative_to(older_root).parts:
-            current = current / component
-            component_info = os.lstat(current)
-            if (
-                stat.S_ISLNK(component_info.st_mode)
-                or not stat.S_ISDIR(component_info.st_mode)
-                or component_info.st_uid != os.geteuid()
-                or component_info.st_dev != older_info.st_dev
-                or os.path.ismount(current)
-            ):
-                _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
-        leaf_info = os.lstat(leaf)
-        if (
-            stat.S_ISLNK(leaf_info.st_mode)
-            or not stat.S_ISDIR(leaf_info.st_mode)
-            or leaf_info.st_uid != os.geteuid()
-            or leaf_info.st_dev != older_info.st_dev
-            or stat.S_IMODE(leaf_info.st_mode) not in {0o700, 0o2700}
-            or os.path.ismount(leaf)
-        ):
-            _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
-        names: list[str] = []
-        metadata: list[dict[str, int | str]] = []
-        total_bytes = 0
-        with os.scandir(leaf) as directory:
-            for entry in directory:
-                info = entry.stat(follow_symlinks=False)
-                if (
-                    entry.name.startswith(".nfs")
-                    or ".partial" in entry.name
-                    or RAW_OBJECT_BASENAME_RE.fullmatch(entry.name) is None
-                    or entry.is_symlink()
-                    or not stat.S_ISREG(info.st_mode)
-                    or info.st_uid != os.geteuid()
-                    or info.st_nlink != 1
-                    or stat.S_IMODE(info.st_mode) != 0o600
-                    or info.st_dev != leaf_info.st_dev
-                ):
-                    _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
-                names.append(entry.name)
-                total_bytes += info.st_size
-                metadata.append({
-                    "name": entry.name,
-                    "device": info.st_dev,
-                    "inode": info.st_ino,
-                    "mode": stat.S_IMODE(info.st_mode),
-                    "uid": info.st_uid,
-                    "gid": info.st_gid,
-                    "nlink": info.st_nlink,
-                    "size": info.st_size,
-                    "mtime_ns": info.st_mtime_ns,
-                    "ctime_ns": info.st_ctime_ns,
-                })
-    except OlderRawRetirementError:
-        raise
-    except OSError as exc:
-        raise OlderRawRetirementError(
-            "OLDER_RAW_LEAF_AUTHORITY_INVALID"
-        ) from exc
-    names.sort()
-    metadata.sort(key=lambda row: str(row["name"]))
-    if (
-        len(names) != EXPECTED_BATCH_COUNTS[batch_id]
-        or total_bytes != EXPECTED_BATCH_BYTES[batch_id]
-    ):
-        _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+    authority = _raw_object_leaf_authority(
+        older_root,
+        leaf,
+        batch_id=batch_id,
+        expected_sizes=None,
+    )
     return {
         "batch_id": batch_id,
-        "file_count": len(names),
-        "total_bytes": total_bytes,
-        "directory_count": 1,
-        "relative_name_projection_sha256": core.canonical_json_sha256(names),
-        "metadata_projection_sha256": core.canonical_json_sha256(metadata),
-        "leaf_device": leaf_info.st_dev,
-        "leaf_inode": leaf_info.st_ino,
-        "leaf_mode": stat.S_IMODE(leaf_info.st_mode),
-        "leaf_uid": leaf_info.st_uid,
-        "leaf_gid": leaf_info.st_gid,
-        "leaf_nlink": leaf_info.st_nlink,
-        "leaf_size": leaf_info.st_size,
-        "leaf_mtime_ns": leaf_info.st_mtime_ns,
-        "leaf_ctime_ns": leaf_info.st_ctime_ns,
+        "file_count": authority["file_count"],
+        "total_bytes": authority["total_bytes"],
+        "directory_count": authority["directory_count"],
+        "relative_name_projection_sha256": authority[
+            "relative_path_projection_sha256"
+        ],
+        "metadata_projection_sha256": authority[
+            "metadata_projection_sha256"
+        ],
+        "leaf_device": authority["leaf_device"],
+        "leaf_inode": authority["leaf_inode"],
+        "leaf_mode": authority["leaf_mode"],
+        "leaf_uid": authority["leaf_uid"],
+        "leaf_gid": authority["leaf_gid"],
+        "leaf_nlink": authority["leaf_nlink"],
+        "leaf_size": authority["leaf_size"],
+        "leaf_mtime_ns": authority["leaf_mtime_ns"],
+        "leaf_ctime_ns": authority["leaf_ctime_ns"],
         "symlink_entries": 0,
         "nonregular_entries": 0,
         "partial_entries": 0,
@@ -1939,8 +2488,14 @@ def _quiescent() -> Mapping[str, int]:
     if not isinstance(user, str) or not user:
         _fail("OLDER_RAW_QUIESCENCE_AUTHORITY_INVALID")
     older_root = PRODUCTION_ROOT / "attempts" / OLDER_ATTEMPT_ID
-    target_leaves = tuple(Path(os.path.abspath(path)) for path in _target_leaves(older_root))
-    tokens = _candidate_tokens(target_leaves)
+    target_leaves = tuple(
+        Path(os.path.abspath(path)) for path in _target_leaves(older_root)
+    )
+    protected_roots = (
+        *target_leaves,
+        *(Path(os.path.abspath(path)) for path in _partial_trees(older_root)),
+    )
+    tokens = _candidate_tokens(protected_roots)
     qstat = subprocess.run(
         [str(QSTAT), "-xml", "-u", user],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -2020,17 +2575,15 @@ def _quiescent() -> Mapping[str, int]:
             counts["candidate_processes"] += 1
         if state.startswith("Z"):
             continue
-        if not candidate and not unknown:
-            # A clear nonmatching command snapshot is sufficient; optional
-            # per-process procfs completeness is deliberately not required.
-            continue
         disposition = _inspect_proc_references(
             process_id,
-            target_leaves=target_leaves,
-            required=True,
+            target_leaves=protected_roots,
+            required=candidate or unknown,
         )
         if disposition == "PROCESS_EXITED_DURING_SCAN_NONBLOCKING":
             counts["vanished_processes"] += 1
+        elif disposition == "UNRELATED_PROCESS_PROC_INACCESSIBLE_NONBLOCKING":
+            counts["unrelated_inaccessible_processes"] += 1
         elif disposition == "MATCHING_TARGET_REFERENCE_BLOCKING":
             counts["confirmed_target_references"] += 1
             _fail("OLDER_RAW_ACTIVE_PROCESS_EXISTS")
@@ -2047,42 +2600,27 @@ def _quiescent() -> Mapping[str, int]:
 def _validate_leaf_from_manifest(
     older_root: Path, leaf: Path, entries: Sequence[Mapping[str, Any]]
 ) -> None:
-    expected = {
-        Path(item["relative_path"]).name: int(item["size_bytes"])
+    batch_ids = {str(item.get("batch_id")) for item in entries}
+    if len(batch_ids) != 1:
+        _fail("OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID")
+    batch_id = next(iter(batch_ids))
+    expected_sizes = {
+        str(item["source_object_key"]): int(item["size_bytes"])
         for item in entries
     }
-    try:
-        info = os.lstat(leaf)
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or info.st_dev != os.lstat(older_root).st_dev
-            or os.path.ismount(leaf)
-        ):
-            _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
-        observed: dict[str, int] = {}
-        for entry in os.scandir(leaf):
-            child = Path(entry.path)
-            child_info = entry.stat(follow_symlinks=False)
-            if (
-                entry.name.startswith(".nfs")
-                or ".partial" in entry.name
-                or entry.is_symlink()
-                or not stat.S_ISREG(child_info.st_mode)
-                or child_info.st_uid != os.geteuid()
-                or child_info.st_nlink != 1
-                or stat.S_IMODE(child_info.st_mode) != 0o600
-                or child_info.st_dev != info.st_dev
-            ):
-                _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
-            observed[entry.name] = child_info.st_size
-    except OlderRawRetirementError:
-        raise
-    except OSError as exc:
-        raise OlderRawRetirementError("OLDER_RAW_LEAF_AUTHORITY_INVALID") from exc
-    if observed != expected:
-        _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+    expected_relative_paths = {
+        str(item["source_object_key"]): str(item["relative_path"])
+        for item in entries
+    }
+    if len(expected_sizes) != len(entries):
+        _fail("OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID")
+    _raw_object_leaf_authority(
+        older_root,
+        leaf,
+        batch_id=batch_id,
+        expected_sizes=expected_sizes,
+        expected_relative_paths=expected_relative_paths,
+    )
 
 
 def _post_receipt(
@@ -2290,17 +2828,43 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
     rederived = _derive_manifest(str(manifest["governing_commit"]))
     if _canonical(rederived) != manifest_payload:
         _fail("OLDER_RAW_MANIFEST_REDERIVATION_MISMATCH")
+    pre_delete_r4_authority = _validate_r4()
+    _quiescent()
     older_root = PRODUCTION_ROOT / "attempts" / OLDER_ATTEMPT_ID
     by_batch = {
         batch: [item for item in manifest["targets"] if item["batch_id"] == batch]
         for batch in TARGET_BATCHES
     }
+    target_leaves = _target_leaves(older_root)
     eligible: list[tuple[str, Path]] = []
-    for batch, leaf in zip(TARGET_BATCHES, _target_leaves(older_root), strict=True):
+    for batch, leaf in zip(TARGET_BATCHES, target_leaves, strict=True):
         _validate_leaf_from_manifest(older_root, leaf, by_batch[batch])
         eligible.append((batch, leaf))
     if tuple(batch for batch, _leaf in eligible) != TARGET_BATCHES:
         _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
+    final_retained = _retained_evidence_authority(
+        older_root, excluded_roots=target_leaves
+    )
+    if (
+        final_retained["file_count"] != EXPECTED_RETAINED_FILES
+        or final_retained["total_bytes"] != EXPECTED_RETAINED_BYTES
+        or final_retained["file_metadata_sha256"]
+        != manifest["retained_file_metadata_sha256"]
+        or final_retained["directory_topology_sha256"]
+        != manifest["retained_directory_topology_sha256"]
+        or final_retained["role_inventory"] != manifest["retained_role_inventory"]
+        or final_retained["role_inventory_sha256"]
+        != manifest["retained_role_inventory_sha256"]
+        or final_retained["control_content_sha256"]
+        != manifest["retained_control_content_sha256"]
+    ):
+        _fail("OLDER_RAW_RETAINED_AUTHORITY_INVALID")
+    _quiescent()
+    for batch, leaf in eligible:
+        _validate_leaf_from_manifest(older_root, leaf, by_batch[batch])
+    _quiescent()
+    if getattr(shutil.rmtree, "avoids_symlink_attacks", False) is not True:
+        _fail("OLDER_RAW_DELETION_PRIMITIVE_UNSAFE")
     for _batch, leaf in eligible:
         try:
             shutil.rmtree(leaf)
@@ -2315,19 +2879,10 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
             deleted_bytes += int(item["size_bytes"])
     retained = _retained_evidence_authority(older_root)
     diagnostic_root = _diagnostic_root()
-    try:
-        diagnostic_preflight = r3e.run_preflight(
-            governing_commit=str(manifest["governing_commit"]),
-            diagnostic_root=diagnostic_root,
-        )
-    except Exception as exc:
-        raise OlderRawRetirementError(
-            "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED"
-        ) from exc
-    diagnostic_authority = _diagnostic_evidence_authority(
-        diagnostic_root, diagnostic_preflight
-    )
     r4_authority = _validate_r4()
+    diagnostic_authority = _diagnostic_authority_from_sealed_manifest(
+        diagnostic_root, manifest
+    )
     full = (
         deleted_files == EXPECTED_DELETE_FILES
         and deleted_bytes == EXPECTED_DELETE_BYTES
@@ -2343,6 +2898,8 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
         and retained["control_content_sha256"]
         == manifest["retained_control_content_sha256"]
         and diagnostic_authority == manifest["diagnostic_evidence_authority"]
+        and r4_authority == pre_delete_r4_authority
+        and r4_authority == manifest["r4_authority"]
         and all(not os.path.lexists(path) for path in _target_leaves(older_root))
     )
     status = (
@@ -2392,9 +2949,7 @@ def validate_retirement_receipt_authority(
     expected_summary = _summary_from_receipt(
         receipt, receipt_payload=receipt_payload
     )
-    current_pre_cleanup_capacity = _pre_cleanup_capacity_authority(
-        expected_governing_commit
-    )
+    current_pre_cleanup_capacity = _pre_cleanup_capacity_authority()
     if (
         receipt.get("status") != "PASS_OLDER_RAW_DUPLICATES_RETIRED"
         or receipt.get("governing_commit") != expected_governing_commit
@@ -2439,18 +2994,12 @@ def validate_retired_state(*, expected_governing_commit: str) -> Mapping[str, An
     )
     older_root = PRODUCTION_ROOT / "attempts" / OLDER_ATTEMPT_ID
     retained = _retained_evidence_authority(older_root)
+    manifest, _manifest_payload = _read_json(MANIFEST_PATH)
+    _validate_manifest(manifest)
     diagnostic_root = _diagnostic_root()
-    try:
-        diagnostic_preflight = r3e.run_preflight(
-            governing_commit=expected_governing_commit,
-            diagnostic_root=diagnostic_root,
-        )
-    except Exception as exc:
-        raise OlderRawRetirementError(
-            "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED"
-        ) from exc
-    diagnostic_authority = _diagnostic_evidence_authority(
-        diagnostic_root, diagnostic_preflight
+    _validate_r4()
+    diagnostic_authority = _diagnostic_authority_from_sealed_manifest(
+        diagnostic_root, manifest
     )
     if (
         retained["file_count"] != EXPECTED_RETAINED_FILES
@@ -2468,7 +3017,6 @@ def validate_retired_state(*, expected_governing_commit: str) -> Mapping[str, An
         or any(os.path.lexists(path) for path in _target_leaves(older_root))
     ):
         _fail("OLDER_RAW_RETAINED_AUTHORITY_INVALID")
-    _validate_r4()
     return authority
 
 

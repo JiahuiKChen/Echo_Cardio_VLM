@@ -10,6 +10,7 @@ import errno
 import hashlib
 import inspect
 import io
+import json
 import os
 from pathlib import Path
 import stat
@@ -41,6 +42,140 @@ def _expect(code: str, function) -> None:
 def _private_file(path: Path, payload: bytes) -> None:
     path.write_bytes(payload)
     os.chmod(path, 0o600)
+
+
+def _private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+
+
+def _synthetic_raw_leaf(
+    root: Path, *, nested: bool = False
+) -> tuple[Path, dict[str, int]]:
+    leaf = root / "raw" / "c3_batch_000" / "objects"
+    _private_directory(leaf)
+    expected = {"a" * 64: 3, "b" * 64: 4}
+    for ordinal, (key, size) in enumerate(expected.items()):
+        parent = leaf
+        if nested:
+            parent = leaf / f"layout_{ordinal}"
+            _private_directory(parent)
+        _private_file(parent / f"{key}.dcm", bytes([ordinal + 1]) * size)
+    return leaf, expected
+
+
+def _synthetic_raw_authority(
+    older: Path,
+    leaf: Path,
+    expected: dict[str, int],
+):
+    with mock.patch.object(
+        raw_retirement, "_mountinfo_mountpoints", return_value=frozenset()
+    ):
+        return raw_retirement._raw_object_leaf_authority(
+            older,
+            leaf,
+            batch_id="c3_batch_000",
+            expected_sizes=expected,
+        )
+
+
+def _transition_receipt_fixture(root: Path) -> SimpleNamespace:
+    attempt_id = raw_retirement.OLDER_ATTEMPT_ID
+    batch_id = "c3_batch_000"
+    attempt_root = root / attempt_id
+    receipts_root = attempt_root / "raw" / batch_id / "receipts"
+    _private_directory(receipts_root)
+    source_key = "a" * 64
+    required_name = f"{source_key}.verification.json"
+    _private_file(receipts_root / required_name, b"required-receipt\n")
+    runtime = {"batch_plan_sha256": "1" * 64}
+    launch = {"sealed_launch": "2" * 64}
+    verification_map = {source_key: "3" * 64}
+    manifest_sha = "4" * 64
+    documents = {
+        raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]: {
+            "schema_version": 2,
+            "receipt_type": "lvef_c3_state_transition_v2",
+            "attempt_id": attempt_id,
+            "batch_id": batch_id,
+            "from_state": "PLANNED",
+            "to_state": "DOWNLOAD_IN_PROGRESS",
+            "status": "PASS",
+            "authority": runtime,
+            "input_receipt_sha256": [runtime["batch_plan_sha256"]],
+            "output_manifest_sha256": raw_retirement.core.canonical_json_sha256(
+                launch
+            ),
+        }
+    }
+    start_payload = raw_retirement.core.canonical_json_bytes(
+        documents[raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]]
+    )
+    start_sha = hashlib.sha256(start_payload).hexdigest()
+    documents[raw_retirement.TRANSITION_RECEIPT_BASENAMES[1]] = {
+        "schema_version": 2,
+        "receipt_type": "lvef_c3_state_transition_v2",
+        "attempt_id": attempt_id,
+        "batch_id": batch_id,
+        "from_state": "DOWNLOAD_IN_PROGRESS",
+        "to_state": "DOWNLOAD_VERIFIED",
+        "status": "PASS",
+        "authority": runtime,
+        "input_receipt_sha256": [start_sha, *sorted(verification_map.values())],
+        "output_manifest_sha256": manifest_sha,
+    }
+    events = []
+    for document in documents.values():
+        payload = raw_retirement.core.canonical_json_bytes(document)
+        basename = (
+            raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]
+            if document["from_state"] == "PLANNED"
+            else raw_retirement.TRANSITION_RECEIPT_BASENAMES[1]
+        )
+        _private_file(receipts_root / basename, payload)
+        events.append(
+            {
+                "from_state": document["from_state"],
+                "to_state": document["to_state"],
+                "receipt_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    return SimpleNamespace(
+        attempt_root=attempt_root,
+        receipts_root=receipts_root,
+        batch_id=batch_id,
+        attempt_id=attempt_id,
+        required_name=required_name,
+        runtime=runtime,
+        launch=launch,
+        manifest_sha=manifest_sha,
+        documents=documents,
+        ledger_batch={
+            "events": events,
+            "download_verification_receipts": verification_map,
+            "download_recovery_receipts": {},
+        },
+    )
+
+
+def _validate_transition_fixture(fixture: SimpleNamespace):
+    with mock.patch.object(
+        raw_retirement.core,
+        "validate_runtime_authority",
+        side_effect=lambda authority: dict(authority),
+    ):
+        return raw_retirement._retained_receipt_tree_authority(
+            fixture.attempt_root,
+            fixture.receipts_root,
+            batch_id=fixture.batch_id,
+            attempt_id=fixture.attempt_id,
+            expected_receipt_names={fixture.required_name},
+            ledger_batch=fixture.ledger_batch,
+            runtime_authority=fixture.runtime,
+            launch_authority=fixture.launch,
+            download_manifest_sha256=fixture.manifest_sha,
+        )
 
 
 def _download_rows() -> tuple[list[dict[str, str]], dict[str, dict[str, object]]]:
@@ -315,6 +450,17 @@ def test_r5e_destructive_reachability_has_no_caller_target() -> None:
     )
     first_delete = executor.index("shutil.rmtree(leaf)")
     assert validation_gate < first_delete
+    before_delete = executor[:first_delete]
+    assert before_delete.count("_quiescent()") == 3
+    assert before_delete.rindex("_quiescent()") > before_delete.rindex(
+        "_validate_leaf_from_manifest(older_root, leaf, by_batch[batch])"
+    )
+    assert before_delete.rindex("_quiescent()") < before_delete.rindex(
+        'getattr(shutil.rmtree, "avoids_symlink_attacks", False)'
+    )
+    assert before_delete.rindex("_retained_evidence_authority(") < (
+        before_delete.rindex("_quiescent()")
+    )
     assert "except OlderRawRetirementError" not in executor[
         executor.index("eligible: list"):first_delete
     ]
@@ -339,53 +485,620 @@ def test_r5e_r1_deletion_is_unreachable_before_manifest_seal() -> None:
         destructive.assert_not_called()
 
 
-def test_r5e_leaf_membership_is_exact_and_rejects_unsafe_entries() -> None:
-    with tempfile.TemporaryDirectory() as temporary:
-        older = Path(temporary).resolve() / "older"
-        leaf = older / "raw" / "c3_batch_000" / "objects"
-        leaf.mkdir(parents=True)
-        _private_file(leaf / "a.dcm", b"abc")
-        _private_file(leaf / "b.dcm", b"defg")
-        entries = (
-            {"relative_path": "raw/c3_batch_000/objects/a.dcm", "size_bytes": 3},
-            {"relative_path": "raw/c3_batch_000/objects/b.dcm", "size_bytes": 4},
-        )
-        raw_retirement._validate_leaf_from_manifest(older, leaf, entries)
+def test_r5e_r3_final_mutation_quiescence_and_primitive_gates_delete_zero() -> None:
+    governing_commit = "a" * 40
+    role_inventory = [{"role": "SEALED", "file_count": 1, "total_bytes": 1}]
+    retained = {
+        "file_count": raw_retirement.EXPECTED_RETAINED_FILES,
+        "total_bytes": raw_retirement.EXPECTED_RETAINED_BYTES,
+        "file_metadata_sha256": "b" * 64,
+        "directory_topology_sha256": "c" * 64,
+        "role_inventory": role_inventory,
+        "role_inventory_sha256": "d" * 64,
+        "control_content_sha256": "e" * 64,
+    }
+    manifest = {
+        "governing_commit": governing_commit,
+        "retained_file_metadata_sha256": retained["file_metadata_sha256"],
+        "retained_directory_topology_sha256": retained[
+            "directory_topology_sha256"
+        ],
+        "retained_role_inventory": role_inventory,
+        "retained_role_inventory_sha256": retained["role_inventory_sha256"],
+        "retained_control_content_sha256": retained["control_content_sha256"],
+        "targets": [
+            {
+                "batch_id": batch,
+                "relative_path": f"raw/{batch}/objects/{index + 1:064x}.dcm",
+                "size_bytes": 1,
+            }
+            for index, batch in enumerate(raw_retirement.TARGET_BATCHES)
+        ],
+    }
+    payload = raw_retirement._canonical(manifest)
 
-        unsafe_cases = (
-            ("unexpected.dcm", lambda path: _private_file(path, b"x")),
-            (".nfs0001", lambda path: _private_file(path, b"x")),
-            ("x.partial", lambda path: _private_file(path, b"x")),
-            ("link.dcm", lambda path: path.symlink_to("a.dcm")),
-        )
-        for name, create in unsafe_cases:
-            path = leaf / name
-            create(path)
+    def run_to_gate(*, retained_effect, quiescence_effect, safe: bool, code: str):
+        destructive = mock.Mock()
+        destructive.avoids_symlink_attacks = safe
+        quiescent = mock.Mock()
+        if isinstance(quiescence_effect, tuple):
+            quiescent.side_effect = quiescence_effect
+        else:
+            quiescent.return_value = quiescence_effect
+        with (
+            mock.patch.object(raw_retirement, "_current_commit", return_value=governing_commit),
+            mock.patch.object(raw_retirement.os.path, "lexists", return_value=False),
+            mock.patch.object(raw_retirement, "_read_json", return_value=(manifest, payload)),
+            mock.patch.object(raw_retirement, "_validate_manifest"),
+            mock.patch.object(raw_retirement, "_validate_safe_export"),
+            mock.patch.object(raw_retirement, "_derive_manifest", return_value=manifest),
+            mock.patch.object(raw_retirement, "_validate_r4", return_value={}),
+            mock.patch.object(raw_retirement, "_validate_leaf_from_manifest"),
+            mock.patch.object(
+                raw_retirement,
+                "_retained_evidence_authority",
+                return_value=retained_effect,
+            ),
+            mock.patch.object(raw_retirement, "_quiescent", quiescent),
+            mock.patch.object(raw_retirement.shutil, "rmtree", destructive),
+        ):
             _expect(
-                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
-                lambda: raw_retirement._validate_leaf_from_manifest(
-                    older, leaf, entries
+                code,
+                lambda: raw_retirement.execute_exact_retirement(
+                    governing_commit=governing_commit
                 ),
             )
-            path.unlink()
+        destructive.assert_not_called()
 
-        hardlink = leaf / "hard.dcm"
-        os.link(leaf / "a.dcm", hardlink)
+    run_to_gate(
+        retained_effect={**retained, "control_content_sha256": "0" * 64},
+        quiescence_effect={},
+        safe=True,
+        code="OLDER_RAW_RETAINED_AUTHORITY_INVALID",
+    )
+    run_to_gate(
+        retained_effect=retained,
+        quiescence_effect=(
+            {},
+            {},
+            raw_retirement.OlderRawRetirementError(
+                "OLDER_RAW_ACTIVE_PROCESS_EXISTS"
+            ),
+        ),
+        safe=True,
+        code="OLDER_RAW_ACTIVE_PROCESS_EXISTS",
+    )
+    run_to_gate(
+        retained_effect=retained,
+        quiescence_effect={},
+        safe=False,
+        code="OLDER_RAW_DELETION_PRIMITIVE_UNSAFE",
+    )
+
+
+def test_r5e_r3_final_leaf_mutation_before_delete_calls_rmtree_zero() -> None:
+    governing_commit = "a" * 40
+    role_inventory = [{"role": "SEALED", "file_count": 1, "total_bytes": 1}]
+    retained = {
+        "file_count": raw_retirement.EXPECTED_RETAINED_FILES,
+        "total_bytes": raw_retirement.EXPECTED_RETAINED_BYTES,
+        "file_metadata_sha256": "b" * 64,
+        "directory_topology_sha256": "c" * 64,
+        "role_inventory": role_inventory,
+        "role_inventory_sha256": "d" * 64,
+        "control_content_sha256": "e" * 64,
+    }
+    manifest = {
+        "governing_commit": governing_commit,
+        "retained_file_metadata_sha256": retained["file_metadata_sha256"],
+        "retained_directory_topology_sha256": retained[
+            "directory_topology_sha256"
+        ],
+        "retained_role_inventory": role_inventory,
+        "retained_role_inventory_sha256": retained["role_inventory_sha256"],
+        "retained_control_content_sha256": retained["control_content_sha256"],
+        "targets": [
+            {
+                "batch_id": batch,
+                "relative_path": f"raw/{batch}/objects/{index + 1:064x}.dcm",
+                "size_bytes": 1,
+            }
+            for index, batch in enumerate(raw_retirement.TARGET_BATCHES)
+        ],
+    }
+    manifest_payload = raw_retirement._canonical(manifest)
+    final_leaf_mutation = raw_retirement.OlderRawRetirementError(
+        "OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID"
+    )
+    destructive = mock.Mock()
+    destructive.avoids_symlink_attacks = True
+    with (
+        mock.patch.object(
+            raw_retirement, "_current_commit", return_value=governing_commit
+        ),
+        mock.patch.object(raw_retirement.os.path, "lexists", return_value=False),
+        mock.patch.object(
+            raw_retirement,
+            "_read_json",
+            return_value=(manifest, manifest_payload),
+        ),
+        mock.patch.object(raw_retirement, "_validate_manifest"),
+        mock.patch.object(raw_retirement, "_validate_safe_export"),
+        mock.patch.object(
+            raw_retirement, "_derive_manifest", return_value=manifest
+        ),
+        mock.patch.object(raw_retirement, "_validate_r4", return_value={}),
+        mock.patch.object(
+            raw_retirement,
+            "_validate_leaf_from_manifest",
+            side_effect=(None, None, final_leaf_mutation),
+        ) as leaf_validator,
+        mock.patch.object(
+            raw_retirement,
+            "_retained_evidence_authority",
+            return_value=retained,
+        ),
+        mock.patch.object(raw_retirement, "_quiescent", return_value={}),
+        mock.patch.object(raw_retirement.shutil, "rmtree", destructive),
+    ):
         _expect(
-            "OLDER_RAW_LEAF_AUTHORITY_INVALID",
-            lambda: raw_retirement._validate_leaf_from_manifest(
-                older, leaf, entries
+            "OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID",
+            lambda: raw_retirement.execute_exact_retirement(
+                governing_commit=governing_commit
             ),
         )
-        hardlink.unlink()
-        fifo = leaf / "fifo.dcm"
-        os.mkfifo(fifo, 0o600)
+    assert leaf_validator.call_count == 3
+    destructive.assert_not_called()
+
+
+def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postcheck() -> None:
+    governing_commit = "a" * 40
+    role_inventory = [{"role": "SEALED", "file_count": 1, "total_bytes": 1}]
+    retained = {
+        "file_count": raw_retirement.EXPECTED_RETAINED_FILES,
+        "total_bytes": raw_retirement.EXPECTED_RETAINED_BYTES,
+        "file_metadata_sha256": "b" * 64,
+        "directory_topology_sha256": "c" * 64,
+        "role_inventory": role_inventory,
+        "role_inventory_sha256": "d" * 64,
+        "control_content_sha256": "e" * 64,
+    }
+    r4_authority = {"metadata_stat_sha256": "f" * 64}
+    manifest = {
+        "governing_commit": governing_commit,
+        "retained_file_metadata_sha256": retained["file_metadata_sha256"],
+        "retained_directory_topology_sha256": retained[
+            "directory_topology_sha256"
+        ],
+        "retained_role_inventory": role_inventory,
+        "retained_role_inventory_sha256": retained["role_inventory_sha256"],
+        "retained_control_content_sha256": retained["control_content_sha256"],
+        "diagnostic_evidence_authority": {
+            "source_object_key": "1" * 64,
+            "source_local_sha256": "2" * 64,
+        },
+        "r4_authority": r4_authority,
+        "targets": [
+            {
+                "batch_id": batch,
+                "relative_path": f"raw/{batch}/objects/{index + 1:064x}.dcm",
+                "size_bytes": 1,
+            }
+            for index, batch in enumerate(raw_retirement.TARGET_BATCHES)
+        ],
+    }
+    payload = raw_retirement._canonical(manifest)
+    destructive = mock.Mock()
+    destructive.avoids_symlink_attacks = True
+    diagnostic_failure = raw_retirement.OlderRawRetirementError(
+        "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED"
+    )
+    with (
+        mock.patch.object(raw_retirement, "_current_commit", return_value=governing_commit),
+        mock.patch.object(raw_retirement.os.path, "lexists", return_value=False),
+        mock.patch.object(raw_retirement, "_read_json", return_value=(manifest, payload)),
+        mock.patch.object(raw_retirement, "_validate_manifest"),
+        mock.patch.object(raw_retirement, "_validate_safe_export"),
+        mock.patch.object(raw_retirement, "_derive_manifest", return_value=manifest),
+        mock.patch.object(
+            raw_retirement, "_validate_r4", return_value=r4_authority
+        ) as validate_r4,
+        mock.patch.object(raw_retirement, "_validate_leaf_from_manifest"),
+        mock.patch.object(
+            raw_retirement, "_retained_evidence_authority", return_value=retained
+        ),
+        mock.patch.object(raw_retirement, "_quiescent", return_value={}),
+        mock.patch.object(raw_retirement, "_diagnostic_root", return_value=Path("/sealed")),
+        mock.patch.object(
+            raw_retirement,
+            "_diagnostic_authority_from_sealed_manifest",
+            side_effect=diagnostic_failure,
+        ) as diagnostic,
+        mock.patch.object(raw_retirement.shutil, "rmtree", destructive),
+    ):
         _expect(
-            "OLDER_RAW_LEAF_AUTHORITY_INVALID",
-            lambda: raw_retirement._validate_leaf_from_manifest(
-                older, leaf, entries
+            "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED",
+            lambda: raw_retirement.execute_exact_retirement(
+                governing_commit=governing_commit
             ),
         )
+    older_root = (
+        raw_retirement.PRODUCTION_ROOT
+        / "attempts"
+        / raw_retirement.OLDER_ATTEMPT_ID
+    )
+    assert destructive.call_args_list == [
+        mock.call(path) for path in raw_retirement._target_leaves(older_root)
+    ]
+    assert validate_r4.call_count == 2
+    diagnostic.assert_called_once_with(Path("/sealed"), manifest)
+
+
+def test_r5e_r3_sealed_diagnostic_postcheck_never_requires_retired_source() -> None:
+    sealed = {
+        "source_object_key": "a" * 64,
+        "source_local_sha256": "b" * 64,
+        "status": "PASS_R3E_DIAGNOSTIC_EVIDENCE_RETAINED",
+    }
+    root = Path("/sealed/diagnostic")
+    with mock.patch.object(
+        raw_retirement, "_diagnostic_evidence_authority", return_value=sealed
+    ) as validator:
+        assert raw_retirement._diagnostic_authority_from_sealed_manifest(
+            root, {"diagnostic_evidence_authority": sealed}
+        ) == sealed
+    validator.assert_called_once_with(
+        root,
+        source_object_key="a" * 64,
+        source_local_sha256="b" * 64,
+    )
+    with mock.patch.object(
+        raw_retirement,
+        "_diagnostic_evidence_authority",
+        return_value={**sealed, "source_local_sha256": "0" * 64},
+    ):
+        _expect(
+            "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED",
+            lambda: raw_retirement._diagnostic_authority_from_sealed_manifest(
+                root, {"diagnostic_evidence_authority": sealed}
+            ),
+        )
+    assert "r3e.run_preflight" not in inspect.getsource(
+        raw_retirement.validate_retired_state
+    )
+
+
+def test_r5e_r3_recursive_raw_object_closure_and_nested_layout_pass() -> None:
+    for nested in (False, True):
+        with tempfile.TemporaryDirectory() as temporary:
+            older = Path(temporary).resolve() / "older"
+            leaf, expected = _synthetic_raw_leaf(older, nested=nested)
+            authority = _synthetic_raw_authority(older, leaf, expected)
+            assert authority["file_count"] == 2
+            assert authority["total_bytes"] == 7
+            assert authority["directory_count"] == (3 if nested else 1)
+            entries = tuple(
+                {
+                    "batch_id": "c3_batch_000",
+                    "source_object_key": key,
+                    "relative_path": authority["entries"][key]["relative_path"],
+                    "size_bytes": size,
+                }
+                for key, size in expected.items()
+            )
+            with mock.patch.object(
+                raw_retirement,
+                "_mountinfo_mountpoints",
+                return_value=frozenset(),
+            ):
+                raw_retirement._validate_leaf_from_manifest(older, leaf, entries)
+
+
+def test_r5e_r3_raw_object_file_set_and_byte_errors_are_role_specific() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        older = Path(temporary).resolve() / "older"
+        leaf, expected = _synthetic_raw_leaf(older)
+        missing = leaf / ("a" * 64 + ".dcm")
+        missing.unlink()
+        _expect(
+            "OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID",
+            lambda: _synthetic_raw_authority(older, leaf, expected),
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        older = Path(temporary).resolve() / "older"
+        leaf, expected = _synthetic_raw_leaf(older)
+        _private_file(leaf / ("c" * 64 + ".dcm"), b"x")
+        _expect(
+            "OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID",
+            lambda: _synthetic_raw_authority(older, leaf, expected),
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        older = Path(temporary).resolve() / "older"
+        leaf, expected = _synthetic_raw_leaf(older)
+        (leaf / ("a" * 64 + ".dcm")).unlink()
+        _private_file(leaf / ("c" * 64 + ".dcm"), b"abc")
+        _expect(
+            "OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID",
+            lambda: _synthetic_raw_authority(older, leaf, expected),
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        older = Path(temporary).resolve() / "older"
+        leaf, expected = _synthetic_raw_leaf(older)
+        wrong_bytes = {**expected, "a" * 64: 99}
+        _expect(
+            "OLDER_RAW_OBJECT_LEAF_BYTES_INVALID",
+            lambda: _synthetic_raw_authority(older, leaf, wrong_bytes),
+        )
+
+
+def test_r5e_r3_raw_object_unsafe_entries_fail_closed() -> None:
+    unsafe_cases = (
+        (".nfs0001", lambda path, _leaf: _private_file(path, b"x")),
+        ("c" * 64 + ".dcm.partial", lambda path, _leaf: _private_file(path, b"x")),
+        (
+            "c" * 64 + ".dcm",
+            lambda path, leaf: path.symlink_to(leaf / ("a" * 64 + ".dcm")),
+        ),
+        ("c" * 64 + ".dcm", lambda path, _leaf: os.mkfifo(path, 0o600)),
+        (
+            "c" * 64 + ".dcm",
+            lambda path, leaf: os.link(leaf / ("a" * 64 + ".dcm"), path),
+        ),
+    )
+    for name, create in unsafe_cases:
+        with tempfile.TemporaryDirectory() as temporary:
+            older = Path(temporary).resolve() / "older"
+            leaf, expected = _synthetic_raw_leaf(older)
+            create(leaf / name, leaf)
+            _expect(
+                "OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY",
+                lambda: _synthetic_raw_authority(older, leaf, expected),
+            )
+
+
+def test_r5e_r3_mountinfo_parser_and_platform_authority_are_closed() -> None:
+    payload = (
+        b"36 25 0:32 / /restricted\\040project rw,relatime - ext4 /dev/x rw\n"
+        b"37 25 0:33 / /restricted\\134backslash rw - ext4 /dev/y rw\n"
+    )
+    with (
+        mock.patch.object(raw_retirement.sys, "platform", "linux"),
+        mock.patch.object(raw_retirement.os, "open", return_value=41),
+        mock.patch.object(raw_retirement.os, "read", side_effect=(payload, b"")),
+        mock.patch.object(raw_retirement.os, "close") as close,
+    ):
+        observed = raw_retirement._mountinfo_mountpoints()
+    assert observed == frozenset(
+        {Path("/restricted project"), Path("/restricted\\backslash")}
+    )
+    close.assert_called_once_with(41)
+
+    with (
+        mock.patch.object(raw_retirement.sys, "platform", "darwin"),
+        mock.patch.object(raw_retirement.os, "open") as opener,
+    ):
+        assert raw_retirement._mountinfo_mountpoints() == frozenset()
+    opener.assert_not_called()
+
+    with mock.patch.object(raw_retirement.sys, "platform", "freebsd14"):
+        _expect(
+            "OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID",
+            raw_retirement._mountinfo_mountpoints,
+        )
+
+
+def test_r5e_r3_mounts_on_attempt_chain_or_nested_subtree_fail_closed() -> None:
+    for mount_selector in (
+        lambda older, _leaf: older / "raw",
+        lambda _older, leaf: leaf / "empty_nested_bind",
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            older = Path(temporary).resolve() / "older"
+            leaf, expected = _synthetic_raw_leaf(older)
+            _private_directory(leaf / "empty_nested_bind")
+            mountpoint = mount_selector(older, leaf)
+            with mock.patch.object(
+                raw_retirement,
+                "_mountinfo_mountpoints",
+                return_value=frozenset({mountpoint}),
+            ):
+                _expect(
+                    "OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID",
+                    lambda: raw_retirement._raw_object_leaf_authority(
+                        older,
+                        leaf,
+                        batch_id="c3_batch_000",
+                        expected_sizes=expected,
+                    ),
+                )
+
+
+def test_r5e_r3_partial_tree_is_separate_safe_metadata_only_authority() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        attempt_root = Path(temporary).resolve() / raw_retirement.OLDER_ATTEMPT_ID
+        partials = attempt_root / "raw" / "c3_batch_000" / "partials"
+        _private_directory(partials)
+        source_key = "a" * 64
+        partial = partials / (
+            f"{source_key}.{raw_retirement.OLDER_ATTEMPT_ID}.partial"
+        )
+        _private_file(partial, b"preserved-partial")
+        with (
+            mock.patch.object(
+                raw_retirement, "_mountinfo_mountpoints", return_value=frozenset()
+            ),
+            mock.patch("builtins.open", side_effect=AssertionError("body read")),
+        ):
+            authority = raw_retirement._partial_tree_authority(
+                attempt_root,
+                partials,
+                batch_id="c3_batch_000",
+                attempt_id=raw_retirement.OLDER_ATTEMPT_ID,
+                expected_source_keys={source_key},
+            )
+        assert authority == {
+            "file_count": 1,
+            "total_bytes": len(b"preserved-partial"),
+            "directory_count": 1,
+        }
+
+        for unsafe_name in (".nfs0001", "nested.partial"):
+            unsafe = partials / unsafe_name
+            _private_directory(unsafe)
+            with mock.patch.object(
+                raw_retirement, "_mountinfo_mountpoints", return_value=frozenset()
+            ):
+                _expect(
+                    "OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID",
+                    lambda: raw_retirement._partial_tree_authority(
+                        attempt_root,
+                        partials,
+                        batch_id="c3_batch_000",
+                        attempt_id=raw_retirement.OLDER_ATTEMPT_ID,
+                        expected_source_keys={source_key},
+                    ),
+                )
+            unsafe.rmdir()
+
+        unknown = partials / (
+            f"{'b' * 64}.{raw_retirement.OLDER_ATTEMPT_ID}.partial"
+        )
+        _private_file(unknown, b"unknown")
+        with mock.patch.object(
+            raw_retirement, "_mountinfo_mountpoints", return_value=frozenset()
+        ):
+            _expect(
+                "OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID",
+                lambda: raw_retirement._partial_tree_authority(
+                    attempt_root,
+                    partials,
+                    batch_id="c3_batch_000",
+                    attempt_id=raw_retirement.OLDER_ATTEMPT_ID,
+                    expected_source_keys={source_key},
+                ),
+            )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        attempt_root = Path(temporary).resolve() / raw_retirement.OLDER_ATTEMPT_ID
+        partials = attempt_root / "raw" / "c3_batch_000" / "partials"
+        with mock.patch.object(
+            raw_retirement,
+            "_mountinfo_mountpoints",
+            side_effect=raw_retirement.OlderRawRetirementError(
+                "OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID"
+            ),
+        ):
+            _private_directory(partials)
+            _expect(
+                "OLDER_RAW_PARTIAL_TREE_AUTHORITY_INVALID",
+                lambda: raw_retirement._partial_tree_authority(
+                    attempt_root,
+                    partials,
+                    batch_id="c3_batch_000",
+                    attempt_id=raw_retirement.OLDER_ATTEMPT_ID,
+                    expected_source_keys=set(),
+                ),
+            )
+
+
+def test_r5e_r3_retained_receipt_tree_allows_exact_two_transitions_only() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _transition_receipt_fixture(Path(temporary).resolve())
+        authority = _validate_transition_fixture(fixture)
+        assert authority["required_receipt_files"] == 1
+        assert authority["auxiliary_receipt_files"] == 2
+        assert authority["auxiliary_receipt_bytes"] > 0
+
+        _private_file(fixture.receipts_root / "unknown.extra.json", b"{}")
+        _expect(
+            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
+            lambda: _validate_transition_fixture(fixture),
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _transition_receipt_fixture(Path(temporary).resolve())
+        (fixture.receipts_root / fixture.required_name).unlink()
+        _expect(
+            "OLDER_RAW_REQUIRED_RECEIPT_MISSING",
+            lambda: _validate_transition_fixture(fixture),
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _transition_receipt_fixture(Path(temporary).resolve())
+        os.chmod(fixture.receipts_root / fixture.required_name, 0o640)
+        _expect(
+            "OLDER_RAW_REQUIRED_RECEIPT_INVALID",
+            lambda: _validate_transition_fixture(fixture),
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _transition_receipt_fixture(Path(temporary).resolve())
+        fixture.ledger_batch["download_recovery_receipts"] = {"a" * 64: "5" * 64}
+        _expect(
+            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
+            lambda: _validate_transition_fixture(fixture),
+        )
+
+
+def test_r5e_r3_transition_receipts_bind_exact_inputs_outputs_and_bytes() -> None:
+    cases = (
+        (0, "output_manifest_sha256", "9" * 64),
+        (0, "input_receipt_sha256", ["9" * 64]),
+        (1, "input_receipt_sha256", ["8" * 64, "3" * 64]),
+    )
+    for transition_index, field, value in cases:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = _transition_receipt_fixture(Path(temporary).resolve())
+            basename = raw_retirement.TRANSITION_RECEIPT_BASENAMES[
+                transition_index
+            ]
+            fixture.documents[basename][field] = value
+            payload = raw_retirement.core.canonical_json_bytes(
+                fixture.documents[basename]
+            )
+            _private_file(fixture.receipts_root / basename, payload)
+            fixture.ledger_batch["events"][transition_index][
+                "receipt_sha256"
+            ] = hashlib.sha256(payload).hexdigest()
+            _expect(
+                "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
+                lambda: _validate_transition_fixture(fixture),
+            )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _transition_receipt_fixture(Path(temporary).resolve())
+        basename = raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]
+        payload = json.dumps(fixture.documents[basename], indent=2).encode()
+        _private_file(fixture.receipts_root / basename, payload)
+        fixture.ledger_batch["events"][0]["receipt_sha256"] = hashlib.sha256(
+            payload
+        ).hexdigest()
+        _expect(
+            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
+            lambda: _validate_transition_fixture(fixture),
+        )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        older = Path(temporary).resolve() / "older"
+        leaf, expected = _synthetic_raw_leaf(older)
+        _private_file(leaf / "unexpected.txt", b"x")
+        _expect(
+            "OLDER_RAW_OBJECT_LEAF_FILE_SET_INVALID",
+            lambda: _synthetic_raw_authority(older, leaf, expected),
+        )
+
+    for name in (".nfs0001", "layout.partial"):
+        with tempfile.TemporaryDirectory() as temporary:
+            older = Path(temporary).resolve() / "older"
+            leaf, expected = _synthetic_raw_leaf(older)
+            _private_directory(leaf / name)
+            _expect(
+                "OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY",
+                lambda: _synthetic_raw_authority(older, leaf, expected),
+            )
 
 
 def test_r5e_quiescence_fails_closed_when_process_inventory_fails() -> None:
@@ -468,7 +1181,7 @@ def test_r5e_r2_quiescence_classifies_target_processes_and_unrelated_scope() -> 
         mock.patch.object(
             raw_retirement,
             "_inspect_proc_references",
-            side_effect=AssertionError("unrelated procfs must not be required"),
+            return_value="UNRELATED_PROCESS_INSPECTED_NONBLOCKING",
         ) as inspect_proc,
         mock.patch.object(
             raw_retirement,
@@ -478,7 +1191,8 @@ def test_r5e_r2_quiescence_classifies_target_processes_and_unrelated_scope() -> 
         mock.patch.dict(os.environ, {"USER": "synthetic"}),
     ):
         result = raw_retirement._quiescent()
-    inspect_proc.assert_not_called()
+    inspect_proc.assert_called_once()
+    assert inspect_proc.call_args.kwargs["required"] is False
     assert result == {
         "same_user_processes_observed": 1,
         "candidate_processes": 0,
@@ -489,6 +1203,32 @@ def test_r5e_r2_quiescence_classifies_target_processes_and_unrelated_scope() -> 
         "matching_scheduler_jobs": 0,
         "stable_target_leaves": 2,
     }
+
+    completed_ps = SimpleNamespace(
+        returncode=0,
+        stderr=b"",
+        stdout=process_prefix + b"/bin/zsh -l\n",
+    )
+    with (
+        mock.patch.object(
+            raw_retirement.subprocess,
+            "run",
+            side_effect=(completed_qstat, completed_ps),
+        ),
+        mock.patch.object(
+            raw_retirement,
+            "_inspect_proc_references",
+            return_value="MATCHING_TARGET_REFERENCE_BLOCKING",
+        ) as inspect_proc,
+        mock.patch.object(
+            raw_retirement,
+            "_stable_target_leaf_authority",
+            return_value=stable,
+        ),
+        mock.patch.dict(os.environ, {"USER": "synthetic"}),
+    ):
+        _expect("OLDER_RAW_ACTIVE_PROCESS_EXISTS", raw_retirement._quiescent)
+    assert inspect_proc.call_args.kwargs["required"] is False
 
     vanished_ps = SimpleNamespace(
         returncode=0,
@@ -609,7 +1349,7 @@ def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None
             anomaly = leaves[0] / ".nfs0001"
             _private_file(anomaly, b"x")
             _expect(
-                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                "OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY",
                 lambda: raw_retirement._target_leaf_snapshot(
                     older,
                     leaves[0],
@@ -621,7 +1361,7 @@ def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None
             partial = leaves[0] / ("2" * 64 + ".dcm.partial")
             _private_file(partial, b"x")
             _expect(
-                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                "OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY",
                 lambda: raw_retirement._target_leaf_snapshot(
                     older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
                 ),
@@ -631,7 +1371,7 @@ def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None
             symlink = leaves[0] / ("3" * 64 + ".dcm")
             symlink.symlink_to("1".zfill(64) + ".dcm")
             _expect(
-                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                "OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY",
                 lambda: raw_retirement._target_leaf_snapshot(
                     older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
                 ),
@@ -642,7 +1382,7 @@ def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None
             hardlink = leaves[0] / ("4" * 64 + ".dcm")
             os.link(source, hardlink)
             _expect(
-                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                "OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY",
                 lambda: raw_retirement._target_leaf_snapshot(
                     older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
                 ),
@@ -652,7 +1392,7 @@ def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None
             fifo = leaves[0] / ("5" * 64 + ".dcm")
             os.mkfifo(fifo, 0o600)
             _expect(
-                "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                "OLDER_RAW_OBJECT_LEAF_UNSAFE_ENTRY",
                 lambda: raw_retirement._target_leaf_snapshot(
                     older, leaves[0], batch_id=raw_retirement.TARGET_BATCHES[0]
                 ),
@@ -663,49 +1403,22 @@ def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None
                 raw_retirement.os.path, "ismount", return_value=True
             ):
                 _expect(
-                    "OLDER_RAW_LEAF_AUTHORITY_INVALID",
+                    "OLDER_RAW_OBJECT_LEAF_TOPOLOGY_INVALID",
                     lambda: raw_retirement._target_leaf_snapshot(
                         older,
                         leaves[0],
                         batch_id=raw_retirement.TARGET_BATCHES[0],
                     ),
                 )
-
-            socket_entry = SimpleNamespace(
-                name="6" * 64 + ".dcm",
-                path=str(leaves[0] / ("6" * 64 + ".dcm")),
-                is_symlink=lambda: False,
-                stat=lambda follow_symlinks=False: SimpleNamespace(
-                    st_mode=stat.S_IFSOCK | 0o600,
-                    st_uid=os.geteuid(),
-                    st_nlink=1,
-                    st_dev=os.lstat(leaves[0]).st_dev,
-                    st_size=0,
-                    st_ino=1,
-                    st_gid=os.getegid(),
-                    st_mtime_ns=1,
-                    st_ctime_ns=1,
-                ),
-            )
-            directory = mock.MagicMock()
-            directory.__enter__.return_value = iter((socket_entry,))
-            directory.__exit__.return_value = False
-            with mock.patch.object(
-                raw_retirement.os, "scandir", return_value=directory
-            ):
-                _expect(
-                    "OLDER_RAW_LEAF_AUTHORITY_INVALID",
-                    lambda: raw_retirement._target_leaf_snapshot(
-                        older,
-                        leaves[0],
-                        batch_id=raw_retirement.TARGET_BATCHES[0],
-                    ),
-                )
-
 
 def test_r5e_retained_role_classifier_is_closed_and_body_roles_are_exact() -> None:
     cases = {
         "raw/c3_batch_000/objects/a.dcm": "RAW_DICOM_PAYLOAD",
+        (
+            "raw/c3_batch_000/partials/"
+            + "a" * 64
+            + f".{raw_retirement.OLDER_ATTEMPT_ID}.partial"
+        ): "PRESERVED_DOWNLOAD_PARTIALS",
         "extracted_cache/c3_batch_001/dicom_extraction.partial/clips/aa/a.npz": (
             "EXTRACTED_NPZ_CACHE"
         ),
@@ -737,7 +1450,12 @@ def test_r5e_retained_role_classifier_is_closed_and_body_roles_are_exact() -> No
     assert {
         path: raw_retirement._retained_role(path) for path in cases
     } == cases
-    assert len(raw_retirement.RETAINED_ROLE_NAMES) == 13
+    assert len(raw_retirement.RETAINED_ROLE_NAMES) == 14
+    assert raw_retirement._retained_role(
+        "raw/c3_batch_000/partials/"
+        + "a" * 64
+        + ".wrong_attempt.partial"
+    ) == "UNCLASSIFIED"
 
 
 def test_r5e_receipt_and_aggregate_summary_are_closed_and_bound() -> None:
@@ -934,6 +1652,10 @@ def test_r5e_capacity_publisher_keeps_historical_pairs_and_adds_r2_pair() -> Non
 
 
 def test_r5e_cleanup_requires_the_exact_failed_pre_cleanup_capacity_pair() -> None:
+    sealed_receipt = {
+        "governing_commit": raw_retirement.R5E_R2_PRE_ACTION_GOVERNING_COMMIT,
+        "captured_at_utc": "2026-08-01T12:34:56Z",
+    }
     blocked = capacity.DynamicSuccessorCapacityCapture(
         receipt={},
         receipt_payload=b"sealed-pre-capacity\n",
@@ -951,9 +1673,14 @@ def test_r5e_cleanup_requires_the_exact_failed_pre_cleanup_capacity_pair() -> No
             capacity,
             "validate_production_dynamic_successor_capacity_capture",
             return_value=blocked,
+        ) as validator,
+        mock.patch.object(
+            raw_retirement,
+            "_read_json",
+            return_value=(sealed_receipt, raw_retirement._canonical(sealed_receipt)),
         ),
     ):
-        authority = raw_retirement._pre_cleanup_capacity_authority("c" * 40)
+        authority = raw_retirement._pre_cleanup_capacity_authority()
     assert authority["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
     assert authority["receipt_sha256"] == hashlib.sha256(
         blocked.receipt_payload
@@ -961,6 +1688,47 @@ def test_r5e_cleanup_requires_the_exact_failed_pre_cleanup_capacity_pair() -> No
     assert loader.call_args.kwargs["restricted_receipt_path"].name == (
         capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
     )
+    assert loader.call_args.kwargs["expected_governing_commit"] == (
+        raw_retirement.R5E_R2_PRE_ACTION_GOVERNING_COMMIT
+    )
+    assert loader.call_args.kwargs["now_utc"].isoformat() == (
+        "2026-08-01T12:34:56+00:00"
+    )
+    assert validator.call_args.kwargs["now_utc"] == (
+        loader.call_args.kwargs["now_utc"]
+    )
+
+    wrong_commit = {**sealed_receipt, "governing_commit": "0" * 40}
+    with (
+        mock.patch.object(
+            raw_retirement, "_read_json", return_value=(wrong_commit, b"wrong\n")
+        ),
+        mock.patch.object(
+            capacity, "load_dynamic_successor_capacity_capture"
+        ) as loader,
+    ):
+        _expect(
+            "OLDER_RAW_PRE_CLEANUP_CAPACITY_AUTHORITY_INVALID",
+            raw_retirement._pre_cleanup_capacity_authority,
+        )
+    loader.assert_not_called()
+
+    with (
+        mock.patch.object(
+            raw_retirement,
+            "_read_json",
+            return_value=(sealed_receipt, raw_retirement._canonical(sealed_receipt)),
+        ),
+        mock.patch.object(
+            capacity,
+            "load_dynamic_successor_capacity_capture",
+            side_effect=ValueError("sealed pair hash mismatch"),
+        ),
+    ):
+        _expect(
+            "OLDER_RAW_PRE_CLEANUP_CAPACITY_AUTHORITY_INVALID",
+            raw_retirement._pre_cleanup_capacity_authority,
+        )
 
     passed = copy.deepcopy(blocked.observation)
     passed["status"] = capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
@@ -978,10 +1746,15 @@ def test_r5e_cleanup_requires_the_exact_failed_pre_cleanup_capacity_pair() -> No
             "validate_production_dynamic_successor_capacity_capture",
             return_value=pass_capture,
         ),
+        mock.patch.object(
+            raw_retirement,
+            "_read_json",
+            return_value=(sealed_receipt, raw_retirement._canonical(sealed_receipt)),
+        ),
     ):
         _expect(
             "OLDER_RAW_UNAUTHORIZED_CLEANUP_AFTER_CAPACITY_PASS",
-            lambda: raw_retirement._pre_cleanup_capacity_authority("c" * 40),
+            raw_retirement._pre_cleanup_capacity_authority,
         )
 
 
