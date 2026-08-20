@@ -1086,6 +1086,176 @@ def _claimed_run_fixture(
     return run, capacity_value, claim_path
 
 
+def _r5e_r7_claimed_run_fixture(
+    root: Path,
+) -> tuple[
+    sequential.FullRun,
+    capacity.DynamicSuccessorCapacityCapture,
+    Path,
+]:
+    plan, requirements = two_batch_plan()
+    run = _scoped_run(root, plan, requirements)
+    run = replace(
+        run,
+        requirements=replace(
+            requirements, contract_id=core.EXPECTED_FULL_CONTRACT_ID
+        ),
+    )
+    dynamic_capture = _dynamic_capacity_capture(
+        governing_commit=run.authority.governing_commit
+    )
+    capacity_value = _successor_capacity_authority(
+        dynamic_capture.observation
+    )
+    launch_path = (
+        run.attempt_root / "full_launch_authority.restricted.json"
+    )
+    capacity_path = (
+        run.attempt_root / "full_capacity_receipt.restricted.json"
+    )
+    dynamic_path = (
+        run.attempt_root / sequential.DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME
+    )
+    sequential._write_private_json(
+        launch_path, run.launch_authority, attempt_id=run.attempt_id
+    )
+    sequential._write_private_json(
+        capacity_path, capacity_value, attempt_id=run.attempt_id
+    )
+    capacity.write_dynamic_successor_capacity_receipt_payload(
+        dynamic_path,
+        dynamic_capture.receipt_payload,
+        expected_governing_commit=run.authority.governing_commit,
+    )
+    claim = sequential._expected_submission_claim(
+        run,
+        capacity_receipt_sha256=core.sha256_file(capacity_path),
+        dynamic_capacity_receipt_sha256=hashlib.sha256(
+            dynamic_capture.receipt_payload
+        ).hexdigest(),
+        capacity_evidence_role="R5E_POST_CLEANUP",
+        capacity_gain_source="CLEANUP",
+        raw_retirement_status=sequential.RETIREMENT_EVENT_STATUS,
+        raw_retirement_receipt_sha256=(
+            sequential.RETIREMENT_EVENT_RECEIPT_SHA256
+        ),
+        qsub_environment_sha256=BOUND_QSUB_ENVIRONMENT_SHA256,
+    )
+    claim_path = run.attempt_root / "full_submission_claim.restricted.json"
+    sequential._write_private_json(
+        claim_path, claim, attempt_id=run.attempt_id
+    )
+    return run, dynamic_capture, claim_path
+
+
+def test_r5e_r7_claim_binds_current_post_and_completed_event_for_adoption(
+) -> None:
+    with tempfile.TemporaryDirectory() as raw_root:
+        run, current_post, claim_path = _r5e_r7_claimed_run_fixture(
+            Path(raw_root).resolve()
+        )
+        admission = sequential.CapacityAdmission(
+            capture=current_post,
+            evidence_role="R5E_POST_CLEANUP",
+            capacity_gain_source="CLEANUP",
+            raw_retirement_status=sequential.RETIREMENT_EVENT_STATUS,
+            raw_retirement_receipt_sha256=(
+                sequential.RETIREMENT_EVENT_RECEIPT_SHA256
+            ),
+        )
+        fixed_loader = mock.Mock(return_value=admission)
+        forbidden_boundaries = [
+            mock.patch.object(sequential.subprocess, "run"),
+            mock.patch.object(stages, "run_production_dicom_extraction"),
+            mock.patch.object(stages, "run_production_echoprime"),
+            mock.patch.object(core, "execute_exact_batch_download"),
+        ]
+
+        def materialized_run(*, scheduler_job_identity: str = "NO_BODY"):
+            return replace(
+                run, scheduler_job_identity=scheduler_job_identity
+            )
+
+        with (
+            mock.patch.object(
+                sequential,
+                "_load_fixed_capacity_admission",
+                fixed_loader,
+            ),
+            mock.patch.object(
+                sequential, "build_full_run", side_effect=materialized_run
+            ),
+            mock.patch.object(
+                sequential,
+                "_validate_completed_canary_evidence",
+                return_value={"status": "PASS"},
+            ),
+            mock.patch.object(sequential, "_validate_full_run"),
+            mock.patch.object(
+                sequential, "_load_full_batch_plan", return_value=run.plan
+            ),
+            forbidden_boundaries[0] as process,
+            forbidden_boundaries[1] as dicom,
+            forbidden_boundaries[2] as gpu,
+            forbidden_boundaries[3] as cloud,
+        ):
+            assert sequential._load_bound_submission_environment_sha256(
+                run
+            ) == BOUND_QSUB_ENVIRONMENT_SHA256
+            array_run = sequential._adopt_claimed_run(
+                scheduler_job_identity="8123456"
+            )
+            finalizer_run = sequential._adopt_claimed_run(
+                scheduler_job_identity="8123457"
+            )
+
+        assert array_run.scheduler_job_identity == "8123456"
+        assert finalizer_run.scheduler_job_identity == "8123457"
+        assert fixed_loader.call_count == 3
+        assert all(
+            call.kwargs
+            == {
+                "revalidate_retirement_state": False,
+                "require_current_freshness": False,
+            }
+            for call in fixed_loader.call_args_list
+        )
+        claim = json.loads(claim_path.read_text(encoding="utf-8"))
+        current_sha256 = hashlib.sha256(
+            current_post.receipt_payload
+        ).hexdigest()
+        assert claim["capacity_evidence_role"] == "R5E_POST_CLEANUP"
+        assert claim["dynamic_capacity_receipt_sha256"] == current_sha256
+        assert claim["dynamic_capacity_receipt_sha256"] != (
+            sequential.HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_SHA256
+        )
+        assert claim["raw_retirement_receipt_sha256"] == (
+            sequential.RETIREMENT_EVENT_RECEIPT_SHA256
+        )
+        for boundary in (process, dicom, gpu, cloud):
+            boundary.assert_not_called()
+
+        _replace_private_json(
+            claim_path,
+            {
+                **claim,
+                "dynamic_capacity_receipt_sha256": (
+                    sequential.HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_SHA256
+                ),
+            },
+        )
+        with (
+            mock.patch.object(
+                sequential,
+                "_load_fixed_capacity_admission",
+                return_value=admission,
+            ),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential._load_bound_submission_environment_sha256(run)
+        assert caught.value.code == "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+
+
 def _replace_private_json(path: Path, value: Mapping[str, Any]) -> None:
     path.write_bytes(core.canonical_json_bytes(value))
     os.chmod(path, 0o600)
