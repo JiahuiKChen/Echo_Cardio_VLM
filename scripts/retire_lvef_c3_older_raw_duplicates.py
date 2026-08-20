@@ -58,10 +58,6 @@ RAW_OBJECT_BASENAME_RE = re.compile(r"^[0-9a-f]{64}\.dcm$")
 PLANNED_DOWNLOAD_PARTIAL_RE = re.compile(
     rf"^(?P<source_key>[0-9a-f]{{64}})\.{re.escape(OLDER_ATTEMPT_ID)}\.partial$"
 )
-TRANSITION_RECEIPT_BASENAMES = (
-    "download_start_transition.restricted.json",
-    "download_verified_transition.restricted.json",
-)
 R5E_R2_PRE_ACTION_GOVERNING_COMMIT = (
     "f201e22cce760402814be76e25899c0ba10bdfbd"
 )
@@ -142,6 +138,13 @@ BATCH_AUTHORITY_KEYS = frozenset({
     "older_download_ledger_sha256", "r4_download_ledger_sha256",
     "older_download_manifest_role", "r4_download_manifest_role",
     "download_manifest_canonical_projection",
+})
+RECEIPT_TREE_AUTHORITY_KEYS = frozenset({
+    "required_receipt_files",
+    "auxiliary_receipt_files",
+    "auxiliary_receipt_bytes",
+    "auxiliary_metadata_projection_sha256",
+    "auxiliary_files_retained",
 })
 RETAINED_ROLE_NAMES = (
     "RAW_DICOM_PAYLOAD",
@@ -495,12 +498,53 @@ def _stable_metadata_authority(
     }
 
 
-def _retained_role(relative_path: str) -> str:
+def _is_direct_target_receipt(relative_path: str) -> bool:
+    path = PurePosixPath(relative_path)
+    parts = path.parts
+    return (
+        len(parts) == 4
+        and parts[0] == "raw"
+        and parts[1] in TARGET_BATCHES
+        and parts[2] == "receipts"
+    )
+
+
+def _required_receipt_relative_paths(
+    targets: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    return frozenset(
+        "raw/{batch}/receipts/{source}.verification.json".format(
+            batch=item["batch_id"], source=item["source_object_key"]
+        )
+        for item in targets
+    )
+
+
+def _is_opaque_auxiliary_receipt(
+    relative_path: str,
+    *,
+    required_receipt_relative_paths: frozenset[str],
+) -> bool:
+    return (
+        _is_direct_target_receipt(relative_path)
+        and relative_path not in required_receipt_relative_paths
+    )
+
+
+def _retained_role(
+    relative_path: str,
+    *,
+    required_receipt_relative_paths: frozenset[str] = frozenset(),
+) -> str:
     """Classify one retained file by closed topology/name rules, never size."""
 
     path = PurePosixPath(relative_path)
     parts = tuple(part.lower() for part in path.parts)
     name = path.name.lower()
+    if _is_direct_target_receipt(relative_path):
+        if relative_path in required_receipt_relative_paths:
+            return "DOWNLOAD_VERIFICATION_RECEIPTS"
+        return "OTHER_CONTROL_EVIDENCE"
     if name.endswith(".dcm"):
         return "RAW_DICOM_PAYLOAD"
     if (
@@ -519,13 +563,6 @@ def _retained_role(relative_path: str) -> str:
         if "extracted_cache" in parts or "clips" in parts:
             return "EXTRACTED_NPZ_CACHE"
         return "UNCLASSIFIED"
-    if (
-        len(parts) >= 3
-        and parts[0] == "raw"
-        and "receipts" in parts
-        and name.endswith(".verification.json")
-    ):
-        return "DOWNLOAD_VERIFICATION_RECEIPTS"
     if any(
         token in name
         for token in (
@@ -608,10 +645,21 @@ def _read_retained_control(path: Path) -> str:
 
 
 def _retained_evidence_authority(
-    root: Path, *, excluded_roots: Sequence[Path] = ()
+    root: Path,
+    *,
+    required_receipt_relative_paths: frozenset[str],
+    excluded_roots: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Seal every retained role plus exact control content and metadata."""
 
+    if (
+        len(required_receipt_relative_paths) != EXPECTED_DELETE_FILES
+        or any(
+            not _is_direct_target_receipt(relative)
+            for relative in required_receipt_relative_paths
+        )
+    ):
+        _fail("OLDER_RAW_RETAINED_ROLE_AUTHORITY_INVALID")
     first = _metadata_rows(root, excluded_roots=excluded_roots)
     files, directories = first
     counts = {
@@ -626,10 +674,17 @@ def _retained_evidence_authority(
     }
     for row in files:
         relative = str(row[0])
-        role = _retained_role(relative)
+        role = _retained_role(
+            relative,
+            required_receipt_relative_paths=required_receipt_relative_paths,
+        )
         counts[role]["file_count"] += 1
         counts[role]["total_bytes"] += int(row[5])
-        if role not in body_roles:
+        opaque_auxiliary = _is_opaque_auxiliary_receipt(
+            relative,
+            required_receipt_relative_paths=required_receipt_relative_paths,
+        )
+        if role not in body_roles and not opaque_auxiliary:
             control_rows.append(
                 (
                     relative,
@@ -1191,31 +1246,60 @@ def _retained_receipt_tree_authority(
     receipts_root: Path,
     *,
     batch_id: str,
-    attempt_id: str,
     expected_receipt_names: set[str],
-    ledger_batch: Mapping[str, Any],
-    runtime_authority: Mapping[str, Any],
-    launch_authority: Mapping[str, Any],
-    download_manifest_sha256: str,
 ) -> dict[str, Any]:
-    """Validate required receipts plus the two sealed producer transitions."""
+    """Validate required receipts and retain safe auxiliary files opaquely."""
 
     try:
         root_info = os.lstat(receipts_root)
         attempt_info = os.lstat(attempt_root)
+        expected_root = attempt_root / "raw" / batch_id / "receipts"
+        deletion_leaves = _target_leaves(attempt_root)
         if (
-            stat.S_ISLNK(root_info.st_mode)
+            batch_id not in TARGET_BATCHES
+            or receipts_root != expected_root
+            or stat.S_ISLNK(attempt_info.st_mode)
+            or not stat.S_ISDIR(attempt_info.st_mode)
+            or attempt_info.st_uid != os.geteuid()
+            or stat.S_ISLNK(root_info.st_mode)
             or not stat.S_ISDIR(root_info.st_mode)
             or root_info.st_uid != os.geteuid()
             or root_info.st_dev != attempt_info.st_dev
             or os.path.ismount(receipts_root)
         ):
-            _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
+            _fail("OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID")
+        current = attempt_root
+        for component in receipts_root.relative_to(attempt_root).parts:
+            current = current / component
+            current_info = os.lstat(current)
+            if (
+                stat.S_ISLNK(current_info.st_mode)
+                or not stat.S_ISDIR(current_info.st_mode)
+                or current_info.st_uid != os.geteuid()
+                or current_info.st_dev != attempt_info.st_dev
+                or os.path.ismount(current)
+            ):
+                _fail("OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID")
         observed: dict[str, tuple[Path, os.stat_result]] = {}
         for entry in os.scandir(receipts_root):
-            info = entry.stat(follow_symlinks=False)
+            required = entry.name in expected_receipt_names
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                code = (
+                    "OLDER_RAW_REQUIRED_RECEIPT_INVALID"
+                    if required
+                    else "OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID"
+                )
+                raise OlderRawRetirementError(code) from exc
+            path = Path(entry.path)
             if (
-                entry.is_symlink()
+                path.parent != receipts_root
+                or any(
+                    path == leaf or leaf in path.parents
+                    for leaf in deletion_leaves
+                )
+                or entry.is_symlink()
                 or not stat.S_ISREG(info.st_mode)
                 or info.st_uid != os.geteuid()
                 or info.st_nlink != 1
@@ -1224,16 +1308,16 @@ def _retained_receipt_tree_authority(
             ):
                 code = (
                     "OLDER_RAW_REQUIRED_RECEIPT_INVALID"
-                    if entry.name in expected_receipt_names
-                    else "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED"
+                    if required
+                    else "OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID"
                 )
                 _fail(code)
-            observed[entry.name] = (Path(entry.path), info)
+            observed[entry.name] = (path, info)
     except OlderRawRetirementError:
         raise
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise OlderRawRetirementError(
-            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED"
+            "OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID"
         ) from exc
 
     observed_names = set(observed)
@@ -1241,87 +1325,110 @@ def _retained_receipt_tree_authority(
     if missing:
         _fail("OLDER_RAW_REQUIRED_RECEIPT_MISSING")
     auxiliary_names = observed_names - expected_receipt_names
-    allowed_auxiliary = set(TRANSITION_RECEIPT_BASENAMES)
-    if auxiliary_names != allowed_auxiliary:
-        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
-    if ledger_batch.get("download_recovery_receipts"):
-        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
-
-    events = ledger_batch.get("events")
-    if not isinstance(events, list):
-        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
-    start_events = [
-        event
-        for event in events
-        if isinstance(event, Mapping)
-        and event.get("from_state") == "PLANNED"
-        and event.get("to_state") == "DOWNLOAD_IN_PROGRESS"
+    auxiliary_metadata = [
+        (
+            name,
+            stat.S_IMODE(observed[name][1].st_mode),
+            observed[name][1].st_uid,
+            observed[name][1].st_gid,
+            observed[name][1].st_nlink,
+            observed[name][1].st_size,
+            observed[name][1].st_dev,
+            observed[name][1].st_ino,
+            observed[name][1].st_mtime_ns,
+            observed[name][1].st_ctime_ns,
+        )
+        for name in sorted(auxiliary_names)
     ]
-    if len(start_events) != 1:
-        _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
-    specifications = (
-        (
-            TRANSITION_RECEIPT_BASENAMES[0],
-            "PLANNED",
-            "DOWNLOAD_IN_PROGRESS",
-            core.canonical_json_sha256(launch_authority),
-            [runtime_authority["batch_plan_sha256"]],
-        ),
-        (
-            TRANSITION_RECEIPT_BASENAMES[1],
-            "DOWNLOAD_IN_PROGRESS",
-            "DOWNLOAD_VERIFIED",
-            download_manifest_sha256,
-            [
-                start_events[0]["receipt_sha256"],
-                *sorted(ledger_batch["download_verification_receipts"].values()),
-            ],
-        ),
-    )
-    auxiliary_bytes = 0
-    for basename, from_state, to_state, output_sha, expected_inputs in specifications:
-        matching_events = [
-            event
-            for event in events
-            if isinstance(event, Mapping)
-            and event.get("from_state") == from_state
-            and event.get("to_state") == to_state
-        ]
-        if len(matching_events) != 1:
-            _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
-        try:
-            receipt, payload = _read_json(
-                observed[basename][0], maximum=r3e.MAXIMUM_RECEIPT_BYTES
-            )
-            canonical_authority = core.validate_runtime_authority(
-                receipt["authority"]
-            )
-        except Exception as exc:
-            raise OlderRawRetirementError(
-                "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED"
-            ) from exc
-        if (
-            set(receipt) != core.RECEIPT_KEYS
-            or receipt.get("schema_version") != 2
-            or receipt.get("receipt_type") != "lvef_c3_state_transition_v2"
-            or receipt.get("status") != "PASS"
-            or receipt.get("attempt_id") != attempt_id
-            or receipt.get("batch_id") != batch_id
-            or receipt.get("from_state") != from_state
-            or receipt.get("to_state") != to_state
-            or receipt.get("input_receipt_sha256") != expected_inputs
-            or canonical_authority != runtime_authority
-            or core.canonical_json_bytes(receipt) != payload
-            or _sha(payload) != matching_events[0].get("receipt_sha256")
-            or receipt.get("output_manifest_sha256") != output_sha
-        ):
-            _fail("OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED")
-        auxiliary_bytes += len(payload)
     return {
         "required_receipt_files": len(expected_receipt_names),
-        "auxiliary_receipt_files": len(allowed_auxiliary),
-        "auxiliary_receipt_bytes": auxiliary_bytes,
+        "auxiliary_receipt_files": len(auxiliary_names),
+        "auxiliary_receipt_bytes": sum(
+            observed[name][1].st_size for name in auxiliary_names
+        ),
+        "auxiliary_metadata_projection_sha256": core.canonical_json_sha256(
+            auxiliary_metadata
+        ),
+        "auxiliary_files_retained": True,
     }
+
+
+def _aggregate_receipt_tree_authority(
+    rows: Sequence[tuple[str, Mapping[str, Any]]],
+) -> dict[str, Any]:
+    if [batch for batch, _authority in rows] != list(TARGET_BATCHES):
+        _fail("OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID")
+    if any(
+        set(authority) != RECEIPT_TREE_AUTHORITY_KEYS
+        or type(authority.get("required_receipt_files")) is not int
+        or authority["required_receipt_files"] < 0
+        or type(authority.get("auxiliary_receipt_files")) is not int
+        or authority["auxiliary_receipt_files"] < 0
+        or type(authority.get("auxiliary_receipt_bytes")) is not int
+        or authority["auxiliary_receipt_bytes"] < 0
+        or not isinstance(
+            authority.get("auxiliary_metadata_projection_sha256"), str
+        )
+        or SHA_RE.fullmatch(
+            authority["auxiliary_metadata_projection_sha256"]
+        ) is None
+        or authority.get("auxiliary_files_retained") is not True
+        for _batch, authority in rows
+    ):
+        _fail("OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID")
+    return {
+        "required_receipt_files": sum(
+            authority["required_receipt_files"]
+            for _batch, authority in rows
+        ),
+        "auxiliary_receipt_files": sum(
+            authority["auxiliary_receipt_files"]
+            for _batch, authority in rows
+        ),
+        "auxiliary_receipt_bytes": sum(
+            authority["auxiliary_receipt_bytes"]
+            for _batch, authority in rows
+        ),
+        "auxiliary_metadata_projection_sha256": core.canonical_json_sha256(
+            [
+                {
+                    "batch_id": batch,
+                    "metadata_projection_sha256": authority[
+                        "auxiliary_metadata_projection_sha256"
+                    ],
+                }
+                for batch, authority in rows
+            ]
+        ),
+        "auxiliary_files_retained": True,
+    }
+
+
+def _current_older_receipt_tree_authority(
+    older_root: Path, targets: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    rows: list[tuple[str, Mapping[str, Any]]] = []
+    for batch_id in TARGET_BATCHES:
+        expected_names = {
+            f"{item['source_object_key']}.verification.json"
+            for item in targets
+            if item.get("batch_id") == batch_id
+        }
+        rows.append(
+            (
+                batch_id,
+                _retained_receipt_tree_authority(
+                    older_root,
+                    older_root / "raw" / batch_id / "receipts",
+                    batch_id=batch_id,
+                    expected_receipt_names=expected_names,
+                ),
+            )
+        )
+    authority = _aggregate_receipt_tree_authority(rows)
+    if authority["required_receipt_files"] != EXPECTED_DELETE_FILES:
+        _fail("OLDER_RAW_REQUIRED_RECEIPT_MISSING")
+    return authority
 
 
 def _partial_tree_authority(
@@ -1438,7 +1545,7 @@ def _partial_tree_authority(
 
 def _validate_attempt_batch(
     attempt_root: Path, bundle: PlanBundle, batch_id: str
-) -> tuple[dict[str, dict[str, Any]], str, str, str]:
+) -> tuple[dict[str, dict[str, Any]], str, str, str, dict[str, Any]]:
     planned = _batch(bundle.plan, batch_id)
     objects = list(planned["objects"])
     expected = {str(item["source_object_key"]): item for item in objects}
@@ -1497,16 +1604,11 @@ def _validate_attempt_batch(
         batch_id=batch_id,
         expected_sizes={key: int(row["size_bytes"]) for key, row in expected.items()},
     )
-    _retained_receipt_tree_authority(
+    receipt_tree_authority = _retained_receipt_tree_authority(
         attempt_root,
         receipts_root,
         batch_id=batch_id,
-        attempt_id=bundle.authority.attempt_id,
         expected_receipt_names=expected_receipt_names,
-        ledger_batch=ledger_batch,
-        runtime_authority=runtime,
-        launch_authority=bundle.launch,
-        download_manifest_sha256=manifest_sha,
     )
     _partial_tree_authority(
         attempt_root,
@@ -1575,7 +1677,13 @@ def _validate_attempt_batch(
         != int(planned["source_bytes"])
     ):
         _fail("OLDER_RAW_BATCH_AUTHORITY_INVALID")
-    return entries, manifest_sha, _sha(ledger_payload), schema.role
+    return (
+        entries,
+        manifest_sha,
+        _sha(ledger_payload),
+        schema.role,
+        receipt_tree_authority,
+    )
 
 
 def _diagnostic_root() -> Path:
@@ -1811,6 +1919,7 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
     r4_bundle = _load_plan_bundle(r4_root, authority=r4_authority_adapter)
     targets: list[dict[str, Any]] = []
     batch_authorities: list[dict[str, Any]] = []
+    older_receipt_rows: list[tuple[str, Mapping[str, Any]]] = []
     all_older: dict[str, dict[str, Any]] = {}
     all_r4: dict[str, dict[str, Any]] = {}
     for batch_id in TARGET_BATCHES:
@@ -1831,13 +1940,16 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
             older_manifest_sha,
             older_ledger_sha,
             older_manifest_role,
+            older_receipt_authority,
         ) = _validate_attempt_batch(older_root, older_bundle, batch_id)
         (
             r4_entries,
             r4_manifest_sha,
             r4_ledger_sha,
             r4_manifest_role,
+            _r4_receipt_authority,
         ) = _validate_attempt_batch(r4_root, r4_bundle, batch_id)
+        older_receipt_rows.append((batch_id, older_receipt_authority))
         if set(older_entries) != set(r4_entries):
             _fail("OLDER_RAW_CROSS_ATTEMPT_OBJECT_MISMATCH")
         for key in sorted(older_entries):
@@ -1911,8 +2023,15 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
         source_local_sha256=str(preflight.local_sha256),
     )
     leaves = _target_leaves(older_root)
+    older_receipt_tree_authority = _aggregate_receipt_tree_authority(
+        older_receipt_rows
+    )
     retained = _retained_evidence_authority(
-        older_root, excluded_roots=leaves
+        older_root,
+        required_receipt_relative_paths=_required_receipt_relative_paths(
+            targets
+        ),
+        excluded_roots=leaves,
     )
     if (
         retained["file_count"] != EXPECTED_RETAINED_FILES
@@ -1954,6 +2073,7 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
         "retained_control_content_sha256": retained[
             "control_content_sha256"
         ],
+        "older_receipt_tree_authority": older_receipt_tree_authority,
         "batch_authorities": batch_authorities,
         "compared_raw_objects": EXPECTED_DELETE_FILES,
         "exact_r4_matches": EXPECTED_DELETE_FILES,
@@ -2007,7 +2127,7 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
         "target_set_sha256", "retained_file_metadata_sha256",
         "retained_directory_topology_sha256", "retained_role_inventory",
         "retained_role_inventory_sha256", "retained_control_content_sha256",
-        "batch_authorities",
+        "older_receipt_tree_authority", "batch_authorities",
         "compared_raw_objects", "exact_r4_matches", "mismatches",
         "missing_in_older", "missing_in_r4", "diagnostic_source_hold",
         "diagnostic_source_retention", "diagnostic_evidence_authority",
@@ -2024,6 +2144,7 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
     pre_cleanup_capacity = value.get("pre_cleanup_capacity_authority")
     role_inventory = value.get("retained_role_inventory")
     diagnostic_authority = value.get("diagnostic_evidence_authority")
+    receipt_tree_authority = value.get("older_receipt_tree_authority")
     if (
         value.get("schema_version") != 1
         or value.get("artifact_type")
@@ -2102,6 +2223,26 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
         != core.canonical_json_sha256(role_inventory)
         or not isinstance(value.get("retained_control_content_sha256"), str)
         or SHA_RE.fullmatch(value["retained_control_content_sha256"]) is None
+        or not isinstance(receipt_tree_authority, Mapping)
+        or set(receipt_tree_authority) != RECEIPT_TREE_AUTHORITY_KEYS
+        or receipt_tree_authority.get("required_receipt_files")
+        != EXPECTED_DELETE_FILES
+        or type(receipt_tree_authority.get("auxiliary_receipt_files")) is not int
+        or receipt_tree_authority["auxiliary_receipt_files"] < 0
+        or type(receipt_tree_authority.get("auxiliary_receipt_bytes")) is not int
+        or receipt_tree_authority["auxiliary_receipt_bytes"] < 0
+        or not isinstance(
+            receipt_tree_authority.get(
+                "auxiliary_metadata_projection_sha256"
+            ),
+            str,
+        )
+        or SHA_RE.fullmatch(
+            receipt_tree_authority[
+                "auxiliary_metadata_projection_sha256"
+            ]
+        ) is None
+        or receipt_tree_authority.get("auxiliary_files_retained") is not True
         or not isinstance(diagnostic_authority, Mapping)
         or set(diagnostic_authority) != DIAGNOSTIC_AUTHORITY_KEYS
         or value.get("diagnostic_evidence_authority_sha256")
@@ -2316,6 +2457,7 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
     quiescence = _quiescent()
     manifest = _derive_manifest(governing_commit)
     _validate_manifest(manifest)
+    receipt_tree = manifest["older_receipt_tree_authority"]
     payload = _canonical(manifest)
     _write_new(MANIFEST_PATH, payload)
     return {
@@ -2327,6 +2469,9 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
         "planned_delete_bytes": EXPECTED_DELETE_BYTES,
         "expected_retained_files": EXPECTED_RETAINED_FILES,
         "expected_retained_bytes": EXPECTED_RETAINED_BYTES,
+        "required_receipt_files": receipt_tree["required_receipt_files"],
+        "auxiliary_receipt_files": receipt_tree["auxiliary_receipt_files"],
+        "auxiliary_receipt_bytes": receipt_tree["auxiliary_receipt_bytes"],
         "four_manifest_authority": "PASS",
         "r4_copy_authority": "PASS",
         "r4_metadata_sha256": EXPECTED_R4_METADATA_SHA256,
@@ -2835,6 +2980,9 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
         batch: [item for item in manifest["targets"] if item["batch_id"] == batch]
         for batch in TARGET_BATCHES
     }
+    required_receipt_paths = _required_receipt_relative_paths(
+        manifest["targets"]
+    )
     target_leaves = _target_leaves(older_root)
     eligible: list[tuple[str, Path]] = []
     for batch, leaf in zip(TARGET_BATCHES, target_leaves, strict=True):
@@ -2843,7 +2991,9 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
     if tuple(batch for batch, _leaf in eligible) != TARGET_BATCHES:
         _fail("OLDER_RAW_LEAF_AUTHORITY_INVALID")
     final_retained = _retained_evidence_authority(
-        older_root, excluded_roots=target_leaves
+        older_root,
+        required_receipt_relative_paths=required_receipt_paths,
+        excluded_roots=target_leaves,
     )
     if (
         final_retained["file_count"] != EXPECTED_RETAINED_FILES
@@ -2877,7 +3027,13 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
         if not os.path.lexists(path):
             deleted_files += 1
             deleted_bytes += int(item["size_bytes"])
-    retained = _retained_evidence_authority(older_root)
+    retained = _retained_evidence_authority(
+        older_root,
+        required_receipt_relative_paths=required_receipt_paths,
+    )
+    receipt_tree_authority = _current_older_receipt_tree_authority(
+        older_root, manifest["targets"]
+    )
     diagnostic_root = _diagnostic_root()
     r4_authority = _validate_r4()
     diagnostic_authority = _diagnostic_authority_from_sealed_manifest(
@@ -2897,6 +3053,8 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
         == manifest["retained_role_inventory_sha256"]
         and retained["control_content_sha256"]
         == manifest["retained_control_content_sha256"]
+        and receipt_tree_authority
+        == manifest["older_receipt_tree_authority"]
         and diagnostic_authority == manifest["diagnostic_evidence_authority"]
         and r4_authority == pre_delete_r4_authority
         and r4_authority == manifest["r4_authority"]
@@ -2929,6 +3087,12 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
         "actual_deleted_bytes": deleted_bytes,
         "retained_files": retained["file_count"],
         "retained_bytes": retained["total_bytes"],
+        "auxiliary_receipt_files": receipt_tree_authority[
+            "auxiliary_receipt_files"
+        ],
+        "auxiliary_receipt_bytes": receipt_tree_authority[
+            "auxiliary_receipt_bytes"
+        ],
         "receipt_basename": RECEIPT_BASENAME,
         "receipt_bytes": len(receipt_payload),
         "receipt_sha256": _sha(receipt_payload),
@@ -2967,6 +3131,12 @@ def validate_retirement_receipt_authority(
         "receipt_sha256": _sha(receipt_payload),
         "actual_deleted_files": receipt["actual_deleted_files"],
         "actual_deleted_bytes": receipt["actual_deleted_bytes"],
+        "auxiliary_receipt_files": manifest[
+            "older_receipt_tree_authority"
+        ]["auxiliary_receipt_files"],
+        "auxiliary_receipt_bytes": manifest[
+            "older_receipt_tree_authority"
+        ]["auxiliary_receipt_bytes"],
         "retained_file_metadata_sha256": receipt[
             "retained_file_metadata_sha256"
         ],
@@ -2993,9 +3163,17 @@ def validate_retired_state(*, expected_governing_commit: str) -> Mapping[str, An
         expected_governing_commit=expected_governing_commit
     )
     older_root = PRODUCTION_ROOT / "attempts" / OLDER_ATTEMPT_ID
-    retained = _retained_evidence_authority(older_root)
     manifest, _manifest_payload = _read_json(MANIFEST_PATH)
     _validate_manifest(manifest)
+    retained = _retained_evidence_authority(
+        older_root,
+        required_receipt_relative_paths=_required_receipt_relative_paths(
+            manifest["targets"]
+        ),
+    )
+    receipt_tree_authority = _current_older_receipt_tree_authority(
+        older_root, manifest["targets"]
+    )
     diagnostic_root = _diagnostic_root()
     _validate_r4()
     diagnostic_authority = _diagnostic_authority_from_sealed_manifest(
@@ -3014,6 +3192,8 @@ def validate_retired_state(*, expected_governing_commit: str) -> Mapping[str, An
         != authority["retained_control_content_sha256"]
         or core.canonical_json_sha256(diagnostic_authority)
         != authority["diagnostic_evidence_authority_sha256"]
+        or receipt_tree_authority
+        != manifest["older_receipt_tree_authority"]
         or any(os.path.lexists(path) for path in _target_leaves(older_root))
     ):
         _fail("OLDER_RAW_RETAINED_AUTHORITY_INVALID")

@@ -10,9 +10,9 @@ import errno
 import hashlib
 import inspect
 import io
-import json
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 from types import SimpleNamespace
@@ -80,7 +80,7 @@ def _synthetic_raw_authority(
         )
 
 
-def _transition_receipt_fixture(root: Path) -> SimpleNamespace:
+def _opaque_receipt_fixture(root: Path) -> SimpleNamespace:
     attempt_id = raw_retirement.OLDER_ATTEMPT_ID
     batch_id = "c3_batch_000"
     attempt_root = root / attempt_id
@@ -89,93 +89,66 @@ def _transition_receipt_fixture(root: Path) -> SimpleNamespace:
     source_key = "a" * 64
     required_name = f"{source_key}.verification.json"
     _private_file(receipts_root / required_name, b"required-receipt\n")
-    runtime = {"batch_plan_sha256": "1" * 64}
-    launch = {"sealed_launch": "2" * 64}
-    verification_map = {source_key: "3" * 64}
-    manifest_sha = "4" * 64
-    documents = {
-        raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]: {
-            "schema_version": 2,
-            "receipt_type": "lvef_c3_state_transition_v2",
-            "attempt_id": attempt_id,
-            "batch_id": batch_id,
-            "from_state": "PLANNED",
-            "to_state": "DOWNLOAD_IN_PROGRESS",
-            "status": "PASS",
-            "authority": runtime,
-            "input_receipt_sha256": [runtime["batch_plan_sha256"]],
-            "output_manifest_sha256": raw_retirement.core.canonical_json_sha256(
-                launch
-            ),
-        }
+    auxiliary_payloads = {
+        "arbitrary-producer-sidecar.restricted": b"not-json\x00opaque\n",
+        "historical-journal-v0.txt": b"historical schema is intentionally opaque\n",
+        "download_start_transition.restricted.json": b"{not-current-json",
+        "download_verified_transition.restricted.json": b"[]\n",
     }
-    start_payload = raw_retirement.core.canonical_json_bytes(
-        documents[raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]]
-    )
-    start_sha = hashlib.sha256(start_payload).hexdigest()
-    documents[raw_retirement.TRANSITION_RECEIPT_BASENAMES[1]] = {
-        "schema_version": 2,
-        "receipt_type": "lvef_c3_state_transition_v2",
-        "attempt_id": attempt_id,
-        "batch_id": batch_id,
-        "from_state": "DOWNLOAD_IN_PROGRESS",
-        "to_state": "DOWNLOAD_VERIFIED",
-        "status": "PASS",
-        "authority": runtime,
-        "input_receipt_sha256": [start_sha, *sorted(verification_map.values())],
-        "output_manifest_sha256": manifest_sha,
-    }
-    events = []
-    for document in documents.values():
-        payload = raw_retirement.core.canonical_json_bytes(document)
-        basename = (
-            raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]
-            if document["from_state"] == "PLANNED"
-            else raw_retirement.TRANSITION_RECEIPT_BASENAMES[1]
-        )
+    for basename, payload in auxiliary_payloads.items():
         _private_file(receipts_root / basename, payload)
-        events.append(
-            {
-                "from_state": document["from_state"],
-                "to_state": document["to_state"],
-                "receipt_sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
     return SimpleNamespace(
         attempt_root=attempt_root,
         receipts_root=receipts_root,
         batch_id=batch_id,
-        attempt_id=attempt_id,
         required_name=required_name,
-        runtime=runtime,
-        launch=launch,
-        manifest_sha=manifest_sha,
-        documents=documents,
-        ledger_batch={
-            "events": events,
-            "download_verification_receipts": verification_map,
-            "download_recovery_receipts": {},
-        },
+        auxiliary_payloads=auxiliary_payloads,
     )
 
 
-def _validate_transition_fixture(fixture: SimpleNamespace):
-    with mock.patch.object(
-        raw_retirement.core,
-        "validate_runtime_authority",
-        side_effect=lambda authority: dict(authority),
-    ):
-        return raw_retirement._retained_receipt_tree_authority(
-            fixture.attempt_root,
-            fixture.receipts_root,
-            batch_id=fixture.batch_id,
-            attempt_id=fixture.attempt_id,
-            expected_receipt_names={fixture.required_name},
-            ledger_batch=fixture.ledger_batch,
-            runtime_authority=fixture.runtime,
-            launch_authority=fixture.launch,
-            download_manifest_sha256=fixture.manifest_sha,
+def _validate_opaque_fixture(fixture: SimpleNamespace):
+    return raw_retirement._retained_receipt_tree_authority(
+        fixture.attempt_root,
+        fixture.receipts_root,
+        batch_id=fixture.batch_id,
+        expected_receipt_names={fixture.required_name},
+    )
+
+
+def _receipt_scandir_entries(
+    fixture: SimpleNamespace,
+    *,
+    auxiliary_name: str,
+    path_override: Path | None = None,
+    stat_overrides: dict[str, int] | None = None,
+) -> list[SimpleNamespace]:
+    entries = []
+    for path in sorted(fixture.receipts_root.iterdir()):
+        observed_path = (
+            path_override
+            if path.name == auxiliary_name and path_override is not None
+            else path
         )
+        info = os.lstat(observed_path)
+        values = {
+            field: getattr(info, field)
+            for field in (
+                "st_mode", "st_uid", "st_gid", "st_nlink", "st_size",
+                "st_dev", "st_ino", "st_mtime_ns", "st_ctime_ns",
+            )
+        }
+        if path.name == auxiliary_name and stat_overrides is not None:
+            values.update(stat_overrides)
+        projected = SimpleNamespace(**values)
+        entries.append(
+            SimpleNamespace(
+                name=path.name,
+                path=str(observed_path),
+                stat=lambda follow_symlinks=False, value=projected: value,
+                is_symlink=lambda: False,
+            )
+        )
+    return entries
 
 
 def _download_rows() -> tuple[list[dict[str, str]], dict[str, dict[str, object]]]:
@@ -509,6 +482,7 @@ def test_r5e_r3_final_mutation_quiescence_and_primitive_gates_delete_zero() -> N
         "targets": [
             {
                 "batch_id": batch,
+                "source_object_key": f"{index + 1:064x}",
                 "relative_path": f"raw/{batch}/objects/{index + 1:064x}.dcm",
                 "size_bytes": 1,
             }
@@ -600,6 +574,7 @@ def test_r5e_r3_final_leaf_mutation_before_delete_calls_rmtree_zero() -> None:
         "targets": [
             {
                 "batch_id": batch,
+                "source_object_key": f"{index + 1:064x}",
                 "relative_path": f"raw/{batch}/objects/{index + 1:064x}.dcm",
                 "size_bytes": 1,
             }
@@ -664,6 +639,13 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
         "control_content_sha256": "e" * 64,
     }
     r4_authority = {"metadata_stat_sha256": "f" * 64}
+    receipt_tree_authority = {
+        "required_receipt_files": raw_retirement.EXPECTED_DELETE_FILES,
+        "auxiliary_receipt_files": 4,
+        "auxiliary_receipt_bytes": 123,
+        "auxiliary_metadata_projection_sha256": "0" * 64,
+        "auxiliary_files_retained": True,
+    }
     manifest = {
         "governing_commit": governing_commit,
         "retained_file_metadata_sha256": retained["file_metadata_sha256"],
@@ -673,6 +655,7 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
         "retained_role_inventory": role_inventory,
         "retained_role_inventory_sha256": retained["role_inventory_sha256"],
         "retained_control_content_sha256": retained["control_content_sha256"],
+        "older_receipt_tree_authority": receipt_tree_authority,
         "diagnostic_evidence_authority": {
             "source_object_key": "1" * 64,
             "source_local_sha256": "2" * 64,
@@ -681,6 +664,7 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
         "targets": [
             {
                 "batch_id": batch,
+                "source_object_key": f"{index + 1:064x}",
                 "relative_path": f"raw/{batch}/objects/{index + 1:064x}.dcm",
                 "size_bytes": 1,
             }
@@ -707,6 +691,11 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
         mock.patch.object(
             raw_retirement, "_retained_evidence_authority", return_value=retained
         ),
+        mock.patch.object(
+            raw_retirement,
+            "_current_older_receipt_tree_authority",
+            return_value=receipt_tree_authority,
+        ),
         mock.patch.object(raw_retirement, "_quiescent", return_value={}),
         mock.patch.object(raw_retirement, "_diagnostic_root", return_value=Path("/sealed")),
         mock.patch.object(
@@ -732,6 +721,191 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
     ]
     assert validate_r4.call_count == 2
     diagnostic.assert_called_once_with(Path("/sealed"), manifest)
+
+
+def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> None:
+    governing_commit = "a" * 40
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        older = (
+            production / "attempts" / raw_retirement.OLDER_ATTEMPT_ID
+        )
+        targets = []
+        for index, batch in enumerate(raw_retirement.TARGET_BATCHES):
+            leaf = older / "raw" / batch / "objects"
+            _private_directory(leaf)
+            source_key = f"{index + 1:064x}"
+            _private_file(leaf / f"{source_key}.dcm", b"x")
+            targets.append(
+                {
+                    "batch_id": batch,
+                    "source_object_key": source_key,
+                    "relative_path": (
+                        f"raw/{batch}/objects/{source_key}.dcm"
+                    ),
+                    "size_bytes": 1,
+                }
+            )
+            receipts = older / "raw" / batch / "receipts"
+            _private_directory(receipts)
+            _private_file(
+                receipts / f"{source_key}.verification.json", b"required"
+            )
+            for ordinal in range(2):
+                _private_file(
+                    receipts / f"opaque-{index}-{ordinal}.bin",
+                    f"opaque-{index}-{ordinal}".encode(),
+                )
+
+        auxiliary_paths = sorted(
+            older.glob("raw/*/receipts/opaque-*.bin")
+        )
+        before = {
+            path: (
+                path.read_bytes(),
+                tuple(
+                    getattr(os.lstat(path), field)
+                    for field in (
+                        "st_mode", "st_uid", "st_gid", "st_nlink",
+                        "st_size", "st_dev", "st_ino", "st_mtime_ns",
+                        "st_ctime_ns",
+                    )
+                ),
+            )
+            for path in auxiliary_paths
+        }
+        retained_bytes = sum(
+            path.stat().st_size
+            for path in older.glob("raw/*/receipts/*")
+        )
+        role_inventory = [
+            {"role": "SEALED", "file_count": 6, "total_bytes": retained_bytes}
+        ]
+        retained = {
+            "file_count": 6,
+            "total_bytes": retained_bytes,
+            "file_metadata_sha256": "b" * 64,
+            "directory_topology_sha256": "c" * 64,
+            "role_inventory": role_inventory,
+            "role_inventory_sha256": "d" * 64,
+            "control_content_sha256": "e" * 64,
+        }
+        diagnostic = {"status": "SEALED"}
+        r4_authority = {"metadata_stat_sha256": "f" * 64}
+        receipt_rows = []
+        for batch in raw_retirement.TARGET_BATCHES:
+            expected_names = {
+                f"{item['source_object_key']}.verification.json"
+                for item in targets
+                if item["batch_id"] == batch
+            }
+            receipt_rows.append(
+                (
+                    batch,
+                    raw_retirement._retained_receipt_tree_authority(
+                        older,
+                        older / "raw" / batch / "receipts",
+                        batch_id=batch,
+                        expected_receipt_names=expected_names,
+                    ),
+                )
+            )
+        receipt_tree_authority = (
+            raw_retirement._aggregate_receipt_tree_authority(receipt_rows)
+        )
+        manifest = {
+            "governing_commit": governing_commit,
+            "retained_file_metadata_sha256": retained[
+                "file_metadata_sha256"
+            ],
+            "retained_directory_topology_sha256": retained[
+                "directory_topology_sha256"
+            ],
+            "retained_role_inventory": role_inventory,
+            "retained_role_inventory_sha256": retained[
+                "role_inventory_sha256"
+            ],
+            "retained_control_content_sha256": retained[
+                "control_content_sha256"
+            ],
+            "older_receipt_tree_authority": receipt_tree_authority,
+            "diagnostic_evidence_authority": diagnostic,
+            "r4_authority": r4_authority,
+            "targets": targets,
+        }
+        manifest_payload = raw_retirement._canonical(manifest)
+        destructive = mock.Mock(
+            side_effect=raw_retirement.shutil.rmtree
+        )
+        destructive.avoids_symlink_attacks = True
+        evidence = production / "owner_private" / "evidence"
+        writer = mock.Mock()
+        patched = {
+            "PRODUCTION_ROOT": production,
+            "MANIFEST_PATH": evidence / "manifest",
+            "RECEIPT_PATH": evidence / "receipt",
+            "SUMMARY_PATH": evidence / "summary",
+            "EXPECTED_DELETE_FILES": 2,
+            "EXPECTED_DELETE_BYTES": 2,
+            "EXPECTED_RETAINED_FILES": 6,
+            "EXPECTED_RETAINED_BYTES": retained_bytes,
+            "_current_commit": mock.Mock(return_value=governing_commit),
+            "_read_json": mock.Mock(
+                return_value=(manifest, manifest_payload)
+            ),
+            "_validate_manifest": mock.Mock(),
+            "_validate_safe_export": mock.Mock(),
+            "_derive_manifest": mock.Mock(return_value=manifest),
+            "_validate_r4": mock.Mock(return_value=r4_authority),
+            "_quiescent": mock.Mock(return_value={}),
+            "_validate_leaf_from_manifest": mock.Mock(),
+            "_retained_evidence_authority": mock.Mock(return_value=retained),
+            "_diagnostic_root": mock.Mock(return_value=Path("/sealed")),
+            "_diagnostic_authority_from_sealed_manifest": mock.Mock(
+                return_value=diagnostic
+            ),
+            "_post_receipt": mock.Mock(
+                return_value={"status": "PASS_OLDER_RAW_DUPLICATES_RETIRED"}
+            ),
+            "_validate_receipt": mock.Mock(),
+            "_summary_from_receipt": mock.Mock(
+                return_value={"status": "PASS_OLDER_RAW_DUPLICATES_RETIRED"}
+            ),
+            "_write_new": writer,
+        }
+        with (
+            mock.patch.multiple(raw_retirement, **patched),
+            mock.patch.object(raw_retirement.shutil, "rmtree", destructive),
+        ):
+            result = raw_retirement.execute_exact_retirement(
+                governing_commit=governing_commit
+            )
+        assert result["status"] == "PASS_OLDER_RAW_DUPLICATES_RETIRED"
+        assert result["auxiliary_receipt_files"] == 4
+        assert result["auxiliary_receipt_bytes"] == sum(
+            len(f"opaque-{index}-{ordinal}".encode())
+            for index in range(2)
+            for ordinal in range(2)
+        )
+        assert destructive.call_args_list == [
+            mock.call(path) for path in raw_retirement._target_leaves(older)
+        ]
+        assert writer.call_count == 2
+        assert all(not path.exists() for path in raw_retirement._target_leaves(older))
+        assert {
+            path: (
+                path.read_bytes(),
+                tuple(
+                    getattr(os.lstat(path), field)
+                    for field in (
+                        "st_mode", "st_uid", "st_gid", "st_nlink",
+                        "st_size", "st_dev", "st_ino", "st_mtime_ns",
+                        "st_ctime_ns",
+                    )
+                ),
+            )
+            for path in auxiliary_paths
+        } == before
 
 
 def test_r5e_r3_sealed_diagnostic_postcheck_never_requires_retired_source() -> None:
@@ -1004,83 +1178,261 @@ def test_r5e_r3_partial_tree_is_separate_safe_metadata_only_authority() -> None:
             )
 
 
-def test_r5e_r3_retained_receipt_tree_allows_exact_two_transitions_only() -> None:
+def test_r5e_r4_safe_auxiliary_receipts_are_retained_opaquely() -> None:
+    assert tuple(
+        inspect.signature(
+            raw_retirement._retained_receipt_tree_authority
+        ).parameters
+    ) == (
+        "attempt_root",
+        "receipts_root",
+        "batch_id",
+        "expected_receipt_names",
+    )
     with tempfile.TemporaryDirectory() as temporary:
-        fixture = _transition_receipt_fixture(Path(temporary).resolve())
-        authority = _validate_transition_fixture(fixture)
-        assert authority["required_receipt_files"] == 1
-        assert authority["auxiliary_receipt_files"] == 2
-        assert authority["auxiliary_receipt_bytes"] > 0
-
-        _private_file(fixture.receipts_root / "unknown.extra.json", b"{}")
-        _expect(
-            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
-            lambda: _validate_transition_fixture(fixture),
+        fixture = _opaque_receipt_fixture(Path(temporary).resolve())
+        before = {
+            name: (fixture.receipts_root / name).read_bytes()
+            for name in fixture.auxiliary_payloads
+        }
+        with mock.patch.object(
+            raw_retirement,
+            "_read_json",
+            side_effect=AssertionError("auxiliary semantics parsed"),
+        ):
+            authority = _validate_opaque_fixture(fixture)
+        assert authority == {
+            "required_receipt_files": 1,
+            "auxiliary_receipt_files": 4,
+            "auxiliary_receipt_bytes": sum(
+                len(payload) for payload in fixture.auxiliary_payloads.values()
+            ),
+            "auxiliary_metadata_projection_sha256": authority[
+                "auxiliary_metadata_projection_sha256"
+            ],
+            "auxiliary_files_retained": True,
+        }
+        assert re.fullmatch(
+            r"[0-9a-f]{64}",
+            authority["auxiliary_metadata_projection_sha256"],
         )
+        assert {
+            name: (fixture.receipts_root / name).read_bytes()
+            for name in fixture.auxiliary_payloads
+        } == before
+
+        extra = fixture.receipts_root / "name-outside-transition-list.bin"
+        _private_file(extra, b"opaque-extra")
+        expanded = _validate_opaque_fixture(fixture)
+        assert expanded["auxiliary_receipt_files"] == 5
+        assert expanded["auxiliary_files_retained"] is True
+        assert extra.read_bytes() == b"opaque-extra"
 
     with tempfile.TemporaryDirectory() as temporary:
-        fixture = _transition_receipt_fixture(Path(temporary).resolve())
+        fixture = _opaque_receipt_fixture(Path(temporary).resolve())
         (fixture.receipts_root / fixture.required_name).unlink()
         _expect(
             "OLDER_RAW_REQUIRED_RECEIPT_MISSING",
-            lambda: _validate_transition_fixture(fixture),
+            lambda: _validate_opaque_fixture(fixture),
         )
 
     with tempfile.TemporaryDirectory() as temporary:
-        fixture = _transition_receipt_fixture(Path(temporary).resolve())
+        fixture = _opaque_receipt_fixture(Path(temporary).resolve())
         os.chmod(fixture.receipts_root / fixture.required_name, 0o640)
         _expect(
             "OLDER_RAW_REQUIRED_RECEIPT_INVALID",
-            lambda: _validate_transition_fixture(fixture),
-        )
-
-    with tempfile.TemporaryDirectory() as temporary:
-        fixture = _transition_receipt_fixture(Path(temporary).resolve())
-        fixture.ledger_batch["download_recovery_receipts"] = {"a" * 64: "5" * 64}
-        _expect(
-            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
-            lambda: _validate_transition_fixture(fixture),
+            lambda: _validate_opaque_fixture(fixture),
         )
 
 
-def test_r5e_r3_transition_receipts_bind_exact_inputs_outputs_and_bytes() -> None:
-    cases = (
-        (0, "output_manifest_sha256", "9" * 64),
-        (0, "input_receipt_sha256", ["9" * 64]),
-        (1, "input_receipt_sha256", ["8" * 64, "3" * 64]),
+def test_r5e_r4_invalid_required_receipt_content_stays_blocking() -> None:
+    batch_id = raw_retirement.TARGET_BATCHES[0]
+    source_key = "a" * 64
+    attempt_root = Path("/synthetic/strict-required-receipt")
+    row = {
+        "source_object_key": source_key,
+        "size_bytes": 1,
+    }
+    bundle = SimpleNamespace(
+        plan={
+            "authority": {},
+            "batches": [
+                {
+                    "batch_id": batch_id,
+                    "objects": [row],
+                    "n_objects": 1,
+                    "source_bytes": 1,
+                }
+            ],
+        },
+        plan_sha256="b" * 64,
+        authority=SimpleNamespace(attempt_id="strict-attempt"),
     )
-    for transition_index, field, value in cases:
-        with tempfile.TemporaryDirectory() as temporary:
-            fixture = _transition_receipt_fixture(Path(temporary).resolve())
-            basename = raw_retirement.TRANSITION_RECEIPT_BASENAMES[
-                transition_index
-            ]
-            fixture.documents[basename][field] = value
-            payload = raw_retirement.core.canonical_json_bytes(
-                fixture.documents[basename]
-            )
-            _private_file(fixture.receipts_root / basename, payload)
-            fixture.ledger_batch["events"][transition_index][
-                "receipt_sha256"
-            ] = hashlib.sha256(payload).hexdigest()
-            _expect(
-                "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
-                lambda: _validate_transition_fixture(fixture),
-            )
+    manifest_sha = "c" * 64
+    receipt_sha = "d" * 64
+    ledger = {
+        "batches": {
+            batch_id: {
+                "state": "DOWNLOAD_VERIFIED",
+                "download_manifest_sha256": manifest_sha,
+                "download_verification_receipts": {
+                    source_key: receipt_sha
+                },
+            }
+        }
+    }
+    object_path = (
+        attempt_root
+        / "raw"
+        / batch_id
+        / "objects"
+        / f"{source_key}.dcm"
+    )
+    leaf_authority = {
+        "entries": {
+            source_key: {
+                "path": object_path,
+                "info": SimpleNamespace(st_ino=1, st_mtime_ns=2),
+            }
+        }
+    }
+    receipt_tree = {
+        "required_receipt_files": 1,
+        "auxiliary_receipt_files": 4,
+        "auxiliary_receipt_bytes": 123,
+        "auxiliary_metadata_projection_sha256": "e" * 64,
+        "auxiliary_files_retained": True,
+    }
+    with (
+        mock.patch.object(
+            raw_retirement,
+            "_verified_download_manifest_role",
+            return_value=SimpleNamespace(role="STRICT_REQUIRED"),
+        ),
+        mock.patch.object(raw_retirement, "_read_private", return_value=b"csv"),
+        mock.patch.object(
+            raw_retirement,
+            "_validate_verified_download_manifest_payload",
+            return_value=(
+                {source_key: {"observed_sha256": "f" * 64}},
+                manifest_sha,
+            ),
+        ),
+        mock.patch.object(
+            raw_retirement,
+            "_read_json",
+            side_effect=(
+                (ledger, b"ledger"),
+                raw_retirement.OlderRawRetirementError(
+                    "OLDER_RAW_CONTROL_READ_INVALID"
+                ),
+            ),
+        ) as strict_reader,
+        mock.patch.object(
+            raw_retirement.core,
+            "validate_runtime_authority",
+            return_value={},
+        ),
+        mock.patch.object(raw_retirement.core, "validate_resume_authority"),
+        mock.patch.object(
+            raw_retirement,
+            "_raw_object_leaf_authority",
+            return_value=leaf_authority,
+        ),
+        mock.patch.object(
+            raw_retirement,
+            "_retained_receipt_tree_authority",
+            return_value=receipt_tree,
+        ),
+        mock.patch.object(raw_retirement, "_partial_tree_authority"),
+        mock.patch.object(
+            raw_retirement.r3e,
+            "validate_current_mount_authority",
+            return_value=SimpleNamespace(),
+        ),
+    ):
+        _expect(
+            "OLDER_RAW_REQUIRED_RECEIPT_INVALID",
+            lambda: raw_retirement._validate_attempt_batch(
+                attempt_root, bundle, batch_id
+            ),
+        )
+    assert strict_reader.call_count == 2
+
+
+def test_r5e_r4_auxiliary_file_authority_is_topology_only_and_closed() -> None:
+    unsafe_code = "OLDER_RAW_AUXILIARY_RECEIPT_FILE_AUTHORITY_INVALID"
 
     with tempfile.TemporaryDirectory() as temporary:
-        fixture = _transition_receipt_fixture(Path(temporary).resolve())
-        basename = raw_retirement.TRANSITION_RECEIPT_BASENAMES[0]
-        payload = json.dumps(fixture.documents[basename], indent=2).encode()
-        _private_file(fixture.receipts_root / basename, payload)
-        fixture.ledger_batch["events"][0]["receipt_sha256"] = hashlib.sha256(
-            payload
-        ).hexdigest()
+        fixture = _opaque_receipt_fixture(Path(temporary).resolve())
+        unsafe = fixture.receipts_root / "unsafe-symlink"
+        unsafe.symlink_to(fixture.receipts_root / fixture.required_name)
         _expect(
-            "OLDER_RAW_AUXILIARY_RECEIPT_UNCLASSIFIED",
-            lambda: _validate_transition_fixture(fixture),
+            unsafe_code,
+            lambda: _validate_opaque_fixture(fixture),
         )
 
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _opaque_receipt_fixture(Path(temporary).resolve())
+        unsafe = fixture.receipts_root / "unsafe-fifo"
+        os.mkfifo(unsafe, 0o600)
+        _expect(unsafe_code, lambda: _validate_opaque_fixture(fixture))
+
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _opaque_receipt_fixture(Path(temporary).resolve())
+        auxiliary = fixture.receipts_root / next(iter(fixture.auxiliary_payloads))
+        os.chmod(auxiliary, 0o640)
+        _expect(unsafe_code, lambda: _validate_opaque_fixture(fixture))
+
+    with tempfile.TemporaryDirectory() as temporary:
+        fixture = _opaque_receipt_fixture(Path(temporary).resolve())
+        auxiliary = fixture.receipts_root / next(iter(fixture.auxiliary_payloads))
+        os.link(auxiliary, fixture.receipts_root / "unsafe-hardlink")
+        _expect(unsafe_code, lambda: _validate_opaque_fixture(fixture))
+
+    for stat_field in ("st_uid", "st_dev"):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = _opaque_receipt_fixture(Path(temporary).resolve())
+            auxiliary_name = next(iter(fixture.auxiliary_payloads))
+            info = os.lstat(fixture.receipts_root / auxiliary_name)
+            entries = _receipt_scandir_entries(
+                fixture,
+                auxiliary_name=auxiliary_name,
+                stat_overrides={stat_field: getattr(info, stat_field) + 1},
+            )
+            with mock.patch.object(
+                raw_retirement.os, "scandir", return_value=entries
+            ):
+                _expect(unsafe_code, lambda: _validate_opaque_fixture(fixture))
+
+    for escaped_into_deletion_leaf in (False, True):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = _opaque_receipt_fixture(Path(temporary).resolve())
+            auxiliary_name = next(iter(fixture.auxiliary_payloads))
+            if escaped_into_deletion_leaf:
+                escaped_parent = (
+                    fixture.attempt_root
+                    / "raw"
+                    / fixture.batch_id
+                    / "objects"
+                )
+            else:
+                escaped_parent = fixture.attempt_root / "outside-receipts"
+            _private_directory(escaped_parent)
+            escaped_path = escaped_parent / auxiliary_name
+            _private_file(escaped_path, b"escaped-entry")
+            entries = _receipt_scandir_entries(
+                fixture,
+                auxiliary_name=auxiliary_name,
+                path_override=escaped_path,
+            )
+            with mock.patch.object(
+                raw_retirement.os, "scandir", return_value=entries
+            ):
+                _expect(unsafe_code, lambda: _validate_opaque_fixture(fixture))
+
+
+def test_r5e_r4_raw_leaf_authority_remains_closed() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         older = Path(temporary).resolve() / "older"
         leaf, expected = _synthetic_raw_leaf(older)
@@ -1412,6 +1764,12 @@ def test_r5e_r2_target_leaf_double_snapshot_is_exact_and_metadata_only() -> None
                 )
 
 def test_r5e_retained_role_classifier_is_closed_and_body_roles_are_exact() -> None:
+    required_receipt = (
+        "raw/c3_batch_000/receipts/"
+        + "a" * 64
+        + ".verification.json"
+    )
+    required_receipts = frozenset({required_receipt})
     cases = {
         "raw/c3_batch_000/objects/a.dcm": "RAW_DICOM_PAYLOAD",
         (
@@ -1428,8 +1786,18 @@ def test_r5e_retained_role_classifier_is_closed_and_body_roles_are_exact() -> No
         "batches/c3_batch_000/echoprime/study_embeddings.restricted.npz": (
             "STUDY_EMBEDDINGS"
         ),
-        "raw/c3_batch_000/receipts/a.verification.json": (
-            "DOWNLOAD_VERIFICATION_RECEIPTS"
+        required_receipt: "DOWNLOAD_VERIFICATION_RECEIPTS",
+        "raw/c3_batch_000/receipts/" + "b" * 64 + ".verification.json": (
+            "OTHER_CONTROL_EVIDENCE"
+        ),
+        "raw/c3_batch_000/receipts/opaque-sidecar.bin": (
+            "OTHER_CONTROL_EVIDENCE"
+        ),
+        "raw/c3_batch_001/receipts/historical-name.dcm": (
+            "OTHER_CONTROL_EVIDENCE"
+        ),
+        "raw/c3_batch_001/receipts/historical-name.npz": (
+            "OTHER_CONTROL_EVIDENCE"
         ),
         "raw/c3_batch_000/verified_download_manifest.restricted.csv": (
             "SOURCE_AND_BATCH_MANIFESTS"
@@ -1448,14 +1816,94 @@ def test_r5e_retained_role_classifier_is_closed_and_body_roles_are_exact() -> No
         "unknown.bin": "UNCLASSIFIED",
     }
     assert {
-        path: raw_retirement._retained_role(path) for path in cases
+        path: raw_retirement._retained_role(
+            path,
+            required_receipt_relative_paths=required_receipts,
+        )
+        for path in cases
     } == cases
     assert len(raw_retirement.RETAINED_ROLE_NAMES) == 14
     assert raw_retirement._retained_role(
         "raw/c3_batch_000/partials/"
         + "a" * 64
-        + ".wrong_attempt.partial"
+        + ".wrong_attempt.partial",
+        required_receipt_relative_paths=required_receipts,
     ) == "UNCLASSIFIED"
+    for auxiliary in (
+        "raw/c3_batch_000/receipts/" + "b" * 64 + ".verification.json",
+        "raw/c3_batch_001/receipts/historical-name.dcm",
+        "raw/c3_batch_001/receipts/historical-name.npz",
+    ):
+        assert raw_retirement._is_opaque_auxiliary_receipt(
+            auxiliary,
+            required_receipt_relative_paths=required_receipts,
+        )
+    for case_variant in (
+        "RAW/c3_batch_000/receipts/case-variant.bin",
+        "raw/C3_BATCH_000/receipts/case-variant.bin",
+        "raw/c3_batch_000/Receipts/case-variant.bin",
+    ):
+        assert not raw_retirement._is_direct_target_receipt(case_variant)
+        assert not raw_retirement._is_opaque_auxiliary_receipt(
+            case_variant,
+            required_receipt_relative_paths=required_receipts,
+        )
+        assert raw_retirement._retained_role(
+            case_variant,
+            required_receipt_relative_paths=required_receipts,
+        ) == "UNCLASSIFIED"
+
+    root = Path("/synthetic/retained-evidence")
+    auxiliary_dcm = "raw/c3_batch_001/receipts/historical-name.dcm"
+    auxiliary_npz = "raw/c3_batch_001/receipts/historical-name.npz"
+    metadata_rows = [
+        (required_receipt, 0o600, os.geteuid(), 1, 1, 10, 101, 1001),
+        (auxiliary_dcm, 0o600, os.geteuid(), 1, 1, 11, 102, 1002),
+        (auxiliary_npz, 0o600, os.geteuid(), 1, 1, 12, 103, 1003),
+        (
+            "raw/c3_batch_000/objects/body.dcm",
+            0o600,
+            os.geteuid(),
+            1,
+            1,
+            13,
+            104,
+            1004,
+        ),
+        (
+            "extracted_cache/c3_batch_001/dicom_extraction.partial/"
+            "clips/aa/body.npz",
+            0o600,
+            os.geteuid(),
+            1,
+            1,
+            14,
+            105,
+            1005,
+        ),
+    ]
+    control_reader = mock.Mock(return_value="f" * 64)
+    with (
+        mock.patch.object(raw_retirement, "EXPECTED_DELETE_FILES", 1),
+        mock.patch.object(
+            raw_retirement,
+            "_metadata_rows",
+            return_value=(metadata_rows, []),
+        ),
+        mock.patch.object(
+            raw_retirement,
+            "_read_retained_control",
+            control_reader,
+        ),
+    ):
+        _expect(
+            "OLDER_RAW_RETAINED_ROLE_AUTHORITY_INVALID",
+            lambda: raw_retirement._retained_evidence_authority(
+                root,
+                required_receipt_relative_paths=required_receipts,
+            ),
+        )
+    control_reader.assert_called_once_with(root / required_receipt)
 
 
 def test_r5e_receipt_and_aggregate_summary_are_closed_and_bound() -> None:
