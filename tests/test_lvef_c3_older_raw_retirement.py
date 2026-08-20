@@ -49,6 +49,58 @@ def _private_directory(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _diagnostic_authority_stub(
+    *, roots: int = 1, files: int = 2, directories: int = 2, total_bytes: int = 9
+) -> dict[str, object]:
+    return {
+        "status": "PASS_OPAQUE_R3E_DIAGNOSTIC_EVIDENCE_RETAINED",
+        "diagnostic_root_count": roots,
+        "diagnostic_file_count": files,
+        "diagnostic_directory_count": directories,
+        "diagnostic_total_bytes": total_bytes,
+        "diagnostic_file_metadata_projection_sha256": "a" * 64,
+        "diagnostic_directory_topology_sha256": "b" * 64,
+        "diagnostics_outside_deletion_targets": True,
+        "diagnostics_retained": True,
+        "body_reads": 0,
+    }
+
+
+def _synthetic_diagnostic_roots(
+    production: Path, *, root_count: int = 1
+) -> tuple[Path, list[Path]]:
+    owner_private = production / "owner_private"
+    _private_directory(owner_private)
+    files: list[Path] = []
+    for ordinal in range(root_count):
+        root = owner_private / (
+            f"lvef_c3_r3e_one_object_replay_fixture_{ordinal:02d}"
+        )
+        nested = root / "retained" / "clips"
+        _private_directory(nested)
+        payloads = {
+            root / "historical-invalid.restricted.json": b"{not-json\n",
+            nested / f"opaque-{ordinal}.npz": b"not-an-npz-body\x00\n",
+        }
+        for path, payload in payloads.items():
+            _private_file(path, payload)
+            files.append(path)
+    return owner_private, files
+
+
+def _opaque_diagnostics(production: Path, owner_private: Path):
+    with (
+        mock.patch.object(raw_retirement, "PRODUCTION_ROOT", production),
+        mock.patch.object(
+            raw_retirement, "OWNER_PRIVATE_ROOT", owner_private
+        ),
+        mock.patch.object(
+            raw_retirement, "_mountinfo_mountpoints", return_value=frozenset()
+        ),
+    ):
+        return raw_retirement._opaque_diagnostic_evidence_authority()
+
+
 def _synthetic_raw_leaf(
     root: Path, *, nested: bool = False
 ) -> tuple[Path, dict[str, int]]:
@@ -506,6 +558,11 @@ def test_r5e_r3_final_mutation_quiescence_and_primitive_gates_delete_zero() -> N
             mock.patch.object(raw_retirement, "_validate_manifest"),
             mock.patch.object(raw_retirement, "_validate_safe_export"),
             mock.patch.object(raw_retirement, "_derive_manifest", return_value=manifest),
+            mock.patch.object(
+                raw_retirement,
+                "_require_sealed_diagnostic_authority",
+                return_value=_diagnostic_authority_stub(),
+            ),
             mock.patch.object(raw_retirement, "_validate_r4", return_value={}),
             mock.patch.object(raw_retirement, "_validate_leaf_from_manifest"),
             mock.patch.object(
@@ -602,6 +659,11 @@ def test_r5e_r3_final_leaf_mutation_before_delete_calls_rmtree_zero() -> None:
         mock.patch.object(
             raw_retirement, "_derive_manifest", return_value=manifest
         ),
+        mock.patch.object(
+            raw_retirement,
+            "_require_sealed_diagnostic_authority",
+            return_value=_diagnostic_authority_stub(),
+        ),
         mock.patch.object(raw_retirement, "_validate_r4", return_value={}),
         mock.patch.object(
             raw_retirement,
@@ -656,10 +718,7 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
         "retained_role_inventory_sha256": retained["role_inventory_sha256"],
         "retained_control_content_sha256": retained["control_content_sha256"],
         "older_receipt_tree_authority": receipt_tree_authority,
-        "diagnostic_evidence_authority": {
-            "source_object_key": "1" * 64,
-            "source_local_sha256": "2" * 64,
-        },
+        "diagnostic_evidence_authority": _diagnostic_authority_stub(),
         "r4_authority": r4_authority,
         "targets": [
             {
@@ -675,7 +734,7 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
     destructive = mock.Mock()
     destructive.avoids_symlink_attacks = True
     diagnostic_failure = raw_retirement.OlderRawRetirementError(
-        "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED"
+        "OLDER_RAW_DIAGNOSTIC_METADATA_AUTHORITY_MISMATCH"
     )
     with (
         mock.patch.object(raw_retirement, "_current_commit", return_value=governing_commit),
@@ -697,16 +756,18 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
             return_value=receipt_tree_authority,
         ),
         mock.patch.object(raw_retirement, "_quiescent", return_value={}),
-        mock.patch.object(raw_retirement, "_diagnostic_root", return_value=Path("/sealed")),
         mock.patch.object(
             raw_retirement,
-            "_diagnostic_authority_from_sealed_manifest",
-            side_effect=diagnostic_failure,
+            "_require_sealed_diagnostic_authority",
+            side_effect=(
+                manifest["diagnostic_evidence_authority"],
+                diagnostic_failure,
+            ),
         ) as diagnostic,
         mock.patch.object(raw_retirement.shutil, "rmtree", destructive),
     ):
         _expect(
-            "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED",
+            "OLDER_RAW_DIAGNOSTIC_METADATA_AUTHORITY_MISMATCH",
             lambda: raw_retirement.execute_exact_retirement(
                 governing_commit=governing_commit
             ),
@@ -720,13 +781,22 @@ def test_r5e_r3_execution_deletes_exact_two_fixed_leaves_then_uses_sealed_postch
         mock.call(path) for path in raw_retirement._target_leaves(older_root)
     ]
     assert validate_r4.call_count == 2
-    diagnostic.assert_called_once_with(Path("/sealed"), manifest)
+    assert diagnostic.call_args_list == [mock.call(manifest), mock.call(manifest)]
 
 
 def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> None:
     governing_commit = "a" * 40
     with tempfile.TemporaryDirectory() as temporary:
         production = Path(temporary).resolve() / "production"
+        owner_private, diagnostic_paths = _synthetic_diagnostic_roots(
+            production, root_count=2
+        )
+        additional_diagnostic = (
+            diagnostic_paths[0].parent / "additional-arbitrary.dcm"
+        )
+        _private_file(additional_diagnostic, b"opaque-diagnostic-dicom")
+        diagnostic_paths.append(additional_diagnostic)
+        diagnostic = _opaque_diagnostics(production, owner_private)
         older = (
             production / "attempts" / raw_retirement.OLDER_ATTEMPT_ID
         )
@@ -774,6 +844,20 @@ def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> No
             )
             for path in auxiliary_paths
         }
+        diagnostic_before = {
+            path: (
+                path.read_bytes(),
+                tuple(
+                    getattr(os.lstat(path), field)
+                    for field in (
+                        "st_mode", "st_uid", "st_gid", "st_nlink",
+                        "st_size", "st_dev", "st_ino", "st_mtime_ns",
+                        "st_ctime_ns",
+                    )
+                ),
+            )
+            for path in diagnostic_paths
+        }
         retained_bytes = sum(
             path.stat().st_size
             for path in older.glob("raw/*/receipts/*")
@@ -790,7 +874,6 @@ def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> No
             "role_inventory_sha256": "d" * 64,
             "control_content_sha256": "e" * 64,
         }
-        diagnostic = {"status": "SEALED"}
         r4_authority = {"metadata_stat_sha256": "f" * 64}
         receipt_rows = []
         for batch in raw_retirement.TARGET_BATCHES:
@@ -842,6 +925,7 @@ def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> No
         writer = mock.Mock()
         patched = {
             "PRODUCTION_ROOT": production,
+            "OWNER_PRIVATE_ROOT": owner_private,
             "MANIFEST_PATH": evidence / "manifest",
             "RECEIPT_PATH": evidence / "receipt",
             "SUMMARY_PATH": evidence / "summary",
@@ -860,8 +944,7 @@ def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> No
             "_quiescent": mock.Mock(return_value={}),
             "_validate_leaf_from_manifest": mock.Mock(),
             "_retained_evidence_authority": mock.Mock(return_value=retained),
-            "_diagnostic_root": mock.Mock(return_value=Path("/sealed")),
-            "_diagnostic_authority_from_sealed_manifest": mock.Mock(
+            "_require_sealed_diagnostic_authority": mock.Mock(
                 return_value=diagnostic
             ),
             "_post_receipt": mock.Mock(
@@ -887,6 +970,9 @@ def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> No
             for index in range(2)
             for ordinal in range(2)
         )
+        assert result["diagnostic_root_count"] == 2
+        assert result["diagnostic_file_count"] == len(diagnostic_paths)
+        assert result["diagnostic_body_reads"] == 0
         assert destructive.call_args_list == [
             mock.call(path) for path in raw_retirement._target_leaves(older)
         ]
@@ -906,40 +992,273 @@ def test_r5e_r4_successful_synthetic_cleanup_retains_all_auxiliary_files() -> No
             )
             for path in auxiliary_paths
         } == before
+        assert {
+            path: (
+                path.read_bytes(),
+                tuple(
+                    getattr(os.lstat(path), field)
+                    for field in (
+                        "st_mode", "st_uid", "st_gid", "st_nlink",
+                        "st_size", "st_dev", "st_ino", "st_mtime_ns",
+                        "st_ctime_ns",
+                    )
+                ),
+            )
+            for path in diagnostic_paths
+        } == diagnostic_before
 
 
-def test_r5e_r3_sealed_diagnostic_postcheck_never_requires_retired_source() -> None:
-    sealed = {
-        "source_object_key": "a" * 64,
-        "source_local_sha256": "b" * 64,
-        "status": "PASS_R3E_DIAGNOSTIC_EVIDENCE_RETAINED",
-    }
-    root = Path("/sealed/diagnostic")
-    with mock.patch.object(
-        raw_retirement, "_diagnostic_evidence_authority", return_value=sealed
-    ) as validator:
-        assert raw_retirement._diagnostic_authority_from_sealed_manifest(
-            root, {"diagnostic_evidence_authority": sealed}
-        ) == sealed
-    validator.assert_called_once_with(
-        root,
-        source_object_key="a" * 64,
-        source_local_sha256="b" * 64,
-    )
+def test_r5e_r5_opaque_diagnostics_permit_multiplicity_and_extra_files() -> None:
+    for root_count in (1, 2):
+        with tempfile.TemporaryDirectory() as temporary:
+            production = Path(temporary).resolve() / "production"
+            owner_private, files = _synthetic_diagnostic_roots(
+                production, root_count=root_count
+            )
+            additional = files[0].parent / "arbitrary-historical-sidecar.bin"
+            _private_file(additional, b"arbitrary opaque historical evidence")
+            files.append(additional)
+            if root_count == 1:
+                linked = files[0].parent / "retained-hardlink-sidecar.bin"
+                os.link(additional, linked)
+                files.append(linked)
+            authority = _opaque_diagnostics(production, owner_private)
+            assert set(authority) == raw_retirement.DIAGNOSTIC_AUTHORITY_KEYS
+            assert authority["status"] == (
+                "PASS_OPAQUE_R3E_DIAGNOSTIC_EVIDENCE_RETAINED"
+            )
+            assert authority["diagnostic_root_count"] == root_count
+            assert authority["diagnostic_file_count"] == len(files)
+            assert authority["diagnostic_directory_count"] == 3 * root_count
+            assert authority["diagnostic_total_bytes"] == sum(
+                os.lstat(path).st_size for path in files
+            )
+            assert authority["diagnostics_outside_deletion_targets"] is True
+            assert authority["diagnostics_retained"] is True
+            assert authority["body_reads"] == 0
+            assert re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(authority[
+                    "diagnostic_file_metadata_projection_sha256"
+                ]),
+            )
+            assert re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(authority["diagnostic_directory_topology_sha256"]),
+            )
+            assert all(path.name not in str(authority) for path in files)
+
+
+def test_r5e_r5_opaque_diagnostics_never_open_json_dicom_or_npz_bodies() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        owner_private, files = _synthetic_diagnostic_roots(production)
+        dicom = files[0].parent / "retained-arbitrary.dcm"
+        _private_file(dicom, b"not-a-dicom-body")
+        with (
+            mock.patch.object(raw_retirement, "PRODUCTION_ROOT", production),
+            mock.patch.object(
+                raw_retirement, "OWNER_PRIVATE_ROOT", owner_private
+            ),
+            mock.patch.object(
+                raw_retirement,
+                "_mountinfo_mountpoints",
+                return_value=frozenset(),
+            ),
+            mock.patch.object(
+                raw_retirement, "_read_json", side_effect=AssertionError
+            ),
+            mock.patch.object(
+                raw_retirement, "_read_private", side_effect=AssertionError
+            ),
+            mock.patch("builtins.open", side_effect=AssertionError),
+            mock.patch.object(
+                raw_retirement.os, "open", side_effect=AssertionError
+            ),
+        ):
+            authority = raw_retirement._opaque_diagnostic_evidence_authority()
+        assert authority["diagnostic_file_count"] == 3
+        assert authority["body_reads"] == 0
+
+
+def test_r5e_r5_zero_diagnostic_roots_fails_distinctly() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        owner_private = production / "owner_private"
+        _private_directory(owner_private)
+        _expect(
+            "OLDER_RAW_DIAGNOSTIC_ROOT_MISSING",
+            lambda: _opaque_diagnostics(production, owner_private),
+        )
+
+
+def test_r5e_r5_diagnostic_symlink_and_nonregular_descendant_fail() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        owner_private = production / "owner_private"
+        _private_directory(owner_private)
+        target = owner_private / "ordinary-directory"
+        _private_directory(target)
+        link = owner_private / "lvef_c3_r3e_one_object_replay_symlink_fixture"
+        link.symlink_to(target, target_is_directory=True)
+        _expect(
+            "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID",
+            lambda: _opaque_diagnostics(production, owner_private),
+        )
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        owner_private, files = _synthetic_diagnostic_roots(production)
+        fifo = files[0].parent / "unsafe.fifo"
+        os.mkfifo(fifo, 0o600)
+        _expect(
+            "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID",
+            lambda: _opaque_diagnostics(production, owner_private),
+        )
+
+
+def test_r5e_r5_diagnostic_owner_and_filesystem_mismatch_fail() -> None:
+    for field, value in (("st_uid", os.geteuid() + 1), ("st_dev", -1)):
+        with tempfile.TemporaryDirectory() as temporary:
+            production = Path(temporary).resolve() / "production"
+            owner_private, files = _synthetic_diagnostic_roots(production)
+            target = files[0]
+            real_lstat = os.lstat
+
+            def changed_lstat(path, *, target=target, field=field, value=value):
+                info = real_lstat(path)
+                if Path(path) != target:
+                    return info
+                fields = {
+                    name: getattr(info, name)
+                    for name in (
+                        "st_mode", "st_uid", "st_gid", "st_dev", "st_ino",
+                        "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns",
+                    )
+                }
+                fields[field] = value
+                return SimpleNamespace(**fields)
+
+            with mock.patch.object(
+                raw_retirement.os, "lstat", side_effect=changed_lstat
+            ):
+                _expect(
+                    "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID",
+                    lambda: _opaque_diagnostics(production, owner_private),
+                )
+
+
+def test_r5e_r5_diagnostic_target_escape_and_nested_mount_fail() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        owner_private, files = _synthetic_diagnostic_roots(production)
+        root = files[0].parent
+        with (
+            mock.patch.object(raw_retirement, "PRODUCTION_ROOT", production),
+            mock.patch.object(
+                raw_retirement, "OWNER_PRIVATE_ROOT", owner_private
+            ),
+            mock.patch.object(
+                raw_retirement, "_mountinfo_mountpoints", return_value=frozenset()
+            ),
+            mock.patch.object(
+                raw_retirement,
+                "_target_leaves",
+                return_value=(root, production / "unrelated-target"),
+            ),
+        ):
+            _expect(
+                "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID",
+                raw_retirement._opaque_diagnostic_evidence_authority,
+            )
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        owner_private, files = _synthetic_diagnostic_roots(production)
+        root = files[0].parent
+        escaped = owner_private / "escaped.bin"
+        _private_file(escaped, b"escape")
+        with (
+            mock.patch.object(raw_retirement, "PRODUCTION_ROOT", production),
+            mock.patch.object(
+                raw_retirement, "OWNER_PRIVATE_ROOT", owner_private
+            ),
+            mock.patch.object(
+                raw_retirement, "_mountinfo_mountpoints", return_value=frozenset()
+            ),
+            mock.patch.object(
+                raw_retirement.os,
+                "walk",
+                return_value=[(str(root), [], ["../escaped.bin"])],
+            ),
+        ):
+            _expect(
+                "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID",
+                raw_retirement._opaque_diagnostic_evidence_authority,
+            )
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve() / "production"
+        owner_private, files = _synthetic_diagnostic_roots(production)
+        nested_mount = files[1].parent
+        with (
+            mock.patch.object(raw_retirement, "PRODUCTION_ROOT", production),
+            mock.patch.object(
+                raw_retirement, "OWNER_PRIVATE_ROOT", owner_private
+            ),
+            mock.patch.object(
+                raw_retirement,
+                "_mountinfo_mountpoints",
+                return_value=frozenset({nested_mount}),
+            ),
+        ):
+            _expect(
+                "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID",
+                raw_retirement._opaque_diagnostic_evidence_authority,
+            )
+
+
+def test_r5e_r5_sealed_diagnostic_metadata_change_fails_distinctly() -> None:
+    sealed = _diagnostic_authority_stub()
+    changed = {**sealed, "diagnostic_total_bytes": 10}
     with mock.patch.object(
         raw_retirement,
-        "_diagnostic_evidence_authority",
-        return_value={**sealed, "source_local_sha256": "0" * 64},
+        "_opaque_diagnostic_evidence_authority",
+        return_value=changed,
     ):
         _expect(
-            "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED",
-            lambda: raw_retirement._diagnostic_authority_from_sealed_manifest(
-                root, {"diagnostic_evidence_authority": sealed}
+            "OLDER_RAW_DIAGNOSTIC_METADATA_AUTHORITY_MISMATCH",
+            lambda: raw_retirement._require_sealed_diagnostic_authority(
+                {"diagnostic_evidence_authority": sealed}
             ),
         )
-    assert "r3e.run_preflight" not in inspect.getsource(
-        raw_retirement.validate_retired_state
-    )
+
+
+def test_r5e_r5_diagnostic_authority_schema_is_exact_and_opaque() -> None:
+    authority = _diagnostic_authority_stub()
+    expected = frozenset(authority)
+    assert raw_retirement.DIAGNOSTIC_AUTHORITY_KEYS == expected
+    raw_retirement._validate_opaque_diagnostic_authority_schema(authority)
+    for changed in (
+        {**authority, "source_object_key": "c" * 64},
+        {**authority, "diagnostic_root_count": 0},
+        {**authority, "body_reads": 1},
+        {**authority, "body_reads": False},
+    ):
+        _expect(
+            "OLDER_RAW_MANIFEST_SCHEMA_INVALID",
+            lambda changed=changed: (
+                raw_retirement._validate_opaque_diagnostic_authority_schema(
+                    changed
+                )
+            ),
+        )
+    source = inspect.getsource(raw_retirement._opaque_diagnostic_evidence_authority)
+    validator_source = inspect.getsource(raw_retirement._validate_manifest)
+    assert "_read_json" not in source
+    assert "_read_private" not in source
+    assert "run_preflight" not in inspect.getsource(raw_retirement._derive_manifest)
+    assert "source_object_key" not in source
+    assert "source_local_sha256" not in source
+    assert 'diagnostic_authority.get("source_object_key")' not in validator_source
+    assert 'diagnostic_authority.get("source_local_sha256")' not in validator_source
 
 
 def test_r5e_r3_recursive_raw_object_closure_and_nested_layout_pass() -> None:
@@ -2388,7 +2707,7 @@ def test_r5e_retirement_module_never_opens_dicom_or_npz_payloads() -> None:
     tree = ast.parse(source)
     forbidden_names = {
         "sha256_file", "validate_extracted_npz", "np.load",
-        "materialize_verified_download_manifest",
+        "materialize_verified_download_manifest", "run_preflight",
     }
     observed = set()
     for node in ast.walk(tree):

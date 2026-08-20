@@ -163,36 +163,17 @@ RETAINED_ROLE_NAMES = (
     "UNCLASSIFIED",
 )
 RETAINED_ROLE_ROW_KEYS = frozenset({"role", "file_count", "total_bytes"})
-EXPECTED_DIAGNOSTIC_FILES = 4
-EXPECTED_DIAGNOSTIC_DIRECTORIES = 4
-EXPECTED_DIAGNOSTIC_BYTES = 25_175
-DIAGNOSTIC_OBSERVATION_BASENAME = "technical_replay_observation.restricted.json"
-DIAGNOSTIC_OBSERVATION_BYTES = 2_788
-DIAGNOSTIC_OBSERVATION_SHA256 = (
-    "1e4ba03360aa4f4e846a98fd3587969ab12e355ab51156b1debda2e0577fb8e4"
-)
-DIAGNOSTIC_COMPARISON_BASENAME = "technical_comparison.restricted.json"
-DIAGNOSTIC_COMPARISON_BYTES = 4_147
-DIAGNOSTIC_COMPARISON_SHA256 = (
-    "cc60dd119e9193961ae29debd12e1d30c0db1b34ab52ab68b03278b58fe87a97"
-)
-DIAGNOSTIC_AGGREGATE_BASENAME = "one_object_replay.aggregate_safe.json"
-DIAGNOSTIC_AGGREGATE_BYTES = 2_619
-DIAGNOSTIC_AGGREGATE_SHA256 = (
-    "0161b36848ccac7be294652aaecbf9bc2e830b86736739e0c0c37019cc24f04b"
-)
-DIAGNOSTIC_NPZ_BYTES = 15_621
-DIAGNOSTIC_NPZ_SHA256 = (
-    "1a6fb43fe9f666f659f5b88541fffee46cf50fc3e3c823234c28713e581e6a17"
-)
 DIAGNOSTIC_AUTHORITY_KEYS = frozenset({
-    "status", "file_count", "directory_count", "total_bytes",
-    "file_metadata_sha256", "directory_topology_sha256",
-    "observation_basename", "observation_bytes", "observation_sha256",
-    "comparison_basename", "comparison_bytes", "comparison_sha256",
-    "aggregate_basename", "aggregate_bytes", "aggregate_sha256",
-    "npz_relative_path", "npz_bytes", "npz_sealed_sha256",
-    "source_object_key", "source_local_sha256",
+    "status",
+    "diagnostic_root_count",
+    "diagnostic_file_count",
+    "diagnostic_directory_count",
+    "diagnostic_total_bytes",
+    "diagnostic_file_metadata_projection_sha256",
+    "diagnostic_directory_topology_sha256",
+    "diagnostics_outside_deletion_targets",
+    "diagnostics_retained",
+    "body_reads",
 })
 MAXIMUM_CONTROL_BYTES = 512 * 1024 * 1024
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -1686,146 +1667,247 @@ def _validate_attempt_batch(
     )
 
 
-def _diagnostic_root() -> Path:
-    try:
-        candidates = []
-        for entry in os.scandir(OWNER_PRIVATE_ROOT):
-            if r3e.DIAGNOSTIC_NAME_RE.fullmatch(entry.name) is None:
-                continue
-            info = entry.stat(follow_symlinks=False)
-            if entry.is_symlink() or not stat.S_ISDIR(info.st_mode):
-                _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
-            candidates.append(Path(entry.path))
-    except OSError as exc:
-        raise OlderRawRetirementError("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED") from exc
-    if len(candidates) != 1:
-        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
-    return candidates[0]
+def _opaque_diagnostic_metadata_rows(
+) -> tuple[int, list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    """Inventory every retained R3E diagnostic root without opening a file."""
 
-
-def _diagnostic_evidence_authority(
-    diagnostic_root: Path,
-    *,
-    source_object_key: str,
-    source_local_sha256: str,
-) -> dict[str, Any]:
-    """Bind the four preserved R3E artifacts without opening the NPZ body."""
-
-    metadata = _stable_metadata_authority(diagnostic_root)
-    if (
-        metadata["file_count"] != EXPECTED_DIAGNOSTIC_FILES
-        or metadata["directory_count"] != EXPECTED_DIAGNOSTIC_DIRECTORIES
-        or metadata["total_bytes"] != EXPECTED_DIAGNOSTIC_BYTES
-    ):
-        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
-    json_specs = (
-        (
-            DIAGNOSTIC_OBSERVATION_BASENAME,
-            DIAGNOSTIC_OBSERVATION_BYTES,
-            DIAGNOSTIC_OBSERVATION_SHA256,
-        ),
-        (
-            DIAGNOSTIC_COMPARISON_BASENAME,
-            DIAGNOSTIC_COMPARISON_BYTES,
-            DIAGNOSTIC_COMPARISON_SHA256,
-        ),
-        (
-            DIAGNOSTIC_AGGREGATE_BASENAME,
-            DIAGNOSTIC_AGGREGATE_BYTES,
-            DIAGNOSTIC_AGGREGATE_SHA256,
-        ),
-    )
-    documents: dict[str, tuple[dict[str, Any], bytes]] = {}
-    for basename, expected_bytes, expected_sha in json_specs:
-        document, payload = _read_json(
-            diagnostic_root / basename, maximum=r3e.MAXIMUM_RECEIPT_BYTES
+    owner_private = Path(os.path.abspath(OWNER_PRIVATE_ROOT))
+    production_root = Path(os.path.abspath(PRODUCTION_ROOT))
+    deletion_targets = tuple(
+        Path(os.path.abspath(path))
+        for path in _target_leaves(
+            production_root / "attempts" / OLDER_ATTEMPT_ID
         )
-        if len(payload) != expected_bytes or _sha(payload) != expected_sha:
-            _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
-        documents[basename] = (document, payload)
-    aggregate = documents[DIAGNOSTIC_AGGREGATE_BASENAME][0]
-    npz_candidates: list[tuple[Path, os.stat_result]] = []
-    try:
-        for current, names, files in os.walk(
-            diagnostic_root, topdown=True, followlinks=False
-        ):
-            current_path = Path(current)
-            names[:] = sorted(names)
-            for name in sorted(files):
-                path = current_path / name
-                if path.suffix != ".npz":
-                    continue
-                npz_candidates.append((path, os.lstat(path)))
-    except OSError as exc:
-        raise OlderRawRetirementError(
-            "OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED"
-        ) from exc
-    if len(npz_candidates) != 1:
-        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
-    npz_path, npz_info = npz_candidates[0]
-    relative = npz_path.relative_to(diagnostic_root)
-    match = re.fullmatch(
-        r"repaired_extraction/clips/([0-9a-f]{2})/([0-9a-f]{64})\.npz",
-        relative.as_posix(),
     )
-    source_key = str(source_object_key)
-    local_sha = str(source_local_sha256)
-    if (
-        match is None
-        or match.group(1) != match.group(2)[:2]
-        or match.group(2) != source_key
-        or not stat.S_ISREG(npz_info.st_mode)
-        or stat.S_ISLNK(npz_info.st_mode)
-        or npz_info.st_uid != os.geteuid()
-        or stat.S_IMODE(npz_info.st_mode) != 0o600
-        or npz_info.st_nlink != 1
-        or npz_info.st_size != DIAGNOSTIC_NPZ_BYTES
-        or aggregate.get("diagnostic_npz_bytes") != DIAGNOSTIC_NPZ_BYTES
-        or aggregate.get("diagnostic_npz_sha256") != DIAGNOSTIC_NPZ_SHA256
-        or SHA_RE.fullmatch(source_key) is None
-        or SHA_RE.fullmatch(local_sha) is None
-    ):
-        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
+
+    def overlaps_deletion_target(path: Path) -> bool:
+        return any(
+            path == target
+            or path in target.parents
+            or target in path.parents
+            for target in deletion_targets
+        )
+
+    def contained(root: Path, path: Path) -> bool:
+        return path == root or root in path.parents
+
+    try:
+        production_info = os.lstat(production_root)
+        owner_private_info = os.lstat(owner_private)
+        if (
+            stat.S_ISLNK(production_info.st_mode)
+            or not stat.S_ISDIR(production_info.st_mode)
+            or stat.S_ISLNK(owner_private_info.st_mode)
+            or not stat.S_ISDIR(owner_private_info.st_mode)
+            or owner_private_info.st_uid != os.geteuid()
+            or owner_private_info.st_dev != production_info.st_dev
+        ):
+            _fail("OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID")
+        try:
+            mountpoints = _mountinfo_mountpoints()
+        except OlderRawRetirementError as exc:
+            raise OlderRawRetirementError(
+                "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID"
+            ) from exc
+
+        roots: list[tuple[Path, os.stat_result]] = []
+        with os.scandir(owner_private) as entries:
+            for entry in entries:
+                if r3e.DIAGNOSTIC_NAME_RE.fullmatch(entry.name) is None:
+                    continue
+                root = Path(os.path.abspath(entry.path))
+                info = os.lstat(root)
+                if (
+                    root.parent != owner_private
+                    or root.name != entry.name
+                    or stat.S_ISLNK(info.st_mode)
+                    or not stat.S_ISDIR(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_dev != owner_private_info.st_dev
+                    or overlaps_deletion_target(root)
+                    or os.path.ismount(root)
+                    or any(
+                        mountpoint == root or root in mountpoint.parents
+                        for mountpoint in mountpoints
+                    )
+                ):
+                    _fail("OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID")
+                roots.append((root, info))
+        roots.sort(key=lambda item: item[0].name)
+        if not roots:
+            _fail("OLDER_RAW_DIAGNOSTIC_ROOT_MISSING")
+
+        file_rows: list[tuple[Any, ...]] = []
+        directory_rows: list[tuple[Any, ...]] = []
+
+        def walk_error(error: OSError) -> None:
+            raise error
+
+        for root, root_info in roots:
+            for current, names, files in os.walk(
+                root,
+                topdown=True,
+                onerror=walk_error,
+                followlinks=False,
+            ):
+                current_path = Path(os.path.abspath(current))
+                current_info = os.lstat(current_path)
+                if (
+                    not contained(root, current_path)
+                    or stat.S_ISLNK(current_info.st_mode)
+                    or not stat.S_ISDIR(current_info.st_mode)
+                    or current_info.st_uid != os.geteuid()
+                    or current_info.st_dev != root_info.st_dev
+                    or overlaps_deletion_target(current_path)
+                    or os.path.ismount(current_path)
+                    or (
+                        current_path != root
+                        and current_path in mountpoints
+                    )
+                ):
+                    _fail("OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID")
+                relative_directory = (
+                    "."
+                    if current_path == root
+                    else current_path.relative_to(root).as_posix()
+                )
+                directory_rows.append(
+                    (
+                        root.name,
+                        relative_directory,
+                        stat.S_IMODE(current_info.st_mode),
+                        current_info.st_uid,
+                        current_info.st_gid,
+                        current_info.st_dev,
+                        current_info.st_ino,
+                        current_info.st_nlink,
+                        current_info.st_size,
+                        current_info.st_mtime_ns,
+                        current_info.st_ctime_ns,
+                    )
+                )
+                names[:] = sorted(names)
+                for name in names:
+                    directory = Path(os.path.abspath(current_path / name))
+                    directory_info = os.lstat(directory)
+                    if (
+                        directory.parent != current_path
+                        or not contained(root, directory)
+                        or stat.S_ISLNK(directory_info.st_mode)
+                        or not stat.S_ISDIR(directory_info.st_mode)
+                        or directory_info.st_uid != os.geteuid()
+                        or directory_info.st_dev != root_info.st_dev
+                        or overlaps_deletion_target(directory)
+                        or os.path.ismount(directory)
+                        or directory in mountpoints
+                    ):
+                        _fail("OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID")
+                for name in sorted(files):
+                    path = Path(os.path.abspath(current_path / name))
+                    info = os.lstat(path)
+                    if (
+                        path.parent != current_path
+                        or not contained(root, path)
+                        or stat.S_ISLNK(info.st_mode)
+                        or not stat.S_ISREG(info.st_mode)
+                        or info.st_uid != os.geteuid()
+                        or info.st_dev != root_info.st_dev
+                        or overlaps_deletion_target(path)
+                        or os.path.ismount(path)
+                        or path in mountpoints
+                    ):
+                        _fail("OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID")
+                    file_rows.append(
+                        (
+                            root.name,
+                            path.relative_to(root).as_posix(),
+                            stat.S_IMODE(info.st_mode),
+                            info.st_uid,
+                            info.st_gid,
+                            info.st_dev,
+                            info.st_ino,
+                            info.st_nlink,
+                            info.st_size,
+                            info.st_mtime_ns,
+                            info.st_ctime_ns,
+                        )
+                    )
+    except OlderRawRetirementError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise OlderRawRetirementError(
+            "OLDER_RAW_DIAGNOSTIC_TOPOLOGY_INVALID"
+        ) from exc
+    return len(roots), sorted(file_rows), sorted(directory_rows)
+
+
+def _opaque_diagnostic_evidence_authority() -> dict[str, Any]:
+    """Seal all retained R3E diagnostics as opaque, metadata-only evidence."""
+
+    first = _opaque_diagnostic_metadata_rows()
+    second = _opaque_diagnostic_metadata_rows()
+    if first != second:
+        _fail("OLDER_RAW_DIAGNOSTIC_METADATA_AUTHORITY_MISMATCH")
+    root_count, files, directories = first
     return {
-        "status": "PASS_R3E_DIAGNOSTIC_EVIDENCE_RETAINED",
-        "file_count": metadata["file_count"],
-        "directory_count": metadata["directory_count"],
-        "total_bytes": metadata["total_bytes"],
-        "file_metadata_sha256": metadata["file_metadata_sha256"],
-        "directory_topology_sha256": metadata["directory_topology_sha256"],
-        "observation_basename": DIAGNOSTIC_OBSERVATION_BASENAME,
-        "observation_bytes": DIAGNOSTIC_OBSERVATION_BYTES,
-        "observation_sha256": DIAGNOSTIC_OBSERVATION_SHA256,
-        "comparison_basename": DIAGNOSTIC_COMPARISON_BASENAME,
-        "comparison_bytes": DIAGNOSTIC_COMPARISON_BYTES,
-        "comparison_sha256": DIAGNOSTIC_COMPARISON_SHA256,
-        "aggregate_basename": DIAGNOSTIC_AGGREGATE_BASENAME,
-        "aggregate_bytes": DIAGNOSTIC_AGGREGATE_BYTES,
-        "aggregate_sha256": DIAGNOSTIC_AGGREGATE_SHA256,
-        "npz_relative_path": relative.as_posix(),
-        "npz_bytes": DIAGNOSTIC_NPZ_BYTES,
-        "npz_sealed_sha256": DIAGNOSTIC_NPZ_SHA256,
-        "source_object_key": source_key,
-        "source_local_sha256": local_sha,
+        "status": "PASS_OPAQUE_R3E_DIAGNOSTIC_EVIDENCE_RETAINED",
+        "diagnostic_root_count": root_count,
+        "diagnostic_file_count": len(files),
+        "diagnostic_directory_count": len(directories),
+        "diagnostic_total_bytes": sum(int(row[8]) for row in files),
+        "diagnostic_file_metadata_projection_sha256": (
+            core.canonical_json_sha256(files)
+        ),
+        "diagnostic_directory_topology_sha256": (
+            core.canonical_json_sha256(directories)
+        ),
+        "diagnostics_outside_deletion_targets": True,
+        "diagnostics_retained": True,
+        "body_reads": 0,
     }
 
 
-def _diagnostic_authority_from_sealed_manifest(
-    diagnostic_root: Path, manifest: Mapping[str, Any]
+def _require_sealed_diagnostic_authority(
+    manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Revalidate retained diagnostics without reaching a retired raw source."""
-
     sealed = manifest.get("diagnostic_evidence_authority")
     if not isinstance(sealed, Mapping):
-        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
-    observed = _diagnostic_evidence_authority(
-        diagnostic_root,
-        source_object_key=str(sealed.get("source_object_key")),
-        source_local_sha256=str(sealed.get("source_local_sha256")),
-    )
+        _fail("OLDER_RAW_DIAGNOSTIC_METADATA_AUTHORITY_MISMATCH")
+    observed = _opaque_diagnostic_evidence_authority()
     if observed != sealed:
-        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
+        _fail("OLDER_RAW_DIAGNOSTIC_METADATA_AUTHORITY_MISMATCH")
     return observed
+
+
+def _validate_opaque_diagnostic_authority_schema(value: Any) -> None:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != DIAGNOSTIC_AUTHORITY_KEYS
+        or value.get("status")
+        != "PASS_OPAQUE_R3E_DIAGNOSTIC_EVIDENCE_RETAINED"
+        or type(value.get("diagnostic_root_count")) is not int
+        or value["diagnostic_root_count"] < 1
+        or type(value.get("diagnostic_file_count")) is not int
+        or value["diagnostic_file_count"] < 0
+        or type(value.get("diagnostic_directory_count")) is not int
+        or value["diagnostic_directory_count"]
+        < value["diagnostic_root_count"]
+        or type(value.get("diagnostic_total_bytes")) is not int
+        or value["diagnostic_total_bytes"] < 0
+        or value.get("diagnostics_outside_deletion_targets") is not True
+        or value.get("diagnostics_retained") is not True
+        or type(value.get("body_reads")) is not int
+        or value["body_reads"] != 0
+        or any(
+            not isinstance(value.get(key), str)
+            or SHA_RE.fullmatch(value[key]) is None
+            for key in (
+                "diagnostic_file_metadata_projection_sha256",
+                "diagnostic_directory_topology_sha256",
+            )
+        )
+    ):
+        _fail("OLDER_RAW_MANIFEST_SCHEMA_INVALID")
 
 
 def _target_leaves(attempt_root: Path) -> tuple[Path, ...]:
@@ -1920,8 +2002,6 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
     targets: list[dict[str, Any]] = []
     batch_authorities: list[dict[str, Any]] = []
     older_receipt_rows: list[tuple[str, Mapping[str, Any]]] = []
-    all_older: dict[str, dict[str, Any]] = {}
-    all_r4: dict[str, dict[str, Any]] = {}
     for batch_id in TARGET_BATCHES:
         older_batch = _batch(older_bundle.plan, batch_id)
         r4_batch = _batch(r4_bundle.plan, batch_id)
@@ -1973,8 +2053,6 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
                     "r4_file_mtime_ns": right["file_mtime_ns"],
                 }
             )
-        all_older.update(older_entries)
-        all_r4.update(r4_entries)
         batch_authorities.append(
             {
                 "batch_id": batch_id,
@@ -2002,26 +2080,7 @@ def _derive_manifest(governing_commit: str) -> dict[str, Any]:
         or any(sum(item["size_bytes"] for item in targets if item["batch_id"] == batch) != EXPECTED_BATCH_BYTES[batch] for batch in TARGET_BATCHES)
     ):
         _fail("OLDER_RAW_TARGET_AGGREGATE_MISMATCH")
-    diagnostic = _diagnostic_root()
-    try:
-        preflight = r3e.run_preflight(
-            governing_commit=governing_commit, diagnostic_root=diagnostic
-        )
-    except Exception as exc:
-        raise OlderRawRetirementError("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED") from exc
-    diagnostic_key = str(preflight.planned_object.get("source_object_key"))
-    if (
-        diagnostic_key not in all_older
-        or diagnostic_key not in all_r4
-        or preflight.local_sha256 != all_older[diagnostic_key]["local_sha256"]
-        or preflight.local_sha256 != all_r4[diagnostic_key]["local_sha256"]
-    ):
-        _fail("OLDER_RAW_DIAGNOSTIC_AUTHORITY_UNRESOLVED")
-    diagnostic_authority = _diagnostic_evidence_authority(
-        diagnostic,
-        source_object_key=diagnostic_key,
-        source_local_sha256=str(preflight.local_sha256),
-    )
+    diagnostic_authority = _opaque_diagnostic_evidence_authority()
     leaves = _target_leaves(older_root)
     older_receipt_tree_authority = _aggregate_receipt_tree_authority(
         older_receipt_rows
@@ -2145,6 +2204,7 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
     role_inventory = value.get("retained_role_inventory")
     diagnostic_authority = value.get("diagnostic_evidence_authority")
     receipt_tree_authority = value.get("older_receipt_tree_authority")
+    _validate_opaque_diagnostic_authority_schema(diagnostic_authority)
     if (
         value.get("schema_version") != 1
         or value.get("artifact_type")
@@ -2243,8 +2303,6 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
             ]
         ) is None
         or receipt_tree_authority.get("auxiliary_files_retained") is not True
-        or not isinstance(diagnostic_authority, Mapping)
-        or set(diagnostic_authority) != DIAGNOSTIC_AUTHORITY_KEYS
         or value.get("diagnostic_evidence_authority_sha256")
         != core.canonical_json_sha256(diagnostic_authority)
         or value.get("identifiers_emitted") is not False
@@ -2275,41 +2333,6 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
             or by_role[role]["total_bytes"] != 0
             for role in (
                 "RAW_DICOM_PAYLOAD", "R3E_DIAGNOSTIC_EVIDENCE", "UNCLASSIFIED"
-            )
-        )
-        or diagnostic_authority.get("status")
-        != "PASS_R3E_DIAGNOSTIC_EVIDENCE_RETAINED"
-        or diagnostic_authority.get("file_count") != EXPECTED_DIAGNOSTIC_FILES
-        or diagnostic_authority.get("directory_count")
-        != EXPECTED_DIAGNOSTIC_DIRECTORIES
-        or diagnostic_authority.get("total_bytes") != EXPECTED_DIAGNOSTIC_BYTES
-        or diagnostic_authority.get("observation_basename")
-        != DIAGNOSTIC_OBSERVATION_BASENAME
-        or diagnostic_authority.get("observation_bytes")
-        != DIAGNOSTIC_OBSERVATION_BYTES
-        or diagnostic_authority.get("observation_sha256")
-        != DIAGNOSTIC_OBSERVATION_SHA256
-        or diagnostic_authority.get("comparison_basename")
-        != DIAGNOSTIC_COMPARISON_BASENAME
-        or diagnostic_authority.get("comparison_bytes")
-        != DIAGNOSTIC_COMPARISON_BYTES
-        or diagnostic_authority.get("comparison_sha256")
-        != DIAGNOSTIC_COMPARISON_SHA256
-        or diagnostic_authority.get("aggregate_basename")
-        != DIAGNOSTIC_AGGREGATE_BASENAME
-        or diagnostic_authority.get("aggregate_bytes")
-        != DIAGNOSTIC_AGGREGATE_BYTES
-        or diagnostic_authority.get("aggregate_sha256")
-        != DIAGNOSTIC_AGGREGATE_SHA256
-        or diagnostic_authority.get("npz_bytes") != DIAGNOSTIC_NPZ_BYTES
-        or diagnostic_authority.get("npz_sealed_sha256")
-        != DIAGNOSTIC_NPZ_SHA256
-        or any(
-            not isinstance(diagnostic_authority.get(key), str)
-            or SHA_RE.fullmatch(diagnostic_authority[key]) is None
-            for key in (
-                "file_metadata_sha256", "directory_topology_sha256",
-                "source_object_key", "source_local_sha256",
             )
         )
     ):
@@ -2394,18 +2417,6 @@ def _validate_manifest(value: Mapping[str, Any]) -> None:
         expected_order.append((batch_id, source_key))
     if expected_order != sorted(expected_order):
         _fail("OLDER_RAW_MANIFEST_SCHEMA_INVALID")
-    diagnostic_targets = [
-        item
-        for item in targets
-        if item["source_object_key"]
-        == diagnostic_authority.get("source_object_key")
-    ]
-    if (
-        len(diagnostic_targets) != 1
-        or diagnostic_targets[0]["local_sha256"]
-        != diagnostic_authority.get("source_local_sha256")
-    ):
-        _fail("OLDER_RAW_MANIFEST_SCHEMA_INVALID")
     if value.get("target_set_sha256") != core.canonical_json_sha256(
         [
             {key: item[key] for key in TARGET_PROJECTION_KEYS}
@@ -2458,6 +2469,7 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
     manifest = _derive_manifest(governing_commit)
     _validate_manifest(manifest)
     receipt_tree = manifest["older_receipt_tree_authority"]
+    diagnostics = manifest["diagnostic_evidence_authority"]
     payload = _canonical(manifest)
     _write_new(MANIFEST_PATH, payload)
     return {
@@ -2472,6 +2484,14 @@ def prepare_retirement_manifest(*, governing_commit: str) -> Mapping[str, Any]:
         "required_receipt_files": receipt_tree["required_receipt_files"],
         "auxiliary_receipt_files": receipt_tree["auxiliary_receipt_files"],
         "auxiliary_receipt_bytes": receipt_tree["auxiliary_receipt_bytes"],
+        "diagnostic_root_count": diagnostics["diagnostic_root_count"],
+        "diagnostic_file_count": diagnostics["diagnostic_file_count"],
+        "diagnostic_directory_count": diagnostics[
+            "diagnostic_directory_count"
+        ],
+        "diagnostic_total_bytes": diagnostics["diagnostic_total_bytes"],
+        "diagnostics_retained": diagnostics["diagnostics_retained"],
+        "diagnostic_body_reads": diagnostics["body_reads"],
         "four_manifest_authority": "PASS",
         "r4_copy_authority": "PASS",
         "r4_metadata_sha256": EXPECTED_R4_METADATA_SHA256,
@@ -2969,6 +2989,7 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
     _validate_manifest(manifest)
     if manifest.get("governing_commit") != governing_commit:
         _fail("OLDER_RAW_GOVERNING_COMMIT_INVALID")
+    _require_sealed_diagnostic_authority(manifest)
     _validate_safe_export()
     rederived = _derive_manifest(str(manifest["governing_commit"]))
     if _canonical(rederived) != manifest_payload:
@@ -3034,11 +3055,8 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
     receipt_tree_authority = _current_older_receipt_tree_authority(
         older_root, manifest["targets"]
     )
-    diagnostic_root = _diagnostic_root()
     r4_authority = _validate_r4()
-    diagnostic_authority = _diagnostic_authority_from_sealed_manifest(
-        diagnostic_root, manifest
-    )
+    diagnostic_authority = _require_sealed_diagnostic_authority(manifest)
     full = (
         deleted_files == EXPECTED_DELETE_FILES
         and deleted_bytes == EXPECTED_DELETE_BYTES
@@ -3093,6 +3111,22 @@ def execute_exact_retirement(*, governing_commit: str) -> Mapping[str, Any]:
         "auxiliary_receipt_bytes": receipt_tree_authority[
             "auxiliary_receipt_bytes"
         ],
+        "diagnostic_root_count": diagnostic_authority[
+            "diagnostic_root_count"
+        ],
+        "diagnostic_file_count": diagnostic_authority[
+            "diagnostic_file_count"
+        ],
+        "diagnostic_directory_count": diagnostic_authority[
+            "diagnostic_directory_count"
+        ],
+        "diagnostic_total_bytes": diagnostic_authority[
+            "diagnostic_total_bytes"
+        ],
+        "diagnostics_retained": diagnostic_authority[
+            "diagnostics_retained"
+        ],
+        "diagnostic_body_reads": diagnostic_authority["body_reads"],
         "receipt_basename": RECEIPT_BASENAME,
         "receipt_bytes": len(receipt_payload),
         "receipt_sha256": _sha(receipt_payload),
@@ -3124,6 +3158,7 @@ def validate_retirement_receipt_authority(
         != manifest.get("pre_cleanup_capacity_authority")
     ):
         _fail("OLDER_RAW_RETIREMENT_RECEIPT_INVALID")
+    diagnostics = manifest["diagnostic_evidence_authority"]
     return {
         "status": receipt["status"],
         "receipt_basename": RECEIPT_BASENAME,
@@ -3152,6 +3187,14 @@ def validate_retirement_receipt_authority(
         "diagnostic_evidence_authority_sha256": receipt[
             "diagnostic_evidence_authority_sha256"
         ],
+        "diagnostic_root_count": diagnostics["diagnostic_root_count"],
+        "diagnostic_file_count": diagnostics["diagnostic_file_count"],
+        "diagnostic_directory_count": diagnostics[
+            "diagnostic_directory_count"
+        ],
+        "diagnostic_total_bytes": diagnostics["diagnostic_total_bytes"],
+        "diagnostics_retained": diagnostics["diagnostics_retained"],
+        "diagnostic_body_reads": diagnostics["body_reads"],
         "pre_cleanup_capacity_authority": dict(
             manifest["pre_cleanup_capacity_authority"]
         ),
@@ -3174,11 +3217,8 @@ def validate_retired_state(*, expected_governing_commit: str) -> Mapping[str, An
     receipt_tree_authority = _current_older_receipt_tree_authority(
         older_root, manifest["targets"]
     )
-    diagnostic_root = _diagnostic_root()
     _validate_r4()
-    diagnostic_authority = _diagnostic_authority_from_sealed_manifest(
-        diagnostic_root, manifest
-    )
+    diagnostic_authority = _require_sealed_diagnostic_authority(manifest)
     if (
         retained["file_count"] != EXPECTED_RETAINED_FILES
         or retained["total_bytes"] != EXPECTED_RETAINED_BYTES
