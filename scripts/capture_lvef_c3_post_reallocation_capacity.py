@@ -13,6 +13,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from enum import Enum
 import hashlib
 import importlib
 import json
@@ -210,6 +211,12 @@ R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME = (
 R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME = (
     "r5e_post_cleanup_dynamic_successor_capacity.aggregate_safe.json"
 )
+R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME = (
+    "r5e_r8_post_cleanup_dynamic_successor_capacity.restricted.json"
+)
+R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME = (
+    "r5e_r8_post_cleanup_dynamic_successor_capacity.aggregate_safe.json"
+)
 DYNAMIC_SUCCESSOR_ALLOWED_EVIDENCE_BASENAME_PAIRS = frozenset(
     {
         (
@@ -228,7 +235,26 @@ DYNAMIC_SUCCESSOR_ALLOWED_EVIDENCE_BASENAME_PAIRS = frozenset(
             R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
             R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
         ),
+        (
+            R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        ),
     }
+)
+
+
+class DynamicSuccessorCapacityValidationContext(Enum):
+    """Closed distinction between admission and immutable-event replay."""
+
+    LIVE_PRECLAIM_ADMISSION = "LIVE_PRECLAIM_ADMISSION"
+    SEALED_EXECUTION_REPLAY = "SEALED_EXECUTION_REPLAY"
+
+
+LIVE_PRECLAIM_ADMISSION = (
+    DynamicSuccessorCapacityValidationContext.LIVE_PRECLAIM_ADMISSION
+)
+SEALED_EXECUTION_REPLAY = (
+    DynamicSuccessorCapacityValidationContext.SEALED_EXECUTION_REPLAY
 )
 
 DYNAMIC_SUCCESSOR_OBSERVATION_HASHED_KEYS = frozenset(
@@ -3638,18 +3664,19 @@ def validate_dynamic_successor_capacity_observation(
     return dict(value)
 
 
-def validate_production_dynamic_successor_capacity_capture(
+def _validate_closed_dynamic_successor_capacity_capture(
     capture: DynamicSuccessorCapacityCapture,
     *,
     expected_governing_commit: str,
     now_utc: datetime | None = None,
 ) -> DynamicSuccessorCapacityCapture:
-    """Require a generic sealed capture to name the exact SCC authorities.
+    """Validate immutable admission evidence without consulting this node.
 
-    Synthetic authorities remain useful for dependency-light tests, but they
-    may never authorize the fixed production seal consumed by full-C3.  This
-    check is metadata/control-only: it does not rerun a capacity command or
-    reinterpret the captured quota rows.
+    The receipt and aggregate observation remain closed, canonical, mutually
+    bound, and governed by their original commit and event time.  Captured
+    UID, hostname, executable, mount, and path-identity fields are evidence of
+    that event; this replay context deliberately performs no comparison with
+    the current process or filesystem namespace.
     """
 
     if not isinstance(capture, DynamicSuccessorCapacityCapture):
@@ -3675,6 +3702,35 @@ def validate_production_dynamic_successor_capacity_capture(
         expected_receipt_payload=receipt_payload,
         now_utc=now_utc,
     )
+    return DynamicSuccessorCapacityCapture(
+        receipt=dict(receipt),
+        receipt_payload=receipt_payload,
+        observation=dict(observation),
+    )
+
+
+def _validate_production_node_dynamic_successor_capacity_capture(
+    capture: DynamicSuccessorCapacityCapture,
+    *,
+    expected_governing_commit: str,
+    now_utc: datetime | None = None,
+) -> DynamicSuccessorCapacityCapture:
+    """Require a generic sealed capture to name the exact SCC authorities.
+
+    Synthetic authorities remain useful for dependency-light tests, but they
+    may never authorize the fixed production seal consumed by full-C3.  This
+    check is metadata/control-only: it does not rerun a capacity command or
+    reinterpret the captured quota rows.
+    """
+
+    sealed = _validate_closed_dynamic_successor_capacity_capture(
+        capture,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
+    )
+    receipt_payload = sealed.receipt_payload
+    receipt = sealed.receipt
+    observation = sealed.observation
     authority = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
     commands = receipt["commands"]
     paths = receipt["paths"]
@@ -3762,6 +3818,121 @@ def validate_production_dynamic_successor_capacity_capture(
         receipt=dict(receipt),
         receipt_payload=receipt_payload,
         observation=dict(observation),
+    )
+
+
+def _validate_live_preclaim_admission_dynamic_successor_capacity_capture(
+    capture: DynamicSuccessorCapacityCapture,
+    *,
+    expected_governing_commit: str,
+) -> DynamicSuccessorCapacityCapture:
+    """Require strict current-node validation and a PASS observation."""
+
+    validated = _validate_production_node_dynamic_successor_capacity_capture(
+        capture,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=None,
+    )
+    if validated.observation.get("status") != DYNAMIC_SUCCESSOR_STATUS_PASS:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    return validated
+
+
+def validate_dynamic_successor_capacity_capture(
+    capture: DynamicSuccessorCapacityCapture,
+    *,
+    validation_context: DynamicSuccessorCapacityValidationContext,
+    expected_governing_commit: str,
+    expected_captured_at_utc: str | None = None,
+    now_utc: datetime | None = None,
+) -> DynamicSuccessorCapacityCapture:
+    """Dispatch one capture through exactly one closed validation context."""
+
+    if type(validation_context) is not DynamicSuccessorCapacityValidationContext:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID"
+        )
+    if validation_context is LIVE_PRECLAIM_ADMISSION:
+        if expected_captured_at_utc is not None or now_utc is not None:
+            raise PostReallocationCapacityError(
+                "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID"
+            )
+        return _validate_live_preclaim_admission_dynamic_successor_capacity_capture(
+            capture,
+            expected_governing_commit=expected_governing_commit,
+        )
+    if validation_context is not SEALED_EXECUTION_REPLAY:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID"
+        )
+    if (
+        type(expected_captured_at_utc) is not str
+        or re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+            expected_captured_at_utc,
+        )
+        is None
+        or now_utc is not None
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID"
+        )
+    if (
+        not isinstance(capture, DynamicSuccessorCapacityCapture)
+        or not isinstance(capture.receipt, Mapping)
+    ):
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    if capture.receipt.get("captured_at_utc") != expected_captured_at_utc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_CAPTURE_TIME_MISMATCH"
+        )
+    try:
+        event_time = datetime.fromisoformat(
+            expected_captured_at_utc.replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise PostReallocationCapacityError(
+            "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID"
+        ) from exc
+    return _validate_closed_dynamic_successor_capacity_capture(
+        capture,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=event_time,
+    )
+
+
+def validate_sealed_execution_replay_dynamic_successor_capacity_capture(
+    capture: DynamicSuccessorCapacityCapture,
+    *,
+    expected_governing_commit: str,
+    expected_captured_at_utc: str,
+) -> DynamicSuccessorCapacityCapture:
+    """Compatibility-named entry for the closed sealed-replay context."""
+
+    return validate_dynamic_successor_capacity_capture(
+        capture,
+        validation_context=SEALED_EXECUTION_REPLAY,
+        expected_governing_commit=expected_governing_commit,
+        expected_captured_at_utc=expected_captured_at_utc,
+    )
+
+
+def validate_production_dynamic_successor_capacity_capture(
+    capture: DynamicSuccessorCapacityCapture,
+    *,
+    expected_governing_commit: str,
+    now_utc: datetime | None = None,
+) -> DynamicSuccessorCapacityCapture:
+    """Retain the strict legacy live-production validation entry point."""
+
+    return _validate_production_node_dynamic_successor_capacity_capture(
+        capture,
+        expected_governing_commit=expected_governing_commit,
+        now_utc=now_utc,
     )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import csv
 import copy
+from contextlib import ExitStack
 from dataclasses import replace
 import errno
 import hashlib
@@ -2279,6 +2280,248 @@ def test_r5e_receipt_and_aggregate_summary_are_closed_and_bound() -> None:
         )
 
 
+def test_r5e_r8_completed_retirement_replay_uses_only_sealed_artifacts() -> None:
+    historical_authority = {
+        "status": capacity.DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING,
+        "receipt_basename": (
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
+        ),
+        "receipt_bytes": sequential.HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_BYTES,
+        "receipt_sha256": (
+            sequential.HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_SHA256
+        ),
+        "summary_basename": (
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
+        ),
+        "summary_bytes": sequential.HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_BYTES,
+        "summary_sha256": (
+            sequential.HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_SHA256
+        ),
+    }
+    diagnostics = {
+        "diagnostic_root_count": 2,
+        "diagnostic_file_count": 3,
+        "diagnostic_directory_count": 4,
+        "diagnostic_total_bytes": 5,
+        "diagnostics_retained": True,
+        "body_reads": 0,
+    }
+    manifest = {
+        "governing_commit": sequential.RETIREMENT_EVENT_COMMIT,
+        "pre_cleanup_capacity_authority": historical_authority,
+        "diagnostic_evidence_authority": diagnostics,
+        "older_receipt_tree_authority": {
+            "auxiliary_receipt_files": 6,
+            "auxiliary_receipt_bytes": 7,
+        },
+    }
+    manifest_payload = raw_retirement._canonical(manifest)
+    receipt = {
+        "governing_commit": sequential.RETIREMENT_EVENT_COMMIT,
+        "status": sequential.RETIREMENT_EVENT_STATUS,
+        "actual_deleted_files": sequential.RETIREMENT_EVENT_DELETED_FILES,
+        "actual_deleted_bytes": sequential.RETIREMENT_EVENT_DELETED_BYTES,
+        "retained_file_metadata_sha256": "1" * 64,
+        "retained_directory_topology_sha256": "2" * 64,
+        "retained_role_inventory_sha256": "3" * 64,
+        "retained_control_content_sha256": "4" * 64,
+        "diagnostic_evidence_authority_sha256": "5" * 64,
+    }
+    receipt_payload = raw_retirement._canonical(receipt)
+    summary = {"artifact_type": "synthetic_sealed_retirement_summary"}
+    summary_payload = raw_retirement._canonical(summary)
+    payloads = {
+        raw_retirement.MANIFEST_BASENAME: manifest_payload,
+        raw_retirement.RECEIPT_BASENAME: receipt_payload,
+        raw_retirement.SUMMARY_BASENAME: summary_payload,
+    }
+    artifacts = tuple(
+        (basename, len(payload), hashlib.sha256(payload).hexdigest())
+        for basename, payload in payloads.items()
+    )
+
+    def validate_manifest(value) -> None:
+        assert value == manifest
+
+    def validate_receipt(value, *, manifest_payload) -> None:
+        assert value == receipt
+        assert manifest_payload == payloads[raw_retirement.MANIFEST_BASENAME]
+
+    def summary_from_receipt(value, *, receipt_payload):
+        assert value == receipt
+        assert receipt_payload == payloads[raw_retirement.RECEIPT_BASENAME]
+        return summary
+
+    forbidden_live_helpers = (
+        "validate_retirement_receipt_authority",
+        "validate_retired_state",
+        "_pre_cleanup_capacity_authority",
+        "_derive_manifest",
+        "_validate_r4",
+        "_retained_evidence_authority",
+        "_retained_receipt_tree_authority",
+        "_opaque_diagnostic_evidence_authority",
+        "_require_sealed_diagnostic_authority",
+        "_raw_object_leaf_authority",
+        "_validate_leaf_from_manifest",
+        "_target_leaves",
+        "_target_leaf_snapshot",
+        "_stable_target_leaf_authority",
+        "_quiescent",
+        "_metadata_rows",
+        "_read_retained_control",
+    )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        production = Path(temporary).resolve()
+        owner_private = production / "owner_private"
+        artifact_root = owner_private / "r5e_older_raw_retirement"
+        _private_directory(artifact_root)
+        for basename, payload in payloads.items():
+            _private_file(artifact_root / basename, payload)
+
+        manifest_validator = mock.Mock(side_effect=validate_manifest)
+        receipt_validator = mock.Mock(side_effect=validate_receipt)
+        summary_builder = mock.Mock(side_effect=summary_from_receipt)
+        historical_loader = mock.Mock(return_value=historical_authority)
+        current_commit = "f" * 40
+        interpreter_blob = "e" * 40
+
+        def git(*arguments: str) -> str:
+            if arguments == (
+                "merge-base",
+                sequential.RETIREMENT_EVENT_COMMIT,
+                current_commit,
+            ):
+                return sequential.RETIREMENT_EVENT_COMMIT
+            if arguments[0] == "rev-parse" and arguments[1] in {
+                (
+                    f"{sequential.RETIREMENT_EVENT_COMMIT}:"
+                    f"{sequential.RETIREMENT_EVENT_INTERPRETER_PATH}"
+                ),
+                (
+                    f"{current_commit}:"
+                    f"{sequential.RETIREMENT_EVENT_INTERPRETER_PATH}"
+                ),
+            }:
+                return interpreter_blob
+            raise AssertionError(f"unexpected retirement Git query: {arguments!r}")
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(sequential, "PRODUCTION_ROOT", production)
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    sequential, "RETIREMENT_EVENT_ARTIFACTS", artifacts
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    sequential,
+                    "RETIREMENT_EVENT_RECEIPT_SHA256",
+                    artifacts[1][2],
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    sequential, "_current_commit", return_value=current_commit
+                )
+            )
+            stack.enter_context(mock.patch.object(sequential, "_git", side_effect=git))
+            stack.enter_context(
+                mock.patch.object(
+                    sequential,
+                    "_fixed_historical_pre_cleanup_capacity_authority",
+                    historical_loader,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    raw_retirement,
+                    "_validate_manifest",
+                    manifest_validator,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    raw_retirement,
+                    "_validate_receipt",
+                    receipt_validator,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    raw_retirement,
+                    "_summary_from_receipt",
+                    summary_builder,
+                )
+            )
+            for helper_name in forbidden_live_helpers:
+                stack.enter_context(
+                    mock.patch.object(
+                        raw_retirement,
+                        helper_name,
+                        side_effect=AssertionError(
+                            f"sealed replay called live helper {helper_name}"
+                        ),
+                    )
+                )
+
+            event = sequential._load_completed_retirement_event()
+            assert event == {
+                "status": sequential.RETIREMENT_EVENT_STATUS,
+                "receipt_sha256": artifacts[1][2],
+                "pre_cleanup_capacity_authority": historical_authority,
+                "retained_state_authority": {
+                    "actual_deleted_files": (
+                        sequential.RETIREMENT_EVENT_DELETED_FILES
+                    ),
+                    "actual_deleted_bytes": (
+                        sequential.RETIREMENT_EVENT_DELETED_BYTES
+                    ),
+                    "auxiliary_receipt_files": 6,
+                    "auxiliary_receipt_bytes": 7,
+                    "retained_file_metadata_sha256": "1" * 64,
+                    "retained_directory_topology_sha256": "2" * 64,
+                    "retained_role_inventory_sha256": "3" * 64,
+                    "retained_control_content_sha256": "4" * 64,
+                    "diagnostic_evidence_authority_sha256": "5" * 64,
+                    "diagnostic_root_count": 2,
+                    "diagnostic_file_count": 3,
+                    "diagnostic_directory_count": 4,
+                    "diagnostic_total_bytes": 5,
+                    "diagnostics_retained": True,
+                    "diagnostic_body_reads": 0,
+                },
+            }
+            historical_loader.assert_called_once_with()
+            manifest_validator.assert_called_once_with(manifest)
+            receipt_validator.assert_called_once_with(
+                receipt, manifest_payload=manifest_payload
+            )
+            summary_builder.assert_called_once_with(
+                receipt, receipt_payload=receipt_payload
+            )
+
+            for basename, original_payload in payloads.items():
+                manifest_validator.reset_mock()
+                receipt_validator.reset_mock()
+                summary_builder.reset_mock()
+                changed_payload = (
+                    bytes([original_payload[0] ^ 1]) + original_payload[1:]
+                )
+                _private_file(artifact_root / basename, changed_payload)
+                _expect(
+                    "FULL_SEQUENTIAL_RETIREMENT_EVENT_ARTIFACT_INVALID",
+                    sequential._load_completed_retirement_event,
+                )
+                manifest_validator.assert_not_called()
+                receipt_validator.assert_not_called()
+                summary_builder.assert_not_called()
+                _private_file(artifact_root / basename, original_payload)
+
+
 def test_r5e_capacity_gain_classification_is_exact() -> None:
     historical = capacity.EXPECTED_RESEARCH_QUOTA_KIB * 1024
     base = {
@@ -2409,7 +2652,11 @@ def test_r5e_capacity_publisher_keeps_historical_pairs_and_adds_r2_pair() -> Non
         capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
         capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
     ) in allowed
-    assert len(allowed) == 4
+    assert (
+        capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+        capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+    ) in allowed
+    assert len(allowed) == 5
     parser = sequential._parser()
     parsed = parser.parse_args(["--seal-r5e-r2-pre-action-capacity"])
     assert parsed.seal_r5e_r2_pre_action_capacity is True
@@ -2585,7 +2832,9 @@ def test_r5e_post_capacity_admission_requires_pre_failure_and_cleanup_receipt() 
             return post if "post_cleanup" in restricted_basename else pre
 
         with (
-            mock.patch.object(sequential, "_load_capacity_pair", side_effect=load),
+            mock.patch.object(
+                sequential, "_load_test_only_capacity_pair", side_effect=load
+            ),
             mock.patch.object(
                 raw_retirement,
                 "validate_retired_state",
@@ -2616,7 +2865,7 @@ def test_r5e_post_capacity_admission_requires_pre_failure_and_cleanup_receipt() 
         with (
             mock.patch.object(
                 sequential,
-                "_load_capacity_pair",
+                "_load_test_only_capacity_pair",
                 side_effect=lambda _run, *, restricted_basename,
                 summary_basename, require_pass=True: (
                     post if "post_cleanup" in restricted_basename else pre_pass
@@ -2639,7 +2888,9 @@ def test_r5e_post_capacity_admission_requires_pre_failure_and_cleanup_receipt() 
 
         wrong_pre = {**pre_authority, "receipt_sha256": "0" * 64}
         with (
-            mock.patch.object(sequential, "_load_capacity_pair", side_effect=load),
+            mock.patch.object(
+                sequential, "_load_test_only_capacity_pair", side_effect=load
+            ),
             mock.patch.object(
                 raw_retirement,
                 "validate_retired_state",
@@ -2684,7 +2935,7 @@ def test_r5e_r2_pre_action_is_the_only_no_cleanup_current_role() -> None:
             authority=SimpleNamespace(governing_commit="c" * 40),
         )
         with mock.patch.object(
-            sequential, "_load_capacity_pair", return_value=captured
+            sequential, "_load_test_only_capacity_pair", return_value=captured
         ) as loader:
             admission = sequential._load_fixed_capacity_admission(run)
     assert admission.evidence_role == "R5E_R2_PRE_ACTION"

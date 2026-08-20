@@ -1882,6 +1882,9 @@ def test_claim_rejects_missing_mutated_stale_and_nonpass_fixed_pair_before_root(
     for scenario, expected_code in scenarios:
         with tempfile.TemporaryDirectory() as temporary:
             run = _synthetic_full_run(Path(temporary).resolve())
+            dependencies, _ = _no_effect_dependencies(
+                test_only_synthetic_full_scope=False
+            )
             if scenario == "mutated":
                 capture = _capture(now_utc=datetime.now(timezone.utc))
                 _, summary_path = _write_fixed_capture_pair(run, capture)
@@ -1915,7 +1918,10 @@ def test_claim_rejects_missing_mutated_stale_and_nonpass_fixed_pair_before_root(
                 side_effect=AssertionError("invalid sealed pair created root")
             )
             with (
-                mock.patch.object(sequential, "build_full_run", return_value=run),
+                _synthetic_preflight_boundaries(run),
+                mock.patch.object(
+                    sequential, "resolve_dependencies", return_value=dependencies
+                ),
                 mock.patch.object(
                     sequential, "preflight_full", forbidden_preflight
                 ),
@@ -1961,6 +1967,294 @@ def test_fixed_loader_rejects_synthetic_authority_in_production_role() -> None:
             )
         forbidden_probe.assert_not_called()
         assert not run.attempt_root.exists()
+
+
+def test_r5e_r8_fixed_pair_is_append_only_and_allowed() -> None:
+    expected_pair = (
+        "r5e_r8_post_cleanup_dynamic_successor_capacity.restricted.json",
+        "r5e_r8_post_cleanup_dynamic_successor_capacity.aggregate_safe.json",
+    )
+    assert capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME == (
+        expected_pair[0]
+    )
+    assert capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME == (
+        expected_pair[1]
+    )
+    assert expected_pair in capacity.DYNAMIC_SUCCESSOR_ALLOWED_EVIDENCE_BASENAME_PAIRS
+    assert capacity.SEALED_EXECUTION_REPLAY is (
+        capacity.DynamicSuccessorCapacityValidationContext.SEALED_EXECUTION_REPLAY
+    )
+    assert capacity.LIVE_PRECLAIM_ADMISSION is (
+        capacity.DynamicSuccessorCapacityValidationContext.LIVE_PRECLAIM_ADMISSION
+    )
+    assert set(capacity.DynamicSuccessorCapacityValidationContext) == {
+        capacity.LIVE_PRECLAIM_ADMISSION,
+        capacity.SEALED_EXECUTION_REPLAY,
+    }
+
+    capture = _capture(now_utc=CAPTURED_AT)
+    with tempfile.TemporaryDirectory() as temporary:
+        owner = Path(temporary).resolve() / "owner_private"
+        owner.mkdir(mode=0o700)
+        prior_pair = (
+            owner / capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            owner / capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        )
+        for ordinal, path in enumerate(prior_pair):
+            path.write_bytes(f"sealed-r5e-post-{ordinal}\n".encode())
+            path.chmod(0o600)
+        prior_payloads = tuple(path.read_bytes() for path in prior_pair)
+        restricted = owner / expected_pair[0]
+        summary = owner / expected_pair[1]
+        result = capacity.publish_dynamic_successor_capacity_capture(
+            capture,
+            restricted_receipt_path=restricted,
+            aggregate_summary_path=summary,
+            safe_export_policy_path=SAFE_EXPORT_POLICY,
+            now_utc=CAPTURED_AT,
+        )
+        assert result["restricted_receipt_basename"] == expected_pair[0]
+        assert result["aggregate_summary_basename"] == expected_pair[1]
+        assert tuple(path.read_bytes() for path in prior_pair) == prior_payloads
+
+
+def test_r5e_r8_sealed_execution_replay_has_no_live_node_dependencies() -> None:
+    historical = _r5e_historical_failed_capture()
+    blocked_live_dependency = AssertionError(
+        "sealed replay consulted current execution-node state"
+    )
+    with (
+        mock.patch.object(
+            capacity.os, "geteuid", side_effect=blocked_live_dependency
+        ) as effective_uid,
+        mock.patch.object(
+            capacity.pwd, "getpwuid", side_effect=blocked_live_dependency
+        ) as username,
+        mock.patch.object(
+            capacity.socket, "gethostname", side_effect=blocked_live_dependency
+        ) as hostname,
+        mock.patch.object(
+            capacity,
+            "_validate_current_canary_headroom_authority",
+            side_effect=blocked_live_dependency,
+        ) as live_authority,
+        mock.patch.object(
+            capacity, "_read_regular", side_effect=blocked_live_dependency
+        ) as executable_read,
+        mock.patch.object(
+            capacity, "_path_identity", side_effect=blocked_live_dependency
+        ) as path_identity,
+        mock.patch.object(
+            capacity,
+            "_validate_pquota_restricted_mount_reconciliation",
+            side_effect=blocked_live_dependency,
+        ) as mount_reconciliation,
+        mock.patch.object(
+            capacity.subprocess, "run", side_effect=blocked_live_dependency
+        ) as process,
+    ):
+        replayed = (
+            capacity.validate_dynamic_successor_capacity_capture(
+                historical,
+                validation_context=capacity.SEALED_EXECUTION_REPLAY,
+                expected_governing_commit=(
+                    sequential.HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
+                ),
+                expected_captured_at_utc=historical.receipt[
+                    "captured_at_utc"
+                ],
+            )
+        )
+    assert replayed.receipt_payload == historical.receipt_payload
+    assert replayed.receipt == historical.receipt
+    assert replayed.observation == historical.observation
+    assert replayed.observation["status"] == (
+        capacity.DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
+    )
+    for dependency in (
+        effective_uid,
+        username,
+        hostname,
+        live_authority,
+        executable_read,
+        path_identity,
+        mount_reconciliation,
+        process,
+    ):
+        dependency.assert_not_called()
+
+    _expect_code(
+        "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID",
+        lambda: capacity.validate_production_dynamic_successor_capacity_capture(
+            historical,
+            expected_governing_commit=(
+                sequential.HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
+            ),
+            now_utc=CAPTURED_AT,
+        ),
+    )
+
+
+def test_r5e_r8_sealed_execution_replay_fails_on_bytes_commit_and_time() -> None:
+    historical = _r5e_historical_failed_capture()
+    captured_at = historical.receipt["captured_at_utc"]
+
+    def validator(
+        value: capacity.DynamicSuccessorCapacityCapture,
+        *,
+        expected_commit: str = (
+            sequential.HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
+        ),
+        expected_time: str = captured_at,
+    ) -> capacity.DynamicSuccessorCapacityCapture:
+        return capacity.validate_dynamic_successor_capacity_capture(
+            value,
+            validation_context=capacity.SEALED_EXECUTION_REPLAY,
+            expected_governing_commit=expected_commit,
+            expected_captured_at_utc=expected_time,
+        )
+
+    changed_receipt_bytes = dataclass_replace(
+        historical,
+        receipt_payload=historical.receipt_payload + b" ",
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID",
+        lambda: validator(changed_receipt_bytes),
+    )
+
+    changed_summary = copy.deepcopy(historical.observation)
+    changed_summary["observation_authority_sha256"] = "0" * 64
+    _expect_code(
+        "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH",
+        lambda: validator(
+            dataclass_replace(historical, observation=changed_summary)
+        ),
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID",
+        lambda: validator(historical, expected_commit="e" * 40),
+    )
+    wrong_time = (
+        CAPTURED_AT + timedelta(seconds=1)
+    ).isoformat().replace("+00:00", "Z")
+    _expect_code(
+        "DYNAMIC_CAPACITY_CAPTURE_TIME_MISMATCH",
+        lambda: validator(historical, expected_time=wrong_time),
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_CAPTURE_TIME_MISMATCH",
+        lambda: validator(
+            changed_receipt_bytes,
+            expected_time=wrong_time,
+        ),
+    )
+
+
+def test_r5e_r8_validation_context_dispatch_is_closed() -> None:
+    historical = _r5e_historical_failed_capture()
+    captured_at = historical.receipt["captured_at_utc"]
+    base = {
+        "expected_governing_commit": (
+            sequential.HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
+        )
+    }
+    for invalid_context in ("SEALED_EXECUTION_REPLAY", True, None):
+        _expect_code(
+            "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID",
+            lambda invalid_context=invalid_context: (
+                capacity.validate_dynamic_successor_capacity_capture(
+                    historical,
+                    validation_context=invalid_context,
+                    expected_captured_at_utc=captured_at,
+                    **base,
+                )
+            ),
+        )
+    _expect_code(
+        "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID",
+        lambda: capacity.validate_dynamic_successor_capacity_capture(
+            historical,
+            validation_context=capacity.SEALED_EXECUTION_REPLAY,
+            **base,
+        ),
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID",
+        lambda: capacity.validate_dynamic_successor_capacity_capture(
+            historical,
+            validation_context=capacity.SEALED_EXECUTION_REPLAY,
+            expected_captured_at_utc=captured_at,
+            now_utc=CAPTURED_AT,
+            **base,
+        ),
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID",
+        lambda: capacity.validate_dynamic_successor_capacity_capture(
+            historical,
+            validation_context=capacity.SEALED_EXECUTION_REPLAY,
+            expected_captured_at_utc="not-an-event-time",
+            **base,
+        ),
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID",
+        lambda: capacity.validate_dynamic_successor_capacity_capture(
+            historical,
+            validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+            expected_captured_at_utc=captured_at,
+            **base,
+        ),
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID",
+        lambda: capacity.validate_dynamic_successor_capacity_capture(
+            historical,
+            validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+            now_utc=CAPTURED_AT,
+            **base,
+        ),
+    )
+
+    blocked = _capture(
+        governing_commit=GOVERNING_COMMIT,
+        native_payload=_dynamic_native(
+            research_quota_bytes=HISTORICAL_RESEARCH_QUOTA_BYTES,
+            research_usage_bytes=LIVE_USAGE_BYTES,
+        ),
+        now_utc=datetime.now(timezone.utc),
+    )
+    assert blocked.observation["status"] != (
+        capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+    )
+    _expect_code(
+        "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID",
+        lambda: capacity.validate_dynamic_successor_capacity_capture(
+            blocked,
+            validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+            expected_governing_commit=GOVERNING_COMMIT,
+        ),
+    )
+
+    live = mock.Mock(return_value=historical)
+    with mock.patch.object(
+        capacity,
+        "_validate_live_preclaim_admission_dynamic_successor_capacity_capture",
+        live,
+    ):
+        observed = capacity.validate_dynamic_successor_capacity_capture(
+            historical,
+            validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+            **base,
+        )
+    assert observed is historical
+    live.assert_called_once_with(
+        historical,
+        expected_governing_commit=(
+            sequential.HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
+        ),
+    )
 
 
 def test_production_capture_validation_rechecks_tools_without_native_content_read() -> None:
@@ -2101,6 +2395,11 @@ def test_scheduler_preflight_and_synthetic_claim_reuse_fixed_pair_without_probe(
                 side_effect=accept_isolated_production_role,
             ),
             mock.patch.object(
+                capacity,
+                "validate_dynamic_successor_capacity_capture",
+                side_effect=accept_isolated_production_role,
+            ),
+            mock.patch.object(
                 sequential.subprocess,
                 "run",
                 side_effect=AssertionError("scheduler path ran capacity command"),
@@ -2182,6 +2481,11 @@ def test_real_dynamic_seal_reuses_one_capture_in_full_no_body_preflight() -> Non
             mock.patch.object(
                 capacity,
                 "validate_production_dynamic_successor_capacity_capture",
+                side_effect=accept_isolated_production_role,
+            ),
+            mock.patch.object(
+                capacity,
+                "validate_dynamic_successor_capacity_capture",
                 side_effect=accept_isolated_production_role,
             ),
             mock.patch.object(
@@ -2573,13 +2877,16 @@ def test_r5e_r7_historical_pre_cleanup_is_closed_event_time_evidence() -> None:
     assert captured.observation["status"] == (
         capacity.DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING
     )
+    captured_at = captured.receipt["captured_at_utc"]
     assert not inspect.signature(
         sequential._load_historical_r5e_r2_pre_action_capacity
     ).parameters
     with tempfile.TemporaryDirectory() as temporary:
         run = _synthetic_full_run(Path(temporary).resolve())
         receipt, summary = _write_r5e_historical_pair(run, captured)
-        production_validator = mock.Mock(return_value=captured)
+        capture_validator = mock.Mock(
+            wraps=capacity.validate_dynamic_successor_capacity_capture
+        )
         with (
             mock.patch.object(
                 sequential, "PRODUCTION_ROOT", run.production_root
@@ -2605,9 +2912,14 @@ def test_r5e_r7_historical_pre_cleanup_is_closed_event_time_evidence() -> None:
                 hashlib.sha256(summary.read_bytes()).hexdigest(),
             ),
             mock.patch.object(
+                sequential,
+                "HISTORICAL_R5E_R2_PRE_ACTION_CAPTURED_AT_UTC",
+                captured_at,
+            ),
+            mock.patch.object(
                 capacity,
-                "validate_production_dynamic_successor_capacity_capture",
-                production_validator,
+                "validate_dynamic_successor_capacity_capture",
+                capture_validator,
             ),
         ):
             historical = (
@@ -2615,7 +2927,7 @@ def test_r5e_r7_historical_pre_cleanup_is_closed_event_time_evidence() -> None:
             )
             _expect_code(
                 "DYNAMIC_CAPACITY_RECEIPT_SCHEMA_INVALID",
-                lambda: sequential._load_capacity_pair(
+                lambda: sequential._load_test_only_capacity_pair(
                     run,
                     restricted_basename=receipt.name,
                     summary_basename=summary.name,
@@ -2627,12 +2939,13 @@ def test_r5e_r7_historical_pre_cleanup_is_closed_event_time_evidence() -> None:
         assert not isinstance(historical, sequential.CapacityAdmission)
         assert historical.capture.receipt_payload == captured.receipt_payload
         assert historical.authority == _historical_event(captured).authority
-        production_validator.assert_called_once()
-        assert production_validator.call_args.kwargs == {
+        capture_validator.assert_called_once()
+        assert capture_validator.call_args.kwargs == {
+            "validation_context": capacity.SEALED_EXECUTION_REPLAY,
             "expected_governing_commit": (
                 sequential.HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
             ),
-            "now_utc": CAPTURED_AT,
+            "expected_captured_at_utc": captured_at,
         }
         assert run.authority.governing_commit != (
             sequential.HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
@@ -2680,10 +2993,7 @@ def test_r5e_r7_historical_pre_cleanup_failure_roles_are_exact() -> None:
                 ),
             ):
                 _expect_code(
-                    (
-                        "FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_"
-                        "CAPACITY_HASH_MISMATCH"
-                    ),
+                    "FULL_SEQUENTIAL_HISTORICAL_EVENT_HASH_MISMATCH",
                     sequential._load_historical_r5e_r2_pre_action_capacity,
                 )
 
@@ -2733,15 +3043,16 @@ def test_r5e_r7_historical_pre_cleanup_failure_roles_are_exact() -> None:
                     hashlib.sha256(summary.read_bytes()).hexdigest(),
                 ),
                 mock.patch.object(
-                    capacity,
-                    "validate_production_dynamic_successor_capacity_capture",
-                    return_value=captured,
+                    sequential,
+                    "HISTORICAL_R5E_R2_PRE_ACTION_CAPTURED_AT_UTC",
+                    captured.receipt["captured_at_utc"],
                 ),
             ):
                 _expect_code(
                     (
-                        "FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_"
-                        "CAPACITY_INVALID"
+                        "FULL_SEQUENTIAL_HISTORICAL_EVENT_COMMIT_INVALID"
+                        if label == "wrong_commit"
+                        else "FULL_SEQUENTIAL_HISTORICAL_EVENT_SCHEMA_INVALID"
                     ),
                     sequential._load_historical_r5e_r2_pre_action_capacity,
                 )
@@ -2781,10 +3092,45 @@ def test_r5e_r7_completed_retirement_event_is_fixed_and_descendant_safe() -> Non
             / "r5e_older_raw_retirement"
         )
         artifact_root.mkdir(mode=0o700)
+        diagnostics = {
+            "diagnostic_root_count": 1,
+            "diagnostic_file_count": 2,
+            "diagnostic_directory_count": 3,
+            "diagnostic_total_bytes": 4,
+            "diagnostics_retained": True,
+            "body_reads": 0,
+        }
+        manifest = {
+            "governing_commit": sequential.RETIREMENT_EVENT_COMMIT,
+            "pre_cleanup_capacity_authority": dict(historical.authority),
+            "diagnostic_evidence_authority": diagnostics,
+            "older_receipt_tree_authority": {
+                "auxiliary_receipt_files": 5,
+                "auxiliary_receipt_bytes": 6,
+            },
+        }
+        receipt_value = {
+            "governing_commit": sequential.RETIREMENT_EVENT_COMMIT,
+            "status": sequential.RETIREMENT_EVENT_STATUS,
+            "actual_deleted_files": sequential.RETIREMENT_EVENT_DELETED_FILES,
+            "actual_deleted_bytes": sequential.RETIREMENT_EVENT_DELETED_BYTES,
+            "retained_file_metadata_sha256": "a" * 64,
+            "retained_directory_topology_sha256": "b" * 64,
+            "retained_role_inventory_sha256": "c" * 64,
+            "retained_control_content_sha256": "d" * 64,
+            "diagnostic_evidence_authority_sha256": "e" * 64,
+        }
+        summary_value = {"status": "PURE_SEALED_RETIREMENT_TEST"}
         payloads = {
-            "older_raw_retirement_manifest.restricted.json": b"manifest\n",
-            "older_raw_retirement_receipt.restricted.json": b"receipt\n",
-            "older_raw_retirement_summary.aggregate_safe.json": b"summary\n",
+            "older_raw_retirement_manifest.restricted.json": (
+                raw_retirement._canonical(manifest)
+            ),
+            "older_raw_retirement_receipt.restricted.json": (
+                raw_retirement._canonical(receipt_value)
+            ),
+            "older_raw_retirement_summary.aggregate_safe.json": (
+                raw_retirement._canonical(summary_value)
+            ),
         }
         artifacts = tuple(
             (
@@ -2798,20 +3144,13 @@ def test_r5e_r7_completed_retirement_event_is_fixed_and_descendant_safe() -> Non
             path = artifact_root / basename
             path.write_bytes(payload)
             path.chmod(0o600)
-        retired = {
-            "status": sequential.RETIREMENT_EVENT_STATUS,
-            "receipt_basename": artifacts[1][0],
-            "receipt_bytes": artifacts[1][1],
-            "receipt_sha256": artifacts[1][2],
-            "actual_deleted_files": sequential.RETIREMENT_EVENT_DELETED_FILES,
-            "actual_deleted_bytes": sequential.RETIREMENT_EVENT_DELETED_BYTES,
-            "pre_cleanup_capacity_authority": dict(historical.authority),
-            "retained_files": 121_220,
-            "retained_bytes": 18_131_756_871,
-            "r4_metadata_stat_sha256": "a" * 64,
-        }
-        validator = mock.Mock(return_value=retired)
-        common_patches = (
+        manifest_validator = mock.Mock()
+        receipt_validator = mock.Mock()
+        summary_builder = mock.Mock(return_value=summary_value)
+        live_validator = mock.Mock(
+            side_effect=AssertionError("pure loader reached live replay")
+        )
+        with (
             mock.patch.object(
                 sequential, "PRODUCTION_ROOT", run.production_root
             ),
@@ -2834,13 +3173,18 @@ def test_r5e_r7_completed_retirement_event_is_fixed_and_descendant_safe() -> Non
                 return_value=dict(historical.authority),
             ),
             mock.patch.object(
-                raw_retirement,
-                "validate_retired_state",
-                validator,
+                raw_retirement, "_validate_manifest", manifest_validator
             ),
-        )
-        with common_patches[0], common_patches[1], common_patches[2], \
-                common_patches[3], common_patches[4], common_patches[5]:
+            mock.patch.object(
+                raw_retirement, "_validate_receipt", receipt_validator
+            ),
+            mock.patch.object(
+                raw_retirement, "_summary_from_receipt", summary_builder
+            ),
+            mock.patch.object(
+                raw_retirement, "validate_retired_state", live_validator
+            ),
+        ):
             event = sequential._load_completed_retirement_event()
         assert event == {
             "status": sequential.RETIREMENT_EVENT_STATUS,
@@ -2853,14 +3197,31 @@ def test_r5e_r7_completed_retirement_event_is_fixed_and_descendant_safe() -> Non
                 "actual_deleted_bytes": (
                     sequential.RETIREMENT_EVENT_DELETED_BYTES
                 ),
-                "retained_files": 121_220,
-                "retained_bytes": 18_131_756_871,
-                "r4_metadata_stat_sha256": "a" * 64,
+                "auxiliary_receipt_files": 5,
+                "auxiliary_receipt_bytes": 6,
+                "retained_file_metadata_sha256": "a" * 64,
+                "retained_directory_topology_sha256": "b" * 64,
+                "retained_role_inventory_sha256": "c" * 64,
+                "retained_control_content_sha256": "d" * 64,
+                "diagnostic_evidence_authority_sha256": "e" * 64,
+                "diagnostic_root_count": 1,
+                "diagnostic_file_count": 2,
+                "diagnostic_directory_count": 3,
+                "diagnostic_total_bytes": 4,
+                "diagnostics_retained": True,
+                "diagnostic_body_reads": 0,
             },
         }
-        validator.assert_called_once_with(
-            expected_governing_commit=sequential.RETIREMENT_EVENT_COMMIT
+        manifest_validator.assert_called_once_with(manifest)
+        receipt_validator.assert_called_once_with(
+            receipt_value,
+            manifest_payload=payloads[artifacts[0][0]],
         )
+        summary_builder.assert_called_once_with(
+            receipt_value,
+            receipt_payload=payloads[artifacts[1][0]],
+        )
+        live_validator.assert_not_called()
 
         for ordinal, (basename, size, digest) in enumerate(artifacts):
             changed = list(artifacts)
@@ -2909,26 +3270,24 @@ def test_r5e_r7_completed_retirement_event_is_fixed_and_descendant_safe() -> Non
                 sequential._require_retirement_event_git_authority,
             )
 
-        for state_failure in (
-            RuntimeError("former raw leaf reappeared"),
-            {**retired, "actual_deleted_files": 0},
-        ):
-            state_validator = mock.Mock()
-            if isinstance(state_failure, BaseException):
-                state_validator.side_effect = state_failure
+        for state_failure in ("manifest", "deleted_count"):
+            state_payloads = payloads
+            state_manifest_validator = mock.Mock()
+            if state_failure == "manifest":
+                state_manifest_validator.side_effect = RuntimeError(
+                    "sealed manifest invalid"
+                )
             else:
-                state_validator.return_value = state_failure
+                bad_receipt = {**receipt_value, "actual_deleted_files": 0}
+                state_payloads = {
+                    **payloads,
+                    artifacts[1][0]: raw_retirement._canonical(bad_receipt),
+                }
             with (
                 mock.patch.object(
-                    sequential, "PRODUCTION_ROOT", run.production_root
-                ),
-                mock.patch.object(
-                    sequential, "RETIREMENT_EVENT_ARTIFACTS", artifacts
-                ),
-                mock.patch.object(
                     sequential,
-                    "RETIREMENT_EVENT_RECEIPT_SHA256",
-                    artifacts[1][2],
+                    "_retirement_event_artifact_payloads",
+                    return_value=state_payloads,
                 ),
                 mock.patch.object(
                     sequential,
@@ -2942,8 +3301,16 @@ def test_r5e_r7_completed_retirement_event_is_fixed_and_descendant_safe() -> Non
                 ),
                 mock.patch.object(
                     raw_retirement,
-                    "validate_retired_state",
-                    state_validator,
+                    "_validate_manifest",
+                    state_manifest_validator,
+                ),
+                mock.patch.object(
+                    raw_retirement, "_validate_receipt"
+                ),
+                mock.patch.object(
+                    raw_retirement,
+                    "_summary_from_receipt",
+                    return_value=summary_value,
                 ),
             ):
                 _expect_code(
@@ -2965,20 +3332,33 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
     assert current.observation["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
     with tempfile.TemporaryDirectory() as temporary:
         run = _synthetic_full_run(Path(temporary).resolve())
-        _write_r5e_post_cleanup_pair(run, current)
+        _write_fixed_capture_pair(
+            run,
+            current,
+            restricted_basename=(
+                capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+            ),
+            summary_basename=(
+                capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+            ),
+        )
         production_validator = mock.Mock(return_value=current)
         with (
             mock.patch.object(
                 capacity,
-                "validate_production_dynamic_successor_capacity_capture",
+                "validate_dynamic_successor_capacity_capture",
                 production_validator,
             ),
         ):
-            observed = sequential._load_current_post_cleanup_capacity(run)
+            observed = sequential._load_current_r5e_r8_post_cleanup_capacity(
+                run
+            )
         assert observed.receipt_payload == current.receipt_payload
-        assert production_validator.call_args.kwargs[
-            "expected_governing_commit"
-        ] == GOVERNING_COMMIT
+        production_validator.assert_called_once_with(
+            mock.ANY,
+            validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+            expected_governing_commit=GOVERNING_COMMIT,
+        )
 
     stale = _capture(
         governing_commit=GOVERNING_COMMIT,
@@ -2995,10 +3375,19 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
     )
     with tempfile.TemporaryDirectory() as temporary:
         run = _synthetic_full_run(Path(temporary).resolve())
-        _write_r5e_post_cleanup_pair(run, stale)
+        _write_fixed_capture_pair(
+            run,
+            stale,
+            restricted_basename=(
+                capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+            ),
+            summary_basename=(
+                capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+            ),
+        )
         _expect_code(
-            "FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_STALE",
-            lambda: sequential._load_current_post_cleanup_capacity(run),
+            "FULL_SEQUENTIAL_CURRENT_CAPACITY_STALE",
+            lambda: sequential._load_current_r5e_r8_post_cleanup_capacity(run),
         )
 
     historical = _historical_event(_r5e_historical_failed_capture())
@@ -3016,7 +3405,16 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
     for expected_gain, post in (("CLEANUP", current), ("BOTH", combined)):
         with tempfile.TemporaryDirectory() as temporary:
             run = _production_role_run(Path(temporary).resolve())
-            _write_r5e_post_cleanup_pair(run, post)
+            _write_fixed_capture_pair(
+                run,
+                post,
+                restricted_basename=(
+                    capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+                ),
+                summary_basename=(
+                    capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+                ),
+            )
             retired = _completed_retirement_event(historical)
             with (
                 mock.patch.object(
@@ -3029,7 +3427,12 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
                 ),
                 mock.patch.object(
                     sequential,
-                    "_load_current_post_cleanup_capacity",
+                    "_load_historical_r5e_post_cleanup_capacity",
+                    return_value=_historical_event(post),
+                ),
+                mock.patch.object(
+                    sequential,
+                    "_load_current_r5e_r8_post_cleanup_capacity",
                     return_value=post,
                 ),
                 mock.patch.object(
@@ -3039,7 +3442,7 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
                 ),
             ):
                 admission = sequential._load_fixed_capacity_admission(run)
-            assert admission.evidence_role == "R5E_POST_CLEANUP"
+            assert admission.evidence_role == "R5E_R8_POST_CLEANUP"
             assert admission.capacity_gain_source == expected_gain
             assert admission.capture is post
             assert admission.raw_retirement_receipt_sha256 == (
@@ -3059,14 +3462,19 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
                 historical_loader,
             ),
             mock.patch.object(
-                sequential, "_load_current_post_cleanup_capacity"
+                sequential,
+                "_load_historical_r5e_post_cleanup_capacity",
+                return_value=_historical_event(current),
+            ),
+            mock.patch.object(
+                sequential, "_load_current_r5e_r8_post_cleanup_capacity"
             ) as current_loader,
             mock.patch.object(
                 sequential, "_load_completed_retirement_event"
             ) as event_loader,
         ):
             _expect_code(
-                "FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_INVALID",
+                "FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID",
                 lambda: sequential._load_fixed_capacity_admission(run),
             )
         historical_loader.assert_called_once_with()
@@ -3098,7 +3506,7 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
             run,
             capacity_receipt_sha256="a" * 64,
             dynamic_capacity_receipt_sha256=current_sha,
-            capacity_evidence_role="R5E_POST_CLEANUP",
+            capacity_evidence_role="R5E_R8_POST_CLEANUP",
             capacity_gain_source="CLEANUP",
             raw_retirement_status=sequential.RETIREMENT_EVENT_STATUS,
             raw_retirement_receipt_sha256=(
@@ -3108,6 +3516,7 @@ def test_r5e_r7_current_post_cleanup_is_fresh_and_claim_only() -> None:
         )
         assert claim["dynamic_capacity_receipt_sha256"] == current_sha
         assert claim["dynamic_capacity_receipt_sha256"] != historical_sha
+        assert claim["capacity_evidence_role"] == "R5E_R8_POST_CLEANUP"
         assert claim["raw_retirement_receipt_sha256"] == (
             sequential.RETIREMENT_EVENT_RECEIPT_SHA256
         )
@@ -3140,9 +3549,13 @@ def test_r5e_r7_post_cleanup_seal_reuses_one_probe_and_has_no_effects() -> None:
 
         def accept_current(
             value: capacity.DynamicSuccessorCapacityCapture,
-            **_kwargs: Any,
+            **kwargs: Any,
         ) -> capacity.DynamicSuccessorCapacityCapture:
             assert value is current
+            assert kwargs == {
+                "validation_context": capacity.LIVE_PRECLAIM_ADMISSION,
+                "expected_governing_commit": GOVERNING_COMMIT,
+            }
             return value
 
         with (
@@ -3151,6 +3564,11 @@ def test_r5e_r7_post_cleanup_seal_reuses_one_probe_and_has_no_effects() -> None:
                 sequential,
                 "_load_historical_r5e_r2_pre_action_capacity",
                 return_value=historical,
+            ),
+            mock.patch.object(
+                sequential,
+                "_load_historical_r5e_post_cleanup_capacity",
+                return_value=_historical_event(current),
             ),
             mock.patch.object(
                 sequential,
@@ -3164,7 +3582,7 @@ def test_r5e_r7_post_cleanup_seal_reuses_one_probe_and_has_no_effects() -> None:
             ) as probe,
             mock.patch.object(
                 capacity,
-                "validate_production_dynamic_successor_capacity_capture",
+                "validate_dynamic_successor_capacity_capture",
                 side_effect=accept_current,
             ),
             mock.patch.object(
@@ -3186,11 +3604,11 @@ def test_r5e_r7_post_cleanup_seal_reuses_one_probe_and_has_no_effects() -> None:
             ) as preflight,
         ):
             result = sequential.run_dynamic_successor_capacity_seal(
-                evidence_role="R5E_POST_CLEANUP",
+                evidence_role="R5E_R8_POST_CLEANUP",
                 dependencies=dependencies,
             )
         probe.assert_called_once()
-        preflight.assert_called_once()
+        preflight.assert_not_called()
         process.assert_not_called()
         forbidden_claim.assert_not_called()
         forbidden_science.assert_not_called()
@@ -3198,7 +3616,7 @@ def test_r5e_r7_post_cleanup_seal_reuses_one_probe_and_has_no_effects() -> None:
             if name != "environment_validator":
                 effect.assert_not_called()
         assert result["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
-        assert result["capacity_evidence_role"] == "R5E_POST_CLEANUP"
+        assert result["capacity_evidence_role"] == "R5E_R8_POST_CLEANUP"
         assert result["capacity_gain_source"] == "CLEANUP"
         assert result["raw_retirement_status"] == (
             sequential.RETIREMENT_EVENT_STATUS
@@ -3206,7 +3624,7 @@ def test_r5e_r7_post_cleanup_seal_reuses_one_probe_and_has_no_effects() -> None:
         assert result["raw_retirement_receipt_sha256"] == (
             sequential.RETIREMENT_EVENT_RECEIPT_SHA256
         )
-        assert result["integrated_no_body_preflight"] == "PASS"
+        assert result["integrated_no_body_preflight"] == "NOT_RUN"
         assert result["evidence_files_written"] == 2
         assert not run.attempt_root.exists()
         for key in capacity.DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS:

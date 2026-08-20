@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+from importlib.util import module_from_spec, spec_from_file_location
 import json
 import os
 from pathlib import Path
@@ -54,6 +55,9 @@ DYNAMIC_CAPACITY_ATTEMPT_SOURCE_BASENAME = (
     "full_dynamic_capacity_source.restricted.json"
 )
 ARRAY_RUNNER_PATH = SCRIPT_ROOT / "scc_run_lvef_c3_full_sequential.sh"
+EXECUTION_NODE_PROBE_RUNNER_PATH = (
+    SCRIPT_ROOT / "scc_run_lvef_c3_r8_execution_node_probe.sh"
+)
 STATE_MACHINE_PATH = REPOSITORY_ROOT / "configs/lvef_c3_state_machine_v2.json"
 RESUME_LEDGER_PATH = REPOSITORY_ROOT / "configs/lvef_c3_resume_ledger_v2.json"
 TASK_RE = re.compile(r"^(?:[1-9]|1[0-9])$")
@@ -75,6 +79,7 @@ _DYNAMIC_CAPTURE_REUSE_TOKEN = object()
 HISTORICAL_R5E_R2_PRE_ACTION_COMMIT = (
     "f201e22cce760402814be76e25899c0ba10bdfbd"
 )
+HISTORICAL_R5E_R2_PRE_ACTION_CAPTURED_AT_UTC = "2026-08-18T22:56:28Z"
 HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_BYTES = 12_267
 HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_SHA256 = (
     "b5a3340e9968633189f70d00a6593c39296d7b9dce20303bbe97671626b14b5e"
@@ -83,6 +88,19 @@ HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_BYTES = 3_084
 HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_SHA256 = (
     "72201eedc716aa5bf39da6bda76ea4614c34f3fe4edaa1db3a36454ed2b7ec5e"
 )
+HISTORICAL_R5E_POST_CLEANUP_COMMIT = (
+    "1fc48455492c989fc6bca549f2baa1aa9a82379c"
+)
+HISTORICAL_R5E_POST_CLEANUP_CAPTURED_AT_UTC = "2026-08-20T18:19:59Z"
+HISTORICAL_R5E_POST_CLEANUP_RECEIPT_BYTES = 12_242
+HISTORICAL_R5E_POST_CLEANUP_RECEIPT_SHA256 = (
+    "a840864bbf37c04c133626346b7e4e5f7f6521d87b36ba83eaf3439261c9e33f"
+)
+HISTORICAL_R5E_POST_CLEANUP_SUMMARY_BYTES = 3_050
+HISTORICAL_R5E_POST_CLEANUP_SUMMARY_SHA256 = (
+    "5a8453a5b6a417ac31d427416a7757945a754640d9e5d598416188d7b05298ae"
+)
+HISTORICAL_R5E_POST_CLEANUP_GAIN_SOURCE = "CLEANUP"
 RETIREMENT_EVENT_COMMIT = "ab5670f9db8d7ae06a43f3e5b10aa79e52edfb6b"
 RETIREMENT_EVENT_ARTIFACTS = (
     (
@@ -2309,7 +2327,9 @@ def _capacity_gain_source(
             if current_quota > historical_quota
             else "EXISTING_HEADROOM"
         )
-    if evidence_role != "R5E_POST_CLEANUP" or pre_cleanup_observation is None:
+    if evidence_role not in {
+        "R5E_POST_CLEANUP", "R5E_R8_POST_CLEANUP"
+    } or pre_cleanup_observation is None:
         _fail("FULL_SEQUENTIAL_CAPACITY_GAIN_SOURCE_INVALID")
     if pre_cleanup_observation.get("status") == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
         _fail("FULL_SEQUENTIAL_CAPACITY_GAIN_SOURCE_INVALID")
@@ -2339,23 +2359,62 @@ def _capacity_gain_source(
     return "BOTH"
 
 
+def _sealed_r5e_r8_gain_source(
+    observation: Mapping[str, Any],
+) -> str:
+    """Derive the claimable R8 gain solely from its sealed local receipt.
+
+    A production R8 admission rejects the ALLOCATION-only case before claim
+    materialization.  Among the two claimable values, the current observation
+    itself therefore closes the distinction: historical-quota headroom means
+    CLEANUP; otherwise the admitted result necessarily required BOTH.
+    """
+
+    if observation.get("status") != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+        _fail("FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH")
+    try:
+        cleanup_alone = _headroom_passes(
+            quota=capacity.EXPECTED_RESEARCH_QUOTA_KIB * 1024,
+            usage=int(observation["live_research_usage_bytes"]),
+            physical=int(
+                observation["live_research_filesystem_available_bytes"]
+            ),
+            file_slots=int(observation["remaining_file_slots"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH"
+        ) from exc
+    return "CLEANUP" if cleanup_alone else "BOTH"
+
+
 def _validate_capacity_admission(value: CapacityAdmission) -> None:
     if not isinstance(value, CapacityAdmission):
         _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
     if value.evidence_role not in {
         "R5B_HISTORICAL", "R5E_PRE_CLEANUP", "R5E_R2_PRE_ACTION",
-        "R5E_POST_CLEANUP",
+        "R5E_POST_CLEANUP", "R5E_R8_POST_CLEANUP",
     }:
         _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
     if value.capacity_gain_source not in {
         "ALLOCATION", "CLEANUP", "BOTH", "EXISTING_HEADROOM", "NONE"
     }:
         _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
-    if value.evidence_role == "R5E_POST_CLEANUP":
+    if value.evidence_role in {
+        "R5E_POST_CLEANUP", "R5E_R8_POST_CLEANUP"
+    }:
         if (
             value.raw_retirement_status
             != "PASS_OLDER_RAW_DUPLICATES_RETIRED"
             or SHA_RE.fullmatch(value.raw_retirement_receipt_sha256) is None
+            or (
+                value.evidence_role == "R5E_R8_POST_CLEANUP"
+                and (
+                    value.raw_retirement_receipt_sha256
+                    != RETIREMENT_EVENT_RECEIPT_SHA256
+                    or value.capacity_gain_source not in {"CLEANUP", "BOTH"}
+                )
+            )
         ):
             _fail("FULL_SEQUENTIAL_CAPACITY_ADMISSION_INVALID")
     elif value.evidence_role == "R5E_R2_PRE_ACTION":
@@ -2382,6 +2441,7 @@ def validate_installation() -> Mapping[str, Any]:
     required = (
         Path(__file__).resolve(),
         ARRAY_RUNNER_PATH,
+        EXECUTION_NODE_PROBE_RUNNER_PATH,
         SCRIPT_ROOT / "scc_run_lvef_c3_full_finalizer.sh",
         SCRIPT_ROOT / "scc_submit_lvef_c3_full_sequential.sh",
         SCRIPT_ROOT / "lvef_c3_orchestration_core.py",
@@ -2523,13 +2583,10 @@ def preflight_full(
         ):
             _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID")
         if not dependency.test_only_synthetic_full_scope:
-            observed_capture = (
-                capacity.validate_production_dynamic_successor_capacity_capture(
-                    observed_capture,
-                    expected_governing_commit=(
-                        run.authority.governing_commit
-                    ),
-                )
+            observed_capture = capacity.validate_dynamic_successor_capacity_capture(
+                observed_capture,
+                validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+                expected_governing_commit=run.authority.governing_commit,
             )
         observed_capacity = dict(observed_capture.observation)
         capacity.validate_dynamic_successor_capacity_observation(
@@ -2601,6 +2658,120 @@ def preflight_full(
     }
 
 
+def _load_r5e_r8_integrated_module(
+    module_name: str, relative_path: str
+) -> Any:
+    """Load one fixed dependency-light acceptance module from this checkout."""
+
+    path = REPOSITORY_ROOT / relative_path
+    if path.is_symlink() or not path.is_file():
+        _fail("FULL_SEQUENTIAL_INTEGRATED_NO_BODY_ACCEPTANCE_INVALID")
+    specification = spec_from_file_location(module_name, path)
+    if specification is None or specification.loader is None:
+        _fail("FULL_SEQUENTIAL_INTEGRATED_NO_BODY_ACCEPTANCE_INVALID")
+    module = module_from_spec(specification)
+    sys.modules[module_name] = module
+    try:
+        specification.loader.exec_module(module)
+    except BaseException as exc:
+        sys.modules.pop(module_name, None)
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_INTEGRATED_NO_BODY_ACCEPTANCE_INVALID"
+        ) from exc
+    return module
+
+
+def _run_r5e_r8_integrated_no_body_acceptance() -> Mapping[str, Any]:
+    """Run the exact synthetic gates, then one live no-body preflight.
+
+    This is intentionally the implementation behind the scheduler's sole
+    ``--preflight-only`` call.  Capacity sealing does not call it, and claim
+    creation does not repeat it.
+    """
+
+    # Never execute checkout-provided acceptance code before proving that the
+    # branch, HEAD, cached origin, and tracked worktree are the exact current
+    # authority.  ``preflight_full`` repeats this gate after the synthetic
+    # checks to close the intervening TOCTOU window before live admission.
+    _current_commit()
+    canonical_name = "lvef_c3_full_sequential"
+    previous_module = sys.modules.get(canonical_name)
+    sys.modules[canonical_name] = sys.modules[__name__]
+    try:
+        focused = _load_r5e_r8_integrated_module(
+            "lvef_c3_r8_integrated_technical",
+            "tests/test_lvef_c3_object_technical_disposition.py",
+        )
+        cohort = _load_r5e_r8_integrated_module(
+            "lvef_c3_r8_integrated_cohort",
+            "tests/test_lvef_c3_production_stages_and_finalizer.py",
+        )
+        checks = (
+            (
+                focused,
+                "test_r5e_v2_policy_is_closed_and_v1_policy_remains_byte_valid",
+            ),
+            (
+                focused,
+                "test_case_02_r4d2c_is_bound_provenance_but_unreachable_to_classifier",
+            ),
+            (
+                focused,
+                "test_case_01_exact_batch3_pattern_is_one_disposition_and_one_affected_study",
+            ),
+            (
+                cohort,
+                "test_production_finalizer_reconciles_exact_cohort_and_five_no_cine",
+            ),
+        )
+        for module, name in checks:
+            check = getattr(module, name, None)
+            if not callable(check):
+                _fail("FULL_SEQUENTIAL_INTEGRATED_NO_BODY_ACCEPTANCE_INVALID")
+            check()
+        result = preflight_full()
+    except FullSequentialError:
+        raise
+    except BaseException as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_INTEGRATED_NO_BODY_ACCEPTANCE_INVALID"
+        ) from exc
+    finally:
+        if previous_module is None:
+            sys.modules.pop(canonical_name, None)
+        else:
+            sys.modules[canonical_name] = previous_module
+    if (
+        result.get("status") != "PASS_FULL_C3_NO_BODY_PREFLIGHT"
+        or result.get("capacity_evidence_role") != "R5E_R8_POST_CLEANUP"
+        or result.get("capacity_gain_source") not in {"CLEANUP", "BOTH"}
+        or result.get("raw_retirement_status") != RETIREMENT_EVENT_STATUS
+        or result.get("raw_retirement_receipt_sha256")
+        != RETIREMENT_EVENT_RECEIPT_SHA256
+        or any(
+            result.get(key) != 0
+            for key in (
+                "bucket_listing_requests",
+                "cloud_requests",
+                "qsub_submissions",
+                "dicom_body_reads",
+                "gpu_executions",
+                "writes_performed",
+            )
+        )
+    ):
+        _fail("FULL_SEQUENTIAL_INTEGRATED_NO_BODY_ACCEPTANCE_INVALID")
+    run = build_full_run()
+    if (
+        os.path.lexists(run.attempt_root)
+        or os.path.lexists(
+            run.attempt_root / "full_submission_claim.restricted.json"
+        )
+    ):
+        _fail("FULL_SEQUENTIAL_INTEGRATED_NO_BODY_ACCEPTANCE_INVALID")
+    return result
+
+
 def run_dynamic_successor_capacity_seal(
     *,
     capture: capacity.DynamicSuccessorCapacityCapture | None = None,
@@ -2626,6 +2797,10 @@ def run_dynamic_successor_capacity_seal(
         "R5E_POST_CLEANUP": (
             capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
             capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        ),
+        "R5E_R8_POST_CLEANUP": (
+            capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
         ),
     }
     if evidence_role not in evidence_names:
@@ -2681,11 +2856,22 @@ def run_dynamic_successor_capacity_seal(
     retirement_status = "NOT_APPLICABLE_CLEANUP_SKIPPED"
     retirement_sha = "NOT_APPLICABLE_CLEANUP_SKIPPED"
     pre_cleanup_observation: Mapping[str, Any] | None = None
-    if evidence_role == "R5E_POST_CLEANUP":
+    if evidence_role in {"R5E_POST_CLEANUP", "R5E_R8_POST_CLEANUP"}:
         # The former generic ``require_pass=False`` path still imposed the
         # current commit and live clock on this immutable historical event.
         historical = _load_historical_r5e_r2_pre_action_capacity()
         retired = _load_completed_retirement_event()
+        if evidence_role == "R5E_R8_POST_CLEANUP":
+            historical_post = _load_historical_r5e_post_cleanup_capacity()
+            if (
+                _capacity_gain_source(
+                    historical_post.capture.observation,
+                    evidence_role="R5E_POST_CLEANUP",
+                    pre_cleanup_observation=historical.capture.observation,
+                )
+                != HISTORICAL_R5E_POST_CLEANUP_GAIN_SOURCE
+            ):
+                _fail("FULL_SEQUENTIAL_HISTORICAL_EVENT_SCHEMA_INVALID")
         if retired["pre_cleanup_capacity_authority"] != historical.authority:
             _fail("FULL_SEQUENTIAL_RETIREMENT_STATE_INVALID")
         retirement_status = str(retired["status"])
@@ -2707,20 +2893,23 @@ def run_dynamic_successor_capacity_seal(
             observed_capture, capacity.DynamicSuccessorCapacityCapture
         ):
             _fail("FULL_SEQUENTIAL_SUCCESSOR_CAPACITY_SOURCE_INVALID")
-        if not dependency.test_only_synthetic_full_scope:
-            observed_capture = (
-                capacity.validate_production_dynamic_successor_capacity_capture(
-                    observed_capture,
-                    expected_governing_commit=(
-                        run.authority.governing_commit
-                    ),
-                )
-            )
         observation = capacity.validate_dynamic_successor_capacity_observation(
             observed_capture.observation,
             expected_governing_commit=run.authority.governing_commit,
             expected_receipt_payload=observed_capture.receipt_payload,
         )
+        # A blocked observation is still publishable evidence, but it is not
+        # live admission authority.  The closed LIVE context is PASS-only.
+        if (
+            observation["status"]
+            == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+            and not dependency.test_only_synthetic_full_scope
+        ):
+            observed_capture = capacity.validate_dynamic_successor_capacity_capture(
+                observed_capture,
+                validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+                expected_governing_commit=run.authority.governing_commit,
+            )
         if (
             observation["active_extraction_caches"]
             != cache_inventory.active
@@ -2757,6 +2946,13 @@ def run_dynamic_successor_capacity_seal(
             safe_export_policy_path=DYNAMIC_CAPACITY_SAFE_EXPORT_POLICY_PATH,
         )
     except capacity.PostReallocationCapacityError as exc:
+        if evidence_role == "R5E_R8_POST_CLEANUP":
+            code = (
+                "FULL_SEQUENTIAL_CURRENT_CAPACITY_STALE"
+                if exc.code == "DYNAMIC_CAPACITY_RECEIPT_STALE"
+                else "FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID"
+            )
+            raise FullSequentialError(code) from exc
         if evidence_role == "R5E_POST_CLEANUP":
             code = (
                 "FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_STALE"
@@ -2779,8 +2975,15 @@ def run_dynamic_successor_capacity_seal(
         raw_retirement_status=retirement_status,
         raw_retirement_receipt_sha256=retirement_sha,
     )
-    _validate_capacity_admission(admission)
-    if observation["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+    if (
+        evidence_role != "R5E_R8_POST_CLEANUP"
+        or observation["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+    ):
+        _validate_capacity_admission(admission)
+    if (
+        observation["status"] == capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+        and evidence_role != "R5E_R8_POST_CLEANUP"
+    ):
         integrated = preflight_full(
             dependencies=replace(dependency, capacity_probe=None),
             _validated_capacity_admission=admission,
@@ -2833,6 +3036,14 @@ def run_dynamic_successor_capacity_seal(
         "writes_performed_by_observation": 0,
         "evidence_files_written": 2,
     }
+
+
+def run_r5e_r8_post_cleanup_capacity_seal() -> Mapping[str, Any]:
+    """Publish the sole append-only R8 current-admission pair."""
+
+    return run_dynamic_successor_capacity_seal(
+        evidence_role="R5E_R8_POST_CLEANUP"
+    )
 
 
 def format_dynamic_successor_capacity_seal_report(
@@ -3286,17 +3497,27 @@ def _expected_submission_claim(
         _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
     if capacity_evidence_role not in {
         "R5B_HISTORICAL", "R5E_R2_PRE_ACTION",
-        "R5E_POST_CLEANUP",
+        "R5E_POST_CLEANUP", "R5E_R8_POST_CLEANUP",
     } or capacity_gain_source not in {
         "ALLOCATION", "CLEANUP", "BOTH", "EXISTING_HEADROOM"
     }:
         _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
-    if production_contract and capacity_evidence_role != "R5E_POST_CLEANUP":
+    if production_contract and (
+        capacity_evidence_role != "R5E_R8_POST_CLEANUP"
+        or capacity_gain_source not in {"CLEANUP", "BOTH"}
+    ):
         _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
-    if capacity_evidence_role == "R5E_POST_CLEANUP":
+    if capacity_evidence_role in {
+        "R5E_POST_CLEANUP", "R5E_R8_POST_CLEANUP"
+    }:
         if (
             raw_retirement_status != "PASS_OLDER_RAW_DUPLICATES_RETIRED"
             or SHA_RE.fullmatch(raw_retirement_receipt_sha256) is None
+            or (
+                capacity_evidence_role == "R5E_R8_POST_CLEANUP"
+                and raw_retirement_receipt_sha256
+                != RETIREMENT_EVENT_RECEIPT_SHA256
+            )
         ):
             _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
     elif capacity_evidence_role == "R5E_R2_PRE_ACTION":
@@ -3386,14 +3607,6 @@ def _load_bound_submission_environment_sha256(
                 ),
             )
         )
-        captured_time = datetime.fromisoformat(
-            dynamic_value["captured_at_utc"].replace("Z", "+00:00")
-        )
-        capacity.validate_dynamic_successor_capacity_receipt(
-            dynamic_value,
-            expected_governing_commit=run.authority.governing_commit,
-            now_utc=captured_time,
-        )
         dynamic_core = dynamic_value["observation_authority"]
         dynamic_observation = {
             **dynamic_core,
@@ -3405,12 +3618,17 @@ def _load_bound_submission_environment_sha256(
                 dynamic_payload
             ).hexdigest(),
         }
-        capacity.validate_dynamic_successor_capacity_observation(
-            dynamic_observation,
+        sealed_local = capacity.validate_dynamic_successor_capacity_capture(
+            capacity.DynamicSuccessorCapacityCapture(
+                receipt=dict(dynamic_value),
+                receipt_payload=dynamic_payload,
+                observation=dynamic_observation,
+            ),
+            validation_context=capacity.SEALED_EXECUTION_REPLAY,
             expected_governing_commit=run.authority.governing_commit,
-            expected_receipt_payload=dynamic_payload,
-            now_utc=captured_time,
+            expected_captured_at_utc=dynamic_value["captured_at_utc"],
         )
+        dynamic_observation = sealed_local.observation
         if (
             dynamic_observation["status"]
             != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
@@ -3424,7 +3642,7 @@ def _load_bound_submission_environment_sha256(
             raise ValueError("dynamic capacity binding mismatch")
     except Exception as exc:
         raise FullSequentialError(
-            "FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID"
+            "FULL_SEQUENTIAL_ATTEMPT_LOCAL_CAPACITY_MISMATCH"
         ) from exc
     try:
         claim, _ = _load_owner_private_json(
@@ -3432,13 +3650,13 @@ def _load_bound_submission_environment_sha256(
         )
     except Exception as exc:
         raise FullSequentialError(
-            "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+            "FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH"
         ) from exc
     if set(claim) != FRESH_FULL_SUBMISSION_CLAIM_V3_KEYS:
-        _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+        _fail("FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH")
     observed = claim.get("qsub_environment_sha256")
     if not isinstance(observed, str) or SHA_RE.fullmatch(observed) is None:
-        _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+        _fail("FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH")
     if expected_qsub_environment_sha256 is not None:
         try:
             expected_binding = _require_qsub_environment_sha256(
@@ -3446,10 +3664,10 @@ def _load_bound_submission_environment_sha256(
             )
         except FullSequentialError as exc:
             raise FullSequentialError(
-                "FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID"
+                "FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH"
             ) from exc
         if observed != expected_binding:
-            _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+            _fail("FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH")
     capacity_evidence_role = claim.get("capacity_evidence_role")
     capacity_gain_source = claim.get("capacity_gain_source")
     raw_retirement_status = claim.get("raw_retirement_status")
@@ -3461,29 +3679,30 @@ def _load_bound_submission_environment_sha256(
             run.requirements, "contract_id", core.TEST_ONLY_FULL_CONTRACT_ID
         )
         != core.TEST_ONLY_FULL_CONTRACT_ID
-        and capacity_evidence_role != "R5E_POST_CLEANUP"
+        and capacity_evidence_role != "R5E_R8_POST_CLEANUP"
     ):
-        _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+        _fail("FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH")
     if (
-        getattr(
-            run.requirements, "contract_id", core.TEST_ONLY_FULL_CONTRACT_ID
+        claim.get("capacity_receipt_sha256")
+        != hashlib.sha256(capacity_payload).hexdigest()
+        or claim.get("dynamic_capacity_receipt_sha256")
+        != hashlib.sha256(dynamic_payload).hexdigest()
+        or capacity_value.get("source_dynamic_receipt_sha256")
+        != claim.get("dynamic_capacity_receipt_sha256")
+        or capacity_value.get("source_dynamic_receipt_bytes")
+        != len(dynamic_payload)
+        or (
+            capacity_evidence_role == "R5E_R8_POST_CLEANUP"
+            and (
+                capacity_gain_source
+                != _sealed_r5e_r8_gain_source(dynamic_observation)
+                or raw_retirement_status != RETIREMENT_EVENT_STATUS
+                or raw_retirement_receipt_sha256
+                != RETIREMENT_EVENT_RECEIPT_SHA256
+            )
         )
-        != core.TEST_ONLY_FULL_CONTRACT_ID
     ):
-        fixed_admission = _load_fixed_capacity_admission(
-            run,
-            revalidate_retirement_state=False,
-            require_current_freshness=False,
-        )
-        if (
-            fixed_admission.capture.receipt_payload != dynamic_payload
-            or fixed_admission.evidence_role != capacity_evidence_role
-            or fixed_admission.capacity_gain_source != capacity_gain_source
-            or fixed_admission.raw_retirement_status != raw_retirement_status
-            or fixed_admission.raw_retirement_receipt_sha256
-            != raw_retirement_receipt_sha256
-        ):
-            _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
+        _fail("FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH")
     expected_claim = _expected_submission_claim(
         run,
         capacity_receipt_sha256=hashlib.sha256(capacity_payload).hexdigest(),
@@ -3497,22 +3716,8 @@ def _load_bound_submission_environment_sha256(
         qsub_environment_sha256=observed,
     )
     if claim != expected_claim:
-        _fail("FULL_SEQUENTIAL_PREPARED_CLAIM_INVALID")
+        _fail("FULL_SEQUENTIAL_CLAIM_CAPACITY_BINDING_MISMATCH")
     return observed
-
-
-def _historical_capture_time(value: object) -> datetime:
-    if not isinstance(value, str):
-        _fail("FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_CAPACITY_INVALID")
-    try:
-        captured_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise FullSequentialError(
-            "FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_CAPACITY_INVALID"
-        ) from exc
-    if captured_at.tzinfo is None or captured_at.utcoffset() is None:
-        _fail("FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_CAPACITY_INVALID")
-    return captured_at
 
 
 def _fixed_historical_pre_cleanup_capacity_authority() -> dict[str, Any]:
@@ -3531,19 +3736,23 @@ def _fixed_historical_pre_cleanup_capacity_authority() -> dict[str, Any]:
     }
 
 
-def _load_historical_r5e_r2_pre_action_capacity(
+def _load_fixed_historical_capacity_event(
+    *,
+    receipt_basename: str,
+    summary_basename: str,
+    receipt_bytes: int,
+    receipt_sha256: str,
+    summary_bytes: int,
+    summary_sha256: str,
+    governing_commit: str,
+    captured_at_utc: str,
+    allowed_statuses: frozenset[str],
 ) -> HistoricalCapacityEvent:
-    """Reopen the fixed failed f201 capacity event at its event time."""
+    """Load one internally fixed event without consulting live node state."""
 
     owner_private = PRODUCTION_ROOT / "owner_private"
-    receipt_path = (
-        owner_private
-        / capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
-    )
-    summary_path = (
-        owner_private
-        / capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
-    )
+    receipt_path = owner_private / receipt_basename
+    summary_path = owner_private / summary_basename
     try:
         _validate_private_directory(owner_private)
         receipt_payload = capacity._read_dynamic_owner_private_regular(
@@ -3554,60 +3763,70 @@ def _load_historical_r5e_r2_pre_action_capacity(
         )
     except Exception as exc:
         raise FullSequentialError(
-            "FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_CAPACITY_INVALID"
+            "FULL_SEQUENTIAL_HISTORICAL_EVENT_FILE_INVALID"
         ) from exc
     if (
-        len(receipt_payload)
-        != HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_BYTES
-        or len(summary_payload)
-        != HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_BYTES
-        or hashlib.sha256(receipt_payload).hexdigest()
-        != HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_SHA256
-        or hashlib.sha256(summary_payload).hexdigest()
-        != HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_SHA256
+        len(receipt_payload) != receipt_bytes
+        or len(summary_payload) != summary_bytes
+        or hashlib.sha256(receipt_payload).hexdigest() != receipt_sha256
+        or hashlib.sha256(summary_payload).hexdigest() != summary_sha256
     ):
-        _fail("FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_CAPACITY_HASH_MISMATCH")
+        _fail("FULL_SEQUENTIAL_HISTORICAL_EVENT_HASH_MISMATCH")
     try:
         receipt_value = json.loads(
             receipt_payload.decode("utf-8"),
             object_pairs_hook=_strict_json_pairs,
         )
-        if not isinstance(receipt_value, Mapping):
-            raise ValueError("historical receipt is not a mapping")
-        historical_now = _historical_capture_time(
-            receipt_value.get("captured_at_utc")
-        )
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_HISTORICAL_EVENT_SCHEMA_INVALID"
+        ) from exc
+    if not isinstance(receipt_value, Mapping):
+        _fail("FULL_SEQUENTIAL_HISTORICAL_EVENT_SCHEMA_INVALID")
+    if (
+        receipt_value.get("governing_commit") != governing_commit
+        or receipt_value.get("captured_at_utc") != captured_at_utc
+    ):
+        _fail("FULL_SEQUENTIAL_HISTORICAL_EVENT_COMMIT_INVALID")
+    event_time = datetime.fromisoformat(captured_at_utc.replace("Z", "+00:00"))
+    try:
         captured = capacity.load_dynamic_successor_capacity_capture(
             restricted_receipt_path=receipt_path,
             aggregate_summary_path=summary_path,
-            expected_governing_commit=(
-                HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
-            ),
-            now_utc=historical_now,
+            expected_governing_commit=governing_commit,
+            now_utc=event_time,
         )
-        captured = (
-            capacity.validate_production_dynamic_successor_capacity_capture(
-                captured,
-                expected_governing_commit=(
-                    HISTORICAL_R5E_R2_PRE_ACTION_COMMIT
-                ),
-                now_utc=historical_now,
+        captured = capacity.validate_dynamic_successor_capacity_capture(
+            captured,
+            validation_context=capacity.SEALED_EXECUTION_REPLAY,
+            expected_governing_commit=governing_commit,
+            expected_captured_at_utc=captured_at_utc,
+        )
+    except capacity.PostReallocationCapacityError as exc:
+        code = (
+            "FULL_SEQUENTIAL_EXECUTION_REPLAY_LIVE_NODE_DEPENDENCY"
+            if exc.code == "DYNAMIC_CAPACITY_VALIDATION_CONTEXT_INVALID"
+            else (
+                "FULL_SEQUENTIAL_HISTORICAL_EVENT_COMMIT_INVALID"
+                if exc.code == "DYNAMIC_CAPACITY_CAPTURE_TIME_MISMATCH"
+                else (
+                    "FULL_SEQUENTIAL_HISTORICAL_EVENT_HASH_MISMATCH"
+                    if exc.code == "DYNAMIC_CAPACITY_RECEIPT_HASH_MISMATCH"
+                    else "FULL_SEQUENTIAL_HISTORICAL_EVENT_SCHEMA_INVALID"
+                )
             )
         )
-        if (
-            captured.receipt_payload != receipt_payload
-            or capacity._canonical(captured.observation) != summary_payload
-            or captured.observation.get("status")
-            not in {
-                capacity.DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING,
-                capacity.DYNAMIC_SUCCESSOR_STATUS_BLOCKED,
-            }
-        ):
-            raise ValueError("historical capacity event result changed")
+        raise FullSequentialError(code) from exc
     except Exception as exc:
         raise FullSequentialError(
-            "FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_CAPACITY_INVALID"
+            "FULL_SEQUENTIAL_HISTORICAL_EVENT_SCHEMA_INVALID"
         ) from exc
+    if (
+        captured.receipt_payload != receipt_payload
+        or capacity._canonical(captured.observation) != summary_payload
+        or captured.observation.get("status") not in allowed_statuses
+    ):
+        _fail("FULL_SEQUENTIAL_HISTORICAL_EVENT_SCHEMA_INVALID")
     authority = {
         "status": captured.observation["status"],
         "receipt_basename": receipt_path.name,
@@ -3618,6 +3837,47 @@ def _load_historical_r5e_r2_pre_action_capacity(
         "summary_sha256": hashlib.sha256(summary_payload).hexdigest(),
     }
     return HistoricalCapacityEvent(capture=captured, authority=authority)
+
+
+def _load_historical_r5e_r2_pre_action_capacity(
+) -> HistoricalCapacityEvent:
+    """Reopen the exact f201 cleanup-provenance event at event time."""
+
+    return _load_fixed_historical_capacity_event(
+        receipt_basename=(
+            capacity.R5E_R2_PRE_ACTION_RESTRICTED_RECEIPT_BASENAME
+        ),
+        summary_basename=(
+            capacity.R5E_R2_PRE_ACTION_AGGREGATE_SUMMARY_BASENAME
+        ),
+        receipt_bytes=HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_BYTES,
+        receipt_sha256=HISTORICAL_R5E_R2_PRE_ACTION_RECEIPT_SHA256,
+        summary_bytes=HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_BYTES,
+        summary_sha256=HISTORICAL_R5E_R2_PRE_ACTION_SUMMARY_SHA256,
+        governing_commit=HISTORICAL_R5E_R2_PRE_ACTION_COMMIT,
+        captured_at_utc=HISTORICAL_R5E_R2_PRE_ACTION_CAPTURED_AT_UTC,
+        allowed_statuses=frozenset({
+            capacity.DYNAMIC_SUCCESSOR_STATUS_ALLOCATION_PENDING,
+            capacity.DYNAMIC_SUCCESSOR_STATUS_BLOCKED,
+        }),
+    )
+
+
+def _load_historical_r5e_post_cleanup_capacity(
+) -> HistoricalCapacityEvent:
+    """Reopen the exact 1fc launch-capacity event as provenance only."""
+
+    return _load_fixed_historical_capacity_event(
+        receipt_basename=capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+        summary_basename=capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+        receipt_bytes=HISTORICAL_R5E_POST_CLEANUP_RECEIPT_BYTES,
+        receipt_sha256=HISTORICAL_R5E_POST_CLEANUP_RECEIPT_SHA256,
+        summary_bytes=HISTORICAL_R5E_POST_CLEANUP_SUMMARY_BYTES,
+        summary_sha256=HISTORICAL_R5E_POST_CLEANUP_SUMMARY_SHA256,
+        governing_commit=HISTORICAL_R5E_POST_CLEANUP_COMMIT,
+        captured_at_utc=HISTORICAL_R5E_POST_CLEANUP_CAPTURED_AT_UTC,
+        allowed_statuses=frozenset({capacity.DYNAMIC_SUCCESSOR_STATUS_PASS}),
+    )
 
 
 def _retirement_event_artifact_payloads() -> Mapping[str, bytes]:
@@ -3711,54 +3971,111 @@ def _require_retirement_event_git_authority() -> str:
     return current_commit
 
 
-def _load_completed_retirement_event_common(
-    *, revalidate_retained_state: bool
-) -> Mapping[str, Any]:
+def _load_completed_retirement_event_common() -> Mapping[str, Any]:
     _require_retirement_event_git_authority()
-    _retirement_event_artifact_payloads()
+    payloads = _retirement_event_artifact_payloads()
     historical_authority = (
         _fixed_historical_pre_cleanup_capacity_authority()
     )
     try:
         import retire_lvef_c3_older_raw_duplicates as older_raw
 
-        validator = (
-            older_raw.validate_retired_state
-            if revalidate_retained_state
-            else older_raw.validate_retirement_receipt_authority
+        manifest_payload = payloads[RETIREMENT_EVENT_ARTIFACTS[0][0]]
+        receipt_payload = payloads[RETIREMENT_EVENT_ARTIFACTS[1][0]]
+        summary_payload = payloads[RETIREMENT_EVENT_ARTIFACTS[2][0]]
+        manifest = json.loads(
+            manifest_payload.decode("utf-8"),
+            object_pairs_hook=_strict_json_pairs,
         )
-        retired = validator(
-            expected_governing_commit=RETIREMENT_EVENT_COMMIT
+        receipt = json.loads(
+            receipt_payload.decode("utf-8"),
+            object_pairs_hook=_strict_json_pairs,
         )
+        summary = json.loads(
+            summary_payload.decode("utf-8"),
+            object_pairs_hook=_strict_json_pairs,
+        )
+        if not all(
+            isinstance(value, Mapping)
+            for value in (manifest, receipt, summary)
+        ):
+            raise ValueError("retirement event artifact is not a mapping")
+        # These raw-retirement helpers validate only the immutable payloads;
+        # unlike the public replay entry points they do not reopen the f201
+        # capacity event against this execution node.
+        older_raw._validate_manifest(manifest)
+        older_raw._validate_receipt(
+            receipt, manifest_payload=manifest_payload
+        )
+        expected_summary = older_raw._summary_from_receipt(
+            receipt, receipt_payload=receipt_payload
+        )
+        if (
+            summary != expected_summary
+            or summary_payload != older_raw._canonical(expected_summary)
+        ):
+            raise ValueError("retirement summary binding changed")
     except Exception as exc:
         raise FullSequentialError(
             "FULL_SEQUENTIAL_RETIREMENT_STATE_INVALID"
         ) from exc
     if (
-        retired.get("status") != RETIREMENT_EVENT_STATUS
-        or retired.get("receipt_basename")
-        != RETIREMENT_EVENT_ARTIFACTS[1][0]
-        or retired.get("receipt_bytes")
-        != RETIREMENT_EVENT_ARTIFACTS[1][1]
-        or retired.get("receipt_sha256")
-        != RETIREMENT_EVENT_RECEIPT_SHA256
-        or retired.get("actual_deleted_files")
-        != RETIREMENT_EVENT_DELETED_FILES
-        or retired.get("actual_deleted_bytes")
-        != RETIREMENT_EVENT_DELETED_BYTES
-        or retired.get("pre_cleanup_capacity_authority")
+        manifest.get("governing_commit") != RETIREMENT_EVENT_COMMIT
+        or receipt.get("governing_commit") != RETIREMENT_EVENT_COMMIT
+        or receipt.get("status") != RETIREMENT_EVENT_STATUS
+        or receipt.get("actual_deleted_files") != RETIREMENT_EVENT_DELETED_FILES
+        or receipt.get("actual_deleted_bytes") != RETIREMENT_EVENT_DELETED_BYTES
+        or manifest.get("pre_cleanup_capacity_authority")
         != historical_authority
     ):
         _fail("FULL_SEQUENTIAL_RETIREMENT_STATE_INVALID")
+    diagnostics = manifest["diagnostic_evidence_authority"]
+    retired = {
+        "status": receipt["status"],
+        "receipt_basename": RETIREMENT_EVENT_ARTIFACTS[1][0],
+        "receipt_bytes": len(receipt_payload),
+        "receipt_sha256": hashlib.sha256(receipt_payload).hexdigest(),
+        "actual_deleted_files": receipt["actual_deleted_files"],
+        "actual_deleted_bytes": receipt["actual_deleted_bytes"],
+        "auxiliary_receipt_files": manifest[
+            "older_receipt_tree_authority"
+        ]["auxiliary_receipt_files"],
+        "auxiliary_receipt_bytes": manifest[
+            "older_receipt_tree_authority"
+        ]["auxiliary_receipt_bytes"],
+        "retained_file_metadata_sha256": receipt[
+            "retained_file_metadata_sha256"
+        ],
+        "retained_directory_topology_sha256": receipt[
+            "retained_directory_topology_sha256"
+        ],
+        "retained_role_inventory_sha256": receipt[
+            "retained_role_inventory_sha256"
+        ],
+        "retained_control_content_sha256": receipt[
+            "retained_control_content_sha256"
+        ],
+        "diagnostic_evidence_authority_sha256": receipt[
+            "diagnostic_evidence_authority_sha256"
+        ],
+        "diagnostic_root_count": diagnostics["diagnostic_root_count"],
+        "diagnostic_file_count": diagnostics["diagnostic_file_count"],
+        "diagnostic_directory_count": diagnostics[
+            "diagnostic_directory_count"
+        ],
+        "diagnostic_total_bytes": diagnostics["diagnostic_total_bytes"],
+        "diagnostics_retained": diagnostics["diagnostics_retained"],
+        "diagnostic_body_reads": diagnostics["body_reads"],
+        "pre_cleanup_capacity_authority": dict(
+            manifest["pre_cleanup_capacity_authority"]
+        ),
+    }
     retained_state_authority = {
         key: value
         for key, value in retired.items()
         if key
         not in {
-            "status",
-            "receipt_basename",
-            "receipt_bytes",
-            "receipt_sha256",
+            "status", "receipt_basename", "receipt_bytes", "receipt_sha256",
             "pre_cleanup_capacity_authority",
         }
     }
@@ -3771,18 +4088,14 @@ def _load_completed_retirement_event_common(
 
 
 def _load_completed_retirement_event() -> Mapping[str, Any]:
-    return _load_completed_retirement_event_common(
-        revalidate_retained_state=True
-    )
+    return _load_completed_retirement_event_common()
 
 
 def _load_completed_retirement_receipt_event() -> Mapping[str, Any]:
-    return _load_completed_retirement_event_common(
-        revalidate_retained_state=False
-    )
+    return _load_completed_retirement_event_common()
 
 
-def _load_capacity_pair(
+def _load_test_only_capacity_pair(
     run: FullRun,
     *,
     restricted_basename: str,
@@ -3790,7 +4103,7 @@ def _load_capacity_pair(
     require_pass: bool = True,
     now_utc: datetime | None = None,
 ) -> capacity.DynamicSuccessorCapacityCapture:
-    if not require_pass and (
+    if (
         getattr(
             getattr(run, "requirements", None),
             "contract_id",
@@ -3798,7 +4111,7 @@ def _load_capacity_pair(
         )
         != core.TEST_ONLY_FULL_CONTRACT_ID
     ):
-        _fail("FULL_SEQUENTIAL_HISTORICAL_PRE_CLEANUP_CAPACITY_INVALID")
+        _fail("FULL_SEQUENTIAL_SYNTHETIC_CAPACITY_NOT_AUTHORIZED")
     owner_private = run.production_root / "owner_private"
     _validate_private_directory(owner_private)
     try:
@@ -3817,69 +4130,77 @@ def _load_capacity_pair(
             != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
         ):
             _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_NOT_PASS")
-        captured = (
-            capacity.validate_production_dynamic_successor_capacity_capture(
-                captured,
-                expected_governing_commit=run.authority.governing_commit,
-                now_utc=now_utc,
-            )
+        captured = capacity.validate_production_dynamic_successor_capacity_capture(
+            captured,
+            expected_governing_commit=run.authority.governing_commit,
+            now_utc=now_utc,
         )
     except capacity.PostReallocationCapacityError as exc:
         raise FullSequentialError(exc.code) from exc
     return captured
 
 
-def _load_current_post_cleanup_capacity(
-    run: FullRun, *, require_freshness: bool = True
+def _load_current_r5e_r8_post_cleanup_capacity(
+    run: FullRun,
 ) -> capacity.DynamicSuccessorCapacityCapture:
-    now_utc: datetime | None = None
-    if not require_freshness:
-        path = (
-            run.production_root
-            / "owner_private"
-            / capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME
-        )
-        try:
-            receipt, _payload = (
-                capacity.load_dynamic_successor_capacity_receipt_payload(
-                    path,
-                    expected_governing_commit=(
-                        run.authority.governing_commit
-                    ),
-                )
-            )
-            now_utc = _historical_capture_time(
-                receipt.get("captured_at_utc")
-            )
-        except Exception as exc:
-            raise FullSequentialError(
-                "FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_INVALID"
-            ) from exc
+    """Load the sole current R8 pair in strict live-admission context."""
+
+    owner_private = run.production_root / "owner_private"
+    receipt_path = (
+        owner_private
+        / capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME
+    )
+    summary_path = (
+        owner_private
+        / capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME
+    )
     try:
-        return _load_capacity_pair(
-            run,
-            restricted_basename=(
-                capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME
-            ),
-            summary_basename=(
-                capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME
-            ),
-            now_utc=now_utc,
+        _validate_private_directory(owner_private)
+        present = tuple(
+            os.path.lexists(path) for path in (receipt_path, summary_path)
         )
-    except FullSequentialError as exc:
+        if not all(present):
+            raise ValueError("current R8 capacity pair missing or partial")
+        captured = capacity.load_dynamic_successor_capacity_capture(
+            restricted_receipt_path=receipt_path,
+            aggregate_summary_path=summary_path,
+            expected_governing_commit=run.authority.governing_commit,
+        )
+    except capacity.PostReallocationCapacityError as exc:
         code = (
-            "FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_STALE"
+            "FULL_SEQUENTIAL_CURRENT_CAPACITY_STALE"
             if exc.code == "DYNAMIC_CAPACITY_RECEIPT_STALE"
-            else "FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_INVALID"
+            else "FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID"
         )
         raise FullSequentialError(code) from exc
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID"
+        ) from exc
+    if captured.observation.get("status") != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
+        _fail("FULL_SEQUENTIAL_CURRENT_CAPACITY_NOT_PASS")
+    try:
+        captured = capacity.validate_dynamic_successor_capacity_capture(
+            captured,
+            validation_context=capacity.LIVE_PRECLAIM_ADMISSION,
+            expected_governing_commit=run.authority.governing_commit,
+        )
+    except capacity.PostReallocationCapacityError as exc:
+        code = (
+            "FULL_SEQUENTIAL_CURRENT_CAPACITY_STALE"
+            if exc.code == "DYNAMIC_CAPACITY_RECEIPT_STALE"
+            else "FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID"
+        )
+        raise FullSequentialError(code) from exc
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID"
+        ) from exc
+    return captured
 
 
 def _load_fixed_capacity_admission(
     run: FullRun,
-    *,
-    revalidate_retirement_state: bool = True,
-    require_current_freshness: bool = True,
 ) -> CapacityAdmission:
     production_contract = (
         getattr(
@@ -3891,40 +4212,29 @@ def _load_fixed_capacity_admission(
     )
     if production_contract:
         if Path(run.production_root) != PRODUCTION_ROOT:
-            _fail("FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_INVALID")
+            _fail("FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID")
         owner_private = PRODUCTION_ROOT / "owner_private"
-        post_paths = (
+        r8_paths = (
             owner_private
-            / capacity.R5E_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
+            / capacity.R5E_R8_POST_CLEANUP_RESTRICTED_RECEIPT_BASENAME,
             owner_private
-            / capacity.R5E_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
+            / capacity.R5E_R8_POST_CLEANUP_AGGREGATE_SUMMARY_BASENAME,
         )
-        post_present = tuple(os.path.lexists(path) for path in post_paths)
-        if not all(post_present):
-            if any(post_present):
-                _fail("FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_INVALID")
-            # Validate the fixed failed event even when current admission is
-            # absent. It remains cleanup provenance and can never be promoted
-            # to the claim's current-capacity role.
-            _load_historical_r5e_r2_pre_action_capacity()
-            _fail("FULL_SEQUENTIAL_CURRENT_POST_CLEANUP_CAPACITY_INVALID")
         historical = _load_historical_r5e_r2_pre_action_capacity()
-        post = _load_current_post_cleanup_capacity(
-            run, require_freshness=require_current_freshness
-        )
-        retired = (
-            _load_completed_retirement_event()
-            if revalidate_retirement_state
-            else _load_completed_retirement_receipt_event()
-        )
+        _load_historical_r5e_post_cleanup_capacity()
+        r8_present = tuple(os.path.lexists(path) for path in r8_paths)
+        if not all(r8_present):
+            _fail("FULL_SEQUENTIAL_CURRENT_CAPACITY_FILE_INVALID")
+        post = _load_current_r5e_r8_post_cleanup_capacity(run)
+        retired = _load_completed_retirement_event()
         if retired["pre_cleanup_capacity_authority"] != historical.authority:
             _fail("FULL_SEQUENTIAL_RETIREMENT_STATE_INVALID")
         admission = CapacityAdmission(
             capture=post,
-            evidence_role="R5E_POST_CLEANUP",
+            evidence_role="R5E_R8_POST_CLEANUP",
             capacity_gain_source=_capacity_gain_source(
                 post.observation,
-                evidence_role="R5E_POST_CLEANUP",
+                evidence_role="R5E_R8_POST_CLEANUP",
                 pre_cleanup_observation=historical.capture.observation,
             ),
             raw_retirement_status=str(retired["status"]),
@@ -3952,13 +4262,13 @@ def _load_fixed_capacity_admission(
     if any(post_present):
         if not all(post_present) or not all(pre_present):
             _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_PAIR_INVALID")
-        pre = _load_capacity_pair(
+        pre = _load_test_only_capacity_pair(
             run,
             restricted_basename=pre_paths[0].name,
             summary_basename=pre_paths[1].name,
             require_pass=False,
         )
-        post = _load_capacity_pair(
+        post = _load_test_only_capacity_pair(
             run,
             restricted_basename=post_paths[0].name,
             summary_basename=post_paths[1].name,
@@ -3968,12 +4278,7 @@ def _load_fixed_capacity_admission(
         try:
             import retire_lvef_c3_older_raw_duplicates as older_raw
 
-            validator = (
-                older_raw.validate_retired_state
-                if revalidate_retirement_state
-                else older_raw.validate_retirement_receipt_authority
-            )
-            retired = validator(
+            retired = older_raw.validate_retired_state(
                 expected_governing_commit=run.authority.governing_commit
             )
         except Exception as exc:
@@ -4011,7 +4316,7 @@ def _load_fixed_capacity_admission(
     elif any(pre_present):
         if not all(pre_present):
             _fail("FULL_SEQUENTIAL_DYNAMIC_CAPACITY_PAIR_INVALID")
-        pre = _load_capacity_pair(
+        pre = _load_test_only_capacity_pair(
             run,
             restricted_basename=pre_paths[0].name,
             summary_basename=pre_paths[1].name,
@@ -4030,7 +4335,7 @@ def _load_fixed_capacity_admission(
             ),
         )
     else:
-        historical = _load_capacity_pair(
+        historical = _load_test_only_capacity_pair(
             run,
             restricted_basename=(
                 capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME
@@ -4062,6 +4367,49 @@ def _load_fixed_dynamic_capacity_capture(
     return _load_fixed_capacity_admission(run).capture
 
 
+def validate_execution_node_sealed_authorities() -> Mapping[str, Any]:
+    """Replay fixed admission events without consulting node-local capacity."""
+
+    try:
+        installation = validate_installation()
+        historical = _load_historical_r5e_r2_pre_action_capacity()
+        retired = _load_completed_retirement_receipt_event()
+        historical_post = _load_historical_r5e_post_cleanup_capacity()
+        if (
+            retired["pre_cleanup_capacity_authority"] != historical.authority
+            or retired["status"] != RETIREMENT_EVENT_STATUS
+            or retired["receipt_sha256"] != RETIREMENT_EVENT_RECEIPT_SHA256
+            or historical_post.capture.observation.get("status")
+            != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+            or _capacity_gain_source(
+                historical_post.capture.observation,
+                evidence_role="R5E_POST_CLEANUP",
+                pre_cleanup_observation=historical.capture.observation,
+            )
+            != HISTORICAL_R5E_POST_CLEANUP_GAIN_SOURCE
+        ):
+            _fail("FULL_SEQUENTIAL_EXECUTION_NODE_AUTHORITY_REPLAY_FAILED")
+    except FullSequentialError:
+        raise
+    except Exception as exc:
+        raise FullSequentialError(
+            "FULL_SEQUENTIAL_EXECUTION_NODE_AUTHORITY_REPLAY_FAILED"
+        ) from exc
+    return {
+        "status": "PASS_SEALED_EXECUTION_NODE_AUTHORITY_REPLAY",
+        "governing_commit": installation["governing_commit"],
+        "historical_pre_cleanup": "PASS",
+        "retirement_event": "PASS",
+        "historical_post_cleanup": "PASS",
+        "cloud_requests": 0,
+        "dicom_body_reads": 0,
+        "npz_body_reads": 0,
+        "gpu_executions": 0,
+        "successor_claims_created": 0,
+        "successor_attempt_roots_created": 0,
+    }
+
+
 def claim_submission(
     *, qsub_environment_sha256: str
 ) -> Mapping[str, Any]:
@@ -4071,19 +4419,46 @@ def claim_submission(
     run = build_full_run()
     if os.path.lexists(run.attempt_root):
         _fail("FULL_SEQUENTIAL_ATTEMPT_ALREADY_EXISTS")
+    validate_installation()
+    _validate_completed_canary_evidence()
+    dependency = resolve_dependencies()
+    dependency.environment_validator(
+        run.authority.environment_receipt,
+        expected_environment_receipt_sha256=(
+            run.runtime_authority["environment_receipt_sha256"]
+        ),
+        scientific_governing_commit=run.authority.governing_commit,
+    )
+    cache_inventory = _extraction_cache_inventory(
+        run.production_root, current_attempt_id=run.attempt_id
+    )
+    if (
+        cache_inventory.active != 0
+        or cache_inventory.preserved_terminal_failed
+        != SUCCESSOR_REQUIRED_TERMINAL_FAILED_CACHES
+    ):
+        _fail("FULL_SEQUENTIAL_TERMINAL_FAILURE_CACHE_AUTHORITY_INVALID")
     admission = _load_fixed_capacity_admission(run)
     if (
         getattr(
             run.requirements, "contract_id", core.TEST_ONLY_FULL_CONTRACT_ID
         )
         != core.TEST_ONLY_FULL_CONTRACT_ID
-        and admission.evidence_role != "R5E_POST_CLEANUP"
+        and admission.evidence_role != "R5E_R8_POST_CLEANUP"
     ):
         _fail("FULL_SEQUENTIAL_CAPACITY_EVIDENCE_ROLE_INVALID")
     dynamic_capture = admission.capture
-    preflight = preflight_full(
-        _validated_capacity_admission=admission,
-        _capture_reuse_token=_DYNAMIC_CAPTURE_REUSE_TOKEN,
+    _validate_capacity_admission(admission)
+    if (
+        dynamic_capture.observation.get("status")
+        != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS
+        or dynamic_capture.observation.get("successor_attempt_root_absent")
+        is not True
+        or dynamic_capture.observation.get("successor_claim_absent") is not True
+    ):
+        _fail("FULL_SEQUENTIAL_CURRENT_CAPACITY_NOT_PASS")
+    successor_capacity = build_successor_capacity_authority(
+        dynamic_capture, cache_inventory
     )
     if os.path.lexists(run.attempt_root):
         _fail("DYNAMIC_CAPACITY_SUCCESSOR_COLLISION")
@@ -4115,7 +4490,7 @@ def claim_submission(
             _fail("FULL_SEQUENTIAL_PREPARED_CAPACITY_INVALID")
         _write_private_json(
             run.attempt_root / "full_capacity_receipt.restricted.json",
-            preflight["successor_capacity"],
+            successor_capacity,
             attempt_id=run.attempt_id,
         )
         claim = _expected_submission_claim(
@@ -4126,12 +4501,12 @@ def claim_submission(
             dynamic_capacity_receipt_sha256=hashlib.sha256(
                 dynamic_payload
             ).hexdigest(),
-            capacity_evidence_role=preflight["capacity_evidence_role"],
-            capacity_gain_source=preflight["capacity_gain_source"],
-            raw_retirement_status=preflight["raw_retirement_status"],
-            raw_retirement_receipt_sha256=preflight[
-                "raw_retirement_receipt_sha256"
-            ],
+            capacity_evidence_role=admission.evidence_role,
+            capacity_gain_source=admission.capacity_gain_source,
+            raw_retirement_status=admission.raw_retirement_status,
+            raw_retirement_receipt_sha256=(
+                admission.raw_retirement_receipt_sha256
+            ),
             qsub_environment_sha256=qsub_environment_sha256,
         )
         _write_private_json(
@@ -4252,6 +4627,10 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--seal-r5e-pre-cleanup-capacity", action="store_true")
     modes.add_argument("--seal-r5e-r2-pre-action-capacity", action="store_true")
     modes.add_argument("--seal-r5e-post-cleanup-capacity", action="store_true")
+    modes.add_argument("--seal-r5e-r8-post-cleanup-capacity", action="store_true")
+    modes.add_argument(
+        "--validate-execution-node-sealed-authorities", action="store_true"
+    )
     modes.add_argument("--claim-submission", action="store_true")
     modes.add_argument("--validate-claimed-submission", action="store_true")
     modes.add_argument("--print-fixed-identity", action="store_true")
@@ -4279,7 +4658,7 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             validate_installation()
             print("FULL_C3_INSTALLATION=PASS")
         elif args.preflight_only:
-            preflight_full()
+            _run_r5e_r8_integrated_no_body_acceptance()
             print("FULL_C3_NO_BODY_PREFLIGHT=PASS")
         elif args.preflight_report:
             print("\n".join(format_preflight_report(preflight_full())))
@@ -4294,6 +4673,7 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             args.seal_r5e_pre_cleanup_capacity
             or args.seal_r5e_r2_pre_action_capacity
             or args.seal_r5e_post_cleanup_capacity
+            or args.seal_r5e_r8_post_cleanup_capacity
         ):
             role = (
                 "R5E_PRE_CLEANUP"
@@ -4301,11 +4681,19 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
                 else (
                     "R5E_R2_PRE_ACTION"
                     if args.seal_r5e_r2_pre_action_capacity
-                    else "R5E_POST_CLEANUP"
+                    else (
+                        "R5E_R8_POST_CLEANUP"
+                        if args.seal_r5e_r8_post_cleanup_capacity
+                        else "R5E_POST_CLEANUP"
+                    )
                 )
             )
-            sealed = run_dynamic_successor_capacity_seal(
-                evidence_role=role
+            sealed = (
+                run_r5e_r8_post_cleanup_capacity_seal()
+                if role == "R5E_R8_POST_CLEANUP"
+                else run_dynamic_successor_capacity_seal(
+                    evidence_role=role
+                )
             )
             observation = sealed["observation"]
             markers = (
@@ -4358,6 +4746,15 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             print("\n".join(markers))
             if sealed["status"] != capacity.DYNAMIC_SUCCESSOR_STATUS_PASS:
                 return 78
+        elif args.validate_execution_node_sealed_authorities:
+            validate_execution_node_sealed_authorities()
+            print("FULL_C3_EXECUTION_NODE_SEALED_AUTHORITY_REPLAY=PASS")
+            print("CLOUD_REQUESTS=0")
+            print("DICOM_BODY_READS=0")
+            print("NPZ_BODY_READS=0")
+            print("GPU_EXECUTIONS=0")
+            print("SUCCESSOR_CLAIMS_CREATED=0")
+            print("SUCCESSOR_ATTEMPT_ROOTS_CREATED=0")
         elif args.claim_submission:
             claim_submission(
                 qsub_environment_sha256=qsub_environment_sha256
