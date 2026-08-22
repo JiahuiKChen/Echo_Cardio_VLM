@@ -13,6 +13,7 @@ import argparse
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 import hashlib
 import io
 import importlib.metadata
@@ -325,6 +326,33 @@ ENVIRONMENT_RECEIPT_KEYS = frozenset(
         "confirmatory_performance_accessed",
     }
 )
+ENVIRONMENT_RUNTIME_KEYS = frozenset(
+    {
+        "python_executable_sha256",
+        "python_version",
+        "torch_version",
+        "torchvision_version",
+        "cuda_version",
+        "cudnn_version",
+        "operating_system",
+    }
+)
+PORTABLE_ENVIRONMENT_RUNTIME_KEYS = (
+    ENVIRONMENT_RUNTIME_KEYS - {"operating_system"}
+)
+
+
+class RuntimeAuthorityValidationContext(Enum):
+    """Closed choice between a live capture and replay of a sealed event."""
+
+    LIVE_RUNTIME_CAPTURE = "LIVE_RUNTIME_CAPTURE"
+    SEALED_SCHEDULER_RUNTIME_REPLAY = "SEALED_SCHEDULER_RUNTIME_REPLAY"
+
+
+LIVE_RUNTIME_CAPTURE = RuntimeAuthorityValidationContext.LIVE_RUNTIME_CAPTURE
+SEALED_SCHEDULER_RUNTIME_REPLAY = (
+    RuntimeAuthorityValidationContext.SEALED_SCHEDULER_RUNTIME_REPLAY
+)
 
 
 class ProductionStageError(RuntimeError):
@@ -333,6 +361,14 @@ class ProductionStageError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def _require_runtime_validation_context(
+    value: RuntimeAuthorityValidationContext,
+) -> RuntimeAuthorityValidationContext:
+    if not isinstance(value, RuntimeAuthorityValidationContext):
+        raise ProductionStageError("RUNTIME_VALIDATION_CONTEXT_INVALID")
+    return value
 
 
 @dataclass(frozen=True)
@@ -1113,7 +1149,11 @@ def validate_wrapper_authority(
     output_root: Path,
     requirements: Any | None = None,
     expected_runtime_authority: Mapping[str, Any] | None = None,
+    runtime_validation_context: RuntimeAuthorityValidationContext = (
+        LIVE_RUNTIME_CAPTURE
+    ),
 ) -> dict[str, Any]:
+    context = _require_runtime_validation_context(runtime_validation_context)
     if stage not in WRAPPER_STAGES:
         raise ProductionStageError("UNKNOWN_PRODUCTION_STAGE")
     if not BATCH_RE.fullmatch(batch_id):
@@ -1128,6 +1168,8 @@ def validate_wrapper_authority(
     plan = core.load_strict_json(batch_plan)
     scoped = requirements is not None or expected_runtime_authority is not None
     if scoped and (requirements is None or expected_runtime_authority is None):
+        raise ProductionStageError("SCOPED_RUNTIME_AUTHORITY_ARGUMENTS_INCOMPLETE")
+    if context is SEALED_SCHEDULER_RUNTIME_REPLAY and not scoped:
         raise ProductionStageError("SCOPED_RUNTIME_AUTHORITY_ARGUMENTS_INCOMPLETE")
     effective_requirements = (
         requirements if requirements is not None else core.production_requirements(contract)
@@ -1144,10 +1186,26 @@ def validate_wrapper_authority(
     )
     if planned_batch is None:
         raise ProductionStageError("BATCH_NOT_PRESENT_IN_PLAN")
+    scoped_runtime_authority = (
+        core.validate_runtime_authority(expected_runtime_authority)
+        if scoped
+        else None
+    )
+    expected_environment_receipt_sha256 = (
+        scoped_runtime_authority["environment_receipt_sha256"]
+        if scoped_runtime_authority is not None
+        else sha256_file(environment_receipt)
+    )
+    validate_environment_receipt_against_current_runtime(
+        environment_receipt,
+        runtime_validation_context=context,
+        expected_environment_receipt_sha256=(
+            expected_environment_receipt_sha256
+        ),
+    )
     environment_receipt_sha256 = sha256_file(environment_receipt)
-    validate_environment_receipt_against_current_runtime(environment_receipt)
     if scoped:
-        runtime_authority = core.validate_runtime_authority(expected_runtime_authority)
+        runtime_authority = scoped_runtime_authority
         if (
             runtime_authority["batch_plan_sha256"] != plan_hash
             or any(
@@ -2254,9 +2312,18 @@ def validate_embedding_values(
 
 def validate_environment_receipt_payload(
     receipt: Mapping[str, Any], *, live_packages: Sequence[Mapping[str, str]],
-    live_runtime: Mapping[str, str]
+    live_runtime: Mapping[str, str],
+    runtime_validation_context: RuntimeAuthorityValidationContext = (
+        LIVE_RUNTIME_CAPTURE
+    ),
 ) -> None:
-    """Validate the retained package preimage and exact live runtime authority."""
+    """Validate one receipt against the selected closed runtime context."""
+    context = _require_runtime_validation_context(runtime_validation_context)
+    if (
+        not isinstance(live_runtime, Mapping)
+        or set(live_runtime) != ENVIRONMENT_RUNTIME_KEYS
+    ):
+        raise ProductionStageError("LIVE_RUNTIME_SCHEMA_MISMATCH")
     if set(receipt) != ENVIRONMENT_RECEIPT_KEYS:
         raise ProductionStageError("ENVIRONMENT_RECEIPT_SCHEMA_MISMATCH")
     if (
@@ -2351,14 +2418,40 @@ def validate_environment_receipt_payload(
         or packages != list(live_packages)
     ):
         raise ProductionStageError("RUNNING_PACKAGE_INVENTORY_MISMATCH")
-    for key, value in live_runtime.items():
-        if str(receipt.get(key)) != str(value):
+    compared_runtime_keys = (
+        ENVIRONMENT_RUNTIME_KEYS
+        if context is LIVE_RUNTIME_CAPTURE
+        else PORTABLE_ENVIRONMENT_RUNTIME_KEYS
+    )
+    for key in sorted(compared_runtime_keys):
+        if str(receipt.get(key)) != str(live_runtime[key]):
             raise ProductionStageError("RUNNING_ENVIRONMENT_RUNTIME_MISMATCH")
 
 
 def validate_environment_receipt_against_current_runtime(
     environment_receipt: Path,
+    *,
+    runtime_validation_context: RuntimeAuthorityValidationContext = (
+        LIVE_RUNTIME_CAPTURE
+    ),
+    expected_environment_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
+    context = _require_runtime_validation_context(runtime_validation_context)
+    if context is SEALED_SCHEDULER_RUNTIME_REPLAY and (
+        not isinstance(expected_environment_receipt_sha256, str)
+        or SHA256_RE.fullmatch(expected_environment_receipt_sha256) is None
+    ):
+        raise ProductionStageError("ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH")
+    if expected_environment_receipt_sha256 is not None:
+        if (
+            not isinstance(expected_environment_receipt_sha256, str)
+            or SHA256_RE.fullmatch(expected_environment_receipt_sha256) is None
+            or sha256_file(environment_receipt)
+            != expected_environment_receipt_sha256
+        ):
+            raise ProductionStageError(
+                "ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH"
+            )
     receipt = load_json_object(environment_receipt, "ENVIRONMENT_RECEIPT")
     try:
         import torch
@@ -2390,7 +2483,14 @@ def validate_environment_receipt_against_current_runtime(
             "cudnn_version": str(cudnn_version),
             "operating_system": platform.platform(),
         },
+        runtime_validation_context=context,
     )
+    if (
+        expected_environment_receipt_sha256 is not None
+        and sha256_file(environment_receipt)
+        != expected_environment_receipt_sha256
+    ):
+        raise ProductionStageError("ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH")
     return receipt
 
 
@@ -2442,8 +2542,13 @@ def validate_environment_authority_for_scientific_commit(
     *,
     expected_environment_receipt_sha256: str,
     scientific_governing_commit: str,
+    runtime_validation_context: RuntimeAuthorityValidationContext = (
+        LIVE_RUNTIME_CAPTURE
+    ),
 ) -> dict[str, Any]:
-    """Bind one live runtime authority to an equal or ancestor code commit."""
+    """Bind one context-validated runtime authority to its code ancestry."""
+
+    context = _require_runtime_validation_context(runtime_validation_context)
 
     if not SHA256_RE.fullmatch(str(expected_environment_receipt_sha256)):
         raise ProductionStageError("ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH")
@@ -2468,7 +2573,9 @@ def validate_environment_authority_for_scientific_commit(
 
     try:
         receipt = validate_environment_receipt_against_current_runtime(
-            environment_receipt
+            environment_receipt,
+            runtime_validation_context=context,
+            expected_environment_receipt_sha256=expected_sha256,
         )
     except ProductionStageError as exc:
         raise ProductionStageError(
@@ -2568,7 +2675,12 @@ def validate_checkpoint_and_environment(
     *,
     crc32c_python: Path | None = None,
     crc32c_worker: Path | None = None,
+    runtime_validation_context: RuntimeAuthorityValidationContext = (
+        LIVE_RUNTIME_CAPTURE
+    ),
+    expected_environment_receipt_sha256: str | None = None,
 ) -> dict[str, Any]:
+    context = _require_runtime_validation_context(runtime_validation_context)
     if checkpoint.name != CHECKPOINT_FILENAME:
         raise ProductionStageError("CHECKPOINT_FILENAME_MISMATCH")
     if checkpoint.is_symlink() or not checkpoint.is_file():
@@ -2577,7 +2689,13 @@ def validate_checkpoint_and_environment(
         raise ProductionStageError("CHECKPOINT_SIZE_MISMATCH")
     if sha256_file(checkpoint) != CHECKPOINT_SHA256:
         raise ProductionStageError("CHECKPOINT_SHA256_MISMATCH")
-    validate_environment_receipt_against_current_runtime(environment_receipt)
+    validate_environment_receipt_against_current_runtime(
+        environment_receipt,
+        runtime_validation_context=context,
+        expected_environment_receipt_sha256=(
+            expected_environment_receipt_sha256
+        ),
+    )
     if (crc32c_python is None) is not (crc32c_worker is None):
         raise ProductionStageError("CRC32C_EXTERNAL_AUTHORITY_PAIR_INCOMPLETE")
     if crc32c_python is not None and crc32c_worker is not None:
@@ -2990,6 +3108,9 @@ def run_production_echoprime(
     attempt_id: str,
     runtime_authority: Mapping[str, Any],
     requirements: Any | None = None,
+    runtime_validation_context: RuntimeAuthorityValidationContext = (
+        LIVE_RUNTIME_CAPTURE
+    ),
 ) -> dict[str, Any]:
     """Run encoder-only EchoPrime and deterministic study mean pooling.
 
@@ -2997,9 +3118,22 @@ def run_production_echoprime(
     explicitly called execution function, after the wrapper authorization gate.
     """
 
+    context = _require_runtime_validation_context(runtime_validation_context)
     if batch_size < 1:
         raise ProductionStageError("EMBEDDING_BATCH_SIZE_INVALID")
-    validate_checkpoint_and_environment(checkpoint, environment_receipt)
+    expected_environment_sha256 = runtime_authority.get(
+        "environment_receipt_sha256"
+    )
+    validate_checkpoint_and_environment(
+        checkpoint,
+        environment_receipt,
+        runtime_validation_context=context,
+        expected_environment_receipt_sha256=(
+            str(expected_environment_sha256)
+            if expected_environment_sha256 is not None
+            else None
+        ),
+    )
     extracted_root = require_projectnb_path(extraction_root, must_exist=True)
     batch_root = require_projectnb_path(batch_output_root, must_exist=True)
     import numpy as np

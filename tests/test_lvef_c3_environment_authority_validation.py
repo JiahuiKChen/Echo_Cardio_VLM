@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import lvef_c3_production_stages as stages
 import capture_lvef_c3_production_environment as capture
+import lvef_c3_minimal_canary as minimal
 
 
 def _expect_code(code: str, operation) -> None:
@@ -93,6 +94,97 @@ def test_environment_receipt_retains_exact_closed_package_preimage() -> None:
     )
 
 
+def test_runtime_validation_context_is_a_closed_enum() -> None:
+    assert (
+        stages.LIVE_RUNTIME_CAPTURE
+        is stages.RuntimeAuthorityValidationContext.LIVE_RUNTIME_CAPTURE
+    )
+    assert (
+        stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+        is stages.RuntimeAuthorityValidationContext.SEALED_SCHEDULER_RUNTIME_REPLAY
+    )
+    _expect_code(
+        "RUNTIME_VALIDATION_CONTEXT_INVALID",
+        lambda: stages.validate_environment_receipt_payload(
+            _receipt(),
+            live_packages=_packages(),
+            live_runtime=_runtime(),
+            runtime_validation_context="SEALED_SCHEDULER_RUNTIME_REPLAY",
+        ),
+    )
+    incomplete_runtime = _runtime()
+    incomplete_runtime.pop("operating_system")
+    _expect_code(
+        "LIVE_RUNTIME_SCHEMA_MISMATCH",
+        lambda: stages.validate_environment_receipt_payload(
+            _receipt(),
+            live_packages=_packages(),
+            live_runtime=incomplete_runtime,
+            runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        ),
+    )
+
+
+def test_sealed_runtime_replay_excludes_only_operating_system_equality() -> None:
+    different_node_runtime = _runtime()
+    different_node_runtime["operating_system"] = "synthetic-other-node"
+    _expect_code(
+        "RUNNING_ENVIRONMENT_RUNTIME_MISMATCH",
+        lambda: stages.validate_environment_receipt_payload(
+            _receipt(),
+            live_packages=_packages(),
+            live_runtime=different_node_runtime,
+            runtime_validation_context=stages.LIVE_RUNTIME_CAPTURE,
+        ),
+    )
+    stages.validate_environment_receipt_payload(
+        _receipt(),
+        live_packages=_packages(),
+        live_runtime=different_node_runtime,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+    )
+
+    for field in sorted(stages.PORTABLE_ENVIRONMENT_RUNTIME_KEYS):
+        changed = _runtime()
+        changed[field] = f"changed-{field}"
+        _expect_code(
+            "RUNNING_ENVIRONMENT_RUNTIME_MISMATCH",
+            lambda changed=changed: stages.validate_environment_receipt_payload(
+                _receipt(),
+                live_packages=_packages(),
+                live_runtime=changed,
+                runtime_validation_context=(
+                    stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+                ),
+            ),
+        )
+
+
+def test_sealed_runtime_replay_keeps_package_schema_and_activity_gates() -> None:
+    changed_packages = _packages()
+    changed_packages[0] = {"name": "torch", "version": "changed"}
+    _expect_code(
+        "RUNNING_PACKAGE_INVENTORY_MISMATCH",
+        lambda: stages.validate_environment_receipt_payload(
+            _receipt(),
+            live_packages=changed_packages,
+            live_runtime=_runtime(),
+            runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        ),
+    )
+    activity = _receipt()
+    activity["dicom_body_read"] = True
+    _expect_code(
+        "ENVIRONMENT_RECEIPT_ACTIVITY_FLAG_INVALID",
+        lambda: stages.validate_environment_receipt_payload(
+            activity,
+            live_packages=_packages(),
+            live_runtime=_runtime(),
+            runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        ),
+    )
+
+
 def test_environment_receipt_producer_and_consumer_share_exact_closed_keys() -> None:
     assert capture.ENVIRONMENT_RECEIPT_KEYS == stages.ENVIRONMENT_RECEIPT_KEYS
     capture.validate_receipt_schema(_receipt())
@@ -108,6 +200,31 @@ def test_runtime_python_authority_resolves_virtual_environment_symlink() -> None
         assert stages.resolved_python_executable_sha256(link) == hashlib.sha256(
             target.read_bytes()
         ).hexdigest()
+
+
+def test_sealed_runtime_replay_requires_exact_receipt_hash_binding() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path, digest = _write_receipt(Path(directory), _receipt())
+        _expect_code(
+            "ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH",
+            lambda: stages.validate_environment_receipt_against_current_runtime(
+                path,
+                runtime_validation_context=(
+                    stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+                ),
+            ),
+        )
+        _expect_code(
+            "ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH",
+            lambda: stages.validate_environment_receipt_against_current_runtime(
+                path,
+                runtime_validation_context=(
+                    stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+                ),
+                expected_environment_receipt_sha256="0" * 64,
+            ),
+        )
+        assert digest != "0" * 64
 
 
 def test_environment_receipt_rejects_tampered_package_preimage() -> None:
@@ -225,7 +342,11 @@ def test_shared_environment_authority_accepts_equal_available_commit() -> None:
         "scientific_governing_commit": receipt["governing_commit"],
         "environment_authority_relation": "EQUAL",
     }
-    runtime.assert_called_once_with(path)
+    runtime.assert_called_once_with(
+        path,
+        runtime_validation_context=stages.LIVE_RUNTIME_CAPTURE,
+        expected_environment_receipt_sha256=digest,
+    )
     crc32c.assert_called_once_with(
         path,
         stages.PINNED_CRC32C_PYTHON,
@@ -241,6 +362,84 @@ def test_shared_environment_authority_accepts_equal_available_commit() -> None:
             "-e",
             f'{receipt["governing_commit"]}^{{commit}}',
         ]
+
+
+def test_shared_environment_authority_threads_sealed_runtime_replay() -> None:
+    receipt = _receipt()
+    with tempfile.TemporaryDirectory() as directory:
+        path, digest = _write_receipt(Path(directory), receipt)
+        with mock.patch.object(
+            stages,
+            "validate_environment_receipt_against_current_runtime",
+            return_value=receipt,
+        ) as runtime, mock.patch.object(
+            stages,
+            "validate_crc32c_external_authority",
+            return_value=receipt,
+        ) as crc32c, mock.patch.object(
+            stages.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ):
+            authority = stages.validate_environment_authority_for_scientific_commit(
+                path,
+                expected_environment_receipt_sha256=digest,
+                scientific_governing_commit=str(receipt["governing_commit"]),
+                runtime_validation_context=(
+                    stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+                ),
+            )
+
+    assert authority["environment_authority_relation"] == "EQUAL"
+    runtime.assert_called_once_with(
+        path,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        expected_environment_receipt_sha256=digest,
+    )
+    crc32c.assert_called_once_with(
+        path,
+        stages.PINNED_CRC32C_PYTHON,
+        stages.CANONICAL_REPOSITORY_ROOT / "scripts/lvef_c3_crc32c_worker.py",
+    )
+
+
+def test_checkpoint_validation_threads_sealed_receipt_and_crc_authority() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        checkpoint = root / stages.CHECKPOINT_FILENAME
+        checkpoint.write_bytes(b"synthetic-checkpoint")
+        environment, digest = _write_receipt(root, _receipt())
+        crc_python = root / "crc-python"
+        crc_worker = root / "crc-worker"
+        with mock.patch.object(
+            stages, "CHECKPOINT_BYTES", checkpoint.stat().st_size
+        ), mock.patch.object(
+            stages,
+            "CHECKPOINT_SHA256",
+            hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+        ), mock.patch.object(
+            stages, "validate_environment_receipt_against_current_runtime"
+        ) as runtime, mock.patch.object(
+            stages, "validate_crc32c_external_authority"
+        ) as crc32c:
+            result = stages.validate_checkpoint_and_environment(
+                checkpoint,
+                environment,
+                crc32c_python=crc_python,
+                crc32c_worker=crc_worker,
+                runtime_validation_context=(
+                    stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+                ),
+                expected_environment_receipt_sha256=digest,
+            )
+
+    assert result["checkpoint_identity_passed"] is True
+    runtime.assert_called_once_with(
+        environment,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        expected_environment_receipt_sha256=digest,
+    )
+    crc32c.assert_called_once_with(environment, crc_python, crc_worker)
 
 
 def test_shared_environment_authority_accepts_only_proven_strict_ancestor() -> None:
@@ -550,7 +749,7 @@ def test_shared_environment_authority_rejects_receipt_tamper_during_validation()
     with tempfile.TemporaryDirectory() as directory:
         path, digest = _write_receipt(Path(directory), receipt)
 
-        def tamper(_path: Path) -> dict[str, object]:
+        def tamper(_path: Path, **_kwargs: object) -> dict[str, object]:
             path.write_bytes(path.read_bytes() + b" ")
             return receipt
 
@@ -663,6 +862,89 @@ def test_shared_environment_authority_preserves_activity_and_schema_gates() -> N
                 live_runtime=_runtime(),
             ),
         )
+
+
+def test_minimal_live_authority_threads_explicit_sealed_runtime_context() -> None:
+    values = {
+        name: "synthetic"
+        for name in minimal.LEGACY_SESSION_REQUIRED_NAMES
+    }
+    values.update(
+        {
+            "PREFLIGHT_ENV": "/synthetic/billing.env",
+            "EXPECTED_COMMIT": "a" * 40,
+            "CLOUDSDK_CONFIG": "/synthetic/cloudsdk",
+        }
+    )
+    projection = minimal.LegacySessionProjection(
+        values=values,
+        source_sha256="b" * 64,
+        source_size=1,
+        repeated_assignment_count=0,
+        repeated_name_count=0,
+        conflict_count=0,
+    )
+    environment = Path("/synthetic/environment.restricted.json")
+    sentinel = RuntimeError("stop after runtime propagation")
+    with mock.patch.object(
+        minimal,
+        "_project_legacy_session_environment",
+        return_value=projection,
+    ), mock.patch.object(
+        minimal,
+        "_parse_literal_environment",
+        return_value={"LVEF_C3_GCP_BILLING_PROJECT": "synthetic-project"},
+    ), mock.patch.object(
+        minimal, "_git", return_value="c" * 40
+    ), mock.patch.object(
+        minimal, "_git_is_ancestor", return_value=True
+    ), mock.patch.object(
+        minimal.os, "lstat", return_value=mock.Mock(st_gid=123)
+    ), mock.patch.object(
+        minimal, "validate_private_directory"
+    ), mock.patch.object(
+        minimal,
+        "_discover_current_environment_receipt",
+        return_value=environment,
+    ), mock.patch.object(
+        stages,
+        "validate_checkpoint_and_environment",
+        side_effect=sentinel,
+    ) as checkpoint:
+        try:
+            minimal.discover_live_authority(
+                runtime_validation_context=(
+                    stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+                )
+            )
+        except RuntimeError as exc:
+            assert exc is sentinel
+        else:
+            raise AssertionError("runtime propagation sentinel was not reached")
+
+    checkpoint.assert_called_once_with(
+        minimal.CHECKPOINT_PATH,
+        environment,
+        crc32c_python=minimal.CRC32C_PYTHON_PATH,
+        crc32c_worker=minimal.SCRIPT_ROOT / "lvef_c3_crc32c_worker.py",
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        expected_environment_receipt_sha256=minimal.CURRENT_ENVIRONMENT_SHA256,
+    )
+
+
+def test_minimal_live_authority_rejects_string_runtime_context_before_reads() -> None:
+    with mock.patch.object(
+        minimal, "_project_legacy_session_environment"
+    ) as legacy:
+        try:
+            minimal.discover_live_authority(
+                runtime_validation_context="SEALED_SCHEDULER_RUNTIME_REPLAY"
+            )
+        except minimal.MinimalCanaryError as exc:
+            assert exc.code == "MINIMAL_RUNTIME_VALIDATION_CONTEXT_INVALID"
+        else:
+            raise AssertionError("string runtime context was accepted")
+    legacy.assert_not_called()
 
 
 def test_preservation_uses_shared_environment_authority_without_duplicate_schema() -> None:

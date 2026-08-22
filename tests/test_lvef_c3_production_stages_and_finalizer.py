@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 from argparse import Namespace
@@ -17,7 +18,7 @@ import shutil
 import subprocess
 import tempfile
 from types import ModuleType, SimpleNamespace
-from typing import Mapping
+from typing import Any, Mapping
 from unittest import mock
 
 
@@ -1691,6 +1692,917 @@ def test_production_finalizer_route_rejects_all_legacy_and_mixed_receipts() -> N
                 mixed, expected_governing_commit="a" * 40
             ),
         )
+
+
+def _write_r8r_mixed_epoch_receipts(
+    root: Path,
+) -> tuple[list[Path], tuple[str, ...], dict[str, str]]:
+    historical_epoch = tuple(
+        hashlib.sha256(f"historical-{key}".encode()).hexdigest()
+        for key in finalizer.R8R_IMPLEMENTATION_EPOCH_KEYS
+    )
+    repair_epoch = tuple(
+        hashlib.sha256(f"repair-{key}".encode()).hexdigest()
+        for key in finalizer.R8R_IMPLEMENTATION_EPOCH_KEYS
+    )
+    paths: list[Path] = []
+    for index in range(19):
+        receipt = _batch_receipt(index)
+        receipt.update(
+            {
+                "attempt_id": finalizer.R8R_ATTEMPT_ID,
+                "governing_commit": (
+                    finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+                ),
+                "source_commit": finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+                "batch_plan_sha256": finalizer.R8R_BATCH_PLAN_SHA256,
+                **dict(
+                    zip(
+                        finalizer.R8R_IMPLEMENTATION_EPOCH_KEYS,
+                        historical_epoch if index < 2 else repair_epoch,
+                    )
+                ),
+            }
+        )
+        path = root / f"receipt_{index:03d}.json"
+        path.write_text(
+            json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        paths.append(path)
+    runtime = {
+        key: hashlib.sha256(f"runtime-{key}".encode()).hexdigest()
+        for key in finalizer.core.RUNTIME_AUTHORITY_KEYS
+    }
+    first = _batch_receipt(0)
+    runtime.update(
+        {
+            "git_commit": finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            "batch_plan_sha256": finalizer.R8R_BATCH_PLAN_SHA256,
+            "orchestration_contract_sha256": first[
+                "orchestration_contract_sha256"
+            ],
+            "checkpoint_sha256": first["checkpoint_sha256"],
+            "environment_receipt_sha256": first[
+                "environment_receipt_sha256"
+            ],
+        }
+    )
+    return paths, repair_epoch, runtime
+
+
+def _r8r_implementation_authority() -> object:
+    hashes = [
+        hashlib.sha256(f"r8r-authority-{index}".encode()).hexdigest()
+        for index in range(5)
+    ]
+    return finalizer.R8RImplementationAuthority(
+        implementation_commit="b" * 40,
+        recovery_authority_sha256=hashes[0],
+        recovery_terminal_receipt_sha256=hashes[1],
+        continuation_capacity_receipt_sha256=hashes[2],
+        continuation_claim_sha256=hashes[3],
+        continuation_submission_receipt_sha256=hashes[4],
+    )
+
+
+def test_r8r_finalizer_chain_artifacts_are_content_bound() -> None:
+    implementation_commit = "b" * 40
+    attempt_root = (
+        Path("/synthetic/attempts") / finalizer.R8R_ATTEMPT_ID
+    )
+    receipt_paths = {
+        f"c3_batch_{index:03d}": attempt_root
+        / "batches"
+        / f"c3_batch_{index:03d}"
+        / "preservation"
+        / "batch_finalization_receipt.restricted.json"
+        for index in range(19)
+    }
+    common = {
+        "schema_version": 1,
+        "original_scientific_commit": (
+            finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+        ),
+        "implementation_commit": implementation_commit,
+        "attempt_id": finalizer.R8R_ATTEMPT_ID,
+        "batch_plan_sha256": finalizer.R8R_BATCH_PLAN_SHA256,
+    }
+
+    def closed(keys: object, **values: Any) -> dict[str, Any]:
+        result = {key: None for key in keys}
+        result.update(values)
+        return result
+
+    empty_sha = hashlib.sha256(b"").hexdigest()
+
+    def qsub_evidence(payload: bytes) -> dict[str, Any]:
+        return {
+            "stdout_bytes": len(payload),
+            "stdout_sha256": hashlib.sha256(payload).hexdigest(),
+            "stderr_bytes": 0,
+            "stderr_sha256": empty_sha,
+            "exit_status": 0,
+        }
+
+    qsub_environment_sha256 = "2" * 64
+    runtime_authority = {"synthetic": "runtime"}
+    current_script_authority = finalizer._r8r_current_script_authority()
+    prefix_sha256 = [
+        finalizer.R8R_HISTORICAL_PREFIX_RECEIPT_AUTHORITIES[
+            f"c3_batch_{index:03d}"
+        ][1]
+        for index in range(2)
+    ]
+    batch3_payload = b"synthetic-batch3-final-receipt\n"
+    batch3_sha256 = hashlib.sha256(batch3_payload).hexdigest()
+    prefix_sha256.append(batch3_sha256)
+
+    recovery = closed(
+        finalizer.R8R_RECOVERY_AUTHORITY_KEYS,
+        **common,
+        artifact_type="lvef_c3_r8r_batch3_recovery_authority_v1",
+        status="AUTHORIZED_FIXED_BATCH3_PRESERVATION_RECOVERY",
+        batch_id="c3_batch_002",
+        original_control_authority={},
+        prefix_final_receipt_sha256=prefix_sha256[:2],
+        batch3_retained_authority={},
+        script_authority=current_script_authority,
+        runtime_validation_context="SEALED_SCHEDULER_RUNTIME_REPLAY",
+        qsub_environment_sha256=qsub_environment_sha256,
+        fixed_recovery_task=3,
+        cloud_requests_authorized=0,
+        dicom_body_reads_authorized=0,
+        dicom_extraction_reruns_authorized=0,
+        echoprime_reruns_authorized=0,
+        embedding_generations_authorized=0,
+        gpu_executions_authorized=0,
+        raw_dicom_deletion_authorized=False,
+        model_fitting_authorized=False,
+        prediction_authorized=False,
+        confirmatory_performance_access_authorized=False,
+    )
+    payloads: dict[Path, bytes] = {}
+    recovery_path = attempt_root / (
+        "r8r_batch3_recovery/recovery_authority.restricted.json"
+    )
+    payloads[recovery_path] = finalizer.core.canonical_json_bytes(recovery)
+    recovery_sha = hashlib.sha256(payloads[recovery_path]).hexdigest()
+    recovery_job_id = "101"
+    recovery_command, array_command, finalizer_command = (
+        finalizer._r8r_expected_qsub_commands(
+            attempt_root=attempt_root,
+            implementation_commit=implementation_commit,
+            array_job_id="102",
+        )
+    )
+    recovery_submission = closed(
+        finalizer.R8R_RECOVERY_SUBMISSION_KEYS,
+        **common,
+        artifact_type="lvef_c3_r8r_batch3_recovery_submission_v1",
+        status="PASS_EXACT_ONE_CPU_RECOVERY_QSUB",
+        batch_id="c3_batch_002",
+        recovery_job_name=f"lvef_c3_r8r_rec_{implementation_commit[:8]}",
+        recovery_job_id=recovery_job_id,
+        recovery_qsub_argv_sha256=(
+            finalizer._r8r_controller_json_sha256(
+                {"argv": recovery_command}
+            )
+        ),
+        qsub_environment_sha256=qsub_environment_sha256,
+        recovery_qsub_evidence=qsub_evidence(b"101\n"),
+        scheduler_submission_count=1,
+        recovery_is_array=False,
+        gpu_requested=False,
+        automatic_retry_authorized=False,
+        cloud_requests=0,
+        dicom_body_reads_by_submitter=0,
+        gpu_executions_by_submitter=0,
+    )
+    recovery_submission_path = attempt_root / (
+        "r8r_batch3_recovery/scheduler/submission_receipt.restricted.json"
+    )
+    payloads[recovery_submission_path] = (
+        finalizer.core.canonical_json_bytes(recovery_submission)
+    )
+    recovery_submission_sha256 = hashlib.sha256(
+        payloads[recovery_submission_path]
+    ).hexdigest()
+    terminal = closed(
+        finalizer.R8R_RECOVERY_TERMINAL_KEYS,
+        **common,
+        artifact_type="lvef_c3_r8r_batch3_recovery_terminal_v1",
+        status="PASS_BATCH3_PRESERVATION_RECOVERY",
+        batch_id="c3_batch_002",
+        recovery_authority_sha256=recovery_sha,
+        recovery_submission_receipt_sha256=recovery_submission_sha256,
+        preservation_receipt_sha256="4" * 64,
+        cache_retirement_authorization_sha256="5" * 64,
+        cache_retirement_transition_sha256="6" * 64,
+        final_ledger_sha256="7" * 64,
+        batch_finalization_receipt_sha256=batch3_sha256,
+        raw_retention_authority={
+            "raw_dicom_files": 18_653,
+            "raw_dicom_bytes": 68_725_707_170,
+            "raw_metadata_projection_sha256": "8" * 64,
+            "raw_dicom_body_reads": 0,
+        },
+        n_selected_studies=250,
+        n_expected_objects=18_653,
+        expected_source_bytes=68_725_707_170,
+        n_successfully_extracted_cines=10_256,
+        n_object_technical_dispositions=1,
+        n_blocking_failures=0,
+        n_clip_embeddings=10_256,
+        n_pooled_studies=249,
+        n_no_cine_studies=1,
+        n_new_no_cine_studies=0,
+        raw_dicoms_retained=True,
+        extracted_cache_retired=True,
+        download_reruns=0,
+        dicom_extraction_reruns=0,
+        echoprime_reruns=0,
+        embedding_generations=0,
+        cloud_requests=0,
+        dicom_body_reads=0,
+        gpu_executions=0,
+        model_fitting_count=0,
+        prediction_generation_count=0,
+        confirmatory_performance_access_count=0,
+    )
+    terminal_path = attempt_root / (
+        "r8r_batch3_recovery/recovery_terminal.aggregate_safe.json"
+    )
+    payloads[terminal_path] = finalizer.core.canonical_json_bytes(terminal)
+    terminal_sha = hashlib.sha256(payloads[terminal_path]).hexdigest()
+    accounting = {
+        "status": "PASS_RECOVERY_QACCT_FAILED_0_EXIT_0",
+        "job_id": recovery_job_id,
+        "task_id": "undefined",
+        "failed": 0,
+        "exit_status": 0,
+        "start_time": "Sat Aug 22 12:00:00 2026",
+        "end_time": "Sat Aug 22 12:10:00 2026",
+        "ru_wallclock_seconds": "600.0",
+    }
+    capacity_module = finalizer.r8r_capacity
+    remaining_objects = 280_263
+    remaining_studies = 3_780
+    largest_objects = 17_517
+    largest_source_bytes = 63_376_316_676
+    increment = sum(
+        (
+            1_014_021_066_806,
+            largest_source_bytes,
+            largest_objects * capacity_module.R8R_EXTRACTED_BYTES_PER_OBJECT,
+            remaining_objects * capacity_module.R8R_CLIP_EMBEDDING_BYTES_PER_OBJECT,
+            remaining_studies * capacity_module.R8R_STUDY_EMBEDDING_BYTES_PER_STUDY,
+            capacity_module.R8R_RETAINED_EXTRACTED_AUDIT_BYTES,
+            capacity_module.R8R_MANIFEST_AND_METADATA_BYTES,
+            capacity_module.R8R_LOG_BYTES,
+            capacity_module.R8R_PRESERVATION_AND_FINALIZATION_BYTES,
+            capacity_module.R8R_SAFETY_BYTES,
+        )
+    )
+    required_files = (
+        remaining_objects
+        + largest_objects
+        + capacity_module.R8R_FIXED_CONTROL_FILE_DEMAND
+    )
+    usage = 1_024
+    quota = capacity_module.EXPECTED_RESEARCH_QUOTA_KIB * 1_024
+    physical = increment + capacity_module.R8R_PHYSICAL_RESERVE_BYTES + 1_000
+    file_quota = capacity_module.EXPECTED_RESEARCH_FILE_QUOTA
+    observation = {
+        key: 0 for key in capacity_module.R8R_CONTINUATION_CAPACITY_KEYS
+    }
+    observation.update(
+        {
+            "schema_version": 1,
+            "artifact_type": capacity_module.R8R_CONTINUATION_ARTIFACT_TYPE,
+            "status": capacity_module.R8R_CONTINUATION_STATUS_PASS,
+            "blocking_reason_codes": [],
+            "original_attempt_id": finalizer.R8R_ATTEMPT_ID,
+            "original_plan_sha256": finalizer.R8R_BATCH_PLAN_SHA256,
+            "original_scientific_governing_commit": (
+                finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+            ),
+            "continuation_first_task": 4,
+            "continuation_last_task": 19,
+            "continuation_task_count": 16,
+            "remaining_batch_count": 16,
+            "remaining_studies": remaining_studies,
+            "remaining_objects": remaining_objects,
+            "remaining_source_bytes": 1_014_021_066_806,
+            "largest_remaining_batch_objects": largest_objects,
+            "largest_remaining_batch_source_bytes": largest_source_bytes,
+            "remaining_raw_source_demand_bytes": 1_014_021_066_806,
+            "largest_remaining_transfer_retry_demand_bytes": largest_source_bytes,
+            "largest_rolling_extracted_cache_demand_bytes": (
+                largest_objects * capacity_module.R8R_EXTRACTED_BYTES_PER_OBJECT
+            ),
+            "remaining_clip_embedding_upper_bound_bytes": (
+                remaining_objects * capacity_module.R8R_CLIP_EMBEDDING_BYTES_PER_OBJECT
+            ),
+            "remaining_study_embedding_upper_bound_bytes": (
+                remaining_studies * capacity_module.R8R_STUDY_EMBEDDING_BYTES_PER_STUDY
+            ),
+            "retained_extracted_audit_demand_bytes": (
+                capacity_module.R8R_RETAINED_EXTRACTED_AUDIT_BYTES
+            ),
+            "manifest_and_metadata_demand_bytes": (
+                capacity_module.R8R_MANIFEST_AND_METADATA_BYTES
+            ),
+            "log_demand_bytes": capacity_module.R8R_LOG_BYTES,
+            "preservation_and_finalization_demand_bytes": (
+                capacity_module.R8R_PRESERVATION_AND_FINALIZATION_BYTES
+            ),
+            "safety_demand_bytes": capacity_module.R8R_SAFETY_BYTES,
+            "continuation_increment_bytes": increment,
+            "remaining_raw_object_file_demand": remaining_objects,
+            "largest_rolling_object_file_demand": largest_objects,
+            "fixed_control_file_demand": capacity_module.R8R_FIXED_CONTROL_FILE_DEMAND,
+            "required_file_slots": required_files,
+            "research_quota_bytes": quota,
+            "research_usage_bytes": usage,
+            "research_quota_remaining_bytes": quota - usage,
+            "research_file_quota": file_quota,
+            "research_files_used": 0,
+            "research_file_slots_remaining": file_quota,
+            "research_filesystem_total_bytes": physical + 10,
+            "research_filesystem_used_bytes": 10,
+            "research_filesystem_available_bytes": physical,
+            "projected_research_usage_bytes": usage + increment,
+            "required_quota_reserve_bytes": capacity_module.R8R_QUOTA_RESERVE_BYTES,
+            "required_physical_reserve_bytes": capacity_module.R8R_PHYSICAL_RESERVE_BYTES,
+            "quota_slack_after_continuation_bytes": quota - usage - increment,
+            "physical_slack_after_continuation_bytes": physical - increment,
+            "quota_margin_beyond_reserve_bytes": (
+                quota
+                - usage
+                - increment
+                - capacity_module.R8R_QUOTA_RESERVE_BYTES
+            ),
+            "physical_margin_beyond_reserve_bytes": 1_000,
+            "file_slot_margin_after_demand": file_quota - required_files,
+            "quota_reserve_gate_passed": True,
+            "physical_reserve_gate_passed": True,
+            "file_slot_gate_passed": True,
+            "native_capacity_snapshot_captures": 1,
+            "native_quota_file_captures": 1,
+            "capacity_command_captures": 5,
+            "pquota_command_captures": 1,
+            "findmnt_command_captures": 2,
+            "df_command_captures": 2,
+            "native_quota_authority_read_only": True,
+            "pquota_display_crosscheck": capacity_module.DISPLAY_CROSSCHECK_PASS,
+        }
+    )
+    for key in capacity_module.R8R_CONTINUATION_ZERO_EFFECT_KEYS:
+        observation[key] = 0
+    capacity_value = closed(
+        finalizer.R8R_CONTINUATION_CAPACITY_RECEIPT_KEYS,
+        **common,
+        artifact_type="lvef_c3_r8r_fixed_continuation_capacity_v1",
+        status="PASS_FIXED_CONTINUATION_4_19_WITH_200GB_RESERVE",
+        captured_at_utc="2026-08-22T12:11:00Z",
+        continuation_task_range="4-19",
+        continuation_task_count=16,
+        continuation_max_concurrency=1,
+        prefix_final_receipt_sha256=prefix_sha256,
+        recovery_terminal_receipt_sha256=terminal_sha,
+        recovery_scheduler_accounting=accounting,
+        capacity_observation=observation,
+        active_extraction_caches=0,
+        continuation_root_absent_at_capture=True,
+        continuation_claim_absent_at_capture=True,
+        continuation_submission_receipt_absent_at_capture=True,
+        cloud_requests=0,
+        dicom_body_reads=0,
+        npz_body_reads=0,
+        scheduler_submissions=0,
+        gpu_executions=0,
+        embedding_generations=0,
+        model_fitting_count=0,
+        prediction_generation_count=0,
+        confirmatory_performance_access_count=0,
+    )
+    capacity_path = attempt_root / (
+        "r8r_continuation/continuation_capacity.restricted.json"
+    )
+    payloads[capacity_path] = finalizer.core.canonical_json_bytes(
+        capacity_value
+    )
+    capacity_sha = hashlib.sha256(payloads[capacity_path]).hexdigest()
+    claim = closed(
+        finalizer.R8R_CONTINUATION_CLAIM_KEYS,
+        **common,
+        artifact_type="lvef_c3_r8r_fixed_continuation_claim_v1",
+        status="AUTHORIZED_FIXED_CONTINUATION_4_19",
+        original_claim_sha256=(
+            "482b084b7e6407349b4c330a8029bae19a88c06d2a390a9fe2f385d5c7349b99"
+        ),
+        original_submission_receipt_sha256=(
+            "5a8b942cef716b3cc90411638024146a5189781f6f4c70654bbfe0efc41e9c46"
+        ),
+        prefix_final_receipt_sha256=prefix_sha256,
+        recovery_terminal_receipt_sha256=terminal_sha,
+        continuation_capacity_receipt_sha256=capacity_sha,
+        recovery_job_id=recovery_job_id,
+        recovery_scheduler_accounting_sha256=(
+            finalizer.core.canonical_json_sha256(accounting)
+        ),
+        runtime_authority_sha256=(
+            finalizer.core.canonical_json_sha256(runtime_authority)
+        ),
+        qsub_environment_sha256="a" * 64,
+        script_authority=current_script_authority,
+        continuation_task_range="4-19",
+        continuation_task_count=16,
+        continuation_max_concurrency=1,
+        held_finalizer_count=1,
+        automatic_retry_authorized=False,
+        whole_stage_retry_authorized=False,
+        third_continuation_submission_reachable=False,
+        cloud_requests_by_submitter=0,
+        dicom_body_reads_by_submitter=0,
+        npz_body_reads_by_submitter=0,
+        gpu_executions_by_submitter=0,
+        embedding_generations_by_submitter=0,
+        model_fitting_authorized=False,
+        prediction_authorized=False,
+        confirmatory_performance_access_authorized=False,
+    )
+    claim_path = attempt_root / (
+        "r8r_continuation/continuation_claim.restricted.json"
+    )
+    payloads[claim_path] = finalizer.core.canonical_json_bytes(claim)
+    claim_sha = hashlib.sha256(payloads[claim_path]).hexdigest()
+    submission = closed(
+        finalizer.R8R_CONTINUATION_SUBMISSION_KEYS,
+        **common,
+        artifact_type="lvef_c3_r8r_fixed_continuation_submission_v1",
+        status="PASS_EXACT_ARRAY_4_19_AND_HELD_FINALIZER",
+        array_job_name=f"lvef_c3_r8r_seq_{implementation_commit[:8]}",
+        finalizer_job_name=f"lvef_c3_r8r_fin_{implementation_commit[:8]}",
+        array_job_id="102",
+        finalizer_job_id="103",
+        array_qsub_argv_sha256=finalizer._r8r_controller_json_sha256(
+            {"argv": array_command}
+        ),
+        finalizer_qsub_argv_sha256=finalizer._r8r_controller_json_sha256(
+            {"argv": finalizer_command}
+        ),
+        qsub_environment_sha256="a" * 64,
+        continuation_capacity_receipt_sha256=capacity_sha,
+        continuation_claim_sha256=claim_sha,
+        array_qsub_evidence=qsub_evidence(b"102.4-19:1\n"),
+        finalizer_qsub_evidence=qsub_evidence(b"103\n"),
+        scheduler_submission_count=2,
+        scheduler_submission_maximum=2,
+        array_task_range="4-19",
+        array_task_count=16,
+        array_max_concurrency=1,
+        finalizer_held_on_array=True,
+        whole_stage_retry_authorized=False,
+        third_continuation_submission_reachable=False,
+        cloud_requests=0,
+        dicom_body_reads_by_submitter=0,
+        npz_body_reads_by_submitter=0,
+        gpu_executions_by_submitter=0,
+    )
+    submission_path = attempt_root / (
+        "r8r_continuation/scheduler/submission_receipt.restricted.json"
+    )
+    payloads[submission_path] = finalizer.core.canonical_json_bytes(submission)
+    payloads[receipt_paths["c3_batch_002"]] = batch3_payload
+    submission_sha = hashlib.sha256(payloads[submission_path]).hexdigest()
+    authority = finalizer.R8RImplementationAuthority(
+        implementation_commit=implementation_commit,
+        recovery_authority_sha256=recovery_sha,
+        recovery_terminal_receipt_sha256=terminal_sha,
+        continuation_capacity_receipt_sha256=capacity_sha,
+        continuation_claim_sha256=claim_sha,
+        continuation_submission_receipt_sha256=submission_sha,
+    )
+
+    def read(path: Path, **_kwargs: Any) -> bytes:
+        return payloads[path]
+
+    with mock.patch.object(
+        finalizer, "_stable_nofollow_bytes", side_effect=read
+    ):
+        observed = finalizer._validate_r8r_chain_artifacts(
+            receipt_paths_by_batch=receipt_paths,
+            authority=authority,
+            expected_runtime_authority=runtime_authority,
+        )
+    assert re.fullmatch(r"[0-9a-f]{64}", observed)
+
+    impossible_filesystem = copy.deepcopy(observation)
+    impossible_filesystem["research_filesystem_total_bytes"] = (
+        observation["research_filesystem_used_bytes"]
+        + observation["research_filesystem_available_bytes"]
+        - 1
+    )
+    expect_code(
+        "R8R_FINALIZER_CAPACITY_AUTHORITY_INVALID",
+        lambda: finalizer._validate_r8r_capacity_observation(
+            impossible_filesystem
+        ),
+    )
+    low_file_quota = copy.deepcopy(observation)
+    low_file_quota["research_file_quota"] = (
+        capacity_module.EXPECTED_RESEARCH_FILE_QUOTA - 1
+    )
+    low_file_quota["research_file_slots_remaining"] = (
+        low_file_quota["research_file_quota"]
+        - low_file_quota["research_files_used"]
+    )
+    low_file_quota["file_slot_margin_after_demand"] = (
+        low_file_quota["research_file_slots_remaining"]
+        - low_file_quota["required_file_slots"]
+    )
+    expect_code(
+        "R8R_FINALIZER_CAPACITY_AUTHORITY_INVALID",
+        lambda: finalizer._validate_r8r_capacity_observation(
+            low_file_quota
+        ),
+    )
+
+    original_capacity_payload = payloads[capacity_path]
+    original_claim_payload = payloads[claim_path]
+    original_submission_payload = payloads[submission_path]
+    failed_capacity = copy.deepcopy(capacity_value)
+    failed_capacity["recovery_scheduler_accounting"]["exit_status"] = 78
+    payloads[capacity_path] = finalizer.core.canonical_json_bytes(
+        failed_capacity
+    )
+    failed_capacity_sha = hashlib.sha256(payloads[capacity_path]).hexdigest()
+    failed_claim = copy.deepcopy(claim)
+    failed_claim["continuation_capacity_receipt_sha256"] = (
+        failed_capacity_sha
+    )
+    failed_claim["recovery_scheduler_accounting_sha256"] = (
+        finalizer.core.canonical_json_sha256(
+            failed_capacity["recovery_scheduler_accounting"]
+        )
+    )
+    payloads[claim_path] = finalizer.core.canonical_json_bytes(failed_claim)
+    failed_claim_sha = hashlib.sha256(payloads[claim_path]).hexdigest()
+    failed_submission = copy.deepcopy(submission)
+    failed_submission["continuation_capacity_receipt_sha256"] = (
+        failed_capacity_sha
+    )
+    failed_submission["continuation_claim_sha256"] = failed_claim_sha
+    payloads[submission_path] = finalizer.core.canonical_json_bytes(
+        failed_submission
+    )
+    rebound_authority = finalizer.R8RImplementationAuthority(
+        implementation_commit=implementation_commit,
+        recovery_authority_sha256=recovery_sha,
+        recovery_terminal_receipt_sha256=terminal_sha,
+        continuation_capacity_receipt_sha256=failed_capacity_sha,
+        continuation_claim_sha256=failed_claim_sha,
+        continuation_submission_receipt_sha256=hashlib.sha256(
+            payloads[submission_path]
+        ).hexdigest(),
+    )
+    with mock.patch.object(
+        finalizer, "_stable_nofollow_bytes", side_effect=read
+    ):
+        expect_code(
+            "R8R_FINALIZER_RECOVERY_ACCOUNTING_INVALID",
+            lambda: finalizer._validate_r8r_chain_artifacts(
+                receipt_paths_by_batch=receipt_paths,
+                authority=rebound_authority,
+                expected_runtime_authority=runtime_authority,
+            ),
+        )
+    payloads[capacity_path] = original_capacity_payload
+    payloads[claim_path] = original_claim_payload
+    payloads[submission_path] = original_submission_payload
+
+    duplicate_job_submission = copy.deepcopy(submission)
+    duplicate_job_submission["array_job_id"] = recovery_job_id
+    duplicate_job_submission["array_qsub_evidence"] = qsub_evidence(
+        f"{recovery_job_id}.4-19:1\n".encode("ascii")
+    )
+    _, _, duplicate_finalizer_command = (
+        finalizer._r8r_expected_qsub_commands(
+            attempt_root=attempt_root,
+            implementation_commit=implementation_commit,
+            array_job_id=recovery_job_id,
+        )
+    )
+    duplicate_job_submission["finalizer_qsub_argv_sha256"] = (
+        finalizer._r8r_controller_json_sha256(
+            {"argv": duplicate_finalizer_command}
+        )
+    )
+    payloads[submission_path] = finalizer.core.canonical_json_bytes(
+        duplicate_job_submission
+    )
+    duplicate_job_authority = finalizer.R8RImplementationAuthority(
+        implementation_commit=implementation_commit,
+        recovery_authority_sha256=recovery_sha,
+        recovery_terminal_receipt_sha256=terminal_sha,
+        continuation_capacity_receipt_sha256=capacity_sha,
+        continuation_claim_sha256=claim_sha,
+        continuation_submission_receipt_sha256=hashlib.sha256(
+            payloads[submission_path]
+        ).hexdigest(),
+    )
+    with mock.patch.object(
+        finalizer, "_stable_nofollow_bytes", side_effect=read
+    ):
+        expect_code(
+            "R8R_FINALIZER_CHAIN_BINDING_MISMATCH",
+            lambda: finalizer._validate_r8r_chain_artifacts(
+                receipt_paths_by_batch=receipt_paths,
+                authority=duplicate_job_authority,
+                expected_runtime_authority=runtime_authority,
+            ),
+        )
+    payloads[submission_path] = original_submission_payload
+
+    changed = dict(submission)
+    changed["continuation_claim_sha256"] = "f" * 64
+    payloads[submission_path] = finalizer.core.canonical_json_bytes(changed)
+    changed_authority = finalizer.R8RImplementationAuthority(
+        implementation_commit=implementation_commit,
+        recovery_authority_sha256=recovery_sha,
+        recovery_terminal_receipt_sha256=terminal_sha,
+        continuation_capacity_receipt_sha256=capacity_sha,
+        continuation_claim_sha256=claim_sha,
+        continuation_submission_receipt_sha256=hashlib.sha256(
+            payloads[submission_path]
+        ).hexdigest(),
+    )
+    with mock.patch.object(
+        finalizer, "_stable_nofollow_bytes", side_effect=read
+    ):
+        expect_code(
+            "R8R_FINALIZER_CHAIN_BINDING_MISMATCH",
+            lambda: finalizer._validate_r8r_chain_artifacts(
+                receipt_paths_by_batch=receipt_paths,
+                authority=changed_authority,
+                expected_runtime_authority=runtime_authority,
+            ),
+        )
+
+
+def test_r8r_finalizer_accepts_only_fixed_two_epoch_receipt_partition() -> None:
+    assert finalizer.R8R_HISTORICAL_PREFIX_RECEIPT_AUTHORITIES == {
+        "c3_batch_000": (
+            4_730,
+            "e8f1b505422af64fc98c44f1cb85da52528f014c904e1cbfe319ca0109f31277",
+        ),
+        "c3_batch_001": (
+            4_725,
+            "54c536f5c2faa712bc3a97d18c6c6fde804941d096dc307dbaf50e6c33e32c98",
+        ),
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        paths, repair_epoch, runtime = _write_r8r_mixed_epoch_receipts(
+            Path(directory)
+        )
+        expect_code(
+            "CROSS_BATCH_AUTHORITY_MISMATCH",
+            lambda: finalizer.finalize_receipts(
+                paths,
+                expected_governing_commit=(
+                    finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+                ),
+            ),
+        )
+        prefix_authorities = {
+            f"c3_batch_{index:03d}": (
+                paths[index].stat().st_size,
+                hashlib.sha256(paths[index].read_bytes()).hexdigest(),
+            )
+            for index in range(2)
+        }
+        with (
+            mock.patch.object(
+                finalizer,
+                "R8R_HISTORICAL_PREFIX_RECEIPT_AUTHORITIES",
+                prefix_authorities,
+            ),
+            mock.patch.object(
+                finalizer,
+                "_validate_r8r_repository_authority",
+                return_value=None,
+            ),
+            mock.patch.object(
+                finalizer,
+                "_current_r8r_implementation_epoch",
+                return_value=repair_epoch,
+            ),
+            mock.patch.object(
+                finalizer,
+                "_validate_r8r_chain_artifacts",
+                return_value="a" * 64,
+            ),
+        ):
+            summary = finalizer.finalize_receipts(
+                paths,
+                expected_governing_commit=(
+                    finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+                ),
+                expected_attempt_id=finalizer.R8R_ATTEMPT_ID,
+                expected_runtime_authority=runtime,
+                r8r_implementation_authority=(
+                    _r8r_implementation_authority()
+                ),
+            )
+        assert summary["production_batches"] == 19
+        assert summary["selected_studies"] == 4_530
+        assert summary["all_authority_bindings_identical"] is False
+        assert summary["all_scientific_authority_bindings_identical"] is True
+        assert summary["implementation_authority_epoch_count"] == 2
+        assert summary["r8r_recovery_continuation_authority_sha256"] == "a" * 64
+
+
+def test_r8r_finalizer_rejects_prefix_third_epoch_and_authority_drift() -> None:
+    assert (
+        finalizer.R8R_SCHEDULER_RUNNER_BASENAME
+        == "scc_run_lvef_c3_r8r_recovery_continuation.sh"
+    )
+    expect_code(
+        "R8R_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH",
+        lambda: finalizer._validate_r8r_repository_authority(
+            finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+        ),
+    )
+
+    implementation_commit = "b" * 40
+
+    def git_result(arguments: list[str], *, distance: bytes) -> Any:
+        tail = arguments[3:]
+        if tail == ["rev-parse", "HEAD"]:
+            stdout = f"{implementation_commit}\n".encode("ascii")
+        elif tail == ["branch", "--show-current"]:
+            stdout = b"codex/lvef-multitask-revalidation\n"
+        elif tail[:2] == ["rev-list", "--count"]:
+            stdout = distance
+        else:
+            stdout = b""
+        return subprocess.CompletedProcess(arguments, 0, stdout, b"")
+
+    with mock.patch.object(
+        finalizer.subprocess,
+        "run",
+        side_effect=lambda arguments, **_kwargs: git_result(
+            arguments, distance=b"1\n"
+        ),
+    ):
+        finalizer._validate_r8r_repository_authority(implementation_commit)
+    with mock.patch.object(
+        finalizer.subprocess,
+        "run",
+        side_effect=lambda arguments, **_kwargs: git_result(
+            arguments, distance=b"2\n"
+        ),
+    ):
+        expect_code(
+            "R8R_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH",
+            lambda: finalizer._validate_r8r_repository_authority(
+                implementation_commit
+            ),
+        )
+
+    with tempfile.TemporaryDirectory() as directory:
+        paths, repair_epoch, runtime = _write_r8r_mixed_epoch_receipts(
+            Path(directory)
+        )
+        prefix_authorities = {
+            f"c3_batch_{index:03d}": (
+                paths[index].stat().st_size,
+                hashlib.sha256(paths[index].read_bytes()).hexdigest(),
+            )
+            for index in range(2)
+        }
+        patches = (
+            mock.patch.object(
+                finalizer,
+                "R8R_HISTORICAL_PREFIX_RECEIPT_AUTHORITIES",
+                prefix_authorities,
+            ),
+            mock.patch.object(
+                finalizer,
+                "_validate_r8r_repository_authority",
+                return_value=None,
+            ),
+            mock.patch.object(
+                finalizer,
+                "_current_r8r_implementation_epoch",
+                return_value=repair_epoch,
+            ),
+            mock.patch.object(
+                finalizer,
+                "_validate_r8r_chain_artifacts",
+                return_value="a" * 64,
+            ),
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            wrong_prefix = dict(prefix_authorities)
+            wrong_prefix["c3_batch_000"] = (
+                wrong_prefix["c3_batch_000"][0],
+                "0" * 64,
+            )
+            with mock.patch.object(
+                finalizer,
+                "R8R_HISTORICAL_PREFIX_RECEIPT_AUTHORITIES",
+                wrong_prefix,
+            ):
+                expect_code(
+                    "R8R_FINALIZER_PREFIX_RECEIPT_MISMATCH",
+                    lambda: finalizer.finalize_receipts(
+                        paths,
+                        expected_governing_commit=(
+                            finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+                        ),
+                        expected_attempt_id=finalizer.R8R_ATTEMPT_ID,
+                        expected_runtime_authority=runtime,
+                        r8r_implementation_authority=(
+                            _r8r_implementation_authority()
+                        ),
+                    ),
+                )
+
+            original_repair_receipt = paths[8].read_text(encoding="utf-8")
+            scientific_drift = json.loads(original_repair_receipt)
+            scientific_drift["package_inventory_sha256"] = "f" * 64
+            paths[8].write_text(
+                json.dumps(scientific_drift, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            expect_code(
+                "R8R_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH",
+                lambda: finalizer.finalize_receipts(
+                    paths,
+                    expected_governing_commit=(
+                        finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+                    ),
+                    expected_attempt_id=finalizer.R8R_ATTEMPT_ID,
+                    expected_runtime_authority=runtime,
+                    r8r_implementation_authority=(
+                        _r8r_implementation_authority()
+                    ),
+                ),
+            )
+            paths[8].write_text(original_repair_receipt, encoding="utf-8")
+
+            third = json.loads(paths[8].read_text(encoding="utf-8"))
+            third["scheduler_runner_sha256"] = "f" * 64
+            paths[8].write_text(
+                json.dumps(third, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            expect_code(
+                "R8R_FINALIZER_IMPLEMENTATION_EPOCH_MISMATCH",
+                lambda: finalizer.finalize_receipts(
+                    paths,
+                    expected_governing_commit=(
+                        finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+                    ),
+                    expected_attempt_id=finalizer.R8R_ATTEMPT_ID,
+                    expected_runtime_authority=runtime,
+                    r8r_implementation_authority=(
+                        _r8r_implementation_authority()
+                    ),
+                ),
+            )
+
+        invalid = _r8r_implementation_authority()
+        invalid = finalizer.R8RImplementationAuthority(
+            implementation_commit=invalid.implementation_commit,
+            recovery_authority_sha256=invalid.recovery_authority_sha256,
+            recovery_terminal_receipt_sha256=invalid.recovery_authority_sha256,
+            continuation_capacity_receipt_sha256=(
+                invalid.continuation_capacity_receipt_sha256
+            ),
+            continuation_claim_sha256=invalid.continuation_claim_sha256,
+            continuation_submission_receipt_sha256=(
+                invalid.continuation_submission_receipt_sha256
+            ),
+        )
+        with mock.patch.object(
+            finalizer,
+            "R8R_HISTORICAL_PREFIX_RECEIPT_AUTHORITIES",
+            prefix_authorities,
+        ):
+            expect_code(
+                "R8R_FINALIZER_AUTHORITY_INVALID",
+                lambda: finalizer.finalize_receipts(
+                    paths,
+                    expected_governing_commit=(
+                        finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT
+                    ),
+                    expected_attempt_id=finalizer.R8R_ATTEMPT_ID,
+                    expected_runtime_authority=runtime,
+                    r8r_implementation_authority=invalid,
+                ),
+            )
 
 
 def test_production_finalizer_fails_on_missing_batch_or_scientific_inconsistency() -> None:

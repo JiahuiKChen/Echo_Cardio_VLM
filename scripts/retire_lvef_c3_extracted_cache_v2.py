@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lvef_c3_orchestration_core as core
 import finalize_lvef_c3_production as finalizer
 import lvef_c3_production_stages as production_stages
+import preserve_lvef_c3_production_batch as preservation
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -34,6 +35,12 @@ LIVE_PRODUCTION_ROOT = Path(
 )
 MAX_AUTHORITY_JSON_BYTES = 8 * 1024 * 1024
 _SYNTHETIC_TEST_ROOT_CAPABILITY = object()
+ArtifactValidationContext = preservation.ArtifactValidationContext
+SealedRawDicomAuthority = preservation.SealedRawDicomAuthority
+STRICT_CONTENT_HASH = preservation.STRICT_CONTENT_HASH
+R8R_FIXED_BATCH3_NO_DICOM_BODY = (
+    preservation.R8R_FIXED_BATCH3_NO_DICOM_BODY
+)
 AUTH_KEYS = {
     "schema_version", "artifact_type", "status", "authorization_scope",
     "owner_authorized", "owner_authorization_date_utc",
@@ -58,6 +65,39 @@ class CacheRetirementError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def require_artifact_validation_context(
+    value: ArtifactValidationContext,
+) -> ArtifactValidationContext:
+    try:
+        return preservation.require_artifact_validation_context(value)
+    except preservation.BatchPreservationError as exc:
+        raise CacheRetirementError(exc.code) from exc
+
+
+def validate_artifact_validation_scope(
+    *,
+    artifact_validation_context: ArtifactValidationContext,
+    production_root: Path,
+    attempt_id: str,
+    batch_id: str,
+    plan_sha256: str,
+    governing_commit: str,
+    scheduler_runner_path: Path | None,
+) -> None:
+    try:
+        preservation.validate_artifact_validation_scope(
+            artifact_validation_context=artifact_validation_context,
+            production_root=production_root,
+            attempt_id=attempt_id,
+            batch_id=batch_id,
+            plan_sha256=plan_sha256,
+            governing_commit=governing_commit,
+            scheduler_runner_path=scheduler_runner_path,
+        )
+    except preservation.BatchPreservationError as exc:
+        raise CacheRetirementError(exc.code) from exc
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -229,7 +269,31 @@ def cache_tree_sha256(root: Path) -> str:
 def validate_preservation_coverage(
     manifest_path: Path, *, production_root: Path,
     required_roots: Sequence[tuple[Path, Path]],
+    artifact_validation_context: ArtifactValidationContext = STRICT_CONTENT_HASH,
+    sealed_raw_dicom_authority: Mapping[
+        Path, SealedRawDicomAuthority
+    ] | None = None,
 ) -> None:
+    context = require_artifact_validation_context(
+        artifact_validation_context
+    )
+    if context is R8R_FIXED_BATCH3_NO_DICOM_BODY:
+        if sealed_raw_dicom_authority is None:
+            raise CacheRetirementError(
+                "RECOVERY_RAW_DICOM_AUTHORITY_MISSING"
+            )
+    elif sealed_raw_dicom_authority is not None:
+        raise CacheRetirementError(
+            "STRICT_CONTENT_HASH_SEALED_AUTHORITY_PROHIBITED"
+        )
+    sealed_by_path = dict(sealed_raw_dicom_authority or {})
+    if any(
+        not isinstance(path, Path)
+        or type(authority) is not SealedRawDicomAuthority
+        or authority.path != path
+        for path, authority in sealed_by_path.items()
+    ):
+        raise CacheRetirementError("RAW_DICOM_SEALED_AUTHORITY_INVALID")
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise CacheRetirementError("PRESERVATION_MANIFEST_NOT_REGULAR")
     with manifest_path.open(newline="", encoding="utf-8") as handle:
@@ -247,6 +311,12 @@ def validate_preservation_coverage(
     for actual_root, logical_root in required_roots:
         if actual_root.is_symlink() or not actual_root.is_dir():
             raise CacheRetirementError("PRESERVED_TREE_INVALID")
+        expected_sealed_paths = {
+            path
+            for path in sealed_by_path
+            if path == actual_root or actual_root in path.parents
+        }
+        observed_sealed_paths: set[Path] = set()
         for directory, names, filenames in os.walk(actual_root, followlinks=False):
             current = Path(directory)
             if any((current / name).is_symlink() for name in names):
@@ -258,12 +328,45 @@ def validate_preservation_coverage(
                 logical_path = logical_root / path.relative_to(actual_root)
                 relative = logical_path.relative_to(production_root).as_posix()
                 row = by_relative.get(relative)
+                sealed = sealed_by_path.get(path)
+                if sealed is not None:
+                    if context is not R8R_FIXED_BATCH3_NO_DICOM_BODY:
+                        raise CacheRetirementError(
+                            "RAW_DICOM_SEALED_AUTHORITY_INVALID"
+                        )
+                    try:
+                        preservation.validate_sealed_raw_dicom_metadata(
+                            sealed
+                        )
+                    except preservation.BatchPreservationError as exc:
+                        raise CacheRetirementError(exc.code) from exc
+                    observed_sealed_paths.add(path)
+                    observed_size = sealed.size_bytes
+                    observed_sha256 = sealed.observed_sha256
+                else:
+                    if (
+                        context is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                        and path.suffix.lower() == ".dcm"
+                    ):
+                        raise CacheRetirementError(
+                            "RECOVERY_RAW_DICOM_AUTHORITY_MISSING"
+                        )
+                    observed_size = path.stat(follow_symlinks=False).st_size
+                    observed_sha256 = sha256_file(path)
+                try:
+                    row_size = int(row["size_bytes"]) if row is not None else -1
+                except (TypeError, ValueError):
+                    row_size = -1
                 if (
                     row is None
-                    or int(row["size_bytes"]) != path.stat().st_size
-                    or row["sha256"] != sha256_file(path)
+                    or row_size != observed_size
+                    or row["sha256"] != observed_sha256
                 ):
                     raise CacheRetirementError("PRESERVATION_TREE_COVERAGE_MISMATCH")
+        if observed_sealed_paths != expected_sealed_paths:
+            raise CacheRetirementError(
+                "RECOVERY_RAW_DICOM_AUTHORITY_MISSING"
+            )
 
 
 def _validate_production_root(
@@ -367,24 +470,29 @@ def _derive_and_validate_ledger_authority(
 
 def _validate_raw_retention(
     raw_root: Path, *, planned_batch: Mapping[str, Any],
-) -> None:
-    if raw_root.is_symlink() or not raw_root.is_dir():
-        raise CacheRetirementError("RAW_RETENTION_ROOT_INVALID")
+    artifact_validation_context: ArtifactValidationContext = STRICT_CONTENT_HASH,
+    expected_authority: Mapping[
+        Path, SealedRawDicomAuthority
+    ] | None = None,
+) -> dict[Path, SealedRawDicomAuthority]:
+    context = require_artifact_validation_context(
+        artifact_validation_context
+    )
     try:
-        expected = {
-            f"{row['source_object_key']}.dcm": int(row["size_bytes"])
-            for row in planned_batch["objects"]
-        }
-    except (KeyError, TypeError, ValueError) as exc:
-        raise CacheRetirementError("RAW_RETENTION_PLAN_INVALID") from exc
-    observed: dict[str, int] = {}
-    for entry in os.scandir(raw_root):
-        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
-            raise CacheRetirementError("RAW_RETENTION_ENTRY_INVALID")
-        metadata = entry.stat(follow_symlinks=False)
-        observed[entry.name] = metadata.st_size
-    if observed != expected:
-        raise CacheRetirementError("RAW_RETENTION_MEMBERSHIP_MISMATCH")
+        _rows, observed = preservation.validate_verified_raw_dicom_authority(
+            raw_objects_root=raw_root,
+            verified_download_manifest=(
+                raw_root.parent
+                / "verified_download_manifest.restricted.csv"
+            ),
+            planned_batch=planned_batch,
+            artifact_validation_context=context,
+        )
+    except preservation.BatchPreservationError as exc:
+        raise CacheRetirementError(exc.code) from exc
+    if expected_authority is not None and observed != dict(expected_authority):
+        raise CacheRetirementError("RAW_DICOM_METADATA_CHANGED")
+    return observed
 
 
 def validate_preservation_eligibility_receipt(
@@ -394,6 +502,7 @@ def validate_preservation_eligibility_receipt(
     contract: Mapping[str, Any], contract_path: Path,
     environment_receipt: Path, production_root: Path,
     preservation_manifest: Path,
+    scheduler_runner_path: Path | None = None,
 ) -> None:
     """Closed validation of every destructive eligibility assertion."""
 
@@ -519,6 +628,12 @@ def validate_preservation_eligibility_receipt(
         / batch_id
         / "dicom_extraction"
     )
+    effective_scheduler_runner = (
+        scheduler_runner_path
+        if scheduler_runner_path is not None
+        else Path(__file__).resolve().parent
+        / "scc_run_lvef_c3_full_sequential.sh"
+    )
     artifact_paths = {
         "state_input_ledger_sha256": batch_root / "pooling_resume_ledger.restricted.json",
         "source_receipt_sha256": batch_root / "download_resume_ledger.restricted.json",
@@ -536,9 +651,7 @@ def validate_preservation_eligibility_receipt(
         "batch_preservation_script_sha256": (
             Path(__file__).resolve().parent / "preserve_lvef_c3_production_batch.py"
         ),
-        "scheduler_runner_sha256": (
-            Path(__file__).resolve().parent / "scc_run_lvef_c3_full_sequential.sh"
-        ),
+        "scheduler_runner_sha256": effective_scheduler_runner,
     }
     for key, path in artifact_paths.items():
         observed_hash = (
@@ -588,9 +701,14 @@ def validate_gate(
     require_authorization: bool,
     requirements: core.PlanRequirements | None = None,
     expected_runtime_authority: Mapping[str, Any] | None = None,
+    artifact_validation_context: ArtifactValidationContext = STRICT_CONTENT_HASH,
+    scheduler_runner_path: Path | None = None,
     allowed_production_prefix: Path = PRODUCTION_ROOT_PREFIX,
     _synthetic_test_capability: object | None = None,
 ) -> dict[str, Any]:
+    artifact_validation_context = require_artifact_validation_context(
+        artifact_validation_context
+    )
     if (
         not ATTEMPT_RE.fullmatch(attempt_id)
         or not BATCH_RE.fullmatch(batch_id)
@@ -611,6 +729,7 @@ def validate_gate(
         batch_id / "dicom_extraction" / "clips"
     )
     raw_root = production_root / "attempts" / attempt_id / "raw" / batch_id / "objects"
+    raw_batch_root = raw_root.parent
     batch_root = production_root / "attempts" / attempt_id / "batches" / batch_id
     expected_preservation_receipt = (
         batch_root / "preservation" / "batch_preservation_receipt.restricted.json"
@@ -629,6 +748,7 @@ def validate_gate(
         raise CacheRetirementError("RETIREMENT_AUTHORITY_PATH_MISMATCH")
     require_no_symlink_ancestors(cache_root, production_root)
     require_no_symlink_ancestors(raw_root, production_root)
+    require_no_symlink_ancestors(raw_batch_root, production_root)
     require_no_symlink_ancestors(preservation_receipt_path, production_root)
     require_no_symlink_ancestors(final_ledger_path, production_root)
     require_no_symlink_ancestors(plan_path, production_root)
@@ -641,6 +761,15 @@ def validate_gate(
     effective_requirements = requirements or core.production_requirements(contract)
     plan_sha = core.validate_current_batch_plan_v3(
         plan, requirements=effective_requirements
+    )
+    validate_artifact_validation_scope(
+        artifact_validation_context=artifact_validation_context,
+        production_root=production_root,
+        attempt_id=attempt_id,
+        batch_id=batch_id,
+        plan_sha256=plan_sha,
+        governing_commit=governing_commit,
+        scheduler_runner_path=scheduler_runner_path,
     )
     planned = next((row for row in plan["batches"] if row["batch_id"] == batch_id), None)
     if planned is None:
@@ -687,8 +816,19 @@ def validate_gate(
         environment_receipt=environment_receipt,
         production_root=production_root,
         preservation_manifest=preservation_manifest,
+        scheduler_runner_path=scheduler_runner_path,
     )
-    _validate_raw_retention(raw_root, planned_batch=planned)
+    raw_dicom_authority = _validate_raw_retention(
+        raw_root,
+        planned_batch=planned,
+        artifact_validation_context=artifact_validation_context,
+    )
+    coverage_sealed_authority = (
+        raw_dicom_authority
+        if artifact_validation_context
+        is R8R_FIXED_BATCH3_NO_DICOM_BODY
+        else None
+    )
     authorization = None
     intent_path = preservation_receipt_path.parent / "cache_retirement_intent.restricted.json"
     staged_path = preservation_receipt_path.parent / "cache_atomically_staged.restricted.json"
@@ -734,13 +874,20 @@ def validate_gate(
         validate_preservation_coverage(
             preservation_manifest,
             production_root=production_root,
-            required_roots=((cache_root, cache_root), (raw_root, raw_root)),
+            required_roots=(
+                (cache_root, cache_root),
+                (raw_batch_root, raw_batch_root),
+            ),
+            artifact_validation_context=artifact_validation_context,
+            sealed_raw_dicom_authority=coverage_sealed_authority,
         )
     else:
         validate_preservation_coverage(
             preservation_manifest,
             production_root=production_root,
-            required_roots=((raw_root, raw_root),),
+            required_roots=((raw_batch_root, raw_batch_root),),
+            artifact_validation_context=artifact_validation_context,
+            sealed_raw_dicom_authority=coverage_sealed_authority,
         )
     if require_authorization:
         expected = {
@@ -819,12 +966,18 @@ def validate_gate(
                 preservation_manifest,
                 production_root=production_root,
                 required_roots=((retirement_staging, cache_root),),
+                artifact_validation_context=artifact_validation_context,
+                sealed_raw_dicom_authority=coverage_sealed_authority,
             )
     if expected_authority["checkpoint_sha256"] != preservation["checkpoint_sha256"]:
         raise CacheRetirementError("CHECKPOINT_AUTHORITY_MISMATCH")
     return {
         "cache_root": cache_root,
         "raw_root": raw_root,
+        "raw_batch_root": raw_batch_root,
+        "raw_dicom_authority": raw_dicom_authority,
+        "artifact_validation_context": artifact_validation_context,
+        "scheduler_runner_path": scheduler_runner_path,
         "cache_tree_sha256": tree_sha,
         "retirement_staging": retirement_staging,
         "intent_path": intent_path,
@@ -909,6 +1062,8 @@ def main(
     *,
     requirements: core.PlanRequirements | None = None,
     expected_runtime_authority: Mapping[str, Any] | None = None,
+    artifact_validation_context: ArtifactValidationContext = STRICT_CONTENT_HASH,
+    scheduler_runner_path: Path | None = None,
     allowed_production_prefix: Path = PRODUCTION_ROOT_PREFIX,
     _synthetic_test_capability: object | None = None,
 ) -> int:
@@ -930,12 +1085,15 @@ def main(
         require_authorization=args.execute,
         requirements=requirements,
         expected_runtime_authority=expected_runtime_authority,
+        artifact_validation_context=artifact_validation_context,
+        scheduler_runner_path=scheduler_runner_path,
         allowed_production_prefix=allowed_production_prefix,
         _synthetic_test_capability=_synthetic_test_capability,
     )
     if args.execute:
         cache_root = context["cache_root"]
         raw_root = context["raw_root"]
+        raw_batch_root = context["raw_batch_root"]
         staging = context["retirement_staging"]
         intent_path = context["intent_path"]
         expected_intent = context["expected_intent"]
@@ -990,7 +1148,12 @@ def main(
             raise CacheRetirementError("CACHE_RETIREMENT_POSTCONDITION_FAILED")
         try:
             _validate_raw_retention(
-                raw_root, planned_batch=context["planned_batch"]
+                raw_root,
+                planned_batch=context["planned_batch"],
+                artifact_validation_context=context[
+                    "artifact_validation_context"
+                ],
+                expected_authority=context["raw_dicom_authority"],
             )
             retained_extraction_root = cache_root.parent
             retained_metadata = {
@@ -1018,7 +1181,16 @@ def main(
                 args.preservation_receipt.parent
                 / "batch_preservation_manifest.restricted.tsv",
                 production_root=args.production_root,
-                required_roots=((raw_root, raw_root),),
+                required_roots=((raw_batch_root, raw_batch_root),),
+                artifact_validation_context=context[
+                    "artifact_validation_context"
+                ],
+                sealed_raw_dicom_authority=(
+                    context["raw_dicom_authority"]
+                    if context["artifact_validation_context"]
+                    is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                    else None
+                ),
             )
         except CacheRetirementError:
             raise

@@ -34,6 +34,9 @@ SCRIPT_ROOT: Final = Path(__file__).resolve().parent
 # ambient PYTHONPATH or a caller-selected import directory.
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
+# This dependency-light import must follow the isolated fixed-root bootstrap.
+import lvef_c3_production_stages as production_stages
+
 REPOSITORY_ROOT: Final = SCRIPT_ROOT.parent
 CONFIG_ROOT: Final = REPOSITORY_ROOT / "configs"
 CONTRACT_PATH: Final = CONFIG_ROOT / "lvef_c3_orchestration_v2.yaml"
@@ -545,11 +548,21 @@ def _discover_current_environment_receipt(*, repository: Path) -> Path:
     return receipt
 
 
-def discover_live_authority(*, repository: Path = REPOSITORY_ROOT) -> LiveAuthority:
+def discover_live_authority(
+    *,
+    repository: Path = REPOSITORY_ROOT,
+    runtime_validation_context: (
+        production_stages.RuntimeAuthorityValidationContext
+    ) = production_stages.LIVE_RUNTIME_CAPTURE,
+) -> LiveAuthority:
     """Read only fixed current authorities; never open a selected-study row body."""
 
+    if not isinstance(
+        runtime_validation_context,
+        production_stages.RuntimeAuthorityValidationContext,
+    ):
+        _fail("MINIMAL_RUNTIME_VALIDATION_CONTEXT_INVALID")
     import lvef_c3_orchestration_core as core
-    import lvef_c3_production_stages as production_stages
 
     legacy_session = _project_legacy_session_environment(
         required_names=LEGACY_SESSION_REQUIRED_NAMES
@@ -576,6 +589,8 @@ def discover_live_authority(*, repository: Path = REPOSITORY_ROOT) -> LiveAuthor
         environment,
         crc32c_python=CRC32C_PYTHON_PATH,
         crc32c_worker=SCRIPT_ROOT / "lvef_c3_crc32c_worker.py",
+        runtime_validation_context=runtime_validation_context,
+        expected_environment_receipt_sha256=CURRENT_ENVIRONMENT_SHA256,
     )
 
     selected_studies = Path(values["SELECTED_STUDIES"])

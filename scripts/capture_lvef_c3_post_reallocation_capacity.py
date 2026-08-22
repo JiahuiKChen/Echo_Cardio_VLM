@@ -153,6 +153,130 @@ FULL_HEADROOM_KEYS = frozenset(
     }
 )
 
+# Phase 1I-R8R continuation capacity is intentionally not a general successor
+# estimate.  It is one fixed read-only adjudication for the still-unrun array
+# tasks 4--19 of the original, already materialized scientific attempt.  The
+# plan is supplied as an already-loaded mapping so this module never reopens or
+# reinterprets a caller-selected path, range, attempt, commit, or demand.
+R8R_ORIGINAL_PLAN_SHA256 = (
+    "904d0ab65f003c1eb68adeee8c0b1dd786ec7a9ef4bb496b646b22cc7a540247"
+)
+R8R_ORIGINAL_ATTEMPT_ID = "lvef_c3_full_904d0ab65f003c1e_e1cdb674"
+R8R_ORIGINAL_SCIENTIFIC_COMMIT = (
+    "e1cdb674ada23bbc9f3a1ff77c33927bd324d3ed"
+)
+R8R_CONTINUATION_FIRST_TASK = 4
+R8R_CONTINUATION_LAST_TASK = 19
+R8R_CONTINUATION_TASK_COUNT = 16
+R8R_CONTINUATION_FIRST_BATCH_INDEX = 3
+R8R_CONTINUATION_EXCLUSIVE_LAST_BATCH_INDEX = 19
+R8R_CONTINUATION_REMAINING_STUDIES = 3_780
+R8R_CONTINUATION_REMAINING_OBJECTS = 280_263
+R8R_CONTINUATION_REMAINING_SOURCE_BYTES = 1_014_021_066_806
+R8R_ORIGINAL_STUDIES = 4_530
+R8R_ORIGINAL_OBJECTS = 335_984
+R8R_ORIGINAL_SOURCE_BYTES = 1_216_569_133_322
+R8R_EXTRACTED_BYTES_PER_OBJECT = 4_816_896
+R8R_CLIP_EMBEDDING_BYTES_PER_OBJECT = 4_096
+R8R_STUDY_EMBEDDING_BYTES_PER_STUDY = 4_096
+R8R_RETAINED_EXTRACTED_AUDIT_BYTES = 2_000_000_000
+R8R_MANIFEST_AND_METADATA_BYTES = 5_000_000_000
+R8R_LOG_BYTES = 10_000_000_000
+R8R_PRESERVATION_AND_FINALIZATION_BYTES = 10_000_000_000
+R8R_SAFETY_BYTES = 50_000_000_000
+R8R_QUOTA_RESERVE_BYTES = 200_000_000_000
+R8R_PHYSICAL_RESERVE_BYTES = 200_000_000_000
+R8R_FIXED_CONTROL_FILE_DEMAND = 100_000
+R8R_CONTINUATION_STATUS_PASS = (
+    "PASS_FIXED_CONTINUATION_4_19_WITH_200GB_RESERVE"
+)
+R8R_CONTINUATION_STATUS_BLOCKED = "BLOCKED"
+R8R_CONTINUATION_ARTIFACT_TYPE = (
+    "lvef_c3_r8r_fixed_continuation_capacity_authority_v1"
+)
+R8R_CONTINUATION_ZERO_EFFECT_KEYS = frozenset(
+    {
+        "cloud_requests",
+        "qsub_submissions",
+        "scheduler_jobs_submitted",
+        "dicom_body_reads",
+        "npz_body_reads",
+        "gpu_executions",
+        "echoprime_executions",
+        "embedding_generations",
+        "model_fitting",
+        "prediction_generation",
+        "confirmatory_performance_accesses",
+        "files_moved",
+        "files_deleted",
+        "writes_performed",
+    }
+)
+R8R_CONTINUATION_CAPACITY_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "blocking_reason_codes",
+        "original_attempt_id",
+        "original_plan_sha256",
+        "original_scientific_governing_commit",
+        "continuation_first_task",
+        "continuation_last_task",
+        "continuation_task_count",
+        "remaining_batch_count",
+        "remaining_studies",
+        "remaining_objects",
+        "remaining_source_bytes",
+        "largest_remaining_batch_objects",
+        "largest_remaining_batch_source_bytes",
+        "remaining_raw_source_demand_bytes",
+        "largest_remaining_transfer_retry_demand_bytes",
+        "largest_rolling_extracted_cache_demand_bytes",
+        "remaining_clip_embedding_upper_bound_bytes",
+        "remaining_study_embedding_upper_bound_bytes",
+        "retained_extracted_audit_demand_bytes",
+        "manifest_and_metadata_demand_bytes",
+        "log_demand_bytes",
+        "preservation_and_finalization_demand_bytes",
+        "safety_demand_bytes",
+        "continuation_increment_bytes",
+        "remaining_raw_object_file_demand",
+        "largest_rolling_object_file_demand",
+        "fixed_control_file_demand",
+        "required_file_slots",
+        "research_quota_bytes",
+        "research_usage_bytes",
+        "research_quota_remaining_bytes",
+        "research_file_quota",
+        "research_files_used",
+        "research_file_slots_remaining",
+        "research_filesystem_total_bytes",
+        "research_filesystem_used_bytes",
+        "research_filesystem_available_bytes",
+        "projected_research_usage_bytes",
+        "required_quota_reserve_bytes",
+        "required_physical_reserve_bytes",
+        "quota_slack_after_continuation_bytes",
+        "physical_slack_after_continuation_bytes",
+        "quota_margin_beyond_reserve_bytes",
+        "physical_margin_beyond_reserve_bytes",
+        "file_slot_margin_after_demand",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "native_capacity_snapshot_captures",
+        "native_quota_file_captures",
+        "capacity_command_captures",
+        "pquota_command_captures",
+        "findmnt_command_captures",
+        "df_command_captures",
+        "native_quota_authority_read_only",
+        "pquota_display_crosscheck",
+        *R8R_CONTINUATION_ZERO_EFFECT_KEYS,
+    }
+)
+
 # The historical Phase 1E-F receipt above deliberately remains bound to the
 # exact allocation that existed when it was captured.  Fresh-successor
 # admission is a different authority: it is expected to observe a changed
@@ -2692,6 +2816,121 @@ def validate_current_full_headroom(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
+def _capture_current_capacity_snapshot(
+    authority: CurrentCanaryHeadroomAuthority,
+    *,
+    process_runner: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    """Capture the fixed native-quota/findmnt/df registry exactly once."""
+
+    _validated_command_registry(
+        CAPACITY_COMMAND_SPECS, require_canonical_roles=True
+    )
+    production = _validate_current_canary_headroom_authority(authority)
+    permitted_owner_uids = (
+        frozenset({0}) if production else frozenset({0, os.geteuid()})
+    )
+    commands: dict[str, Mapping[str, Any]] = {}
+    for specification in CAPACITY_COMMAND_SPECS:
+        argv = _current_canary_command_argv(specification, authority)
+        if specification.logical_role == "pquota":
+            record = _run_current_canary_pquota(
+                specification, argv, process_runner=process_runner
+            )
+        else:
+            record = _run(
+                specification,
+                argv,
+                process_runner=process_runner,
+                permitted_owner_uids=permitted_owner_uids,
+            )
+        commands[specification.logical_role] = dict(record)
+    if set(commands) != CAPACITY_COMMAND_ROLES:
+        raise PostReallocationCapacityError(
+            "CURRENT_CAPACITY_SNAPSHOT_COMMAND_INVALID"
+        )
+
+    native = _parse_dynamic_native_quota(
+        _read_regular(authority.native_quota_path, maximum=64_000_000)
+    )
+    paths = {
+        "research": _path_identity(authority.research_path),
+        "backed": _path_identity(authority.backed_path),
+    }
+    mounts = {
+        "research": _parse_findmnt(
+            commands[CAPACITY_COMMAND_CONSUMER_ROLES["research_mount"]][
+                "stdout_text"
+            ],
+            authority.research_path,
+        ),
+        "backed": _parse_findmnt(
+            commands[CAPACITY_COMMAND_CONSUMER_ROLES["backed_mount"]][
+                "stdout_text"
+            ],
+            authority.backed_path,
+        ),
+    }
+    if production:
+        _validate_pquota_restricted_mount_reconciliation(
+            native=native, paths=paths, mounts=mounts
+        )
+    elif any(
+        paths[role]["is_symlink"] is not False
+        or mounts[role]["bind"] is not False
+        or mounts[role]["fsroot"] != "/"
+        or native[role]["native_name_sha256"]
+        != _sha(EXPECTED_NATIVE_ROWS[role].encode())
+        for role in ("research", "backed")
+    ):
+        raise PostReallocationCapacityError(
+            "CURRENT_CAPACITY_SNAPSHOT_MOUNT_RECONCILIATION_FAILED"
+        )
+    dfs = {
+        role: _parse_df(
+            commands[
+                CAPACITY_COMMAND_CONSUMER_ROLES[f"{role}_df"]
+            ]["stdout_text"],
+            mounts[role],
+        )
+        for role in ("research", "backed")
+    }
+    display_record = commands[
+        CAPACITY_COMMAND_CONSUMER_ROLES["pquota_display"]
+    ]
+    display = _parse_pquota(
+        display_record["stdout_text"],
+        native,
+        command_available=(
+            display_record.get("availability_status") == "AVAILABLE"
+        ),
+    )
+    if display["status"] == DISPLAY_CROSSCHECK_FAIL:
+        raise PostReallocationCapacityError(
+            "CURRENT_CAPACITY_SNAPSHOT_PQUOTA_CONTRADICTION"
+        )
+    return {
+        "native": native,
+        "dfs": dfs,
+        "pquota_display_crosscheck": str(display["status"]),
+        "native_capacity_snapshot_captures": 1,
+        "native_quota_file_captures": 1,
+        "capacity_command_captures": len(commands),
+        "pquota_command_captures": sum(
+            specification.command_kind == "pquota"
+            for specification in CAPACITY_COMMAND_SPECS
+        ),
+        "findmnt_command_captures": sum(
+            specification.command_kind == "findmnt"
+            for specification in CAPACITY_COMMAND_SPECS
+        ),
+        "df_command_captures": sum(
+            specification.command_kind == "df"
+            for specification in CAPACITY_COMMAND_SPECS
+        ),
+    }
+
+
 def probe_current_full_headroom(
     authority: CurrentCanaryHeadroomAuthority = (
         DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY
@@ -2875,6 +3114,591 @@ def probe_current_full_headroom(
             "writes_performed": 0,
         }
     )
+
+
+def _fixed_r8r_continuation_batches(
+    plan: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    """Bind one exact original plan and return only its fixed tasks 4--19."""
+
+    if not isinstance(plan, Mapping):
+        raise PostReallocationCapacityError("R8R_FIXED_PLAN_SCHEMA_INVALID")
+    try:
+        plan_payload = json.dumps(
+            plan,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+        raise PostReallocationCapacityError(
+            "R8R_FIXED_PLAN_SCHEMA_INVALID"
+        ) from exc
+    if _sha(plan_payload) != R8R_ORIGINAL_PLAN_SHA256:
+        raise PostReallocationCapacityError("R8R_FIXED_PLAN_SHA256_MISMATCH")
+
+    authority = plan.get("authority")
+    cohort = plan.get("cohort")
+    batches = plan.get("batches")
+    if (
+        plan.get("schema_version") != 3
+        or plan.get("artifact_type")
+        != "lvef_c3_restricted_immutable_batch_plan_v3"
+        or not isinstance(authority, Mapping)
+        or authority.get("git_commit") != R8R_ORIGINAL_SCIENTIFIC_COMMIT
+        or not isinstance(cohort, Mapping)
+        or not isinstance(batches, list)
+        or len(batches) != R8R_CONTINUATION_LAST_TASK
+    ):
+        raise PostReallocationCapacityError("R8R_FIXED_PLAN_AUTHORITY_INVALID")
+
+    integer_fields = ("n_studies", "n_objects", "source_bytes")
+    for ordinal, batch in enumerate(batches):
+        if (
+            not isinstance(batch, Mapping)
+            or batch.get("batch_id") != f"c3_batch_{ordinal:03d}"
+            or batch.get("ordinal") != ordinal
+            or any(
+                not isinstance(batch.get(field), int)
+                or isinstance(batch.get(field), bool)
+                or int(batch[field]) <= 0
+                for field in integer_fields
+            )
+            or int(batch["n_studies"])
+            != (30 if ordinal == 18 else 250)
+        ):
+            raise PostReallocationCapacityError(
+                "R8R_FIXED_PLAN_TOPOLOGY_INVALID"
+            )
+
+    full_aggregates = (
+        sum(int(batch["n_studies"]) for batch in batches),
+        sum(int(batch["n_objects"]) for batch in batches),
+        sum(int(batch["source_bytes"]) for batch in batches),
+    )
+    if (
+        full_aggregates
+        != (
+            R8R_ORIGINAL_STUDIES,
+            R8R_ORIGINAL_OBJECTS,
+            R8R_ORIGINAL_SOURCE_BYTES,
+        )
+        or cohort.get("selected_studies") != R8R_ORIGINAL_STUDIES
+        or cohort.get("normalized_source_objects") != R8R_ORIGINAL_OBJECTS
+        or cohort.get("selected_source_bytes") != R8R_ORIGINAL_SOURCE_BYTES
+    ):
+        raise PostReallocationCapacityError(
+            "R8R_FIXED_PLAN_AGGREGATE_INVALID"
+        )
+
+    remaining = batches[
+        R8R_CONTINUATION_FIRST_BATCH_INDEX:
+        R8R_CONTINUATION_EXCLUSIVE_LAST_BATCH_INDEX
+    ]
+    remaining_aggregates = (
+        len(remaining),
+        sum(int(batch["n_studies"]) for batch in remaining),
+        sum(int(batch["n_objects"]) for batch in remaining),
+        sum(int(batch["source_bytes"]) for batch in remaining),
+    )
+    if remaining_aggregates != (
+        R8R_CONTINUATION_TASK_COUNT,
+        R8R_CONTINUATION_REMAINING_STUDIES,
+        R8R_CONTINUATION_REMAINING_OBJECTS,
+        R8R_CONTINUATION_REMAINING_SOURCE_BYTES,
+    ):
+        raise PostReallocationCapacityError(
+            "R8R_FIXED_PLAN_CONTINUATION_AGGREGATE_INVALID"
+        )
+    return remaining
+
+
+def probe_fixed_r8r_continuation_capacity(
+    plan: Mapping[str, Any],
+    *,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Adjudicate fixed original-attempt tasks 4--19 without publication.
+
+    Byte demand is derived only from ``plan["batches"][3:19]``: all remaining
+    raw source bytes, the largest remaining transfer retry, one largest rolling
+    extracted cache at 4,816,896 bytes per object, clip/study embedding upper
+    bounds at 4,096 bytes per object/study, and the fixed audit, manifest, log,
+    preservation/finalization, and safety burdens.  Required file slots are
+    exactly ``remaining objects + largest rolling batch objects + 100,000``;
+    the last term is the fixed control-file allowance.  Quota and physical
+    margins must each retain 200,000,000,000 bytes after this increment.
+
+    The caller can supply only the already-loaded exact plan and an optional
+    subprocess runner for dependency-light tests.  The native quota file and
+    canonical pquota/findmnt/df registry are captured once.  This function
+    performs no write, scheduler submission, data-body read, or publication.
+    """
+
+    remaining = _fixed_r8r_continuation_batches(plan)
+    snapshot = _capture_current_capacity_snapshot(
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
+        process_runner=process_runner,
+    )
+    native = snapshot["native"]
+    dfs = snapshot["dfs"]
+
+    remaining_studies = sum(int(row["n_studies"]) for row in remaining)
+    remaining_objects = sum(int(row["n_objects"]) for row in remaining)
+    remaining_source_bytes = sum(
+        int(row["source_bytes"]) for row in remaining
+    )
+    largest_remaining_objects = max(
+        int(row["n_objects"]) for row in remaining
+    )
+    largest_remaining_source_bytes = max(
+        int(row["source_bytes"]) for row in remaining
+    )
+    rolling_extracted_bytes = (
+        largest_remaining_objects * R8R_EXTRACTED_BYTES_PER_OBJECT
+    )
+    clip_embedding_bytes = (
+        remaining_objects * R8R_CLIP_EMBEDDING_BYTES_PER_OBJECT
+    )
+    study_embedding_bytes = (
+        remaining_studies * R8R_STUDY_EMBEDDING_BYTES_PER_STUDY
+    )
+    continuation_increment = sum(
+        (
+            remaining_source_bytes,
+            largest_remaining_source_bytes,
+            rolling_extracted_bytes,
+            clip_embedding_bytes,
+            study_embedding_bytes,
+            R8R_RETAINED_EXTRACTED_AUDIT_BYTES,
+            R8R_MANIFEST_AND_METADATA_BYTES,
+            R8R_LOG_BYTES,
+            R8R_PRESERVATION_AND_FINALIZATION_BYTES,
+            R8R_SAFETY_BYTES,
+        )
+    )
+    required_file_slots = (
+        remaining_objects
+        + largest_remaining_objects
+        + R8R_FIXED_CONTROL_FILE_DEMAND
+    )
+
+    research_quota = int(native["research"]["quota_kib"]) * 1024
+    research_usage = int(native["research"]["usage_kib"]) * 1024
+    research_file_quota = int(native["research"]["file_quota"])
+    research_files_used = int(native["research"]["files_used"])
+    physical_available = int(dfs["research"]["available"])
+    projected_usage = research_usage + continuation_increment
+    quota_slack = research_quota - projected_usage
+    physical_slack = physical_available - continuation_increment
+    quota_margin = quota_slack - R8R_QUOTA_RESERVE_BYTES
+    physical_margin = physical_slack - R8R_PHYSICAL_RESERVE_BYTES
+    file_slots_remaining = research_file_quota - research_files_used
+    file_margin = file_slots_remaining - required_file_slots
+    gates = {
+        "quota_reserve_gate_passed": quota_margin >= 0,
+        "physical_reserve_gate_passed": physical_margin >= 0,
+        "file_slot_gate_passed": file_margin >= 0,
+    }
+    blocking_reason_codes = [
+        code
+        for field, code in (
+            (
+                "quota_reserve_gate_passed",
+                "R8R_CONTINUATION_QUOTA_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "physical_reserve_gate_passed",
+                "R8R_CONTINUATION_PHYSICAL_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "file_slot_gate_passed",
+                "R8R_CONTINUATION_FILE_SLOTS_INSUFFICIENT",
+            ),
+        )
+        if gates[field] is not True
+    ]
+    status = (
+        R8R_CONTINUATION_STATUS_PASS
+        if not blocking_reason_codes
+        else R8R_CONTINUATION_STATUS_BLOCKED
+    )
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": R8R_CONTINUATION_ARTIFACT_TYPE,
+        "status": status,
+        "blocking_reason_codes": blocking_reason_codes,
+        "original_attempt_id": R8R_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": R8R_ORIGINAL_PLAN_SHA256,
+        "original_scientific_governing_commit": (
+            R8R_ORIGINAL_SCIENTIFIC_COMMIT
+        ),
+        "continuation_first_task": R8R_CONTINUATION_FIRST_TASK,
+        "continuation_last_task": R8R_CONTINUATION_LAST_TASK,
+        "continuation_task_count": R8R_CONTINUATION_TASK_COUNT,
+        "remaining_batch_count": len(remaining),
+        "remaining_studies": remaining_studies,
+        "remaining_objects": remaining_objects,
+        "remaining_source_bytes": remaining_source_bytes,
+        "largest_remaining_batch_objects": largest_remaining_objects,
+        "largest_remaining_batch_source_bytes": (
+            largest_remaining_source_bytes
+        ),
+        "remaining_raw_source_demand_bytes": remaining_source_bytes,
+        "largest_remaining_transfer_retry_demand_bytes": (
+            largest_remaining_source_bytes
+        ),
+        "largest_rolling_extracted_cache_demand_bytes": (
+            rolling_extracted_bytes
+        ),
+        "remaining_clip_embedding_upper_bound_bytes": (
+            clip_embedding_bytes
+        ),
+        "remaining_study_embedding_upper_bound_bytes": (
+            study_embedding_bytes
+        ),
+        "retained_extracted_audit_demand_bytes": (
+            R8R_RETAINED_EXTRACTED_AUDIT_BYTES
+        ),
+        "manifest_and_metadata_demand_bytes": (
+            R8R_MANIFEST_AND_METADATA_BYTES
+        ),
+        "log_demand_bytes": R8R_LOG_BYTES,
+        "preservation_and_finalization_demand_bytes": (
+            R8R_PRESERVATION_AND_FINALIZATION_BYTES
+        ),
+        "safety_demand_bytes": R8R_SAFETY_BYTES,
+        "continuation_increment_bytes": continuation_increment,
+        "remaining_raw_object_file_demand": remaining_objects,
+        "largest_rolling_object_file_demand": largest_remaining_objects,
+        "fixed_control_file_demand": R8R_FIXED_CONTROL_FILE_DEMAND,
+        "required_file_slots": required_file_slots,
+        "research_quota_bytes": research_quota,
+        "research_usage_bytes": research_usage,
+        "research_quota_remaining_bytes": research_quota - research_usage,
+        "research_file_quota": research_file_quota,
+        "research_files_used": research_files_used,
+        "research_file_slots_remaining": file_slots_remaining,
+        "research_filesystem_total_bytes": int(dfs["research"]["total"]),
+        "research_filesystem_used_bytes": int(dfs["research"]["used"]),
+        "research_filesystem_available_bytes": physical_available,
+        "projected_research_usage_bytes": projected_usage,
+        "required_quota_reserve_bytes": R8R_QUOTA_RESERVE_BYTES,
+        "required_physical_reserve_bytes": R8R_PHYSICAL_RESERVE_BYTES,
+        "quota_slack_after_continuation_bytes": quota_slack,
+        "physical_slack_after_continuation_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "file_slot_margin_after_demand": file_margin,
+        **gates,
+        "native_capacity_snapshot_captures": int(
+            snapshot["native_capacity_snapshot_captures"]
+        ),
+        "native_quota_file_captures": int(
+            snapshot["native_quota_file_captures"]
+        ),
+        "capacity_command_captures": int(
+            snapshot["capacity_command_captures"]
+        ),
+        "pquota_command_captures": int(
+            snapshot["pquota_command_captures"]
+        ),
+        "findmnt_command_captures": int(
+            snapshot["findmnt_command_captures"]
+        ),
+        "df_command_captures": int(snapshot["df_command_captures"]),
+        "native_quota_authority_read_only": True,
+        "pquota_display_crosscheck": str(
+            snapshot["pquota_display_crosscheck"]
+        ),
+        **{key: 0 for key in R8R_CONTINUATION_ZERO_EFFECT_KEYS},
+    }
+    if set(result) != R8R_CONTINUATION_CAPACITY_KEYS:
+        raise PostReallocationCapacityError(
+            "R8R_CONTINUATION_CAPACITY_SCHEMA_INVALID"
+        )
+    return validate_fixed_r8r_continuation_capacity(plan, result)
+
+
+def validate_fixed_r8r_continuation_capacity(
+    plan: Mapping[str, Any], value: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Replay the fixed continuation arithmetic without a live probe.
+
+    The live submitter captures the native capacity fields once. Delayed
+    workers and the held finalizer use this pure validator to rederive every
+    plan-dependent demand, margin, gate, and status from the sealed fields.
+    """
+
+    remaining = _fixed_r8r_continuation_batches(plan)
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8R_CONTINUATION_CAPACITY_KEYS
+    ):
+        raise PostReallocationCapacityError(
+            "R8R_CONTINUATION_CAPACITY_SCHEMA_INVALID"
+        )
+    integer_fields = {
+        "schema_version",
+        "continuation_first_task",
+        "continuation_last_task",
+        "continuation_task_count",
+        "remaining_batch_count",
+        "remaining_studies",
+        "remaining_objects",
+        "remaining_source_bytes",
+        "largest_remaining_batch_objects",
+        "largest_remaining_batch_source_bytes",
+        "remaining_raw_source_demand_bytes",
+        "largest_remaining_transfer_retry_demand_bytes",
+        "largest_rolling_extracted_cache_demand_bytes",
+        "remaining_clip_embedding_upper_bound_bytes",
+        "remaining_study_embedding_upper_bound_bytes",
+        "retained_extracted_audit_demand_bytes",
+        "manifest_and_metadata_demand_bytes",
+        "log_demand_bytes",
+        "preservation_and_finalization_demand_bytes",
+        "safety_demand_bytes",
+        "continuation_increment_bytes",
+        "remaining_raw_object_file_demand",
+        "largest_rolling_object_file_demand",
+        "fixed_control_file_demand",
+        "required_file_slots",
+        "research_quota_bytes",
+        "research_usage_bytes",
+        "research_quota_remaining_bytes",
+        "research_file_quota",
+        "research_files_used",
+        "research_file_slots_remaining",
+        "research_filesystem_total_bytes",
+        "research_filesystem_used_bytes",
+        "research_filesystem_available_bytes",
+        "projected_research_usage_bytes",
+        "required_quota_reserve_bytes",
+        "required_physical_reserve_bytes",
+        "quota_slack_after_continuation_bytes",
+        "physical_slack_after_continuation_bytes",
+        "quota_margin_beyond_reserve_bytes",
+        "physical_margin_beyond_reserve_bytes",
+        "file_slot_margin_after_demand",
+        "native_capacity_snapshot_captures",
+        "native_quota_file_captures",
+        "capacity_command_captures",
+        "pquota_command_captures",
+        "findmnt_command_captures",
+        "df_command_captures",
+        *R8R_CONTINUATION_ZERO_EFFECT_KEYS,
+    }
+    boolean_fields = {
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "native_quota_authority_read_only",
+    }
+    if (
+        any(type(value.get(key)) is not int for key in integer_fields)
+        or any(type(value.get(key)) is not bool for key in boolean_fields)
+    ):
+        raise PostReallocationCapacityError(
+            "R8R_CONTINUATION_CAPACITY_SCHEMA_INVALID"
+        )
+
+    remaining_studies = sum(int(row["n_studies"]) for row in remaining)
+    remaining_objects = sum(int(row["n_objects"]) for row in remaining)
+    remaining_source_bytes = sum(
+        int(row["source_bytes"]) for row in remaining
+    )
+    largest_objects = max(int(row["n_objects"]) for row in remaining)
+    largest_source_bytes = max(
+        int(row["source_bytes"]) for row in remaining
+    )
+    rolling_extracted_bytes = (
+        largest_objects * R8R_EXTRACTED_BYTES_PER_OBJECT
+    )
+    clip_embedding_bytes = (
+        remaining_objects * R8R_CLIP_EMBEDDING_BYTES_PER_OBJECT
+    )
+    study_embedding_bytes = (
+        remaining_studies * R8R_STUDY_EMBEDDING_BYTES_PER_STUDY
+    )
+    continuation_increment = sum(
+        (
+            remaining_source_bytes,
+            largest_source_bytes,
+            rolling_extracted_bytes,
+            clip_embedding_bytes,
+            study_embedding_bytes,
+            R8R_RETAINED_EXTRACTED_AUDIT_BYTES,
+            R8R_MANIFEST_AND_METADATA_BYTES,
+            R8R_LOG_BYTES,
+            R8R_PRESERVATION_AND_FINALIZATION_BYTES,
+            R8R_SAFETY_BYTES,
+        )
+    )
+    required_file_slots = (
+        remaining_objects
+        + largest_objects
+        + R8R_FIXED_CONTROL_FILE_DEMAND
+    )
+    quota = int(value["research_quota_bytes"])
+    usage = int(value["research_usage_bytes"])
+    file_quota = int(value["research_file_quota"])
+    files_used = int(value["research_files_used"])
+    physical_available = int(
+        value["research_filesystem_available_bytes"]
+    )
+    if (
+        min(
+            quota,
+            usage,
+            file_quota,
+            files_used,
+            int(value["research_filesystem_total_bytes"]),
+            int(value["research_filesystem_used_bytes"]),
+            physical_available,
+        )
+        < 0
+        or quota == 0
+        or file_quota == 0
+        or int(value["research_filesystem_total_bytes"]) == 0
+        or quota % 1024 != 0
+        or usage % 1024 != 0
+        or quota < EXPECTED_RESEARCH_QUOTA_KIB * 1024
+        or file_quota < EXPECTED_RESEARCH_FILE_QUOTA
+        or usage > quota
+        or files_used > file_quota
+        or int(value["research_filesystem_used_bytes"])
+        + physical_available
+        > int(value["research_filesystem_total_bytes"])
+    ):
+        raise PostReallocationCapacityError(
+            "R8R_CONTINUATION_CAPACITY_SCHEMA_INVALID"
+        )
+    projected_usage = usage + continuation_increment
+    quota_slack = quota - projected_usage
+    physical_slack = physical_available - continuation_increment
+    quota_margin = quota_slack - R8R_QUOTA_RESERVE_BYTES
+    physical_margin = physical_slack - R8R_PHYSICAL_RESERVE_BYTES
+    file_slots_remaining = file_quota - files_used
+    file_margin = file_slots_remaining - required_file_slots
+    gates = {
+        "quota_reserve_gate_passed": quota_margin >= 0,
+        "physical_reserve_gate_passed": physical_margin >= 0,
+        "file_slot_gate_passed": file_margin >= 0,
+    }
+    blocking_reason_codes = [
+        code
+        for key, code in (
+            (
+                "quota_reserve_gate_passed",
+                "R8R_CONTINUATION_QUOTA_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "physical_reserve_gate_passed",
+                "R8R_CONTINUATION_PHYSICAL_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "file_slot_gate_passed",
+                "R8R_CONTINUATION_FILE_SLOTS_INSUFFICIENT",
+            ),
+        )
+        if gates[key] is not True
+    ]
+    expected = {
+        "schema_version": 1,
+        "artifact_type": R8R_CONTINUATION_ARTIFACT_TYPE,
+        "status": (
+            R8R_CONTINUATION_STATUS_PASS
+            if not blocking_reason_codes
+            else R8R_CONTINUATION_STATUS_BLOCKED
+        ),
+        "blocking_reason_codes": blocking_reason_codes,
+        "original_attempt_id": R8R_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": R8R_ORIGINAL_PLAN_SHA256,
+        "original_scientific_governing_commit": (
+            R8R_ORIGINAL_SCIENTIFIC_COMMIT
+        ),
+        "continuation_first_task": R8R_CONTINUATION_FIRST_TASK,
+        "continuation_last_task": R8R_CONTINUATION_LAST_TASK,
+        "continuation_task_count": R8R_CONTINUATION_TASK_COUNT,
+        "remaining_batch_count": len(remaining),
+        "remaining_studies": remaining_studies,
+        "remaining_objects": remaining_objects,
+        "remaining_source_bytes": remaining_source_bytes,
+        "largest_remaining_batch_objects": largest_objects,
+        "largest_remaining_batch_source_bytes": largest_source_bytes,
+        "remaining_raw_source_demand_bytes": remaining_source_bytes,
+        "largest_remaining_transfer_retry_demand_bytes": (
+            largest_source_bytes
+        ),
+        "largest_rolling_extracted_cache_demand_bytes": (
+            rolling_extracted_bytes
+        ),
+        "remaining_clip_embedding_upper_bound_bytes": (
+            clip_embedding_bytes
+        ),
+        "remaining_study_embedding_upper_bound_bytes": (
+            study_embedding_bytes
+        ),
+        "retained_extracted_audit_demand_bytes": (
+            R8R_RETAINED_EXTRACTED_AUDIT_BYTES
+        ),
+        "manifest_and_metadata_demand_bytes": (
+            R8R_MANIFEST_AND_METADATA_BYTES
+        ),
+        "log_demand_bytes": R8R_LOG_BYTES,
+        "preservation_and_finalization_demand_bytes": (
+            R8R_PRESERVATION_AND_FINALIZATION_BYTES
+        ),
+        "safety_demand_bytes": R8R_SAFETY_BYTES,
+        "continuation_increment_bytes": continuation_increment,
+        "remaining_raw_object_file_demand": remaining_objects,
+        "largest_rolling_object_file_demand": largest_objects,
+        "fixed_control_file_demand": R8R_FIXED_CONTROL_FILE_DEMAND,
+        "required_file_slots": required_file_slots,
+        "research_quota_bytes": quota,
+        "research_usage_bytes": usage,
+        "research_quota_remaining_bytes": quota - usage,
+        "research_file_quota": file_quota,
+        "research_files_used": files_used,
+        "research_file_slots_remaining": file_slots_remaining,
+        "research_filesystem_total_bytes": int(
+            value["research_filesystem_total_bytes"]
+        ),
+        "research_filesystem_used_bytes": int(
+            value["research_filesystem_used_bytes"]
+        ),
+        "research_filesystem_available_bytes": physical_available,
+        "projected_research_usage_bytes": projected_usage,
+        "required_quota_reserve_bytes": R8R_QUOTA_RESERVE_BYTES,
+        "required_physical_reserve_bytes": R8R_PHYSICAL_RESERVE_BYTES,
+        "quota_slack_after_continuation_bytes": quota_slack,
+        "physical_slack_after_continuation_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "file_slot_margin_after_demand": file_margin,
+        **gates,
+        "native_capacity_snapshot_captures": 1,
+        "native_quota_file_captures": 1,
+        "capacity_command_captures": 5,
+        "pquota_command_captures": 1,
+        "findmnt_command_captures": 2,
+        "df_command_captures": 2,
+        "native_quota_authority_read_only": True,
+        "pquota_display_crosscheck": value.get(
+            "pquota_display_crosscheck"
+        ),
+        **{key: 0 for key in R8R_CONTINUATION_ZERO_EFFECT_KEYS},
+    }
+    if (
+        value.get("pquota_display_crosscheck")
+        not in {DISPLAY_CROSSCHECK_PASS, DISPLAY_CROSSCHECK_UNAVAILABLE}
+        or dict(value) != expected
+    ):
+        raise PostReallocationCapacityError(
+            "R8R_CONTINUATION_CAPACITY_ARITHMETIC_INVALID"
+        )
+    return dict(value)
 
 
 def _dynamic_capture_time(

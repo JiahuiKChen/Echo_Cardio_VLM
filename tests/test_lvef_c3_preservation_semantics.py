@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import csv
 import hashlib
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -15,12 +16,30 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import preserve_lvef_c3_production_batch as preservation
+import retire_lvef_c3_extracted_cache_v2 as retirement
 
 
 def expect_code(code: str, function) -> None:
     try:
         function()
     except preservation.BatchPreservationError as exc:
+        assert exc.code == code
+    else:
+        raise AssertionError(f"Expected {code}")
+
+
+def capture_preservation_error(function) -> preservation.BatchPreservationError:
+    try:
+        function()
+    except preservation.BatchPreservationError as exc:
+        return exc
+    raise AssertionError("Expected a preservation failure")
+
+
+def expect_retirement_code(code: str, function) -> None:
+    try:
+        function()
+    except retirement.CacheRetirementError as exc:
         assert exc.code == code
     else:
         raise AssertionError(f"Expected {code}")
@@ -531,6 +550,356 @@ def _validate_stage_csvs(paths: dict[str, Path]):
     )
 
 
+def _v2_disposition_stage_csv_fixture(
+    root: Path,
+) -> dict[str, Path]:
+    paths, fixture = _stage_csv_fixture(root)
+    definitions = fixture["definitions"]
+    base_dicom = definitions["dicom_audit_path"][2][0]
+    base_extraction = definitions["extraction_manifest_path"][2][0]
+    base_clip = definitions["clip_manifest_path"][2][0]
+    npz_payload = (
+        paths["clips_root"] / str(base_extraction["output_relative_path"])
+    ).read_bytes()
+    successful_rows = 999
+    dicom_rows = []
+    extraction_rows = []
+    clip_rows = []
+    integer_count_fields = (
+        tuple(
+            field
+            for field, _ in
+            preservation.production_stages.SOURCE_SIGNAL_COUNT_GATE_PAIRS
+        )
+        + tuple(
+            field
+            for field, _ in
+            preservation.production_stages.DOWNSTREAM_SIGNAL_COUNT_GATE_PAIRS
+        )
+    )
+
+    def identity(index: int) -> tuple[str, str, str, str]:
+        source_key = hashlib.sha256(f"r8r-csv-{index}".encode()).hexdigest()
+        source_relative = f"{source_key}.dcm"
+        clip_key = hashlib.sha256(
+            (
+                f"{preservation.production_stages.CLIP_KEY_NAMESPACE}"
+                f"\0{source_relative}"
+            ).encode()
+        ).hexdigest()
+        return (
+            source_key,
+            source_relative,
+            clip_key,
+            f"clips/{clip_key[:2]}/{clip_key}.npz",
+        )
+
+    for index in range(successful_rows + 1):
+        source_key, source_relative, clip_key, output_relative = identity(index)
+        dicom = dict(base_dicom)
+        dicom.update(
+            {
+                "source_relative_path": source_relative,
+                "number_of_frames": "64.0",
+                "photometric_interpretation": base_extraction[
+                    "photometric_interpretation"
+                ],
+                "transfer_syntax_uid": base_extraction[
+                    "transfer_syntax_uid"
+                ],
+            }
+        )
+        extraction = dict(base_extraction)
+        extraction.update(
+            {
+                "source_relative_path": source_relative,
+                "clip_key": clip_key,
+                "output_relative_path": output_relative,
+                "physical_source_key": source_key,
+                "source_num_frames": "64.0",
+            }
+        )
+        for field in integer_count_fields:
+            extraction[field] = f"{extraction[field]}.0"
+        dicom_rows.append(dicom)
+        extraction_rows.append(extraction)
+        if index < successful_rows:
+            npz_path = paths["clips_root"] / output_relative
+            npz_path.parent.mkdir(parents=True, exist_ok=True)
+            npz_path.write_bytes(npz_payload)
+            npz_path.chmod(0o600)
+            clip = dict(base_clip)
+            clip.update(
+                {
+                    "embedding_idx": str(index),
+                    "clip_key": clip_key,
+                    "physical_source_key": source_key,
+                }
+            )
+            clip_rows.append(clip)
+
+    disposed = extraction_rows[-1]
+    disposed.update(
+        {
+            "write_ok": "False",
+            "mask_status": "FAILED",
+            "selected_preprocessing_path": "NOT_SELECTED",
+            "fallback_status": (
+                preservation.production_stages.FALLBACK_NOT_ATTEMPTED
+            ),
+            "failure_substage": "SOURCE_SIGNAL_QUALITY_FAILURE",
+            "frames_shape": "",
+            "frames_dtype": "",
+            "frames_sha256": "",
+            "sampled_indices_sha256": "",
+            "source_num_frames_sha256": "",
+            "npz_sha256": "",
+            "error_code": "SourceSignalQualityFailure",
+        }
+    )
+    source_pairs = preservation.production_stages.SOURCE_SIGNAL_COUNT_GATE_PAIRS
+    for ordinal, (count_field, gate_field) in enumerate(source_pairs):
+        disposed[count_field] = "0.0" if ordinal == 2 else "10.0"
+        disposed[gate_field] = "False" if ordinal == 2 else "True"
+    for count_field, gate_field in (
+        preservation.production_stages.DOWNSTREAM_SIGNAL_COUNT_GATE_PAIRS
+    ):
+        disposed[count_field] = ""
+        disposed[gate_field] = "False"
+
+    disposed_source, _relative, disposed_clip, _output = identity(successful_rows)
+    technical_row = {
+        "subject_id": disposed["subject_id"],
+        "study_id": disposed["study_id"],
+        "clip_key": disposed_clip,
+        "physical_source_key": disposed_source,
+        "failure_substage": "SOURCE_SIGNAL_QUALITY_FAILURE",
+        "technical_disposition": (
+            preservation.production_stages.OBJECT_TECHNICAL_DISPOSITION
+        ),
+        "selected_source_membership_passed": "True",
+        "batch_plan_membership_passed": "True",
+        "download_integrity_authority_passed": "True",
+        "dicom_header_readable": "True",
+        "pixel_decode_ok": "True",
+        "decode_color_status": "PASS",
+        "canonical_color_space": "RGB",
+        "raw_dicom_retained": "True",
+        "npz_absent": "True",
+        "embedding_absent": "True",
+        "object_substitution": "False",
+        "study_retains_valid_cine_coverage": "True",
+        "technical_disposition_policy_version": (
+            preservation.production_stages.OBJECT_TECHNICAL_DISPOSITION_POLICY_VERSION
+        ),
+    }
+    study_rows = [
+        {
+            **definitions["study_manifest_path"][2][0],
+            "n_clips": str(successful_rows),
+        }
+    ]
+    rows_by_name = {
+        "dicom_audit_path": dicom_rows,
+        "extraction_manifest_path": extraction_rows,
+        "clip_manifest_path": clip_rows,
+        "study_manifest_path": study_rows,
+        "disposition_path": definitions["disposition_path"][2],
+        "technical_disposition_path": [technical_row],
+    }
+    for name, rows in rows_by_name.items():
+        path, header, _old_rows = definitions[name]
+        _write_csv(path, header, rows)
+        if name == "technical_disposition_path":
+            path.chmod(0o600)
+    return paths
+
+
+def test_r8r_v2_pandas_integer_csv_tokens_replay_losslessly() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        paths = _v2_disposition_stage_csv_fixture(Path(directory))
+        authority = preservation.validate_stage_csv_authority(
+            **paths, expected_objects=1000, expected_studies=1
+        )
+    semantics = authority["extraction_semantics"]
+    assert semantics["n_requested_cines"] == 1000
+    assert semantics["n_successfully_extracted_cines"] == 999
+    assert semantics["n_object_technical_dispositions"] == 1
+    assert semantics["n_blocking_failures"] == 0
+    assert authority["technical_disposition_semantics"][
+        "n_object_technical_dispositions"
+    ] == 1
+
+
+def test_r8r_numeric_csv_coercion_is_closed_and_lossless() -> None:
+    convert = preservation._strict_csv_nonnegative_integer_or_empty
+    for token, expected in (
+        ("", ""),
+        ("0", 0),
+        ("0.0", 0),
+        ("17", 17),
+        ("17.0", 17),
+    ):
+        assert convert(token, code="INTEGER_INVALID") == expected
+    for token in (
+        "-1",
+        "+1",
+        "01",
+        "01.0",
+        "1.00",
+        "1.5",
+        "1e0",
+        "nan",
+        "NaN",
+        "inf",
+        "Infinity",
+        " 1",
+        "1 ",
+    ):
+        expect_code(
+            "INTEGER_INVALID",
+            lambda token=token: convert(token, code="INTEGER_INVALID"),
+        )
+    with tempfile.TemporaryDirectory() as directory:
+        paths, fixture = _stage_csv_fixture(Path(directory))
+        definitions = fixture["definitions"]
+        dicom_path, dicom_header, dicom_rows = definitions["dicom_audit_path"]
+        invalid_dicom = copy.deepcopy(dicom_rows)
+        invalid_dicom[0]["number_of_frames"] = "64.00"
+        _write_csv(dicom_path, dicom_header, invalid_dicom)
+        expect_code(
+            "DICOM_AUDIT_INTEGER_INVALID",
+            lambda: _validate_stage_csvs(paths),
+        )
+        _write_csv(dicom_path, dicom_header, dicom_rows)
+
+        extraction_path, extraction_header, extraction_rows = definitions[
+            "extraction_manifest_path"
+        ]
+        invalid_count = copy.deepcopy(extraction_rows)
+        invalid_count[0]["post_crop_nonzero_retained_pixel_count"] = "5e1"
+        _write_csv(extraction_path, extraction_header, invalid_count)
+        expect_code(
+            "EXTRACTION_MANIFEST_INTEGER_INVALID",
+            lambda: _validate_stage_csvs(paths),
+        )
+        invalid_frames = copy.deepcopy(extraction_rows)
+        invalid_frames[0]["source_num_frames"] = "+64"
+        _write_csv(extraction_path, extraction_header, invalid_frames)
+        expect_code(
+            "EXTRACTION_MANIFEST_INTEGER_INVALID",
+            lambda: _validate_stage_csvs(paths),
+        )
+
+
+def test_r8r_post_embedding_clip_partition_is_exact() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        paths = _v2_disposition_stage_csv_fixture(Path(directory))
+        clip_path = paths["clip_manifest_path"]
+        clip_rows = preservation.read_csv_exact(
+            clip_path, preservation.CLIP_MANIFEST_HEADER
+        )
+        technical_rows = (
+            preservation.production_stages.read_technical_disposition_manifest(
+                paths["technical_disposition_path"]
+            )
+        )
+        _write_csv(
+            clip_path, preservation.CLIP_MANIFEST_HEADER, clip_rows[:-1]
+        )
+        expect_code(
+            "EXTRACTION_CLIP_IDENTITY_SET_MISMATCH",
+            lambda: preservation.validate_stage_csv_authority(
+                **paths, expected_objects=1000, expected_studies=1
+            ),
+        )
+
+        disposed = technical_rows[0]
+        disposed_embedding = {
+            **clip_rows[0],
+            "embedding_idx": str(len(clip_rows)),
+            "subject_id": disposed["subject_id"],
+            "study_id": disposed["study_id"],
+            "clip_key": disposed["clip_key"],
+            "physical_source_key": disposed["physical_source_key"],
+        }
+        _write_csv(
+            clip_path,
+            preservation.CLIP_MANIFEST_HEADER,
+            [*clip_rows, disposed_embedding],
+        )
+        error = capture_preservation_error(
+            lambda: preservation.validate_stage_csv_authority(
+                **paths, expected_objects=1000, expected_studies=1
+            )
+        )
+        assert error.code == (
+            "EXTRACTION_TECHNICAL_DISPOSITION_EMBEDDING_ABSENCE_INVALID"
+        )
+        assert error.validation_substage is (
+            preservation.PreservationValidationSubstage.CONTEXT_RECONSTRUCTION
+        )
+
+
+def test_r8r_preserves_exact_nested_code_and_closed_substage() -> None:
+    validation_substage = preservation.PreservationValidationSubstage
+    cases = (
+        (
+            "context_from_completed_extraction_authority",
+            "EXTRACTION_TECHNICAL_DISPOSITION_CONTEXT_INVALID",
+            validation_substage.CONTEXT_RECONSTRUCTION,
+        ),
+        (
+            "validate_production_extraction_rows",
+            "EXTRACTION_PROVENANCE_COUNT_INVALID",
+            validation_substage.EXTRACTION_ROW_VALIDATION,
+        ),
+        (
+            "validate_technical_disposition_manifest_rows",
+            "TECHNICAL_DISPOSITION_MANIFEST_AUTHORITY_INVALID",
+            validation_substage.TECHNICAL_DISPOSITION_VALIDATION,
+        ),
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        paths, _fixture = _stage_csv_fixture(Path(directory))
+        for function_name, code, substage in cases:
+            with mock.patch.object(
+                preservation.production_stages,
+                function_name,
+                side_effect=preservation.production_stages.ProductionStageError(
+                    code
+                ),
+            ):
+                error = capture_preservation_error(
+                    lambda: _validate_stage_csvs(paths)
+                )
+            assert error.code == code
+            assert error.validation_substage is substage
+
+        with mock.patch.object(
+            preservation.production_stages,
+            "context_from_completed_extraction_authority",
+            side_effect=preservation.production_stages.ProductionStageError(
+                "unsafe/path"
+            ),
+        ):
+            sanitized = capture_preservation_error(
+                lambda: _validate_stage_csvs(paths)
+            )
+        assert sanitized.code == "PRESERVATION_NESTED_VALIDATION_CODE_INVALID"
+        assert sanitized.validation_substage is (
+            preservation.PreservationValidationSubstage.CONTEXT_RECONSTRUCTION
+        )
+    try:
+        preservation.BatchPreservationError(
+            "SYNTHETIC", validation_substage="CONTEXT_RECONSTRUCTION"
+        )
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("A free-form validation substage was accepted")
+
+
 def test_stage_csvs_require_exact_ordered_headers_before_dataframe_loading() -> None:
     with tempfile.TemporaryDirectory() as directory:
         paths, fixture = _stage_csv_fixture(Path(directory))
@@ -718,4 +1087,399 @@ def test_clip_manifest_write_status_and_l2_norm_are_array_bound() -> None:
     expect_code(
         "CLIP_MANIFEST_L2_NORM_MISMATCH",
         lambda: _validate_embedding(mismatch),
+    )
+
+
+def _r8r_raw_authority_fixture(root: Path) -> dict[str, object]:
+    production_root = (root / "production").resolve()
+    raw_batch_root = (
+        production_root
+        / "attempts"
+        / preservation.R8R_FIXED_ATTEMPT_ID
+        / "raw"
+        / preservation.R8R_FIXED_BATCH_ID
+    )
+    raw_objects_root = raw_batch_root / "objects"
+    receipts_root = raw_batch_root / "receipts"
+    raw_objects_root.mkdir(parents=True)
+    receipts_root.mkdir()
+    source_key = hashlib.sha256(b"r8r-fixed-raw-object").hexdigest()
+    source_relative_path = "gcs_authority/cines/r8r_fixed_object.dcm"
+    payload = b"fixed synthetic dicom bytes for body-free authority\n"
+    raw_path = raw_objects_root / f"{source_key}.dcm"
+    raw_path.write_bytes(payload)
+    raw_path.chmod(0o600)
+    observed_sha256 = hashlib.sha256(payload).hexdigest()
+    verified_download_manifest = (
+        raw_batch_root / "verified_download_manifest.restricted.csv"
+    )
+    _write_csv(
+        verified_download_manifest,
+        preservation.VERIFIED_DOWNLOAD_MANIFEST_HEADER,
+        [
+            {
+                "subject_id": "100001",
+                "study_id": "200001",
+                "source_relative_path": source_relative_path,
+                "download_ok": "true",
+                "observed_sha256": observed_sha256,
+                "physical_source_key": source_key,
+            }
+        ],
+    )
+    verified_download_manifest.chmod(0o600)
+    receipt_path = receipts_root / f"{source_key}.verification.json"
+    receipt_path.write_text("{\"status\":\"PASS_DOWNLOAD_VERIFICATION\"}\n")
+    receipt_path.chmod(0o600)
+    planned_batch = {
+        "batch_id": preservation.R8R_FIXED_BATCH_ID,
+        "n_objects": 1,
+        "source_bytes": len(payload),
+        "objects": [
+            {
+                "source_object_key": source_key,
+                "subject_id": "100001",
+                "study_id": "200001",
+                "source_relative_path": source_relative_path,
+                "size_bytes": len(payload),
+            }
+        ],
+    }
+    preservation_manifest = (
+        production_root / "batch_preservation_manifest.restricted.tsv"
+    )
+
+    def write_preservation_manifest(dicom_sha256: str) -> None:
+        rows = []
+        for path in (raw_path, verified_download_manifest, receipt_path):
+            digest = (
+                dicom_sha256
+                if path == raw_path
+                else hashlib.sha256(path.read_bytes()).hexdigest()
+            )
+            rows.append(
+                {
+                    "relative_path": path.relative_to(
+                        production_root
+                    ).as_posix(),
+                    "size_bytes": str(path.stat().st_size),
+                    "sha256": digest,
+                    "role": "raw_dicom_and_download_authority",
+                }
+            )
+        with preservation_manifest.open(
+            "w", newline="", encoding="utf-8"
+        ) as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=preservation.MANIFEST_HEADER,
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            writer.writerows(
+                sorted(rows, key=lambda row: row["relative_path"])
+            )
+        preservation_manifest.chmod(0o600)
+
+    write_preservation_manifest(observed_sha256)
+    return {
+        "production_root": production_root,
+        "raw_batch_root": raw_batch_root,
+        "raw_objects_root": raw_objects_root,
+        "raw_path": raw_path,
+        "verified_download_manifest": verified_download_manifest,
+        "receipt_path": receipt_path,
+        "planned_batch": planned_batch,
+        "observed_sha256": observed_sha256,
+        "preservation_manifest": preservation_manifest,
+        "write_preservation_manifest": write_preservation_manifest,
+    }
+
+
+def test_r8r_recovery_never_opens_dicom_bodies_across_preservation_and_retirement() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _r8r_raw_authority_fixture(Path(directory))
+        raw_path = fixture["raw_path"]
+        verified_manifest = fixture["verified_download_manifest"]
+        raw_batch_root = fixture["raw_batch_root"]
+        production_root = fixture["production_root"]
+        body_open_attempts: list[str] = []
+        non_dicom_stable_hashes: list[Path] = []
+        non_dicom_retirement_hashes: list[Path] = []
+        real_path_open = Path.open
+        real_os_open = os.open
+        real_preservation_hash = preservation.sha256_file
+        real_stable_hash = preservation.stable_manifest_artifact_authority
+        real_retirement_hash = retirement.sha256_file
+
+        def reject_dicom_path_open(path: Path, *args, **kwargs):
+            if path.suffix.lower() == ".dcm":
+                body_open_attempts.append(str(path))
+                raise AssertionError("DICOM Path.open was reached")
+            return real_path_open(path, *args, **kwargs)
+
+        def reject_dicom_os_open(
+            path, flags, mode=0o777, *, dir_fd=None
+        ):
+            token = os.fspath(path)
+            if token.lower().endswith(".dcm"):
+                body_open_attempts.append(token)
+                raise AssertionError("DICOM os.open was reached")
+            if dir_fd is None:
+                return real_os_open(path, flags, mode)
+            return real_os_open(path, flags, mode, dir_fd=dir_fd)
+
+        def guarded_preservation_hash(path: Path) -> str:
+            if Path(path).suffix.lower() == ".dcm":
+                body_open_attempts.append(str(path))
+                raise AssertionError("DICOM sha256_file was reached")
+            return real_preservation_hash(Path(path))
+
+        def guarded_stable_hash(path: Path) -> tuple[int, str]:
+            if Path(path).suffix.lower() == ".dcm":
+                body_open_attempts.append(str(path))
+                raise AssertionError("DICOM stable hash was reached")
+            non_dicom_stable_hashes.append(Path(path))
+            return real_stable_hash(Path(path))
+
+        def guarded_retirement_hash(path: Path) -> str:
+            if Path(path).suffix.lower() == ".dcm":
+                body_open_attempts.append(str(path))
+                raise AssertionError("retirement DICOM hash was reached")
+            non_dicom_retirement_hashes.append(Path(path))
+            return real_retirement_hash(Path(path))
+
+        with mock.patch.object(
+            Path, "open", reject_dicom_path_open
+        ), mock.patch.object(
+            preservation.os, "open", reject_dicom_os_open
+        ), mock.patch.object(
+            preservation, "sha256_file", guarded_preservation_hash
+        ), mock.patch.object(
+            preservation,
+            "stable_manifest_artifact_authority",
+            guarded_stable_hash,
+        ), mock.patch.object(
+            retirement, "sha256_file", guarded_retirement_hash
+        ):
+            rows, authority = (
+                preservation.validate_verified_raw_dicom_authority(
+                    raw_objects_root=fixture["raw_objects_root"],
+                    verified_download_manifest=verified_manifest,
+                    planned_batch=fixture["planned_batch"],
+                    artifact_validation_context=(
+                        preservation.R8R_FIXED_BATCH3_NO_DICOM_BODY
+                    ),
+                )
+            )
+            assert len(rows) == 1
+            sealed = authority[raw_path]
+            assert sealed.observed_sha256 == fixture["observed_sha256"]
+            assert preservation._sealed_raw_dicom_artifact_record(
+                sealed,
+                production_root,
+                "raw_dicom_and_download_authority",
+            )["sha256"] == fixture["observed_sha256"]
+            preservation._artifact_record(
+                verified_manifest,
+                production_root,
+                "raw_dicom_and_download_authority",
+            )
+            retirement_authority = retirement._validate_raw_retention(
+                fixture["raw_objects_root"],
+                planned_batch=fixture["planned_batch"],
+                artifact_validation_context=(
+                    retirement.R8R_FIXED_BATCH3_NO_DICOM_BODY
+                ),
+            )
+            retirement._validate_raw_retention(
+                fixture["raw_objects_root"],
+                planned_batch=fixture["planned_batch"],
+                artifact_validation_context=(
+                    retirement.R8R_FIXED_BATCH3_NO_DICOM_BODY
+                ),
+                expected_authority=retirement_authority,
+            )
+            retirement.validate_preservation_coverage(
+                fixture["preservation_manifest"],
+                production_root=production_root,
+                required_roots=((raw_batch_root, raw_batch_root),),
+                artifact_validation_context=(
+                    retirement.R8R_FIXED_BATCH3_NO_DICOM_BODY
+                ),
+                sealed_raw_dicom_authority=retirement_authority,
+            )
+            fixture["write_preservation_manifest"]("0" * 64)
+            expect_retirement_code(
+                "PRESERVATION_TREE_COVERAGE_MISMATCH",
+                lambda: retirement.validate_preservation_coverage(
+                    fixture["preservation_manifest"],
+                    production_root=production_root,
+                    required_roots=((raw_batch_root, raw_batch_root),),
+                    artifact_validation_context=(
+                        retirement.R8R_FIXED_BATCH3_NO_DICOM_BODY
+                    ),
+                    sealed_raw_dicom_authority=retirement_authority,
+                ),
+            )
+            fixture["write_preservation_manifest"](
+                fixture["observed_sha256"]
+            )
+            metadata = raw_path.stat(follow_symlinks=False)
+            os.utime(
+                raw_path,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1),
+                follow_symlinks=False,
+            )
+            expect_code(
+                "RAW_DICOM_METADATA_CHANGED",
+                lambda: preservation.validate_sealed_raw_dicom_metadata(
+                    sealed
+                ),
+            )
+        assert body_open_attempts == []
+        assert verified_manifest in non_dicom_stable_hashes
+        assert verified_manifest in non_dicom_retirement_hashes
+
+
+def test_ordinary_raw_authority_still_hashes_every_dicom_body() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = _r8r_raw_authority_fixture(Path(directory))
+        raw_path = fixture["raw_path"]
+        preservation_hashes: list[Path] = []
+        stable_hashes: list[Path] = []
+        retirement_hashes: list[Path] = []
+        real_preservation_hash = preservation.sha256_file
+        real_stable_hash = preservation.stable_manifest_artifact_authority
+        real_retirement_hash = retirement.sha256_file
+
+        def observed_preservation_hash(path: Path) -> str:
+            preservation_hashes.append(Path(path))
+            return real_preservation_hash(Path(path))
+
+        def observed_stable_hash(path: Path) -> tuple[int, str]:
+            stable_hashes.append(Path(path))
+            return real_stable_hash(Path(path))
+
+        def observed_retirement_hash(path: Path) -> str:
+            retirement_hashes.append(Path(path))
+            return real_retirement_hash(Path(path))
+
+        with mock.patch.object(
+            preservation, "sha256_file", observed_preservation_hash
+        ), mock.patch.object(
+            preservation,
+            "stable_manifest_artifact_authority",
+            observed_stable_hash,
+        ), mock.patch.object(
+            retirement, "sha256_file", observed_retirement_hash
+        ):
+            preservation.validate_verified_raw_dicom_authority(
+                raw_objects_root=fixture["raw_objects_root"],
+                verified_download_manifest=fixture[
+                    "verified_download_manifest"
+                ],
+                planned_batch=fixture["planned_batch"],
+                artifact_validation_context=preservation.STRICT_CONTENT_HASH,
+            )
+            preservation._artifact_record(
+                raw_path,
+                fixture["production_root"],
+                "raw_dicom_and_download_authority",
+            )
+            retirement._validate_raw_retention(
+                fixture["raw_objects_root"],
+                planned_batch=fixture["planned_batch"],
+                artifact_validation_context=retirement.STRICT_CONTENT_HASH,
+            )
+            retirement.validate_preservation_coverage(
+                fixture["preservation_manifest"],
+                production_root=fixture["production_root"],
+                required_roots=(
+                    (
+                        fixture["raw_batch_root"],
+                        fixture["raw_batch_root"],
+                    ),
+                ),
+                artifact_validation_context=retirement.STRICT_CONTENT_HASH,
+            )
+        assert raw_path in preservation_hashes
+        assert raw_path in stable_hashes
+        assert raw_path in retirement_hashes
+
+
+def test_r8r_body_free_context_is_closed_to_exact_fixed_authority() -> None:
+    exact = {
+        "artifact_validation_context": (
+            preservation.R8R_FIXED_BATCH3_NO_DICOM_BODY
+        ),
+        "production_root": preservation.R8R_FIXED_PRODUCTION_ROOT,
+        "attempt_id": preservation.R8R_FIXED_ATTEMPT_ID,
+        "batch_id": preservation.R8R_FIXED_BATCH_ID,
+        "plan_sha256": preservation.R8R_FIXED_PLAN_SHA256,
+        "governing_commit": preservation.R8R_FIXED_SCIENTIFIC_COMMIT,
+        "scheduler_runner_path": (
+            preservation.R8R_FIXED_SCHEDULER_RUNNER_PATH
+        ),
+    }
+    preservation.validate_artifact_validation_scope(**exact)
+    mutations = (
+        ("attempt_id", "lvef_c3_full_wrong_authority"),
+        ("batch_id", "c3_batch_001"),
+        ("plan_sha256", "0" * 64),
+        ("governing_commit", "0" * 40),
+        ("production_root", Path("/restricted/projectnb/wrong")),
+    )
+    for key, value in mutations:
+        candidate = dict(exact)
+        candidate[key] = value
+        expect_code(
+            "R8R_RECOVERY_SCOPE_INVALID",
+            lambda candidate=candidate: (
+                preservation.validate_artifact_validation_scope(**candidate)
+            ),
+        )
+    wrong_runner = dict(exact)
+    wrong_runner["scheduler_runner_path"] = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "scc_run_lvef_c3_full_sequential.sh"
+    )
+    expect_code(
+        "R8R_RECOVERY_SCHEDULER_RUNNER_INVALID",
+        lambda: preservation.validate_artifact_validation_scope(
+            **wrong_runner
+        ),
+    )
+    for token in (
+        "R8R_FIXED_BATCH3_NO_DICOM_BODY",
+        True,
+        None,
+    ):
+        invalid = dict(exact)
+        invalid["artifact_validation_context"] = token
+        expect_code(
+            "ARTIFACT_VALIDATION_CONTEXT_INVALID",
+            lambda invalid=invalid: (
+                preservation.validate_artifact_validation_scope(**invalid)
+            ),
+        )
+    expect_retirement_code(
+        "ARTIFACT_VALIDATION_CONTEXT_INVALID",
+        lambda: retirement.require_artifact_validation_context(
+            "STRICT_CONTENT_HASH"
+        ),
+    )
+    preservation.validate_artifact_validation_scope(
+        **{
+            **exact,
+            "artifact_validation_context": preservation.STRICT_CONTENT_HASH,
+            "production_root": Path("/ordinary/synthetic"),
+            "attempt_id": "lvef_c3_ordinary_synthetic",
+            "batch_id": "c3_batch_001",
+            "plan_sha256": "1" * 64,
+            "governing_commit": "2" * 40,
+            "scheduler_runner_path": None,
+        }
     )

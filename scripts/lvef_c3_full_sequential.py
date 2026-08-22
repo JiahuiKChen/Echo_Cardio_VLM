@@ -13,6 +13,7 @@ import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 import hashlib
 from importlib.util import module_from_spec, spec_from_file_location
 import json
@@ -429,6 +430,17 @@ class HistoricalCapacityEvent:
     authority: Mapping[str, Any]
 
 
+class FullExecutionContext(Enum):
+    """Closed scheduler context; the ordinary full launch remains the default."""
+
+    ORIGINAL_FULL_SUBMISSION = "ORIGINAL_FULL_SUBMISSION"
+    R8R_FIXED_CONTINUATION = "R8R_FIXED_CONTINUATION"
+
+
+ORIGINAL_FULL_SUBMISSION = FullExecutionContext.ORIGINAL_FULL_SUBMISSION
+R8R_FIXED_CONTINUATION = FullExecutionContext.R8R_FIXED_CONTINUATION
+
+
 @dataclass(frozen=True)
 class FullDependencies:
     prior_batch_validator: Callable[..., Any] | None = None
@@ -451,6 +463,7 @@ class FullDependencies:
     echoprime_batch_size: int = 8
     monotonic_clock: Callable[[], float] = time.monotonic
     sleeper: Callable[[float], None] = time.sleep
+    execution_context: FullExecutionContext = ORIGINAL_FULL_SUBMISSION
 
 
 def _fail(code: str) -> None:
@@ -540,6 +553,7 @@ def resolve_dependencies(value: FullDependencies | None = None) -> FullDependenc
         or source.extraction_workers < 1
         or isinstance(source.echoprime_batch_size, bool)
         or source.echoprime_batch_size < 1
+        or not isinstance(source.execution_context, FullExecutionContext)
     ):
         _fail("FULL_SEQUENTIAL_DEPENDENCY_CONFIGURATION_INVALID")
     functions = _production_functions()
@@ -569,6 +583,7 @@ def resolve_dependencies(value: FullDependencies | None = None) -> FullDependenc
         echoprime_batch_size=source.echoprime_batch_size,
         monotonic_clock=source.monotonic_clock,
         sleeper=source.sleeper,
+        execution_context=source.execution_context,
     )
 
 
@@ -1383,6 +1398,11 @@ def _execute_cache_retirement(**kwargs: Any) -> Mapping[str, Any]:
             if kwargs.get("test_only_synthetic_full_scope") is True
             else None
         ),
+        artifact_validation_context=kwargs.get(
+            "artifact_validation_context",
+            retirement.STRICT_CONTENT_HASH,
+        ),
+        scheduler_runner_path=kwargs.get("scheduler_runner_path"),
     )
     if exit_status != 0:
         _fail("FULL_SEQUENTIAL_CACHE_RETIREMENT_FAILED")
@@ -1469,6 +1489,11 @@ def run_batch_task(
         effective_task = int(raw_task)
     batch_id = task_to_batch(effective_task, effective_run.plan)
     dependency = resolve_dependencies(dependencies)
+    if (
+        dependency.execution_context is R8R_FIXED_CONTINUATION
+        and effective_task not in range(4, 20)
+    ):
+        _fail("FULL_SEQUENTIAL_R8R_CONTINUATION_TASK_OUT_OF_SCOPE")
 
     # This gate is deliberately first for tasks 2..N: no validation below may
     # construct a token provider, body transport, DICOM reader, or GPU object.
@@ -1499,25 +1524,40 @@ def run_batch_task(
 
     with _stage_boundary("SUBMISSION_AUTHORITY"):
         if JOB_RE.fullmatch(str(os.environ.get("JOB_ID", ""))) is not None:
-            _wait_for_submission_receipt(
-                effective_run,
-                current_job_id=str(os.environ.get("JOB_ID", "")),
-                role="array",
-                monotonic_clock=dependency.monotonic_clock,
-                sleeper=dependency.sleeper,
-            )
+            if dependency.execution_context is R8R_FIXED_CONTINUATION:
+                import lvef_c3_r8r_recovery_continuation as r8r
+
+                r8r.validate_continuation_worker_submission(
+                    effective_run,
+                    current_job_id=str(os.environ.get("JOB_ID", "")),
+                    role="array",
+                )
+            else:
+                _wait_for_submission_receipt(
+                    effective_run,
+                    current_job_id=str(os.environ.get("JOB_ID", "")),
+                    role="array",
+                    monotonic_clock=dependency.monotonic_clock,
+                    sleeper=dependency.sleeper,
+                )
         _validate_full_run(effective_run)
     paths = _batch_paths(effective_run, batch_id)
     planned = effective_run.plan["batches"][effective_task - 1]
     object_keys = {str(row["source_object_key"]) for row in planned["objects"]}
     with _stage_boundary("PREBODY_AUTHORITY"):
         try:
+            environment_arguments: dict[str, Any] = {}
+            if dependency.execution_context is R8R_FIXED_CONTINUATION:
+                environment_arguments["runtime_validation_context"] = (
+                    stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+                )
             dependency.environment_validator(
                 effective_run.authority.environment_receipt,
                 expected_environment_receipt_sha256=(
                     effective_run.runtime_authority["environment_receipt_sha256"]
                 ),
                 scientific_governing_commit=effective_run.authority.governing_commit,
+                **environment_arguments,
             )
         except Exception as exc:
             raise FullSequentialError(
@@ -1643,6 +1683,11 @@ def run_batch_task(
             paths["extraction"]
             / "technical_disposition_manifest.restricted.csv",
         )
+        echoprime_arguments: dict[str, Any] = {}
+        if dependency.execution_context is R8R_FIXED_CONTINUATION:
+            echoprime_arguments["runtime_validation_context"] = (
+                stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+            )
         embedding_summary = dependency.echoprime(
             extraction_manifest=extraction_manifest,
             extraction_root=paths["extraction"] / "clips",
@@ -1671,6 +1716,7 @@ def run_batch_task(
             attempt_id=effective_run.attempt_id,
             runtime_authority=effective_run.runtime_authority,
             requirements=effective_run.requirements,
+            **echoprime_arguments,
         )
         stages.advance_stage_ledger(
             input_ledger=paths["extraction_ledger"],
@@ -1696,6 +1742,16 @@ def run_batch_task(
             expected_object_keys=object_keys,
         )
     with _stage_boundary("BATCH_PRESERVATION"):
+        preservation_arguments: dict[str, Any] = {}
+        scheduler_runner_path = ARRAY_RUNNER_PATH
+        if dependency.execution_context is R8R_FIXED_CONTINUATION:
+            preservation_arguments["runtime_validation_context"] = (
+                stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+            )
+            scheduler_runner_path = (
+                SCRIPT_ROOT
+                / "scc_run_lvef_c3_r8r_recovery_continuation.sh"
+            )
         preservation_receipt = dependency.preserve(
             contract_path=effective_run.contract_path,
             plan_path=effective_run.plan_path,
@@ -1710,13 +1766,20 @@ def run_batch_task(
             input_ledger=paths["pooling_ledger"],
             requirements=effective_run.requirements,
             expected_runtime_authority=effective_run.runtime_authority,
-            scheduler_runner_path=ARRAY_RUNNER_PATH,
+            scheduler_runner_path=scheduler_runner_path,
+            **preservation_arguments,
         )
     with _stage_boundary("CACHE_RETIREMENT_ELIGIBILITY"):
         authorization_path = _cache_retirement_authorization(
             run=effective_run, batch_id=batch_id, paths=paths
         )
     with _stage_boundary("CACHE_RETIREMENT"):
+        retirement_arguments: dict[str, Any] = {}
+        if dependency.execution_context is R8R_FIXED_CONTINUATION:
+            retirement_arguments["scheduler_runner_path"] = (
+                SCRIPT_ROOT
+                / "scc_run_lvef_c3_r8r_recovery_continuation.sh"
+            )
         dependency.retire(
             run=effective_run,
             batch_id=batch_id,
@@ -1726,6 +1789,7 @@ def run_batch_task(
             test_only_synthetic_full_scope=(
                 dependency.test_only_synthetic_full_scope
             ),
+            **retirement_arguments,
         )
     with _stage_boundary("BATCH_FINALIZATION"):
         result = dependency.finalize_batch(run=effective_run, batch_id=batch_id)

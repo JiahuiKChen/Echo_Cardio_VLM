@@ -193,6 +193,123 @@ def _synthetic_path_identity(path: Path) -> Mapping[str, Any]:
     }
 
 
+def _fixed_r8r_continuation_plan() -> dict[str, Any]:
+    """Small aggregate-only stand-in for the exact already-loaded R8R plan."""
+
+    remaining_object_base, remaining_object_remainder = divmod(280_263, 16)
+    remaining_byte_base, remaining_byte_remainder = divmod(
+        1_014_021_066_806, 16
+    )
+    batches = [
+        {
+            "ordinal": 0,
+            "batch_id": "c3_batch_000",
+            "n_studies": 250,
+            "n_objects": 18_872,
+            "source_bytes": 67_000_000_000,
+        },
+        {
+            "ordinal": 1,
+            "batch_id": "c3_batch_001",
+            "n_studies": 250,
+            "n_objects": 18_196,
+            "source_bytes": 66_822_359_346,
+        },
+        {
+            "ordinal": 2,
+            "batch_id": "c3_batch_002",
+            "n_studies": 250,
+            "n_objects": 18_653,
+            "source_bytes": 68_725_707_170,
+        },
+    ]
+    for ordinal in range(3, 19):
+        remainder_index = ordinal - 3
+        batches.append(
+            {
+                "ordinal": ordinal,
+                "batch_id": f"c3_batch_{ordinal:03d}",
+                "n_studies": 30 if ordinal == 18 else 250,
+                "n_objects": (
+                    remaining_object_base
+                    + int(remainder_index < remaining_object_remainder)
+                ),
+                "source_bytes": (
+                    remaining_byte_base
+                    + int(remainder_index < remaining_byte_remainder)
+                ),
+            }
+        )
+    return {
+        "schema_version": 3,
+        "artifact_type": "lvef_c3_restricted_immutable_batch_plan_v3",
+        "authority": {
+            "git_commit": capacity.R8R_ORIGINAL_SCIENTIFIC_COMMIT,
+        },
+        "cohort": {
+            "selected_studies": 4_530,
+            "normalized_source_objects": 335_984,
+            "selected_source_bytes": 1_216_569_133_322,
+        },
+        "batches": batches,
+    }
+
+
+def _probe_fixed_r8r_continuation(
+    plan: Mapping[str, Any],
+    *,
+    native_payload: bytes | None = None,
+    research_available: int = PASS_PHYSICAL_AVAILABLE_BYTES,
+) -> tuple[dict[str, Any], list[tuple[str, ...]], list[Path]]:
+    calls: list[tuple[str, ...]] = []
+    native_reads: list[Path] = []
+    with tempfile.TemporaryDirectory() as temporary:
+        authority = _probe_fixture(
+            Path(temporary).resolve(), native_payload=native_payload
+        )
+        real_read = capacity._read_regular
+
+        def counted_read(path: Path, **kwargs: Any) -> bytes:
+            if path == authority.native_quota_path:
+                native_reads.append(path)
+            return real_read(path, **kwargs)
+
+        with (
+            mock.patch.object(
+                capacity,
+                "R8R_ORIGINAL_PLAN_SHA256",
+                core.canonical_json_sha256(plan),
+            ),
+            mock.patch.object(
+                capacity,
+                "DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY",
+                authority,
+            ),
+            mock.patch.object(
+                capacity,
+                "_validate_current_canary_headroom_authority",
+                return_value=False,
+            ),
+            mock.patch.object(
+                capacity,
+                "_path_identity",
+                side_effect=_synthetic_path_identity,
+            ),
+            mock.patch.object(
+                capacity, "_read_regular", side_effect=counted_read
+            ),
+        ):
+            result = capacity.probe_fixed_r8r_continuation_capacity(
+                plan,
+                process_runner=_process_runner(
+                    authority,
+                    research_available=research_available,
+                    calls=calls,
+                ),
+            )
+    return result, calls, native_reads
+
+
 def _capture(
     *,
     governing_commit: str = GOVERNING_COMMIT,
@@ -3629,6 +3746,304 @@ def test_r5e_r7_post_cleanup_seal_reuses_one_probe_and_has_no_effects() -> None:
         assert not run.attempt_root.exists()
         for key in capacity.DYNAMIC_SUCCESSOR_ZERO_EFFECT_KEYS:
             assert result[key] == 0
+
+
+def test_r8r_fixed_continuation_capacity_exact_arithmetic_one_capture() -> None:
+    assert capacity.R8R_ORIGINAL_PLAN_SHA256 == (
+        "904d0ab65f003c1eb68adeee8c0b1dd786ec7a9ef4bb496b646b22cc7a540247"
+    )
+    assert capacity.R8R_ORIGINAL_ATTEMPT_ID == (
+        "lvef_c3_full_904d0ab65f003c1e_e1cdb674"
+    )
+    assert capacity.R8R_ORIGINAL_SCIENTIFIC_COMMIT == (
+        "e1cdb674ada23bbc9f3a1ff77c33927bd324d3ed"
+    )
+    plan = _fixed_r8r_continuation_plan()
+    result, calls, native_reads = _probe_fixed_r8r_continuation(plan)
+
+    assert set(result) == capacity.R8R_CONTINUATION_CAPACITY_KEYS
+    assert result["status"] == (
+        "PASS_FIXED_CONTINUATION_4_19_WITH_200GB_RESERVE"
+    )
+    assert result["blocking_reason_codes"] == []
+    assert result["continuation_first_task"] == 4
+    assert result["continuation_last_task"] == 19
+    assert result["continuation_task_count"] == 16
+    assert result["remaining_batch_count"] == 16
+    assert result["remaining_studies"] == 3_780
+    assert result["remaining_objects"] == 280_263
+    assert result["remaining_source_bytes"] == 1_014_021_066_806
+    assert result["largest_remaining_batch_objects"] == 17_517
+    assert result["largest_remaining_batch_source_bytes"] == 63_376_316_676
+    assert result["remaining_raw_source_demand_bytes"] == 1_014_021_066_806
+    assert result["largest_remaining_transfer_retry_demand_bytes"] == (
+        63_376_316_676
+    )
+    assert result["largest_rolling_extracted_cache_demand_bytes"] == (
+        17_517 * 4_816_896
+    )
+    assert result["remaining_clip_embedding_upper_bound_bytes"] == (
+        280_263 * 4_096
+    )
+    assert result["remaining_study_embedding_upper_bound_bytes"] == (
+        3_780 * 4_096
+    )
+    expected_increment = sum(
+        (
+            1_014_021_066_806,
+            63_376_316_676,
+            17_517 * 4_816_896,
+            280_263 * 4_096,
+            3_780 * 4_096,
+            2_000_000_000,
+            5_000_000_000,
+            10_000_000_000,
+            10_000_000_000,
+            50_000_000_000,
+        )
+    )
+    assert expected_increment == 1_239_938_390_842
+    assert result["continuation_increment_bytes"] == expected_increment
+    assert result["required_file_slots"] == (
+        280_263 + 17_517 + 100_000
+    )
+    assert result["required_file_slots"] == 397_780
+    assert result["quota_margin_beyond_reserve_bytes"] == (
+        result["research_quota_bytes"]
+        - result["research_usage_bytes"]
+        - expected_increment
+        - 200_000_000_000
+    )
+    assert result["physical_margin_beyond_reserve_bytes"] == (
+        result["research_filesystem_available_bytes"]
+        - expected_increment
+        - 200_000_000_000
+    )
+    assert result["research_filesystem_total_bytes"] == (
+        result["research_filesystem_used_bytes"]
+        + result["research_filesystem_available_bytes"]
+    )
+    assert result["file_slot_margin_after_demand"] == (
+        result["research_file_quota"]
+        - result["research_files_used"]
+        - 397_780
+    )
+    assert result["quota_reserve_gate_passed"] is True
+    assert result["physical_reserve_gate_passed"] is True
+    assert result["file_slot_gate_passed"] is True
+
+    assert result["native_capacity_snapshot_captures"] == 1
+    assert result["native_quota_file_captures"] == 1
+    assert result["capacity_command_captures"] == 5
+    assert result["pquota_command_captures"] == 1
+    assert result["findmnt_command_captures"] == 2
+    assert result["df_command_captures"] == 2
+    assert len(native_reads) == 1
+    assert len(calls) == 5
+    command_names = [Path(argv[0]).name for argv in calls]
+    assert command_names.count("pquota") == 1
+    assert command_names.count("findmnt") == 2
+    assert command_names.count("df") == 2
+    for key in capacity.R8R_CONTINUATION_ZERO_EFFECT_KEYS:
+        assert result[key] == 0
+    with mock.patch.object(
+        capacity,
+        "R8R_ORIGINAL_PLAN_SHA256",
+        core.canonical_json_sha256(plan),
+    ):
+        assert capacity.validate_fixed_r8r_continuation_capacity(
+            plan, result
+        ) == result
+        for key, replacement in (
+            ("remaining_source_bytes", result["remaining_source_bytes"] + 1),
+            (
+                "continuation_increment_bytes",
+                result["continuation_increment_bytes"] - 1,
+            ),
+            (
+                "quota_margin_beyond_reserve_bytes",
+                result["quota_margin_beyond_reserve_bytes"] + 1,
+            ),
+            ("quota_reserve_gate_passed", False),
+        ):
+            altered = dict(result)
+            altered[key] = replacement
+            _expect_code(
+                "R8R_CONTINUATION_CAPACITY_ARITHMETIC_INVALID",
+                lambda altered=altered: (
+                    capacity.validate_fixed_r8r_continuation_capacity(
+                        plan, altered
+                    )
+                ),
+            )
+        impossible_filesystem = dict(result)
+        impossible_filesystem["research_filesystem_total_bytes"] = (
+            result["research_filesystem_used_bytes"]
+            + result["research_filesystem_available_bytes"]
+            - 1
+        )
+        _expect_code(
+            "R8R_CONTINUATION_CAPACITY_SCHEMA_INVALID",
+            lambda: capacity.validate_fixed_r8r_continuation_capacity(
+                plan, impossible_filesystem
+            ),
+        )
+        for altered in (
+            {**result, "schema_version": True},
+            {**result, "continuation_first_task": 4.0},
+            {**result, "continuation_last_task": 19.0},
+            {**result, "continuation_task_count": 16.0},
+            {**result, "native_quota_authority_read_only": 1},
+            {
+                **result,
+                "research_quota_bytes": (
+                    result["research_quota_bytes"] + 1
+                ),
+            },
+            {
+                **result,
+                "research_usage_bytes": (
+                    result["research_usage_bytes"] + 1
+                ),
+            },
+            {
+                **result,
+                "research_file_quota": (
+                    capacity.EXPECTED_RESEARCH_FILE_QUOTA - 1
+                ),
+                "research_file_slots_remaining": (
+                    capacity.EXPECTED_RESEARCH_FILE_QUOTA - 1
+                    - result["research_files_used"]
+                ),
+                "file_slot_margin_after_demand": (
+                    capacity.EXPECTED_RESEARCH_FILE_QUOTA - 1
+                    - result["research_files_used"]
+                    - result["required_file_slots"]
+                ),
+            },
+        ):
+            _expect_code(
+                "R8R_CONTINUATION_CAPACITY_SCHEMA_INVALID",
+                lambda altered=altered: (
+                    capacity.validate_fixed_r8r_continuation_capacity(
+                        plan, altered
+                    )
+                ),
+            )
+
+
+def test_r8r_fixed_continuation_capacity_blocks_each_exact_margin() -> None:
+    plan = _fixed_r8r_continuation_plan()
+    increment = 1_239_938_390_842
+    required_files = 397_780
+    quota_bytes = HISTORICAL_RESEARCH_QUOTA_BYTES
+    usage_boundary = (
+        quota_bytes - increment - capacity.R8R_QUOTA_RESERVE_BYTES
+    )
+    usage_above_boundary = ((usage_boundary // 1024) + 1) * 1024
+    assert usage_above_boundary > usage_boundary
+
+    quota_blocked, quota_calls, _ = _probe_fixed_r8r_continuation(
+        plan,
+        native_payload=_dynamic_native(
+            research_quota_bytes=quota_bytes,
+            research_usage_bytes=usage_above_boundary,
+        ),
+    )
+    assert len(quota_calls) == 5
+    assert quota_blocked["status"] == "BLOCKED"
+    assert quota_blocked["blocking_reason_codes"] == [
+        "R8R_CONTINUATION_QUOTA_RESERVE_INSUFFICIENT"
+    ]
+    assert quota_blocked["quota_margin_beyond_reserve_bytes"] < 0
+    assert quota_blocked["physical_reserve_gate_passed"] is True
+    assert quota_blocked["file_slot_gate_passed"] is True
+
+    physical_blocked, physical_calls, _ = _probe_fixed_r8r_continuation(
+        plan,
+        research_available=(
+            increment + capacity.R8R_PHYSICAL_RESERVE_BYTES - 1
+        ),
+    )
+    assert len(physical_calls) == 5
+    assert physical_blocked["status"] == "BLOCKED"
+    assert physical_blocked["blocking_reason_codes"] == [
+        "R8R_CONTINUATION_PHYSICAL_RESERVE_INSUFFICIENT"
+    ]
+    assert physical_blocked["physical_margin_beyond_reserve_bytes"] == -1
+    assert physical_blocked["quota_reserve_gate_passed"] is True
+    assert physical_blocked["file_slot_gate_passed"] is True
+
+    file_quota = capacity.EXPECTED_RESEARCH_FILE_QUOTA
+    files_used = file_quota - required_files + 1
+    file_blocked, file_calls, _ = _probe_fixed_r8r_continuation(
+        plan,
+        native_payload=_dynamic_native(
+            research_file_quota=file_quota,
+            research_files_used=files_used,
+        ),
+    )
+    assert len(file_calls) == 5
+    assert file_blocked["status"] == "BLOCKED"
+    assert file_blocked["blocking_reason_codes"] == [
+        "R8R_CONTINUATION_FILE_SLOTS_INSUFFICIENT"
+    ]
+    assert file_blocked["file_slot_margin_after_demand"] == -1
+    assert file_blocked["quota_reserve_gate_passed"] is True
+    assert file_blocked["physical_reserve_gate_passed"] is True
+
+
+def test_r8r_fixed_continuation_has_no_range_or_identity_override() -> None:
+    signature = inspect.signature(
+        capacity.probe_fixed_r8r_continuation_capacity
+    )
+    assert tuple(signature.parameters) == ("plan", "process_runner")
+    assert signature.parameters["plan"].kind == (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )
+    assert signature.parameters["process_runner"].kind == (
+        inspect.Parameter.KEYWORD_ONLY
+    )
+    assert signature.parameters["process_runner"].default is None
+
+    plan = _fixed_r8r_continuation_plan()
+    poison = mock.Mock(
+        side_effect=AssertionError("invalid override reached native capture")
+    )
+    for override in (
+        {"task_range": (5, 19)},
+        {"first_task": 5},
+        {"last_task": 18},
+        {"attempt_id": "alternate"},
+        {"governing_commit": "0" * 40},
+        {"increment_bytes": 1},
+        {"authority": object()},
+    ):
+        try:
+            capacity.probe_fixed_r8r_continuation_capacity(
+                plan,
+                process_runner=poison,
+                **override,
+            )
+        except TypeError:
+            pass
+        else:
+            raise AssertionError(f"accepted forbidden override {override}")
+    poison.assert_not_called()
+
+    original_digest = core.canonical_json_sha256(plan)
+    changed = copy.deepcopy(plan)
+    changed["batches"][3]["source_bytes"] += 1
+    with mock.patch.object(
+        capacity, "R8R_ORIGINAL_PLAN_SHA256", original_digest
+    ):
+        _expect_code(
+            "R8R_FIXED_PLAN_SHA256_MISMATCH",
+            lambda: capacity.probe_fixed_r8r_continuation_capacity(
+                changed, process_runner=poison
+            ),
+        )
+    poison.assert_not_called()
 
 
 def test_every_r5b_test_function_is_zero_argument() -> None:
