@@ -1,0 +1,48 @@
+{
+  "manifest_version": "jdim-provenance-v1",
+  "mimic_iv_echo_release": "[SCC OPERATOR TO FILL EXACT RELEASE]",
+  "echoprime_code_release": "[SCC OPERATOR TO CONFIRM]",
+  "files": {
+    "structured_measurements": {
+      "path": "[ABSOLUTE RESTRICTED PATH]",
+      "classification": "restricted"
+    },
+    "selected_study_universe": {
+      "path": "[ABSOLUTE RESTRICTED PATH]",
+      "classification": "restricted"
+    },
+    "embedding_manifest": {
+      "path": "[ABSOLUTE RESTRICTED PATH]",
+      "classification": "restricted"
+    },
+    "split_map": {
+      "path": "[ABSOLUTE RESTRICTED PATH]",
+      "classification": "restricted"
+    },
+    "video_encoder_checkpoint": {
+      "path": "[ABSOLUTE RESTRICTED PATH]",
+      "classification": "restricted"
+    },
+    "audit_configuration": {
+      "path": "[ABSOLUTE REPOSITORY PATH]",
+      "classification": "aggregate_safe"
+    }
+  },
+  "split_map_role": "split_map",
+  "selected_study_universe_role": "selected_study_universe",
+  "structured_measurement_role": "structured_measurements",
+  "embedding_manifest_role": "embedding_manifest",
+  "video_encoder_checkpoint_role": "video_encoder_checkpoint",
+  "audit_configuration_role": "audit_configuration",
+  "script_arguments": {},
+  "codex_assisted_artifacts": [
+    "docs/jdim_major_revision_tier1_design.md",
+    "configs/jdim_input_content_audit_v1.yaml",
+    "scripts/jdim_tier1/",
+    "scripts/reconstruct_jdim_cohort_flow.py",
+    "scripts/prepare_jdim_input_audit.py",
+    "scripts/compute_jdim_fixed_prediction_metrics.py",
+    "scripts/build_jdim_provenance_manifests.py",
+    "tests/test_jdim_tier1_*.py"
+  ]
+}
