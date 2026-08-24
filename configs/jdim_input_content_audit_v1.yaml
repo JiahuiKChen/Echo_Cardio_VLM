@@ -1,0 +1,106 @@
+{
+  "protocol_version": "jdim-input-content-audit-v1",
+  "target_cohorts": ["lvot_vti", "tapse"],
+  "intended_sample_size_per_target": 60,
+  "seed": 20260824,
+  "split_allocation": {
+    "method": "proportional_largest_remainder",
+    "allowed_splits": ["train", "val", "test"],
+    "author_approved_override": null
+  },
+  "overlap_deduplication_rule": "one_physical_review_per_unique_study",
+  "primary_study_level_outcomes": [
+    "spectral_doppler_present",
+    "m_mode_present",
+    "caliper_or_trace_present",
+    "visible_numeric_value_present",
+    "target_specific_label_present",
+    "candidate_target_value_present",
+    "confirmed_target_value_match_present"
+  ],
+  "secondary_clip_level_outcomes": [
+    "acquisition_content_type",
+    "waveform_or_tracing",
+    "calipers",
+    "contour_or_measurement_trace",
+    "visible_text",
+    "visible_numeric_value",
+    "visible_unit",
+    "visible_measurement_name",
+    "lvot_vti_specific_label",
+    "tapse_specific_label",
+    "source_frame_visibility",
+    "processed_input_visibility",
+    "reconstruction_success",
+    "reader_confidence"
+  ],
+  "reader_blinding": {
+    "prohibited_fields": [
+      "target_value",
+      "prediction",
+      "residual",
+      "filename",
+      "subject_id",
+      "study_id",
+      "split"
+    ],
+    "reader_manifest_fields": ["audit_id", "review_order"]
+  },
+  "second_reader_fraction": 0.20,
+  "adjudication": {
+    "independent_second_read": true,
+    "adjudicate_all_positive": true,
+    "adjudicate_all_uncertain": true,
+    "agreement_statistics": ["raw_percentage_agreement", "cohen_kappa", "gwet_ac1"]
+  },
+  "restricted_output_root_required": true,
+  "safe_aggregate_output_schema": {
+    "allowed_content": [
+      "counts",
+      "proportions",
+      "confidence_intervals",
+      "reconstruction_failure_rates",
+      "agreement_statistics",
+      "configuration_hashes"
+    ],
+    "forbidden_row_level_content": [
+      "identifiers",
+      "paths",
+      "timestamps",
+      "target_values",
+      "predictions",
+      "residuals",
+      "candidate_values",
+      "split_assignments"
+    ]
+  },
+  "categorical_values": {
+    "presence": ["yes", "no", "uncertain", "not_assessable"],
+    "acquisition_content_type": [
+      "2d_b_mode",
+      "color_doppler",
+      "pulsed_wave_spectral_doppler",
+      "continuous_wave_spectral_doppler",
+      "tissue_doppler",
+      "m_mode",
+      "mixed",
+      "other",
+      "uncertain",
+      "not_assessable"
+    ],
+    "reader_confidence": ["high", "moderate", "low", "not_assessable"]
+  },
+  "technical_pilot": {
+    "default_studies_per_target": 3,
+    "clinical_content_labels_prohibited": true,
+    "excluded_from_prevalence_estimates": true,
+    "allowed_fields": ["audit_id", "review_order", "reconstruction_success", "review_minutes"]
+  },
+  "escalation_triggers": [
+    "frequent_visible_candidate_target_values",
+    "frequent_target_specific_labels",
+    "material_reconstruction_failure",
+    "reader_disagreement_on_positive_or_uncertain_findings",
+    "any_attempt_to_develop_exclusion_rules_from_test_split_findings"
+  ]
+}
