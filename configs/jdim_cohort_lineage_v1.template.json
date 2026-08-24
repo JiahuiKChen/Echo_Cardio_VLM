@@ -1,0 +1,23 @@
+{
+  "protocol_version": "jdim-tier1-v1",
+  "flow_structure": "parallel_branches",
+  "mimic_iv_echo_release": "[SCC OPERATOR TO FILL EXACT RELEASE]",
+  "source_denominator_definition": "[SCC OPERATOR TO FILL EXACT SOURCE QUERY/UNIVERSE]",
+  "imaging_lineage": "fullscale_all plus reconciled legacy Stage D embedding batch",
+  "label_lineage": "structured measurements exported for the pinned eligible-study universe",
+  "split_map": {
+    "version": "subject_split_map_v1",
+    "generator": "[SCC OPERATOR TO CONFIRM FROM PINNED SUMMARY]",
+    "expected_sha256": "[SCC OPERATOR TO COMPUTE]"
+  },
+  "batch_sources": {
+    "legacy_stage_d_500": {
+      "source_class": "legacy"
+    },
+    "batch_000": {
+      "source_class": "fullscale"
+    }
+  },
+  "allowed_batch_overlap_pairs": []
+}
+
