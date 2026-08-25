@@ -30,6 +30,8 @@ Required environment:
 
 Additional for audit-sample/audit-pilot:
   JDIM_AUDIT_KEY_FILE    Restricted file containing at least 16 random bytes
+Additional for audit-reconstruct-pilot:
+  JDIM_DICOM_DATA_ROOT   Approved local MIMIC-IV-ECHO DICOM root
 
 Optional:
   JDIM_BOOTSTRAP_N, JDIM_NONIMAGE_PREDICTIONS
@@ -46,6 +48,7 @@ Usage:
   scripts/scc_run_jdim_tier1.sh corrected-comparison
   scripts/scc_run_jdim_tier1.sh audit-sample
   scripts/scc_run_jdim_tier1.sh audit-pilot
+  scripts/scc_run_jdim_tier1.sh audit-reconstruct-pilot
 EOF
 }
 
@@ -101,7 +104,7 @@ if [[ -z "${MODE}" || "${MODE}" == "-h" || "${MODE}" == "--help" ]]; then
 fi
 
 case "${MODE}" in
-  validate|handoff-check|cohort-flow|reviewer-metrics|duplicate-forensics|corrected-aggregation|corrected-analysis|corrected-comparison|audit-sample|audit-pilot) ;;
+  validate|handoff-check|cohort-flow|reviewer-metrics|duplicate-forensics|corrected-aggregation|corrected-analysis|corrected-comparison|audit-sample|audit-pilot|audit-reconstruct-pilot) ;;
   *)
     echo "[error] Unknown mode: ${MODE}" >&2
     usage
@@ -214,6 +217,9 @@ require_file "${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
 EMBEDDING_ARGS=(
   --embedding-batch "legacy_stage_d_500=${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
 )
+EMBEDDING_NPZ_ARGS=(
+  --embedding-batch-npz "legacy_stage_d_500=${LEGACY}/echoprime_embeddings_512/clip_embeddings_512.npz"
+)
 FORENSIC_ARGS=(
   --extraction-manifest "legacy_stage_d_500=${LEGACY}/extract_allclip/extraction_manifest.csv"
   --embedding-manifest "legacy_stage_d_500=${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
@@ -233,6 +239,7 @@ for path in "${FULLSCALE_EMBEDDINGS[@]}"; do
     --embedding-manifest "${batch_name}=${path}"
     --embedding-npz "${batch_name}=${batch_npz}"
   )
+  EMBEDDING_NPZ_ARGS+=(--embedding-batch-npz "${batch_name}=${batch_npz}")
 done
 
 COHORT_COMMON=(
@@ -242,11 +249,16 @@ COHORT_COMMON=(
   --dicom-audit-csv "${DICOM_AUDITS[@]}"
   --extraction-manifest-csv "${EXTRACTIONS[@]}"
   "${EMBEDDING_ARGS[@]}"
+  "${EMBEDDING_NPZ_ARGS[@]}"
   --final-study-embedding-manifest-csv "${STUDY_EMBEDDING_MANIFEST}"
   --structured-measurements-csv "${STRUCTURED_MEASUREMENTS}"
   --subject-split-map-csv "${SPLIT_MAP}"
   --canonical-summary "lvot_vti=${LVOT_SUMMARY}"
   --canonical-summary "tapse=${TAPSE_SUMMARY}"
+  --canonical-prediction "lvot_vti=${LVOT_PREDICTIONS}"
+  --canonical-prediction "tapse=${TAPSE_PREDICTIONS}"
+  --duplicate-forensics-rows-csv "${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv"
+  --duplicate-forensics-provenance-json "${OUT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json"
   --lineage-metadata-json "${LINEAGE}"
   --output-dir "${OUT}/aggregate_safe/cohort_flow"
 )
@@ -277,7 +289,12 @@ case "${MODE}" in
       "[ok] lineage-repair and duplicate-corrected output roots are explicit and separate"
     ;;
   validate)
-    "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
+    if [[ -f "${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv" && \
+          -f "${OUT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json" ]]; then
+      "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
+    else
+      echo "[deferred] cohort schema/hash validation awaits duplicate-forensics outputs"
+    fi
     "${PY}" scripts/compute_jdim_fixed_prediction_metrics.py "${METRIC_COMMON[@]}" --schema-only
     "${PY}" scripts/prepare_jdim_input_audit.py validate-config --config "${CONFIG}"
     if [[ -f "${OUT}/restricted/cohort_flow/jdim_target_cohort_lvot_vti.csv" && \
@@ -285,7 +302,8 @@ case "${MODE}" in
       "${PY}" scripts/prepare_jdim_input_audit.py validate-inputs \
         --config "${CONFIG}" \
         --cohort "lvot_vti=${OUT}/restricted/cohort_flow/jdim_target_cohort_lvot_vti.csv" \
-        --cohort "tapse=${OUT}/restricted/cohort_flow/jdim_target_cohort_tapse.csv"
+        --cohort "tapse=${OUT}/restricted/cohort_flow/jdim_target_cohort_tapse.csv" \
+        --canonical-clip-manifest-csv "${CLIP_EMBEDDING_MANIFEST}"
     fi
     ;;
   cohort-flow)
@@ -294,6 +312,10 @@ case "${MODE}" in
       --restricted-reconciliation-csv "${OUT}/restricted/cohort_flow/reconciliation.csv"
     ;;
   reviewer-metrics)
+    if [[ -e "${OUT}/aggregate_safe/reviewer_metrics" ]]; then
+      echo "[error] Refusing to overwrite fixed original reviewer metrics" >&2
+      exit 2
+    fi
     "${PY}" scripts/compute_jdim_fixed_prediction_metrics.py "${METRIC_COMMON[@]}"
     ;;
   duplicate-forensics)
@@ -307,10 +329,15 @@ case "${MODE}" in
     ;;
   corrected-aggregation)
     require_file "${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv"
+    require_file "${OUT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json"
+    "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
     "${PY}" scripts/build_jdim_corrected_study_embeddings.py \
       --forensic-evidence-file "${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv" \
+      --forensic-provenance-json "${OUT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json" \
       --clip-manifest-csv "${CLIP_EMBEDDING_MANIFEST}" \
       --clip-embedding-npz "${CLIP_EMBEDDING_NPZ}" \
+      --frozen-study-manifest-csv "${STUDY_EMBEDDING_MANIFEST}" \
+      --frozen-study-embedding-npz "${STUDY_EMBEDDING_NPZ}" \
       --output-root "${CORRECTED_ROOT}/aggregation"
     ;;
   corrected-analysis)
@@ -420,6 +447,9 @@ case "${MODE}" in
       --corrected-results "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes" \
       --frozen-split-map-csv "${SPLIT_MAP}" \
       --output-root "${CORRECTED_ROOT}/aggregate_safe/original_vs_corrected_hard_extremes"
+    "${PY}" scripts/validate_jdim_corrected_completion.py \
+      --corrected-root "${CORRECTED_ROOT}" \
+      --output-json "${CORRECTED_ROOT}/aggregate_safe/corrected_analysis_completion_v1.json"
     ;;
   audit-sample|audit-pilot)
     require_env JDIM_AUDIT_KEY_FILE
@@ -435,9 +465,27 @@ case "${MODE}" in
       --config "${CONFIG}" \
       --cohort "lvot_vti=${OUT}/restricted/cohort_flow/jdim_target_cohort_lvot_vti.csv" \
       --cohort "tapse=${OUT}/restricted/cohort_flow/jdim_target_cohort_tapse.csv" \
+      --canonical-clip-manifest-csv "${CLIP_EMBEDDING_MANIFEST}" \
       --opaque-id-key-file "${JDIM_AUDIT_KEY_FILE}" \
       --restricted-output-root "${RESTRICTED_AUDIT_ROOT}/${AUDIT_SUFFIX}" \
       --safe-output-dir "${OUT}/aggregate_safe/input_content_audit/${AUDIT_SUFFIX}"
+    ;;
+  audit-reconstruct-pilot)
+    require_env JDIM_DICOM_DATA_ROOT
+    require_absolute_outside_repo "${JDIM_DICOM_DATA_ROOT}" "JDIM_DICOM_DATA_ROOT"
+    require_directory "${JDIM_DICOM_DATA_ROOT}"
+    require_file "${RESTRICTED_AUDIT_ROOT}/technical_pilot/audit_linkage.csv"
+    require_file "${RESTRICTED_AUDIT_ROOT}/technical_pilot/canonical_clip_roster_restricted.csv"
+    "${PY}" scripts/build_jdim_audit_reconstruction_pilot.py \
+      --audit-linkage-csv "${RESTRICTED_AUDIT_ROOT}/technical_pilot/audit_linkage.csv" \
+      --canonical-clip-roster-csv "${RESTRICTED_AUDIT_ROOT}/technical_pilot/canonical_clip_roster_restricted.csv" \
+      --canonical-clip-manifest-csv "${CLIP_EMBEDDING_MANIFEST}" \
+      --dicom-data-root "${JDIM_DICOM_DATA_ROOT}" \
+      --restricted-output-root "${RESTRICTED_AUDIT_ROOT}/technical_pilot_reconstruction" \
+      --safe-output-dir "${OUT}/aggregate_safe/input_content_audit/technical_pilot_reconstruction" \
+      --max-studies 6 \
+      --max-clips-per-study 3 \
+      --failure-rate-stop 0.05
     ;;
 esac
 

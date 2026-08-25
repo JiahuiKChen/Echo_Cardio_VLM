@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -22,14 +23,38 @@ from jdim_tier1.corrected_analysis import (  # noqa: E402
     compare_original_corrected,
     write_corrected_aggregation,
 )
+from build_jdim_corrected_study_embeddings import validate_forensic_evidence_hash  # noqa: E402
+from jdim_tier1.safety import sha256_file  # noqa: E402
 
 
 class CorrectedAnalysisTests(unittest.TestCase):
+    def test_corrected_aggregation_evidence_must_match_forensic_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            evidence = root / "duplicate_forensics_rows.csv"
+            provenance = root / "duplicate_forensics_summary.json"
+            evidence.write_text("group_token\ng1\n", encoding="utf-8")
+            provenance.write_text(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "restricted_artifact_sha256": {
+                            "duplicate_forensics_rows.csv": sha256_file(evidence)
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            validate_forensic_evidence_hash(evidence, provenance)
+            evidence.write_text("group_token\ng2\n", encoding="utf-8")
+            with self.assertRaisesRegex(Tier1BlockedError, "does not match"):
+                validate_forensic_evidence_hash(evidence, provenance)
+
     def _clip_fixture(
         self,
         root: Path,
         manifest_order: list[int] | None = None,
-    ) -> tuple[Path, Path, Path]:
+    ) -> tuple[Path, Path, Path, Path, Path]:
         embeddings = np.asarray(
             [
                 [1.0, 0.0],
@@ -56,6 +81,27 @@ class CorrectedAnalysisTests(unittest.TestCase):
         decisions = root / "duplicate_forensics_rows.csv"
         rows.to_csv(manifest, index=False)
         np.savez_compressed(npz, embeddings=embeddings)
+        frozen_manifest = root / "frozen_studies.csv"
+        frozen_npz = root / "frozen_studies.npz"
+        study_rows = []
+        study_vectors = []
+        indexed = rows.sort_values("embedding_idx", kind="mergesort")
+        for study_idx, study_id in enumerate(sorted(indexed["study_id"].unique())):
+            group = indexed[indexed["study_id"] == study_id]
+            indices = group["embedding_idx"].to_numpy(dtype=int)
+            vector = embeddings[indices].mean(axis=0).astype(np.float32)
+            study_vectors.append(vector)
+            study_rows.append(
+                {
+                    "study_idx": study_idx,
+                    "study_id": study_id,
+                    "subject_id": int(group["subject_id"].iloc[0]),
+                    "n_clips": len(group),
+                    "embedding_l2_norm": float(np.linalg.norm(vector)),
+                }
+            )
+        pd.DataFrame(study_rows).to_csv(frozen_manifest, index=False)
+        np.savez_compressed(frozen_npz, embeddings=np.stack(study_vectors))
         vector_hash = _array_sha256(embeddings[1])
         pd.DataFrame(
             [
@@ -91,11 +137,13 @@ class CorrectedAnalysisTests(unittest.TestCase):
                 },
             ]
         ).to_csv(decisions, index=False)
-        return decisions, manifest, npz
+        return decisions, manifest, npz, frozen_manifest, frozen_npz
 
     def _build(self, root: Path, order: list[int] | None = None) -> CorrectedAggregationResult:
-        decisions, manifest, npz = self._clip_fixture(root, order)
-        return build_corrected_aggregation(decisions, manifest, npz)
+        decisions, manifest, npz, frozen_manifest, frozen_npz = self._clip_fixture(root, order)
+        return build_corrected_aggregation(
+            decisions, manifest, npz, frozen_manifest, frozen_npz
+        )
 
     def test_deduplication_is_stable_under_manifest_row_reordering(self) -> None:
         with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
@@ -129,6 +177,20 @@ class CorrectedAnalysisTests(unittest.TestCase):
                 result.aggregate_change_counts.iloc[0]["n_embedding_changed_studies"],
                 1,
             )
+
+    def test_correction_requires_exact_replay_of_frozen_study_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            decisions, manifest, npz, frozen_manifest, frozen_npz = self._clip_fixture(root)
+            with np.load(frozen_npz) as archive:
+                altered = np.asarray(archive["embeddings"]).copy()
+            altered[0, 0] += np.float32(0.01)
+            np.savez_compressed(frozen_npz, embeddings=altered)
+            with self.assertRaisesRegex(Tier1BlockedError, "does not exactly reproduce") as caught:
+                build_corrected_aggregation(
+                    decisions, manifest, npz, frozen_manifest, frozen_npz
+                )
+            self.assertEqual(caught.exception.status, BLOCKED_CORRECTED_ANALYSIS)
 
     def test_existing_output_root_is_never_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -247,6 +309,7 @@ class CorrectedAnalysisTests(unittest.TestCase):
             "random_seed": 1337,
             "legacy_seed_arg": 1337,
             "hard_extremes_excluded": False,
+            "sklearn_version": "synthetic",
             "target_summaries": [target_summary],
         }
 
@@ -325,6 +388,36 @@ class CorrectedAnalysisTests(unittest.TestCase):
                     new_dirs,
                 )
             self.assertEqual(caught.exception.status, BLOCKED_CORRECTED_ANALYSIS)
+
+    def test_comparison_requires_finite_null_predictions(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            original, corrected, split_map, old_dirs, new_dirs = self._comparison_inputs(
+                Path(tempdir)
+            )
+            corrected = corrected.copy()
+            corrected.loc[0, "pred_null_median"] = np.inf
+            with self.assertRaisesRegex(Tier1BlockedError, "invalid null predictions"):
+                compare_original_corrected(
+                    {"lvot_vti": original},
+                    {"lvot_vti": corrected},
+                    split_map,
+                    old_dirs,
+                    new_dirs,
+                )
+
+    def test_comparison_requires_null_prediction_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            original, corrected, split_map, old_dirs, new_dirs = self._comparison_inputs(
+                Path(tempdir)
+            )
+            with self.assertRaisesRegex(Tier1BlockedError, "pred_null_median"):
+                compare_original_corrected(
+                    {"lvot_vti": original.drop(columns=["pred_null_median"])},
+                    {"lvot_vti": corrected},
+                    split_map,
+                    old_dirs,
+                    new_dirs,
+                )
 
 
 if __name__ == "__main__":

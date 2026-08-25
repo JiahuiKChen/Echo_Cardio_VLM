@@ -9,14 +9,18 @@
     "author_approved_override": null
   },
   "overlap_deduplication_rule": "one_physical_review_per_unique_study",
+  "canonical_clip_roster": {
+    "source": "successful rows from the canonical clip embedding manifest",
+    "all_selected_study_clips_required": true,
+    "locked_into_sample_manifest_token": true
+  },
   "primary_study_level_outcomes": [
     "spectral_doppler_present",
     "m_mode_present",
     "caliper_or_trace_present",
     "visible_numeric_value_present",
     "target_specific_label_present",
-    "candidate_target_value_present",
-    "confirmed_target_value_match_present"
+    "candidate_target_value_present"
   ],
   "secondary_clip_level_outcomes": [
     "acquisition_content_type",
@@ -44,16 +48,27 @@
       "study_id",
       "split"
     ],
-    "reader_manifest_fields": ["audit_id", "review_order"]
+    "reader_manifest_fields": ["audit_id", "review_order", "sample_manifest_token"]
   },
   "second_reader_fraction": 0.20,
   "adjudication": {
     "independent_second_read": true,
     "adjudicate_all_positive": true,
     "adjudicate_all_uncertain": true,
+    "completed_queue_required_before_aggregation": true,
     "agreement_statistics": ["raw_percentage_agreement", "cohen_kappa", "gwet_ac1"]
   },
+  "post_unblinding_value_match": {
+    "reader_target_values_prohibited": true,
+    "reader_action": "transcribe visible numeric value, displayed unit, displayed measurement name, and decimal precision",
+    "analyst_action": "after reads are locked, compare target-specific transcriptions with restricted report labels",
+    "unit_normalization": {"lvot_vti": "cm", "tapse": "mm"},
+    "match_tolerance": "half the displayed least-significant unit after unit conversion",
+    "missing_or_ambiguous_unit": "not_assessable",
+    "multiple_candidate_values": "requires_restricted_adjudication"
+  },
   "restricted_output_root_required": true,
+  "clip_level_estimand": "unweighted_sampled_clip_composition",
   "safe_aggregate_output_schema": {
     "allowed_content": [
       "counts",

@@ -65,6 +65,34 @@ WINDOW_ID_COLUMNS = ("window_id", "clip_id")
 WINDOW_START_COLUMNS = ("source_frame_start", "frame_start", "window_start")
 WINDOW_END_COLUMNS = ("source_frame_end", "frame_end", "window_end")
 WINDOW_SEQUENCE_COLUMNS = ("sampled_indices", "frame_indices", "source_frame_indices")
+ALLOWED_COARSE_KEY_COLUMNS = {
+    "study_id",
+    "subject_id",
+    "dicom_id",
+    *FINE_DICOM_COLUMNS,
+    *NPZ_PATH_COLUMNS,
+    *WINDOW_INDEX_COLUMNS,
+    *WINDOW_ID_COLUMNS,
+    *WINDOW_START_COLUMNS,
+    *WINDOW_END_COLUMNS,
+    *WINDOW_SEQUENCE_COLUMNS,
+}
+SOURCE_MANIFEST_FINGERPRINT_COLUMNS = tuple(
+    dict.fromkeys(
+        (
+            "study_id",
+            "subject_id",
+            "embedding_idx",
+            *FINE_DICOM_COLUMNS,
+            *NPZ_PATH_COLUMNS,
+            *WINDOW_INDEX_COLUMNS,
+            *WINDOW_ID_COLUMNS,
+            *WINDOW_START_COLUMNS,
+            *WINDOW_END_COLUMNS,
+            *WINDOW_SEQUENCE_COLUMNS,
+        )
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +135,21 @@ def _text(value: Any) -> str:
     if isinstance(value, (np.floating, float)) and float(value).is_integer():
         return str(int(value))
     return str(value).strip()
+
+
+def source_manifest_row_fingerprint(
+    row: Mapping[str, Any], batch_name: str, manifest_row: int
+) -> str:
+    """Bind an adjudicated row to its successful source-manifest ordinal and content."""
+
+    payload = {
+        "batch_name": str(batch_name),
+        "successful_manifest_row": int(manifest_row),
+        "source_fields": {
+            column: _text(row.get(column)) for column in SOURCE_MANIFEST_FINGERPRINT_COLUMNS
+        },
+    }
+    return sha256_json(payload)
 
 
 def _truthy(series: pd.Series) -> pd.Series:
@@ -417,6 +460,7 @@ def _load_batch(
     )
     if "write_ok" in manifest.columns:
         manifest = manifest[_truthy(manifest["write_ok"])].copy()
+    manifest = manifest.reset_index(drop=True)
     manifest = manifest.reset_index(drop=False).rename(columns={"index": "_manifest_row"})
     if manifest.empty:
         raise Tier1BlockedError(BLOCKED_DUPLICATE_SEMANTICS, f"{name} has no successful embedding rows")
@@ -437,6 +481,11 @@ def _load_batch(
     rows: list[dict[str, Any]] = []
     for raw in manifest.to_dict(orient="records"):
         row = dict(raw)
+        row["source_manifest_row_fingerprint_sha256"] = source_manifest_row_fingerprint(
+            row,
+            name,
+            int(row["_manifest_row"]),
+        )
         _, raw_npz = _first_value(row, NPZ_PATH_COLUMNS)
         row["_resolved_npz_path"] = (
             _resolved_path(raw_npz, artifacts.embedding_manifest.parent) if raw_npz else ""
@@ -726,9 +775,11 @@ def _embedding_changes(
         ordered = sorted(
             indexes,
             key=lambda index: (
-                str(all_rows.at[index, "_batch"]),
-                int(all_rows.at[index, "_manifest_row"]),
-                int(all_rows.at[index, "embedding_idx"]),
+                _text(repeated_rows.at[index, "embedding_vector_sha256"]),
+                _text(repeated_rows.at[index, "processed_array_sha256"]),
+                _text(repeated_rows.at[index, "processed_array_selector"]),
+                _text(repeated_rows.at[index, "explicit_window_spec_json"]),
+                int(repeated_rows.at[index, "embedding_idx"]),
             ),
         )
         for index in ordered[1:]:
@@ -814,23 +865,7 @@ def analyze_duplicate_keys(inputs: DuplicateForensicsInputs) -> DuplicateForensi
     coarse_columns = tuple(inputs.coarse_key_columns)
     if "study_id" not in coarse_columns:
         raise ValueError("coarse key must include study_id")
-    prohibited_key_tokens = {
-        "target",
-        "label",
-        "y_true",
-        "y_pred",
-        "prediction",
-        "residual",
-        "error",
-        "mae",
-        "rmse",
-        "r2",
-    }
-    unsafe_coarse_columns = [
-        column
-        for column in coarse_columns
-        if any(token in str(column).lower() for token in prohibited_key_tokens)
-    ]
+    unsafe_coarse_columns = [column for column in coarse_columns if column not in ALLOWED_COARSE_KEY_COLUMNS]
     if unsafe_coarse_columns:
         raise ValueError(
             "coarse key cannot use targets, labels, predictions, or errors: "
@@ -1120,8 +1155,9 @@ def analyze_duplicate_keys(inputs: DuplicateForensicsInputs) -> DuplicateForensi
             else "computed" if duplicate_groups else "not_applicable_no_true_duplicates"
         ),
         "deduplication_rule": (
-            "within each adjudicated duplicate coarse group, retain the stable first "
-            "batch/manifest-row/embedding-index contribution"
+            "within each adjudicated duplicate group, retain the lexicographically first "
+            "embedding-vector hash, processed-input identity, selector, window specification, "
+            "and immutable embedding-index tie-break"
             if duplicate_groups and not ambiguous
             else None
         ),
@@ -1151,6 +1187,7 @@ def analyze_duplicate_keys(inputs: DuplicateForensicsInputs) -> DuplicateForensi
         "classification_reason",
         "_batch",
         "_manifest_row",
+        "source_manifest_row_fingerprint_sha256",
         "study_id",
         "subject_id",
         "split",
@@ -1273,14 +1310,6 @@ def write_duplicate_forensics_outputs(
         (result.embedding_change_summary, "embedding-change summary"),
     ):
         assert_export_safe_frame(frame, label)
-    safe_summary = dict(result.summary)
-    coarse_key_columns = safe_summary.pop("coarse_key_columns", [])
-    safe_summary.pop("target_values_predictions_and_errors_used_for_classification", None)
-    safe_summary["coarse_key_component_count"] = int(len(coarse_key_columns))
-    safe_summary["classification_uses_input_lineage_and_frozen_embeddings_only"] = True
-    safe_payload = {**safe_summary, "input_provenance": result.safe_provenance}
-    _assert_safe_payload(safe_payload)
-
     restricted_files = (
         "duplicate_forensics_rows.csv",
         "duplicate_forensics_groups.csv",
@@ -1315,10 +1344,17 @@ def write_duplicate_forensics_outputs(
     result.restricted_study_changes.to_csv(
         restricted / "duplicate_embedding_change_by_study.csv", index=False
     )
+    restricted_artifact_sha256 = {
+        name: sha256_file(restricted / name)
+        for name in restricted_files
+        if name != "duplicate_forensics_restricted_summary.json"
+    }
     write_json(
         restricted / "duplicate_forensics_restricted_summary.json",
         {
             **result.summary,
+            "input_provenance": result.safe_provenance,
+            "restricted_artifact_sha256": restricted_artifact_sha256,
             "restricted_artifacts": [
                 "duplicate_forensics_rows.csv",
                 "duplicate_forensics_groups.csv",
@@ -1326,6 +1362,18 @@ def write_duplicate_forensics_outputs(
             ],
         },
     )
+
+    safe_summary = dict(result.summary)
+    coarse_key_columns = safe_summary.pop("coarse_key_columns", [])
+    safe_summary.pop("target_values_predictions_and_errors_used_for_classification", None)
+    safe_summary["coarse_key_component_count"] = int(len(coarse_key_columns))
+    safe_summary["classification_uses_input_lineage_and_frozen_embeddings_only"] = True
+    safe_payload = {
+        **safe_summary,
+        "input_provenance": result.safe_provenance,
+        "restricted_artifact_sha256": restricted_artifact_sha256,
+    }
+    _assert_safe_payload(safe_payload)
 
     safe.mkdir(parents=True, exist_ok=True)
     write_safe_csv(safe / "duplicate_class_summary.csv", result.class_summary, "class summary")

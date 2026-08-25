@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 
 from run_tapse_lvot_vti_imaging_baseline import (
@@ -17,6 +18,7 @@ from run_tapse_lvot_vti_imaging_baseline import (
 )
 
 from . import PROTOCOL_VERSION
+from .duplicate_forensics import source_manifest_row_fingerprint
 from .safety import (
     BLOCKED_LINEAGE,
     Tier1BlockedError,
@@ -35,6 +37,17 @@ from .safety import (
 VALID_SPLITS = ("train", "val", "test")
 TARGET_NAMES = ("lvot_vti", "tapse")
 OUTSIDE_UNIVERSE_POLICIES = {"canonical_only", "declared_legacy_scope"}
+FORENSIC_CLASSES = {
+    "LEGITIMATE_DISTINCT_CLIPS",
+    "TRUE_DUPLICATE_MANIFEST_ROWS",
+    "TRUE_DUPLICATE_EMBEDDING_ROWS",
+    "KEY_GRANULARITY_TOO_COARSE",
+    "AMBIGUOUS_REQUIRES_AUTHOR_REVIEW",
+}
+TRUE_DUPLICATE_CLASSES = {
+    "TRUE_DUPLICATE_MANIFEST_ROWS",
+    "TRUE_DUPLICATE_EMBEDDING_ROWS",
+}
 
 
 @dataclass
@@ -80,11 +93,15 @@ class CohortFlowInputs:
     dicom_audits: Sequence[Path]
     extraction_manifests: Sequence[Path]
     embedding_batches: Mapping[str, Path]
+    embedding_batch_npzs: Mapping[str, Path]
     final_study_embeddings: Path
     structured_measurements: Path
     split_map: Path
     canonical_summaries: Mapping[str, Path]
     lineage_metadata: Path
+    duplicate_forensics: Path
+    duplicate_forensics_provenance: Path
+    canonical_predictions: Mapping[str, Path]
 
 
 @dataclass
@@ -120,6 +137,7 @@ def validate_cohort_input_schemas(inputs: CohortFlowInputs) -> dict[str, Any]:
         raise Tier1BlockedError(BLOCKED_LINEAGE, "missing lineage metadata JSON")
     metadata = json.loads(inputs.lineage_metadata.read_text(encoding="utf-8"))
     validate_lineage_metadata(metadata, list(inputs.embedding_batches), inputs.split_map, report)
+    _validate_duplicate_forensics_provenance(inputs, report)
 
     roles: list[tuple[str, Path, Sequence[str], bool]] = [
         ("source study universe", inputs.source_studies, ("study_id", "subject_id"), False),
@@ -138,6 +156,25 @@ def validate_cohort_input_schemas(inputs: CohortFlowInputs) -> dict[str, Any]:
         for index, path in enumerate(inputs.expected_records)
     )
     roles.extend(
+        (f"canonical predictions {target}", path, ("study_id", "subject_id", "split"), False)
+        for target, path in inputs.canonical_predictions.items()
+    )
+    roles.append(
+        (
+            "duplicate forensic decisions",
+            inputs.duplicate_forensics,
+            (
+                "group_token",
+                "classification",
+                "_batch",
+                "_manifest_row",
+                "dedup_keep_candidate",
+                "source_manifest_row_fingerprint_sha256",
+            ),
+            False,
+        )
+    )
+    roles.extend(
         (f"DICOM audit {index}", path, ("study_id", "subject_id", "read_ok", "is_multiframe"), True)
         for index, path in enumerate(inputs.dicom_audits)
     )
@@ -146,7 +183,7 @@ def validate_cohort_input_schemas(inputs: CohortFlowInputs) -> dict[str, Any]:
         for index, path in enumerate(inputs.extraction_manifests)
     )
     roles.extend(
-        (f"embedding batch {name}", path, ("study_id", "subject_id"), True)
+        (f"embedding batch {name}", path, ("study_id", "subject_id", "embedding_idx"), True)
         for name, path in inputs.embedding_batches.items()
     )
     checked: list[str] = []
@@ -193,6 +230,160 @@ def _read_many(paths: Sequence[Path], label: str) -> pd.DataFrame:
         frame["_source_index"] = index
         frames.append(frame)
     return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _validate_duplicate_forensics_provenance(
+    inputs: CohortFlowInputs,
+    report: InvariantReport,
+) -> dict[str, Any]:
+    if set(inputs.embedding_batch_npzs) != set(inputs.embedding_batches):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "embedding manifest and NPZ batch names differ for forensic provenance",
+        )
+    required_paths = {
+        "duplicate-forensics decisions": inputs.duplicate_forensics,
+        "duplicate-forensics provenance": inputs.duplicate_forensics_provenance,
+        "frozen split map": inputs.split_map,
+        **{
+            f"embedding manifest {name}": path
+            for name, path in inputs.embedding_batches.items()
+        },
+        **{
+            f"embedding NPZ {name}": path
+            for name, path in inputs.embedding_batch_npzs.items()
+        },
+    }
+    missing_paths = sorted(label for label, path in required_paths.items() if not path.is_file())
+    if missing_paths:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            f"missing forensic provenance inputs: {missing_paths}",
+        )
+    if not inputs.duplicate_forensics_provenance.exists():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "missing duplicate-forensics provenance JSON")
+    try:
+        payload = json.loads(
+            inputs.duplicate_forensics_provenance.read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            f"invalid duplicate-forensics provenance JSON: {exc}",
+        ) from exc
+    if payload.get("status") != "ok":
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "duplicate-forensics provenance does not record a resolved status",
+        )
+
+    artifact_hashes = payload.get("restricted_artifact_sha256")
+    expected_rows_hash = (
+        artifact_hashes.get("duplicate_forensics_rows.csv")
+        if isinstance(artifact_hashes, Mapping)
+        else None
+    )
+    observed_rows_hash = sha256_file(inputs.duplicate_forensics)
+    rows_match = bool(expected_rows_hash and expected_rows_hash == observed_rows_hash)
+    report.add(
+        "duplicate_forensic_decisions_match_provenance_hash",
+        rows_match,
+        observed_rows_hash,
+        expected_rows_hash,
+    )
+    if not rows_match:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "duplicate-forensics decision rows do not match their provenance hash",
+        )
+    try:
+        decision_tokens = pd.read_csv(
+            inputs.duplicate_forensics,
+            usecols=["group_token"],
+        )
+    except (ValueError, pd.errors.EmptyDataError) as exc:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "duplicate-forensics decision rows lack a valid group-token column",
+        ) from exc
+    provenance = payload.get("input_provenance")
+    if not isinstance(provenance, Mapping):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "duplicate-forensics input provenance is missing")
+    split_record = provenance.get("split_map")
+    expected_split_hash = (
+        split_record.get("sha256") if isinstance(split_record, Mapping) else None
+    )
+    observed_split_hash = sha256_file(inputs.split_map)
+    split_matches = bool(expected_split_hash and expected_split_hash == observed_split_hash)
+    report.add(
+        "duplicate_forensics_match_frozen_split_map",
+        split_matches,
+        observed_split_hash,
+        expected_split_hash,
+    )
+    if not split_matches:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "duplicate-forensics provenance does not match the frozen split map",
+        )
+
+    raw_batches = provenance.get("batches")
+    if not isinstance(raw_batches, list):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "duplicate-forensics batch provenance is missing")
+    batch_records: dict[str, Mapping[str, Any]] = {}
+    for raw in raw_batches:
+        if not isinstance(raw, Mapping) or not str(raw.get("batch_name", "")).strip():
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "invalid duplicate-forensics batch provenance")
+        name = str(raw["batch_name"])
+        if name in batch_records:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "duplicate batch in forensic provenance")
+        batch_records[name] = raw
+    if set(batch_records) != set(inputs.embedding_batches):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "duplicate-forensics provenance batch names differ from cohort inputs",
+        )
+
+    extraction_hashes = {sha256_file(path) for path in inputs.extraction_manifests}
+    provenance_extraction_hashes = {
+        str(record.get("extraction_manifest_sha256", ""))
+        for record in batch_records.values()
+        if str(record.get("extraction_manifest_sha256", ""))
+    }
+    extraction_set_matches = provenance_extraction_hashes == extraction_hashes
+    report.add(
+        "duplicate_forensics_match_exact_extraction_manifest_set",
+        extraction_set_matches,
+        sorted(extraction_hashes),
+        sorted(provenance_extraction_hashes),
+    )
+    if not extraction_set_matches:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "duplicate-forensics provenance is stale for the extraction-manifest set",
+        )
+    mismatched_batches: list[str] = []
+    for name, record in sorted(batch_records.items()):
+        manifest_hash = sha256_file(inputs.embedding_batches[name])
+        embedding_hash = sha256_file(inputs.embedding_batch_npzs[name])
+        if (
+            record.get("embedding_manifest_sha256") != manifest_hash
+            or record.get("embedding_npz_sha256") != embedding_hash
+            or record.get("extraction_manifest_sha256") not in extraction_hashes
+        ):
+            mismatched_batches.append(name)
+    report.add(
+        "duplicate_forensics_match_batch_manifests_embeddings_and_extractions",
+        not mismatched_batches,
+        mismatched_batches,
+        [],
+    )
+    if mismatched_batches:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "duplicate-forensics provenance is stale for one or more batch inputs",
+        )
+    return payload
 
 
 def _normalize_ids(frame: pd.DataFrame, label: str, require_subject: bool = True) -> pd.DataFrame:
@@ -454,6 +645,7 @@ def _prepare_embedding_batches(
     batches: Mapping[str, pd.DataFrame],
     eligible_studies: set[str],
     metadata: Mapping[str, Any],
+    forensic_rows: pd.DataFrame,
     report: InvariantReport,
 ) -> EmbeddingBatchResult:
     normalized: list[pd.DataFrame] = []
@@ -464,11 +656,18 @@ def _prepare_embedding_batches(
     for name, raw in batches.items():
         frame = _normalize_ids(raw, f"embedding batch {name}")
         success = _bool_series(frame, "write_ok", default=True)
-        frame = frame.loc[success].copy()
+        frame = frame.loc[success].reset_index(drop=True)
+        frame = frame.reset_index(drop=False).rename(columns={"index": "_manifest_row"})
+        frame["_source_manifest_row_fingerprint_sha256"] = frame.apply(
+            lambda row: source_manifest_row_fingerprint(
+                row.to_dict(),
+                name,
+                int(row["_manifest_row"]),
+            ),
+            axis=1,
+        )
         frame["_record"] = _record_key(frame, f"embedding batch {name}")
         duplicate_clip_keys = int(frame.duplicated("_record").sum())
-        report.add(f"{name}_unique_embedded_clip_keys", duplicate_clip_keys == 0, duplicate_clip_keys, 0)
-        frame = frame.drop_duplicates("_record", keep="first")
         frame["_batch"] = name
         frame["_in_canonical_universe"] = frame["_study"].isin(eligible_studies)
         outside_policy = str(batch_meta[name].get("outside_universe_policy", "canonical_only"))
@@ -491,7 +690,7 @@ def _prepare_embedding_batches(
                 "n_unique_studies": int(len(studies)),
                 "n_unique_subjects": int(frame["_subject"].nunique()),
                 "n_studies_with_multiple_clips": int((study_counts > 1).sum()),
-                "n_duplicate_clip_keys_removed": duplicate_clip_keys,
+                "n_repeated_coarse_clip_rows": duplicate_clip_keys,
                 "n_studies_in_canonical_universe": int(frame.loc[frame["_in_canonical_universe"], "_study"].nunique()),
                 "n_studies_outside_canonical_universe": int(
                     frame.loc[~frame["_in_canonical_universe"], "_study"].nunique()
@@ -510,6 +709,15 @@ def _prepare_embedding_batches(
         )
 
     merged = pd.concat(normalized, ignore_index=True, sort=False)
+    merged, forensic_counts = _apply_forensic_clip_decisions(merged, forensic_rows, report)
+    for row in batch_rows:
+        batch = str(row["batch_name"])
+        selected = merged[merged["_batch"] == batch]
+        row["n_canonical_clip_rows_after_forensics"] = int(selected["_canonical_keep"].sum())
+        for classification in sorted(FORENSIC_CLASSES):
+            row[f"n_rows_{classification.lower()}"] = int(
+                (selected["_forensic_classification"] == classification).sum()
+            )
     allowed_pairs = {
         tuple(sorted(str(item).split("|")))
         for item in metadata.get("allowed_batch_overlap_pairs", [])
@@ -528,11 +736,13 @@ def _prepare_embedding_batches(
             )
 
     in_universe = merged[merged["_in_canonical_universe"]].copy()
-    canonical_clips = in_universe.sort_values(["_study", "_batch", "_record"]).drop_duplicates("_record")
+    canonical_clips = in_universe.loc[in_universe["_canonical_keep"]].sort_values(
+        ["_study", "_batch", "_manifest_row"], kind="mergesort"
+    )
     declared_outside_clips = (
         merged.loc[merged["_outside_scope_class"] == "declared_legacy_scope"]
-        .sort_values(["_study", "_batch", "_record"])
-        .drop_duplicates("_record")
+        .loc[lambda frame: frame["_canonical_keep"]]
+        .sort_values(["_study", "_batch", "_manifest_row"], kind="mergesort")
     )
     undeclared_outside = merged.loc[merged["_outside_scope_class"] == "undeclared_outside_scope"]
     canonical_studies = set(canonical_clips["_study"])
@@ -551,7 +761,7 @@ def _prepare_embedding_batches(
         0,
     )
     stages = [
-        _stage("imaging", "canonical_universe_embedded_clips_deduplicated", canonical_clips),
+        _stage("imaging", "canonical_universe_embedded_clips_forensically_adjudicated", canonical_clips),
         _stage(
             "imaging",
             "canonical_universe_studies_with_usable_embeddings",
@@ -573,6 +783,18 @@ def _prepare_embedding_batches(
             undeclared_outside.drop_duplicates("_study"),
         ),
     ]
+    for classification, n_rows in sorted(forensic_counts.items()):
+        stages.append(
+            {
+                "branch": "imaging",
+                "target": "",
+                "stage": f"repeated_clip_rows_{classification.lower()}",
+                "n_rows": int(n_rows),
+                "n_studies": None,
+                "n_subjects": None,
+                "notes": "Restricted forensic decisions; no row identifiers exported.",
+            }
+        )
     return EmbeddingBatchResult(
         merged=merged,
         canonical_clips=canonical_clips,
@@ -583,6 +805,121 @@ def _prepare_embedding_batches(
         undeclared_outside_studies=undeclared_outside_studies,
         reconciliation=pd.DataFrame(batch_rows),
     )
+
+
+def _apply_forensic_clip_decisions(
+    merged: pd.DataFrame,
+    evidence: pd.DataFrame,
+    report: InvariantReport,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    work = merged.copy()
+    repeated_mask = work.duplicated("_record", keep=False)
+    repeated = work.loc[repeated_mask].copy()
+    work["_forensic_classification"] = "UNIQUE"
+    work["_forensic_group_token"] = ""
+    work["_canonical_keep"] = True
+
+    required = [
+        "group_token",
+        "classification",
+        "_batch",
+        "_manifest_row",
+        "study_id",
+        "subject_id",
+        "dedup_keep_candidate",
+        "source_manifest_row_fingerprint_sha256",
+    ]
+    if repeated.empty:
+        extra = 0 if evidence.empty else len(evidence)
+        report.add("forensic_rows_exactly_match_repeated_embedding_rows", extra == 0, extra, 0)
+        return work, {}
+    require_columns(evidence, required, "duplicate forensic decisions")
+    decisions = _normalize_ids(evidence, "duplicate forensic decisions")
+    decisions["_manifest_row"] = pd.to_numeric(decisions["_manifest_row"], errors="coerce")
+    if decisions["_manifest_row"].isna().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "forensic decisions contain invalid manifest rows")
+    decisions["_manifest_row"] = decisions["_manifest_row"].astype(int)
+    decisions["classification"] = decisions["classification"].astype(str).str.strip().str.upper()
+    invalid = sorted(set(decisions["classification"]) - FORENSIC_CLASSES)
+    ambiguous = int((decisions["classification"] == "AMBIGUOUS_REQUIRES_AUTHOR_REVIEW").sum())
+    report.add("forensic_classifications_are_valid", not invalid, invalid, [])
+    report.add("no_ambiguous_repeated_clip_groups", ambiguous == 0, ambiguous, 0)
+    if invalid or ambiguous:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "duplicate forensic decisions are invalid or ambiguous")
+
+    repeated_keys = set(
+        zip(repeated["_batch"].astype(str), repeated["_manifest_row"].astype(int))
+    )
+    decision_keys = set(
+        zip(decisions["_batch"].astype(str), decisions["_manifest_row"].astype(int))
+    )
+    exact = repeated_keys == decision_keys and len(repeated) == len(decisions)
+    report.add(
+        "forensic_rows_exactly_match_repeated_embedding_rows",
+        exact,
+        len(repeated_keys.symmetric_difference(decision_keys)),
+        0,
+    )
+    if not exact:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "forensic decisions do not exactly cover repeated clip rows")
+
+    decision_lookup = decisions.set_index(["_batch", "_manifest_row"])
+    for index, row in repeated.iterrows():
+        key = (str(row["_batch"]), int(row["_manifest_row"]))
+        matched = decision_lookup.loc[key]
+        if isinstance(matched, pd.DataFrame):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "forensic decision row identity is not unique")
+        if str(matched["_study"]) != str(row["_study"]) or str(matched["_subject"]) != str(
+            row["_subject"]
+        ):
+            raise Tier1BlockedError(
+                BLOCKED_LINEAGE,
+                "forensic decision identity does not match the repeated embedding row",
+            )
+        if str(matched["source_manifest_row_fingerprint_sha256"]) != str(
+            row["_source_manifest_row_fingerprint_sha256"]
+        ):
+            raise Tier1BlockedError(
+                BLOCKED_LINEAGE,
+                "forensic decision source-row fingerprint does not match the embedding manifest",
+            )
+        classification = str(matched["classification"])
+        work.at[index, "_forensic_classification"] = classification
+        work.at[index, "_forensic_group_token"] = str(matched["group_token"])
+        if classification in TRUE_DUPLICATE_CLASSES:
+            value = str(matched["dedup_keep_candidate"]).strip().lower()
+            work.at[index, "_canonical_keep"] = value in {"true", "1", "yes", "y"}
+
+    repeated_with_decisions = work.loc[repeated.index]
+    if (repeated_with_decisions["_forensic_group_token"] == "").any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "a repeated embedding row lacks a forensic group")
+    tokens_per_record = repeated_with_decisions.groupby("_record")["_forensic_group_token"].nunique()
+    records_per_token = repeated_with_decisions.groupby("_forensic_group_token")["_record"].nunique()
+    if bool((tokens_per_record != 1).any()) or bool((records_per_token != 1).any()):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "forensic groups do not map one-to-one to repeated coarse-record groups",
+        )
+
+    for token, group in decisions.groupby("group_token", sort=True):
+        classes = set(group["classification"])
+        if len(classes) != 1:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"forensic group {token} has conflicting classes")
+        classification = next(iter(classes))
+        keep_count = sum(
+            str(value).strip().lower() in {"true", "1", "yes", "y"}
+            for value in group["dedup_keep_candidate"]
+        )
+        if classification in TRUE_DUPLICATE_CLASSES and keep_count != 1:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"forensic duplicate group {token} lacks one keeper")
+        if classification not in TRUE_DUPLICATE_CLASSES and keep_count != len(group):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"forensic distinct group {token} would remove a clip")
+
+    counts = {
+        classification: int((decisions["classification"] == classification).sum())
+        for classification in sorted(set(decisions["classification"]))
+    }
+    return work, counts
 
 
 def _target_branch(
@@ -768,9 +1105,55 @@ def _intersection_branch(
         "split_study_counts": split_counts,
         "subject_overlap_counts": overlap_counts,
     }
-    restricted = final[["_study", "_subject", "split"]].copy()
+    restricted = final[["_study", "_subject", "split", "target_value"]].copy()
     restricted["target"] = target
     return summary, stages, split_rows, multiplicity, restricted
+
+
+def _verify_prediction_rows(
+    target: str,
+    reconstructed: pd.DataFrame,
+    predictions: pd.DataFrame,
+    report: InvariantReport,
+) -> None:
+    work = predictions.copy()
+    if "target_value" not in work.columns and "y_true" in work.columns:
+        work = work.rename(columns={"y_true": "target_value"})
+    require_columns(
+        work,
+        ["study_id", "subject_id", "split", "target_value"],
+        f"{target} canonical predictions",
+    )
+    if "target" in work.columns:
+        observed_targets = set(work["target"].dropna().astype(str))
+        if observed_targets != {target}:
+            raise Tier1BlockedError(
+                BLOCKED_LINEAGE,
+                f"{target} canonical prediction file contains targets {sorted(observed_targets)}",
+            )
+    work = _normalize_ids(work, f"{target} canonical predictions")
+    work["split"] = work["split"].astype(str).str.strip().str.lower()
+    work["target_value"] = pd.to_numeric(work["target_value"], errors="coerce")
+    if (
+        work["target_value"].isna().any()
+        or not np.isfinite(work["target_value"].to_numpy(dtype=float)).all()
+        or work["_study"].duplicated().any()
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} canonical prediction rows are invalid")
+    left = reconstructed.sort_values("_study", kind="mergesort").reset_index(drop=True)
+    right = work[["_study", "_subject", "split", "target_value"]].sort_values(
+        "_study", kind="mergesort"
+    ).reset_index(drop=True)
+    keys_match = left["_study"].equals(right["_study"])
+    subjects_match = keys_match and left["_subject"].equals(right["_subject"])
+    splits_match = keys_match and left["split"].equals(right["split"])
+    values_match = keys_match and pd.Series(
+        left["target_value"].to_numpy(dtype=float)
+    ).equals(pd.Series(right["target_value"].to_numpy(dtype=float)))
+    report.add(f"{target}_prediction_study_rows_match_reconstruction", keys_match, len(left), len(right))
+    report.add(f"{target}_prediction_subjects_match_reconstruction", subjects_match, subjects_match, True)
+    report.add(f"{target}_prediction_splits_match_reconstruction", splits_match, splits_match, True)
+    report.add(f"{target}_prediction_labels_match_reconstruction", values_match, values_match, True)
 
 
 def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
@@ -779,6 +1162,7 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         raise Tier1BlockedError(BLOCKED_LINEAGE, "missing lineage metadata JSON")
     metadata = json.loads(inputs.lineage_metadata.read_text(encoding="utf-8"))
     validate_lineage_metadata(metadata, list(inputs.embedding_batches), inputs.split_map, report)
+    forensic_provenance = _validate_duplicate_forensics_provenance(inputs, report)
 
     source = _normalize_ids(_read_csv(inputs.source_studies, "source study universe"), "source study universe")
     eligible = _normalize_ids(_read_csv(inputs.eligible_studies, "eligible study universe"), "eligible study universe")
@@ -789,6 +1173,13 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         name: _read_csv(path, f"embedding batch {name}")
         for name, path in inputs.embedding_batches.items()
     }
+    forensic_rows = _read_csv(inputs.duplicate_forensics, "duplicate forensic decisions")
+    canonical_prediction_frames = {
+        target: _read_csv(path, f"{target} canonical predictions")
+        for target, path in inputs.canonical_predictions.items()
+    }
+    if set(canonical_prediction_frames) != set(TARGET_NAMES):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "canonical prediction inputs must be lvot_vti and tapse")
     final_embeddings = _normalize_ids(
         _read_csv(inputs.final_study_embeddings, "final study embedding manifest"),
         "final study embedding manifest",
@@ -838,6 +1229,7 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         batch_frames,
         eligible_set,
         metadata,
+        forensic_rows,
         report,
     )
     stage_rows.extend(embedding_result.stages)
@@ -878,6 +1270,28 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
             ),
         ]
     )
+    require_columns(final_embeddings, ["n_clips"], "final study embedding manifest")
+    final_embeddings["n_clips"] = pd.to_numeric(final_embeddings["n_clips"], errors="coerce")
+    if (
+        final_embeddings["n_clips"].isna().any()
+        or not np.isfinite(final_embeddings["n_clips"].to_numpy(dtype=float)).all()
+        or not np.all(final_embeddings["n_clips"] == np.floor(final_embeddings["n_clips"]))
+        or bool((final_embeddings["n_clips"] <= 0).any())
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "final study embedding manifest has invalid clip counts")
+    canonical_input_clips = pd.concat(
+        [embedding_result.canonical_clips, embedding_result.declared_outside_clips],
+        ignore_index=True,
+    )
+    replay_counts = canonical_input_clips.groupby("_study").size().astype(int).to_dict()
+    frozen_counts = final_embeddings.set_index("_study")["n_clips"].astype(int).to_dict()
+    report.add(
+        "forensically_adjudicated_clip_counts_match_final_study_manifest",
+        replay_counts == frozen_counts,
+        len(set(replay_counts) ^ set(frozen_counts))
+        + sum(replay_counts.get(study) != frozen_counts.get(study) for study in set(replay_counts) & set(frozen_counts)),
+        0,
+    )
 
     label_summaries: dict[str, Any] = {}
     target_summaries: dict[str, Any] = {}
@@ -899,6 +1313,12 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
             final_canonical_set,
             split_frame,
             canonical,
+            report,
+        )
+        _verify_prediction_rows(
+            target,
+            restricted,
+            canonical_prediction_frames[target],
             report,
         )
         target_summaries[target] = target_summary
@@ -981,6 +1401,9 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         "target_intersections": target_summaries,
         "split_map_subjects": int(raw_split["subject_id"].nunique()),
         "split_map_sha256": sha256_file(inputs.split_map),
+        "duplicate_forensics_provenance_sha256": sha256_file(
+            inputs.duplicate_forensics_provenance
+        ),
         "all_invariants_passed": report.passed,
     }
 
@@ -991,10 +1414,21 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         ("structured_measurements", inputs.structured_measurements, len(measures), measures),
         ("frozen_split_map", inputs.split_map, len(raw_split), raw_split),
         ("lineage_metadata", inputs.lineage_metadata, None, None),
+        ("duplicate_forensic_decisions", inputs.duplicate_forensics, len(forensic_rows), forensic_rows),
+        (
+            "duplicate_forensics_provenance",
+            inputs.duplicate_forensics_provenance,
+            None,
+            None,
+        ),
     ]
     input_paths.extend(
         (f"expected_records_{index}", path, None, None)
         for index, path in enumerate(inputs.expected_records)
+    )
+    input_paths.extend(
+        (f"canonical_predictions_{target}", path, len(canonical_prediction_frames[target]), canonical_prediction_frames[target])
+        for target, path in inputs.canonical_predictions.items()
     )
     input_paths.extend(
         (f"dicom_audit_{index}", path, None, None)
@@ -1007,6 +1441,10 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
     input_paths.extend(
         (f"embedding_batch_{name}", path, len(batch_frames[name]), batch_frames[name])
         for name, path in inputs.embedding_batches.items()
+    )
+    input_paths.extend(
+        (f"embedding_batch_array_{name}", path, None, None)
+        for name, path in inputs.embedding_batch_npzs.items()
     )
     input_paths.extend(
         (f"canonical_summary_{target}", path, None, None)
@@ -1023,6 +1461,7 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         "protocol_version": PROTOCOL_VERSION,
         "inputs": files,
         "lineage": sanitize_for_safe_manifest(metadata),
+        "duplicate_forensics": sanitize_for_safe_manifest(forensic_provenance),
         "split_map_schema_sha256": schema_hash(raw_split),
         "split_map_field_count": int(len(raw_split.columns)),
     }
@@ -1045,7 +1484,17 @@ def write_cohort_flow_outputs(
     output_dir: Path,
     restricted_reconciliation_csv: Path | None = None,
 ) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists():
+        raise FileExistsError(f"refusing to overwrite cohort-flow output directory: {output_dir}")
+    if restricted_reconciliation_csv is not None:
+        destination = require_restricted_destination(restricted_reconciliation_csv)
+        restricted_candidates = [
+            destination,
+            *(destination.parent / f"jdim_target_cohort_{target}.csv" for target in TARGET_NAMES),
+        ]
+        if any(path.exists() for path in restricted_candidates):
+            raise FileExistsError("refusing to overwrite restricted cohort-flow outputs")
+    output_dir.mkdir(parents=True)
     write_json(output_dir / "cohort_flow_invariants.json", result.invariants)
     if result.invariants["status"] != "ok":
         raise Tier1BlockedError(BLOCKED_LINEAGE, "one or more cohort-flow invariants failed")
@@ -1069,7 +1518,6 @@ def write_cohort_flow_outputs(
     )
     write_json(output_dir / "cohort_flow_provenance.json", result.provenance)
     if restricted_reconciliation_csv is not None:
-        destination = require_restricted_destination(restricted_reconciliation_csv)
         destination.parent.mkdir(parents=True, exist_ok=True)
         result.restricted_reconciliation.to_csv(destination, index=False)
         for target in TARGET_NAMES:

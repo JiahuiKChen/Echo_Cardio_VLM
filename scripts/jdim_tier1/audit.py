@@ -18,6 +18,7 @@ from .safety import (
     assert_export_safe_frame,
     require_columns,
     require_restricted_destination,
+    safe_file_record,
     sha256_file,
     sha256_json,
     write_json,
@@ -39,6 +40,23 @@ CONTENT_TYPES = {
     "not_assessable",
 }
 READER_CONFIDENCE = {"high", "moderate", "low", "not_assessable"}
+SAMPLE_TOKEN_COLUMN = "sample_manifest_token"
+MANUAL_AUDIT_INPUT_HASH_ROLES = (
+    "study_annotations",
+    "clip_annotations",
+    "audit_linkage",
+    "sampling_design",
+    "second_reader_manifest",
+    "clip_roster",
+    "completed_adjudication",
+)
+POST_UNBLINDING_SHARED_HASH_ROLES = (
+    "clip_annotations",
+    "audit_linkage",
+    "sampling_design",
+    "clip_roster",
+    "completed_adjudication",
+)
 
 STUDY_OUTCOMES = [
     "spectral_doppler_present",
@@ -47,7 +65,6 @@ STUDY_OUTCOMES = [
     "visible_numeric_value_present",
     "target_specific_label_present",
     "candidate_target_value_present",
-    "confirmed_target_value_match_present",
 ]
 
 CLIP_PRESENCE_FIELDS = [
@@ -68,6 +85,7 @@ CLIP_PRESENCE_FIELDS = [
 
 STUDY_TEMPLATE_COLUMNS = [
     "audit_id",
+    SAMPLE_TOKEN_COLUMN,
     "reader_id",
     "reader_role",
     *STUDY_OUTCOMES,
@@ -78,11 +96,14 @@ STUDY_TEMPLATE_COLUMNS = [
 CLIP_TEMPLATE_COLUMNS = [
     "audit_id",
     "clip_audit_id",
+    SAMPLE_TOKEN_COLUMN,
     "reader_id",
     "reader_role",
     "acquisition_content_type",
     *CLIP_PRESENCE_FIELDS,
     "candidate_target_value",
+    "visible_unit_text",
+    "visible_measurement_name_text",
     "display_precision",
     "reader_confidence",
     "restricted_notes",
@@ -92,6 +113,7 @@ CLIP_TEMPLATE_COLUMNS = [
 @dataclass
 class AuditSampleResult:
     linkage: pd.DataFrame
+    clip_roster: pd.DataFrame
     reader_manifest: pd.DataFrame
     second_reader_manifest: pd.DataFrame
     study_template: pd.DataFrame
@@ -110,6 +132,99 @@ class AuditAggregateResult:
     summary: dict[str, Any]
 
 
+@dataclass
+class PostUnblindingMatchResult:
+    restricted_study_matches: pd.DataFrame
+    safe_summary: pd.DataFrame
+    provenance: dict[str, Any]
+
+
+def canonical_clip_source_row_sha256(row: Mapping[str, Any] | pd.Series) -> str:
+    """Hash the canonical manifest row used to mint one opaque clip ID."""
+
+    values = row.to_dict() if isinstance(row, pd.Series) else dict(row)
+    excluded = {
+        "audit_id",
+        "clip_audit_id",
+        "source_manifest_row_sha256",
+        "_study",
+        "_subject",
+    }
+    source_payload = {
+        column: "" if pd.isna(values.get(column)) else str(values.get(column))
+        for column in sorted(column for column in values if column not in excluded)
+    }
+    return sha256_json(source_payload)
+
+
+def _require_exact_sample_token(frame: pd.DataFrame, expected: str, label: str) -> None:
+    values = frame[SAMPLE_TOKEN_COLUMN].fillna("").astype(str).str.strip()
+    if values.empty or values.eq("").any() or not values.eq(expected).all():
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            f"{label} does not match the locked sample manifest token",
+        )
+
+
+def _validated_input_hashes(
+    hashes: Mapping[str, str] | None,
+    required_roles: Sequence[str],
+    label: str,
+) -> dict[str, str]:
+    payload = dict(hashes or {})
+    missing = sorted(set(required_roles) - set(payload))
+    if missing:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, f"{label} lacks required hash roles: {missing}")
+    for role in required_roles:
+        value = str(payload[role]).strip().lower()
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{label} has an invalid SHA-256 for {role}")
+        payload[role] = value
+    return payload
+
+
+def _validate_manual_audit_completion_for_post_unblinding(
+    completion: Mapping[str, Any],
+    config_hash: str,
+    sample_token: str,
+    input_hashes: Mapping[str, str] | None,
+) -> dict[str, str]:
+    if (
+        completion.get("schema_version") != "jdim-manual-audit-completion-v1"
+        or completion.get("status") != "MANUAL_AUDIT_COMPLETE"
+        or completion.get("annotation_roster_validated") is not True
+        or completion.get("independent_second_reads_validated") is not True
+        or completion.get("completed_adjudication_validated") is not True
+    ):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "post-unblinding analysis requires a validated manual-audit completion certificate",
+        )
+    if completion.get("configuration_sha256") != config_hash:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "manual-audit completion configuration hash changed")
+    if completion.get("sample_manifest_token") != sample_token:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "manual-audit completion sample token changed")
+    certified = _validated_input_hashes(
+        completion.get("input_file_hashes"),
+        MANUAL_AUDIT_INPUT_HASH_ROLES,
+        "manual-audit completion certificate",
+    )
+    current = _validated_input_hashes(
+        input_hashes,
+        POST_UNBLINDING_SHARED_HASH_ROLES,
+        "post-unblinding inputs",
+    )
+    mismatched = sorted(
+        role for role in POST_UNBLINDING_SHARED_HASH_ROLES if current[role] != certified[role]
+    )
+    if mismatched:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            f"post-unblinding inputs do not match the completed blinded audit: {mismatched}",
+        )
+    return current
+
+
 def load_audit_config(path: Path) -> tuple[dict[str, Any], str]:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -126,12 +241,15 @@ def validate_audit_config(config: Mapping[str, Any]) -> None:
         "seed",
         "split_allocation",
         "overlap_deduplication_rule",
+        "canonical_clip_roster",
         "primary_study_level_outcomes",
         "secondary_clip_level_outcomes",
         "reader_blinding",
         "second_reader_fraction",
         "adjudication",
+        "post_unblinding_value_match",
         "restricted_output_root_required",
+        "clip_level_estimand",
         "safe_aggregate_output_schema",
         "technical_pilot",
         "escalation_triggers",
@@ -153,17 +271,81 @@ def validate_audit_config(config: Mapping[str, Any]) -> None:
         raise ValueError("second_reader_fraction must be in [0, 1]")
     if not bool(config["restricted_output_root_required"]):
         raise ValueError("restricted_output_root_required must remain true")
+    if not bool(config["canonical_clip_roster"].get("all_selected_study_clips_required")) or not bool(
+        config["canonical_clip_roster"].get("locked_into_sample_manifest_token")
+    ):
+        raise ValueError("Canonical clip roster must include all selected clips and be sample-locked")
+    if not bool(config["adjudication"].get("completed_queue_required_before_aggregation")):
+        raise ValueError("Completed adjudication queue must be required before aggregation")
+    if config["clip_level_estimand"] != "unweighted_sampled_clip_composition":
+        raise ValueError("Clip-level estimand must be explicitly unweighted sampled-clip composition")
     if set(config["primary_study_level_outcomes"]) != set(STUDY_OUTCOMES):
         raise ValueError("Primary study-level outcome schema differs from protocol v1")
     prohibited = set(config["reader_blinding"].get("prohibited_fields", []))
     required_blinding = {"target_value", "prediction", "residual", "filename", "subject_id", "study_id", "split"}
     if not required_blinding.issubset(prohibited):
         raise ValueError("Reader blinding does not prohibit all prespecified fields")
+    if not bool(config["post_unblinding_value_match"].get("reader_target_values_prohibited")):
+        raise ValueError("Post-unblinding matching must prohibit reader access to target values")
     allowed_pilot = set(config["technical_pilot"].get("allowed_fields", []))
     if not bool(config["technical_pilot"].get("clinical_content_labels_prohibited")):
         raise ValueError("Technical pilot must prohibit clinical content labels")
     if not allowed_pilot.issubset({"audit_id", "review_order", "reconstruction_success", "review_minutes"}):
         raise ValueError("Technical pilot contains nontechnical annotation fields")
+
+
+def _sample_manifest_token(
+    linkage: pd.DataFrame,
+    design: pd.DataFrame,
+    clip_roster: pd.DataFrame,
+) -> str:
+    linkage_columns = sorted(column for column in linkage.columns if column != "_review_rank")
+    design_columns = sorted(design.columns)
+    clip_columns = sorted(clip_roster.columns)
+    if "audit_id" not in linkage_columns:
+        raise ValueError("audit linkage lacks audit_id for sample locking")
+    if not {"target", "split"}.issubset(design_columns):
+        raise ValueError("sampling design lacks target/split for sample locking")
+    if not {"audit_id", "clip_audit_id"}.issubset(clip_columns):
+        raise ValueError("canonical clip roster lacks opaque study/clip identifiers")
+    linkage_records = (
+        linkage[linkage_columns]
+        .fillna("")
+        .astype(str)
+        .sort_values(["audit_id", *[column for column in linkage_columns if column != "audit_id"]])
+        .to_dict(orient="records")
+    )
+    design_records = (
+        design[design_columns]
+        .fillna("")
+        .astype(str)
+        .sort_values(["target", "split", *[column for column in design_columns if column not in {"target", "split"}]])
+        .to_dict(orient="records")
+    )
+    clip_records = (
+        clip_roster[clip_columns]
+        .fillna("")
+        .astype(str)
+        .sort_values(
+            [
+                "audit_id",
+                "clip_audit_id",
+                *[
+                    column
+                    for column in clip_columns
+                    if column not in {"audit_id", "clip_audit_id"}
+                ],
+            ]
+        )
+        .to_dict(orient="records")
+    )
+    return sha256_json(
+        {
+            "linkage": linkage_records,
+            "sampling_design": design_records,
+            "canonical_clip_roster": clip_records,
+        }
+    )
 
 
 def largest_remainder_allocation(
@@ -250,8 +432,78 @@ def _normalize_cohort(frame: pd.DataFrame, target: str) -> pd.DataFrame:
     return out.drop_duplicates("study_id", keep="first").reset_index(drop=True)
 
 
+def _canonical_clip_roster(
+    canonical_clips: pd.DataFrame,
+    linkage: pd.DataFrame,
+    opaque_id_key: bytes,
+    protocol: str,
+) -> pd.DataFrame:
+    require_columns(canonical_clips, ["study_id", "subject_id"], "canonical clip manifest")
+    clips = canonical_clips.copy()
+    if "write_ok" in clips.columns:
+        values = clips["write_ok"]
+        if pd.api.types.is_bool_dtype(values):
+            keep = values.fillna(False).astype(bool)
+        else:
+            keep = values.astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y"})
+        clips = clips.loc[keep].copy()
+    clips = clips.reset_index(drop=True)
+    if clips.empty:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "canonical clip manifest has no successful rows")
+    clips["study_id"] = clips["study_id"].astype(str)
+    clips["subject_id"] = clips["subject_id"].astype(str)
+    clips["source_manifest_row"] = np.arange(len(clips), dtype=int)
+    stable_columns = [
+        column
+        for column in ("canonical_clip_id", "embedding_idx", "source_embedding_idx")
+        if column in clips.columns
+    ]
+    if not stable_columns:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "canonical clip manifest lacks canonical_clip_id or embedding index",
+        )
+
+    linkage_pairs = linkage[["audit_id", "study_id", "subject_id"]].copy()
+    selected = clips.merge(
+        linkage_pairs,
+        on=["study_id", "subject_id"],
+        how="inner",
+        validate="many_to_one",
+    )
+    selected_studies = set(selected["study_id"])
+    expected_studies = set(linkage["study_id"].astype(str))
+    if selected_studies != expected_studies:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "one or more sampled studies lack a canonical clip roster or have subject mismatch",
+        )
+    selected = selected.sort_values(
+        ["audit_id", *stable_columns, "source_manifest_row"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+    row_hashes: list[str] = []
+    clip_ids: list[str] = []
+    for row in selected.to_dict(orient="records"):
+        row_hash = canonical_clip_source_row_sha256(row)
+        clip_digest = hmac.new(
+            opaque_id_key,
+            f"{protocol}::{row['audit_id']}::{row_hash}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        row_hashes.append(row_hash)
+        clip_ids.append(f"C{clip_digest[:19].upper()}")
+    selected["source_manifest_row_sha256"] = row_hashes
+    selected["clip_audit_id"] = clip_ids
+    if selected["clip_audit_id"].duplicated().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "opaque canonical clip IDs are not unique")
+    return selected[["audit_id", "clip_audit_id", *[column for column in selected.columns if column not in {"audit_id", "clip_audit_id"}]]]
+
+
 def build_audit_sample(
     cohorts: Mapping[str, pd.DataFrame],
+    canonical_clips: pd.DataFrame,
     config: Mapping[str, Any],
     config_hash: str,
     opaque_id_key: bytes,
@@ -374,17 +626,44 @@ def build_audit_sample(
     )
 
     design = pd.DataFrame(design_rows)
+    clip_roster = _canonical_clip_roster(
+        canonical_clips,
+        linkage,
+        opaque_id_key,
+        protocol,
+    )
+    sample_token = _sample_manifest_token(linkage, design, clip_roster)
     if technical_pilot:
         study_template = reader_manifest.copy()
         study_template["reconstruction_success"] = ""
         study_template["review_minutes"] = ""
         clip_template = pd.DataFrame(columns=config["technical_pilot"]["allowed_fields"])
     else:
-        primary = reader_manifest[["audit_id"]].copy()
+        reader_manifest[SAMPLE_TOKEN_COLUMN] = sample_token
+        second_reader_manifest[SAMPLE_TOKEN_COLUMN] = sample_token
+        primary = reader_manifest[["audit_id", SAMPLE_TOKEN_COLUMN]].copy()
         primary["reader_id"] = ""
         primary["reader_role"] = "primary"
-        study_template = primary.reindex(columns=STUDY_TEMPLATE_COLUMNS, fill_value="")
-        clip_template = pd.DataFrame(columns=CLIP_TEMPLATE_COLUMNS)
+        secondary = second_reader_manifest[["audit_id", SAMPLE_TOKEN_COLUMN]].copy()
+        secondary["reader_id"] = ""
+        secondary["reader_role"] = "secondary"
+        study_template = pd.concat([primary, secondary], ignore_index=True).reindex(
+            columns=STUDY_TEMPLATE_COLUMNS,
+            fill_value="",
+        )
+        primary_clips = clip_roster[["audit_id", "clip_audit_id"]].copy()
+        primary_clips[SAMPLE_TOKEN_COLUMN] = sample_token
+        primary_clips["reader_id"] = ""
+        primary_clips["reader_role"] = "primary"
+        secondary_ids = set(second_reader_manifest["audit_id"].astype(str))
+        secondary_clips = primary_clips[
+            primary_clips["audit_id"].astype(str).isin(secondary_ids)
+        ].copy()
+        secondary_clips["reader_role"] = "secondary"
+        clip_template = pd.concat([primary_clips, secondary_clips], ignore_index=True).reindex(
+            columns=CLIP_TEMPLATE_COLUMNS,
+            fill_value="",
+        )
 
     summary = {
         "protocol_version": protocol,
@@ -397,6 +676,14 @@ def build_audit_sample(
             target: int((selected["target"] == target).sum()) for target in targets
         },
         "cross_target_overlap_studies": int(selected.groupby("study_id")["target"].nunique().gt(1).sum()),
+        "canonical_clips_in_selected_studies": int(len(clip_roster)),
+        "selected_studies_with_canonical_clips": int(clip_roster["audit_id"].nunique()),
+        "primary_clip_reads_expected": int(len(clip_roster)),
+        "secondary_clip_reads_expected": int(
+            clip_roster["audit_id"].astype(str).isin(
+                set(second_reader_manifest["audit_id"].astype(str))
+            ).sum()
+        ),
         "second_reader_studies": int(len(second_reader_manifest)),
         "allocation_method": (
             "author_approved_override"
@@ -404,9 +691,11 @@ def build_audit_sample(
             else "proportional_largest_remainder"
         ),
         "excluded_from_prevalence_estimates": bool(technical_pilot),
+        "sample_manifest_token": sample_token,
     }
     return AuditSampleResult(
         linkage=linkage.drop(columns=["_review_rank"]),
+        clip_roster=clip_roster,
         reader_manifest=reader_manifest,
         second_reader_manifest=second_reader_manifest,
         study_template=study_template,
@@ -424,8 +713,14 @@ def write_audit_sample(
     safe_output_dir: Path,
 ) -> None:
     restricted_root = require_restricted_destination(restricted_output_root)
+    if restricted_root.exists() or safe_output_dir.exists():
+        raise FileExistsError("refusing to overwrite audit sampling outputs")
     restricted_root.mkdir(parents=True, exist_ok=True)
     result.linkage.to_csv(restricted_root / "audit_linkage.csv", index=False)
+    result.clip_roster.to_csv(
+        restricted_root / "canonical_clip_roster_restricted.csv",
+        index=False,
+    )
     result.reader_manifest.to_csv(restricted_root / "reader_manifest.csv", index=False)
     result.second_reader_manifest.to_csv(restricted_root / "second_reader_manifest.csv", index=False)
     result.study_template.to_csv(
@@ -442,6 +737,7 @@ def write_audit_sample(
             "restricted_output_root": str(restricted_root),
             "row_level_outputs": [
                 "audit_linkage.csv",
+                "canonical_clip_roster_restricted.csv",
                 "reader_manifest.csv",
                 "second_reader_manifest.csv",
                 "study_annotation_template.csv" if not result.technical_pilot else "technical_pilot_template.csv",
@@ -567,8 +863,110 @@ def build_adjudication_queue(
 
 def write_adjudication_queue(queue: pd.DataFrame, restricted_output_csv: Path) -> None:
     destination = require_restricted_destination(restricted_output_csv)
+    if destination.exists():
+        raise FileExistsError("refusing to overwrite adjudication queue")
     destination.parent.mkdir(parents=True, exist_ok=True)
     queue.to_csv(destination, index=False)
+
+
+def _apply_completed_adjudications(
+    study_annotations: pd.DataFrame,
+    clip_annotations: pd.DataFrame,
+    adjudication_queue: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    expected = build_adjudication_queue(study_annotations, clip_annotations)
+    required = [
+        "audit_id",
+        "clip_audit_id",
+        "annotation_level",
+        "outcome",
+        "reader_values",
+        "adjudication_reason",
+        "adjudicated_value",
+        "adjudicator_id",
+    ]
+    require_columns(adjudication_queue, required, "completed adjudication queue")
+    compare_columns = [
+        "audit_id",
+        "clip_audit_id",
+        "annotation_level",
+        "outcome",
+        "reader_values",
+        "adjudication_reason",
+    ]
+
+    def normalized(frame: pd.DataFrame) -> pd.DataFrame:
+        return (
+            frame[compare_columns]
+            .fillna("")
+            .astype(str)
+            .sort_values(compare_columns, kind="mergesort")
+            .reset_index(drop=True)
+        )
+
+    supplied = adjudication_queue.copy()
+    if supplied.duplicated(compare_columns).any() or not normalized(supplied).equals(
+        normalized(expected)
+    ):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "completed adjudication queue does not exactly match the locked reader findings",
+        )
+    if supplied.empty:
+        return study_annotations.copy(), clip_annotations.copy()
+    if (
+        supplied["adjudicated_value"].fillna("").astype(str).str.strip().eq("").any()
+        or supplied["adjudicator_id"].fillna("").astype(str).str.strip().eq("").any()
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "one or more required adjudications are incomplete")
+    supplied["adjudicated_value"] = (
+        supplied["adjudicated_value"].astype(str).str.strip().str.lower()
+    )
+    invalid = sorted(set(supplied["adjudicated_value"]) - PRESENCE_VALUES)
+    if invalid:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            f"completed adjudication queue contains invalid values: {invalid}",
+        )
+
+    resolved_study = study_annotations.copy()
+    resolved_clip = clip_annotations.copy()
+    for level, source, keys in (
+        ("study", study_annotations, ["audit_id"]),
+        ("clip", clip_annotations, ["audit_id", "clip_audit_id"]),
+    ):
+        level_queue = supplied[supplied["annotation_level"].astype(str).eq(level)]
+        appended: list[pd.Series] = []
+        group_key: str | list[str] = keys[0] if len(keys) == 1 else keys
+        for raw_key, group in level_queue.groupby(group_key, dropna=False, sort=True):
+            key_values = raw_key if isinstance(raw_key, tuple) else (raw_key,)
+            mask = pd.Series(True, index=source.index)
+            for column, value in zip(keys, key_values):
+                mask &= source[column].fillna("").astype(str).eq("" if pd.isna(value) else str(value))
+            primary = source.loc[
+                mask
+                & source["reader_role"].astype(str).str.strip().str.lower().eq("primary")
+            ]
+            if len(primary) != 1:
+                raise Tier1BlockedError(
+                    BLOCKED_LINEAGE,
+                    "adjudication cannot resolve to exactly one primary annotation row",
+                )
+            row = primary.iloc[0].copy()
+            for queue_row in group.itertuples(index=False):
+                row[str(queue_row.outcome)] = str(queue_row.adjudicated_value)
+            row["reader_role"] = "adjudicated"
+            row["reader_id"] = ";".join(
+                sorted(set(group["adjudicator_id"].astype(str).str.strip()))
+            )
+            appended.append(row)
+        if appended:
+            combined = pd.concat([source, pd.DataFrame(appended)], ignore_index=True)
+            if level == "study":
+                resolved_study = combined
+            else:
+                resolved_clip = combined
+    return resolved_study, resolved_clip
 
 
 def _primary_annotations(annotations: pd.DataFrame) -> pd.DataFrame:
@@ -681,21 +1079,25 @@ def _study_summaries(
 
 
 def _agreement_summaries(study_annotations: pd.DataFrame) -> pd.DataFrame:
-    if "reader_id" not in study_annotations.columns:
+    if not {"reader_id", "reader_role"}.issubset(study_annotations.columns):
         return pd.DataFrame(columns=["outcome", "n_pairs", "raw_agreement", "cohen_kappa", "gwet_ac1"])
+    roles = study_annotations["reader_role"].astype(str).str.strip().str.lower()
+    preadjudication = study_annotations.loc[roles.isin({"primary", "secondary"})].copy()
     rows: list[dict[str, Any]] = []
     for outcome in STUDY_OUTCOMES:
         if outcome not in study_annotations.columns:
             continue
-        paired = study_annotations[["audit_id", "reader_id", outcome]].dropna(subset=[outcome]).copy()
-        paired = paired.sort_values(["audit_id", "reader_id"])
+        paired = preadjudication[["audit_id", "reader_id", "reader_role", outcome]].dropna(
+            subset=[outcome]
+        ).copy()
         left: list[str] = []
         right: list[str] = []
         for _, group in paired.groupby("audit_id"):
-            values = group[outcome].astype(str).tolist()
-            if len(values) >= 2:
-                left.append(values[0])
-                right.append(values[1])
+            primary = group.loc[group["reader_role"].astype(str).str.lower() == "primary", outcome]
+            secondary = group.loc[group["reader_role"].astype(str).str.lower() == "secondary", outcome]
+            if len(primary) == 1 and len(secondary) == 1:
+                left.append(str(primary.iloc[0]))
+                right.append(str(secondary.iloc[0]))
         rows.append({"outcome": outcome, **agreement_statistics(left, right)})
     return pd.DataFrame(rows)
 
@@ -732,7 +1134,17 @@ def _clip_summaries(
 ) -> pd.DataFrame:
     if clip_annotations.empty:
         return pd.DataFrame(
-            columns=["target", "outcome", "n_clips", "n_studies", "proportion", "ci_low", "ci_high", "ci_method"]
+            columns=[
+                "target",
+                "outcome",
+                "n_clips",
+                "n_studies",
+                "proportion",
+                "ci_low",
+                "ci_high",
+                "estimand",
+                "ci_method",
+            ]
         )
     require_columns(clip_annotations, ["audit_id"], "clip annotations")
     primary = _primary_clip_annotations(clip_annotations)
@@ -758,11 +1170,173 @@ def _clip_summaries(
                     "proportion": estimate,
                     "ci_low": low,
                     "ci_high": high,
-                    "ci_method": "study_cluster_percentile_bootstrap",
+                    "estimand": "unweighted_sampled_clip_composition",
+                    "ci_method": "unweighted_sampled_clip_study_cluster_percentile_bootstrap",
                     "bootstrap_n": int(n_bootstrap),
                 }
             )
+        if "acquisition_content_type" in target_frame.columns:
+            for category in sorted(CONTENT_TYPES):
+                category_frame = target_frame[["audit_id", "acquisition_content_type"]].copy()
+                category_frame["category_present"] = (
+                    category_frame["acquisition_content_type"].astype(str).str.lower() == category
+                ).map({True: "yes", False: "no"})
+                estimate, low, high, n_clips, n_studies = _cluster_bootstrap_clip_proportion(
+                    category_frame,
+                    "category_present",
+                    n_bootstrap,
+                    int(hashlib.sha256(f"{seed}:{target}:acquisition:{category}".encode("utf-8")).hexdigest()[:8], 16),
+                )
+                rows.append(
+                    {
+                        "target": target,
+                        "outcome": f"acquisition_content_type::{category}",
+                        "n_clips": n_clips,
+                        "n_studies": n_studies,
+                        "proportion": estimate,
+                        "ci_low": low,
+                        "ci_high": high,
+                        "estimand": "unweighted_sampled_clip_composition",
+                        "ci_method": "unweighted_sampled_clip_study_cluster_percentile_bootstrap",
+                        "bootstrap_n": int(n_bootstrap),
+                    }
+                )
     return pd.DataFrame(rows)
+
+
+def _validate_annotation_roster(
+    study_annotations: pd.DataFrame,
+    clip_annotations: pd.DataFrame,
+    linkage: pd.DataFrame,
+    sampling_design: pd.DataFrame,
+    second_reader_manifest: pd.DataFrame,
+    clip_roster: pd.DataFrame,
+) -> str:
+    require_columns(linkage, ["audit_id", "target_membership", "target_strata"], "audit linkage")
+    require_columns(study_annotations, ["audit_id", "reader_id", "reader_role", SAMPLE_TOKEN_COLUMN], "study annotations")
+    require_columns(second_reader_manifest, ["audit_id", SAMPLE_TOKEN_COLUMN], "second-reader manifest")
+    require_columns(clip_roster, ["audit_id", "clip_audit_id"], "canonical clip roster")
+    require_columns(clip_annotations, ["audit_id", "clip_audit_id", "reader_id", "reader_role", SAMPLE_TOKEN_COLUMN], "clip annotations")
+    if linkage["audit_id"].duplicated().any() or second_reader_manifest["audit_id"].duplicated().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "audit linkage or second-reader manifest has duplicate audit IDs")
+    if clip_roster[["audit_id", "clip_audit_id"]].astype(str).duplicated().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "canonical clip roster contains duplicate opaque clip IDs")
+    expected_token = _sample_manifest_token(linkage, sampling_design, clip_roster)
+    for label, frame in (
+        ("study annotations", study_annotations),
+        ("clip annotations", clip_annotations),
+        ("second-reader manifest", second_reader_manifest),
+    ):
+        _require_exact_sample_token(frame, expected_token, label)
+
+    expected_ids = set(linkage["audit_id"].astype(str))
+    study_ids = set(study_annotations["audit_id"].astype(str))
+    clip_ids = set(clip_annotations["audit_id"].astype(str))
+    if study_ids != expected_ids or not clip_ids.issubset(expected_ids):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "annotation audit IDs do not match the locked sample roster")
+    roles = study_annotations["reader_role"].astype(str).str.strip().str.lower()
+    if not set(roles).issubset({"primary", "secondary"}):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "study annotations contain invalid reader roles")
+    if study_annotations["reader_id"].fillna("").astype(str).str.strip().eq("").any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "study annotations contain missing reader IDs")
+    study_role_counts = (
+        study_annotations.assign(
+            _audit_id=study_annotations["audit_id"].astype(str),
+            _reader_role=roles,
+        )
+        .groupby(["_audit_id", "_reader_role"])
+        .size()
+    )
+    for audit_id in expected_ids:
+        if int(study_role_counts.get((audit_id, "primary"), 0)) != 1:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "each sampled study must have exactly one primary read")
+    primary = _primary_annotations(study_annotations)
+    if set(primary["audit_id"].astype(str)) != expected_ids or len(primary) != len(expected_ids):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "final study annotations do not contain one canonical row per sampled study")
+    for outcome in (*STUDY_OUTCOMES, "reader_confidence"):
+        require_columns(study_annotations, [outcome], "study annotations")
+        if study_annotations[outcome].fillna("").astype(str).str.strip().eq("").any():
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"study annotations are incomplete for {outcome}")
+
+    expected_secondary = set(second_reader_manifest["audit_id"].astype(str))
+    secondary = study_annotations.loc[roles == "secondary"]
+    secondary_counts = secondary.groupby(secondary["audit_id"].astype(str)).size().to_dict()
+    if set(secondary_counts) != expected_secondary or any(count != 1 for count in secondary_counts.values()):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "second-reader annotations do not match the assigned roster")
+    for audit_id in expected_secondary:
+        readers = study_annotations.loc[
+            study_annotations["audit_id"].astype(str).eq(audit_id)
+            & roles.isin({"primary", "secondary"}),
+            ["reader_role", "reader_id"],
+        ]
+        primary_reader = readers.loc[
+            readers["reader_role"].astype(str).str.strip().str.lower().eq("primary"),
+            "reader_id",
+        ].astype(str).str.strip()
+        secondary_reader = readers.loc[
+            readers["reader_role"].astype(str).str.strip().str.lower().eq("secondary"),
+            "reader_id",
+        ].astype(str).str.strip()
+        if primary_reader.iloc[0] == secondary_reader.iloc[0]:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "primary and secondary reads are not independent")
+
+    clip_roles = clip_annotations["reader_role"].astype(str).str.strip().str.lower()
+    if not set(clip_roles).issubset({"primary", "secondary"}):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "clip annotations contain invalid reader roles")
+    if clip_annotations["reader_id"].fillna("").astype(str).str.strip().eq("").any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "clip annotations contain missing reader IDs")
+    for column in ("acquisition_content_type", *CLIP_PRESENCE_FIELDS, "reader_confidence"):
+        require_columns(clip_annotations, [column], "clip annotations")
+        if clip_annotations[column].fillna("").astype(str).str.strip().eq("").any():
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"clip annotations are incomplete for {column}")
+    clip_with_roles = clip_annotations.assign(
+        _audit_id=clip_annotations["audit_id"].astype(str),
+        _clip_id=clip_annotations["clip_audit_id"].astype(str),
+        _reader_role=clip_roles,
+    )
+    if clip_with_roles[["_audit_id", "_clip_id"]].eq("").any().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "clip annotations contain missing opaque clip IDs")
+    clip_role_counts = clip_with_roles.groupby(["_audit_id", "_clip_id", "_reader_role"]).size()
+    if bool((clip_role_counts > 1).any()):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "clip annotations contain duplicate reads for one reader role")
+    primary_clip_keys = set(
+        clip_with_roles.loc[clip_with_roles["_reader_role"] == "primary", ["_audit_id", "_clip_id"]]
+        .itertuples(index=False, name=None)
+    )
+    expected_clip_keys = set(
+        clip_roster[["audit_id", "clip_audit_id"]]
+        .astype(str)
+        .itertuples(index=False, name=None)
+    )
+    if primary_clip_keys != expected_clip_keys:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "primary clip annotations do not exactly match the locked canonical clip roster",
+        )
+    secondary_clip_keys = set(
+        clip_with_roles.loc[clip_with_roles["_reader_role"] == "secondary", ["_audit_id", "_clip_id"]]
+        .itertuples(index=False, name=None)
+    )
+    expected_secondary_clip_keys = {
+        key for key in expected_clip_keys if key[0] in expected_secondary
+    }
+    if secondary_clip_keys != expected_secondary_clip_keys:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "second-reader clip annotations do not match the assigned roster")
+    study_reader_map = {
+        (str(row.audit_id), str(row.reader_role).strip().lower()): str(row.reader_id).strip()
+        for row in study_annotations[["audit_id", "reader_role", "reader_id"]].itertuples(index=False)
+    }
+    for audit_id, _clip_id, reader_role, reader_id in clip_with_roles[
+        ["_audit_id", "_clip_id", "_reader_role", "reader_id"]
+    ].itertuples(index=False, name=None):
+        expected_reader = study_reader_map.get((str(audit_id), str(reader_role)))
+        observed_reader = str(reader_id).strip()
+        if expected_reader is None or observed_reader != expected_reader:
+            raise Tier1BlockedError(
+                BLOCKED_LINEAGE,
+                "clip readers do not match the independent locked study-reader assignments",
+            )
+    return expected_token
 
 
 def aggregate_audit_annotations(
@@ -772,45 +1346,89 @@ def aggregate_audit_annotations(
     sampling_design: pd.DataFrame,
     config: Mapping[str, Any],
     config_hash: str,
+    second_reader_manifest: pd.DataFrame,
+    clip_roster: pd.DataFrame,
+    adjudication_queue: pd.DataFrame,
+    input_hashes: Mapping[str, str] | None = None,
     n_bootstrap: int = 2000,
 ) -> AuditAggregateResult:
     validate_audit_config(config)
     require_columns(sampling_design, ["target", "split", "source_n", "sample_n", "design_weight"], "sampling design")
     if n_bootstrap <= 0:
         raise ValueError("n_bootstrap must be positive")
+    sample_token = _validate_annotation_roster(
+        study_annotations,
+        clip_annotations,
+        linkage,
+        sampling_design,
+        second_reader_manifest,
+        clip_roster,
+    )
     for column in STUDY_OUTCOMES:
         if column in study_annotations.columns:
             invalid = sorted(set(study_annotations[column].dropna().astype(str).str.lower()) - PRESENCE_VALUES - {""})
             if invalid:
                 raise ValueError(f"Invalid values for {column}: {invalid}")
+    invalid_study_confidence = sorted(
+        set(study_annotations["reader_confidence"].dropna().astype(str).str.lower())
+        - READER_CONFIDENCE
+        - {""}
+    )
+    if invalid_study_confidence:
+        raise ValueError(f"Invalid study reader confidence values: {invalid_study_confidence}")
     if "acquisition_content_type" in clip_annotations.columns:
         invalid_content = sorted(
             set(clip_annotations["acquisition_content_type"].dropna().astype(str).str.lower()) - CONTENT_TYPES - {""}
         )
         if invalid_content:
             raise ValueError(f"Invalid acquisition content types: {invalid_content}")
-    study_summary = _study_summaries(study_annotations, linkage, sampling_design)
+    for column in CLIP_PRESENCE_FIELDS:
+        invalid = sorted(
+            set(clip_annotations[column].dropna().astype(str).str.lower()) - PRESENCE_VALUES - {""}
+        )
+        if invalid:
+            raise ValueError(f"Invalid values for {column}: {invalid}")
+    invalid_confidence = sorted(
+        set(clip_annotations["reader_confidence"].dropna().astype(str).str.lower())
+        - READER_CONFIDENCE
+        - {""}
+    )
+    if invalid_confidence:
+        raise ValueError(f"Invalid reader confidence values: {invalid_confidence}")
+    resolved_study, resolved_clips = _apply_completed_adjudications(
+        study_annotations,
+        clip_annotations,
+        adjudication_queue,
+    )
+    study_summary = _study_summaries(resolved_study, linkage, sampling_design)
     agreement = _agreement_summaries(study_annotations)
-    clip_summary = _clip_summaries(clip_annotations, linkage, n_bootstrap, int(config["seed"]))
+    clip_summary = _clip_summaries(resolved_clips, linkage, n_bootstrap, int(config["seed"]))
     for label, frame in (
         ("study audit summary", study_summary),
         ("clip audit summary", clip_summary),
         ("reader agreement", agreement),
     ):
         assert_export_safe_frame(frame, label)
-    reconstruction_failures = 0
-    if "reconstruction_success" in clip_annotations.columns:
-        reconstruction_failures = int(
-            clip_annotations["reconstruction_success"].astype(str).str.lower().eq("no").sum()
-        )
+    primary_clip_rows = _primary_clip_annotations(resolved_clips)
+    reconstruction_failures = int(
+        primary_clip_rows["reconstruction_success"].astype(str).str.lower().eq("no").sum()
+    )
     summary = {
         "protocol_version": config["protocol_version"],
         "configuration_sha256": config_hash,
+        "sample_manifest_token": sample_token,
+        "input_file_hashes": dict(input_hashes or {}),
         "bootstrap_n": int(n_bootstrap),
         "bootstrap_seed": int(config["seed"]),
         "study_summary_rows": int(len(study_summary)),
         "clip_summary_rows": int(len(clip_summary)),
+        "clip_summary_estimand": "unweighted_sampled_clip_composition",
         "agreement_rows": int(len(agreement)),
+        "required_adjudication_rows": int(len(adjudication_queue)),
+        "completed_adjudication_rows": int(len(adjudication_queue)),
+        "annotation_roster_validated": True,
+        "independent_second_reads_validated": True,
+        "completed_adjudication_validated": True,
         "reconstruction_failure_count": reconstruction_failures,
         "row_level_annotations_exported": False,
         "candidate_values_exported": False,
@@ -818,9 +1436,345 @@ def aggregate_audit_annotations(
     return AuditAggregateResult(study_summary, clip_summary, agreement, summary)
 
 
+def _canonical_visible_value(value: Any, unit: Any, target: str) -> tuple[float, float]:
+    numeric = float(str(value).strip())
+    if not np.isfinite(numeric):
+        raise ValueError("visible value is not finite")
+    normalized_unit = str(unit).strip().lower().replace(" ", "")
+    aliases = {
+        "cm": "cm",
+        "centimeter": "cm",
+        "centimeters": "cm",
+        "mm": "mm",
+        "millimeter": "mm",
+        "millimeters": "mm",
+    }
+    source_unit = aliases.get(normalized_unit)
+    if source_unit is None:
+        raise ValueError("visible unit is missing or unsupported")
+    if target not in {"lvot_vti", "tapse"}:
+        raise ValueError(f"unsupported target for visible-value matching: {target}")
+    canonical_unit = "cm" if target == "lvot_vti" else "mm"
+    factor = 1.0
+    if source_unit == "mm" and canonical_unit == "cm":
+        factor = 0.1
+    elif source_unit == "cm" and canonical_unit == "mm":
+        factor = 10.0
+    return numeric * factor, factor
+
+
+def derive_post_unblinding_value_matches(
+    clip_annotations: pd.DataFrame,
+    linkage: pd.DataFrame,
+    sampling_design: pd.DataFrame,
+    clip_roster: pd.DataFrame,
+    adjudication_queue: pd.DataFrame,
+    config: Mapping[str, Any],
+    config_hash: str,
+    audit_completion: Mapping[str, Any],
+    input_hashes: Mapping[str, str],
+) -> PostUnblindingMatchResult:
+    """Compare locked blinded transcriptions with report labels in restricted storage."""
+
+    validate_audit_config(config)
+    require_columns(
+        clip_annotations,
+        [
+            "audit_id",
+            "clip_audit_id",
+            "reader_id",
+            "reader_role",
+            SAMPLE_TOKEN_COLUMN,
+            "candidate_target_value_present",
+            "candidate_target_value",
+            "visible_unit_text",
+            "display_precision",
+            "lvot_vti_specific_label",
+            "tapse_specific_label",
+        ],
+        "locked clip annotations",
+    )
+    require_columns(
+        linkage,
+        [
+            "audit_id",
+            "target_membership",
+            "target_strata",
+            "lvot_vti_target_value",
+            "tapse_target_value",
+        ],
+        "restricted audit linkage",
+    )
+    require_columns(
+        sampling_design,
+        ["target", "split", "source_n", "sample_n", "design_weight"],
+        "restricted sampling design",
+    )
+    require_columns(
+        adjudication_queue,
+        ["annotation_level"],
+        "completed adjudication queue",
+    )
+    if linkage["audit_id"].duplicated().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "restricted audit linkage has duplicate audit IDs")
+    require_columns(clip_roster, ["audit_id", "clip_audit_id"], "canonical clip roster")
+    sample_token = _sample_manifest_token(linkage, sampling_design, clip_roster)
+    _require_exact_sample_token(clip_annotations, sample_token, "clip transcriptions")
+    validated_hashes = _validate_manual_audit_completion_for_post_unblinding(
+        audit_completion,
+        config_hash,
+        sample_token,
+        input_hashes,
+    )
+
+    clip_queue = adjudication_queue.loc[
+        adjudication_queue["annotation_level"].astype(str).eq("clip")
+    ].copy()
+    _, resolved_clips = _apply_completed_adjudications(
+        pd.DataFrame(),
+        clip_annotations,
+        clip_queue,
+    )
+    primary = _primary_clip_annotations(resolved_clips)
+    expected_clip_keys = set(
+        clip_roster[["audit_id", "clip_audit_id"]]
+        .astype(str)
+        .itertuples(index=False, name=None)
+    )
+    observed_clip_keys = set(
+        primary[["audit_id", "clip_audit_id"]]
+        .astype(str)
+        .itertuples(index=False, name=None)
+    )
+    if observed_clip_keys != expected_clip_keys:
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "post-unblinding annotations do not exactly match the locked clip roster",
+        )
+    linkage_by_id = linkage.set_index("audit_id")
+    expanded = _expand_target_linkage(linkage)
+    rows: list[dict[str, Any]] = []
+    for expanded_row in expanded.itertuples(index=False):
+        audit_id = str(expanded_row.audit_id)
+        target = str(expanded_row.target)
+        split = str(expanded_row.split)
+        label_column = f"{target}_specific_label"
+        target_column = f"{target}_target_value"
+        report_value = pd.to_numeric(
+            pd.Series([linkage_by_id.loc[audit_id, target_column]]), errors="coerce"
+        ).iloc[0]
+        if pd.isna(report_value) or not np.isfinite(float(report_value)):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"restricted linkage lacks {target} report label")
+        study_clips = primary[primary["audit_id"].astype(str) == audit_id]
+        candidate_presence = (
+            study_clips["candidate_target_value_present"].astype(str).str.lower()
+        )
+        target_specificity = study_clips[label_column].astype(str).str.lower()
+        candidate_mask = candidate_presence.eq("yes") & target_specificity.eq("yes")
+        uncertain_candidate_mask = (
+            candidate_presence.isin({"yes", "uncertain", "not_assessable"})
+            & target_specificity.isin({"yes", "uncertain", "not_assessable"})
+            & ~candidate_mask
+        )
+        candidates = study_clips.loc[candidate_mask]
+        uncertain_candidates = int(uncertain_candidate_mask.sum())
+        assessed = 0
+        matched = 0
+        not_assessable = 0
+        canonical_candidates: list[float] = []
+        for candidate in candidates.itertuples(index=False):
+            try:
+                precision = float(getattr(candidate, "display_precision"))
+                if not np.isfinite(precision) or not precision.is_integer() or not 0 <= precision <= 6:
+                    raise ValueError("display precision must be an integer from 0 to 6")
+                visible, unit_factor = _canonical_visible_value(
+                    getattr(candidate, "candidate_target_value"),
+                    getattr(candidate, "visible_unit_text"),
+                    target,
+                )
+                tolerance = 0.5 * (10.0 ** (-int(precision))) * unit_factor
+                assessed += 1
+                canonical_candidates.append(visible)
+                matched += int(abs(visible - float(report_value)) <= tolerance + 1e-12)
+            except (TypeError, ValueError):
+                not_assessable += 1
+        distinct_candidates = sorted(set(canonical_candidates))
+        requires_adjudication = bool(
+            len(distinct_candidates) > 1 or uncertain_candidates or not_assessable
+        )
+        status = (
+            "not_assessable"
+            if requires_adjudication
+            else "yes"
+            if matched
+            else "no"
+        )
+        rows.append(
+            {
+                "audit_id": audit_id,
+                "target": target,
+                "split": split,
+                "confirmed_target_value_match_present": status,
+                "candidate_clip_count": int(len(candidates)),
+                "assessable_candidate_clip_count": int(assessed),
+                "matching_candidate_clip_count": int(matched),
+                "not_assessable_candidate_clip_count": int(not_assessable),
+                "uncertain_candidate_clip_count": uncertain_candidates,
+                "restricted_adjudication_required": "yes" if requires_adjudication else "no",
+            }
+        )
+    restricted = pd.DataFrame(rows)
+    joined = restricted.merge(
+        sampling_design[["target", "split", "design_weight"]],
+        on=["target", "split"],
+        how="left",
+        validate="many_to_one",
+    )
+    if joined["design_weight"].isna().any() or not np.isfinite(
+        pd.to_numeric(joined["design_weight"], errors="coerce").to_numpy(dtype=float)
+    ).all():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "post-unblinding rows do not reconcile to sampling weights")
+    safe_rows: list[dict[str, Any]] = []
+    for target, group in joined.groupby("target", sort=True):
+        values = group["confirmed_target_value_match_present"].astype(str)
+        assessable = values.isin({"yes", "no"})
+        binary = values.loc[assessable].eq("yes").astype(float).to_numpy()
+        weights = pd.to_numeric(group.loc[assessable, "design_weight"], errors="coerce").to_numpy()
+        estimate, low, high, effective_n = weighted_interval(binary, weights)
+        safe_rows.append(
+            {
+                "target": target,
+                "n_sampled_studies": int(len(group)),
+                "n_assessable_studies": int(assessable.sum()),
+                "n_matching_studies": int(values.eq("yes").sum()),
+                "n_not_assessable_studies": int(values.eq("not_assessable").sum()),
+                "n_requiring_restricted_adjudication": int(
+                    group["restricted_adjudication_required"].eq("yes").sum()
+                ),
+                "proportion": estimate,
+                "ci_low": low,
+                "ci_high": high,
+                "effective_n": effective_n,
+                "ci_method": "design_weighted_wilson_effective_n",
+            }
+        )
+    safe = pd.DataFrame(safe_rows)
+    assert_export_safe_frame(safe, "post-unblinding value-match summary")
+    provenance = {
+        "protocol_version": config["protocol_version"],
+        "configuration_sha256": config_hash,
+        "sample_manifest_token": sample_token,
+        "reader_target_values_prohibited": True,
+        "comparison_performed_after_locked_blinded_transcription": True,
+        "manual_audit_completion_status": audit_completion["status"],
+        "match_tolerance": config["post_unblinding_value_match"]["match_tolerance"],
+        "input_file_hashes": validated_hashes,
+    }
+    return PostUnblindingMatchResult(restricted, safe, provenance)
+
+
+def write_post_unblinding_value_matches(
+    result: PostUnblindingMatchResult,
+    restricted_output_csv: Path,
+    safe_output_dir: Path,
+) -> None:
+    restricted = require_restricted_destination(restricted_output_csv)
+    if restricted.exists() or safe_output_dir.exists():
+        raise FileExistsError("refusing to overwrite post-unblinding match outputs")
+    restricted.parent.mkdir(parents=True, exist_ok=True)
+    result.restricted_study_matches.to_csv(restricted, index=False)
+    safe_output_dir.mkdir(parents=True)
+    write_safe_csv(
+        safe_output_dir / "post_unblinding_value_match_summary.csv",
+        result.safe_summary,
+        "post-unblinding value-match summary",
+    )
+    write_json(
+        safe_output_dir / "post_unblinding_value_match_provenance.json",
+        result.provenance,
+    )
+
+
+MANUAL_AUDIT_OUTPUT_FILES = {
+    "manual_audit_study_summary": "manual_audit_study_summary.csv",
+    "manual_audit_clip_summary": "manual_audit_clip_summary.csv",
+    "manual_audit_reader_agreement": "manual_audit_reader_agreement.csv",
+    "manual_audit_summary": "manual_audit_summary.json",
+}
+
+
+def load_manual_audit_completion(path: Path) -> dict[str, Any]:
+    """Load a completion certificate and recheck all certified safe outputs."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, f"invalid manual-audit completion certificate: {exc}") from exc
+    if (
+        payload.get("schema_version") != "jdim-manual-audit-completion-v1"
+        or payload.get("status") != "MANUAL_AUDIT_COMPLETE"
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "manual-audit completion certificate is not complete")
+    records = payload.get("artifacts")
+    if not isinstance(records, list):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "manual-audit completion artifact matrix is invalid")
+    by_role: dict[str, Mapping[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, Mapping) or not str(record.get("logical_role", "")):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "manual-audit completion has an invalid artifact record")
+        role = str(record["logical_role"])
+        if role in by_role:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "manual-audit completion has duplicate artifact roles")
+        by_role[role] = record
+    if set(by_role) != set(MANUAL_AUDIT_OUTPUT_FILES):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "manual-audit completion artifact roles are incomplete")
+    for role, filename in MANUAL_AUDIT_OUTPUT_FILES.items():
+        artifact = path.parent / filename
+        if not artifact.is_file():
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"certified manual-audit artifact is missing: {role}")
+        observed = safe_file_record(role, artifact)
+        declared = by_role[role]
+        if (
+            declared.get("sha256") != observed["sha256"]
+            or declared.get("size_bytes") != observed["size_bytes"]
+        ):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"certified manual-audit artifact changed: {role}")
+    return payload
+
+
 def write_audit_aggregates(result: AuditAggregateResult, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists():
+        raise FileExistsError("refusing to overwrite manual-audit aggregate outputs")
+    input_hashes = _validated_input_hashes(
+        result.summary.get("input_file_hashes"),
+        MANUAL_AUDIT_INPUT_HASH_ROLES,
+        "manual-audit aggregate inputs",
+    )
+    for field in (
+        "annotation_roster_validated",
+        "independent_second_reads_validated",
+        "completed_adjudication_validated",
+    ):
+        if result.summary.get(field) is not True:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"manual-audit aggregate lacks {field}")
+    output_dir.mkdir(parents=True)
     write_safe_csv(output_dir / "manual_audit_study_summary.csv", result.study_summary, "study audit summary")
     write_safe_csv(output_dir / "manual_audit_clip_summary.csv", result.clip_summary, "clip audit summary")
     write_safe_csv(output_dir / "manual_audit_reader_agreement.csv", result.agreement, "reader agreement")
     write_json(output_dir / "manual_audit_summary.json", result.summary)
+    completion = {
+        "schema_version": "jdim-manual-audit-completion-v1",
+        "status": "MANUAL_AUDIT_COMPLETE",
+        "protocol_version": result.summary["protocol_version"],
+        "configuration_sha256": result.summary["configuration_sha256"],
+        "sample_manifest_token": result.summary["sample_manifest_token"],
+        "annotation_roster_validated": True,
+        "independent_second_reads_validated": True,
+        "completed_adjudication_validated": True,
+        "input_file_hashes": input_hashes,
+        "artifacts": [
+            safe_file_record(role, output_dir / filename)
+            for role, filename in sorted(MANUAL_AUDIT_OUTPUT_FILES.items())
+        ],
+    }
+    write_json(output_dir / "manual_audit_completion.json", completion)

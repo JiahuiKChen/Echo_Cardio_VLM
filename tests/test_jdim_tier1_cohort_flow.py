@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -20,6 +21,7 @@ from jdim_tier1.cohort_flow import (  # noqa: E402
     validate_cohort_input_schemas,
     write_cohort_flow_outputs,
 )
+from jdim_tier1.duplicate_forensics import source_manifest_row_fingerprint  # noqa: E402
 from jdim_tier1.safety import BLOCKED_LINEAGE, Tier1BlockedError, sha256_file  # noqa: E402
 
 
@@ -33,6 +35,54 @@ def write_json(root: Path, name: str, payload: dict) -> Path:
     path = root / name
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
+
+
+def refresh_forensic_evidence(inputs: CohortFlowInputs) -> None:
+    decisions = pd.read_csv(inputs.duplicate_forensics)
+    if not decisions.empty:
+        fingerprints: list[str] = []
+        for row in decisions.to_dict(orient="records"):
+            batch_name = str(row["_batch"])
+            manifest = pd.read_csv(inputs.embedding_batches[batch_name])
+            if "write_ok" in manifest.columns:
+                success = manifest["write_ok"].astype(str).str.lower().isin(
+                    {"true", "1", "yes", "y"}
+                )
+                manifest = manifest.loc[success].reset_index(drop=True)
+            source_row = manifest.iloc[int(row["_manifest_row"])].to_dict()
+            fingerprints.append(
+                source_manifest_row_fingerprint(
+                    source_row,
+                    batch_name,
+                    int(row["_manifest_row"]),
+                )
+            )
+        decisions["source_manifest_row_fingerprint_sha256"] = fingerprints
+        decisions.to_csv(inputs.duplicate_forensics, index=False)
+
+    extraction_hashes = [sha256_file(path) for path in inputs.extraction_manifests]
+    payload = {
+        "status": "ok",
+        "restricted_artifact_sha256": {
+            "duplicate_forensics_rows.csv": sha256_file(inputs.duplicate_forensics)
+        },
+        "input_provenance": {
+            "split_map": {"sha256": sha256_file(inputs.split_map)},
+            "batches": [
+                {
+                    "batch_name": name,
+                    "extraction_manifest_sha256": extraction_hashes[0],
+                    "embedding_manifest_sha256": sha256_file(path),
+                    "embedding_npz_sha256": sha256_file(inputs.embedding_batch_npzs[name]),
+                }
+                for name, path in sorted(inputs.embedding_batches.items())
+            ],
+        },
+    }
+    inputs.duplicate_forensics_provenance.write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
 
 
 def make_fixture(root: Path) -> tuple[CohortFlowInputs, dict]:
@@ -107,6 +157,41 @@ def make_fixture(root: Path) -> tuple[CohortFlowInputs, dict]:
         "measures": write_csv(root, "measures.csv", measures),
         "split": write_csv(root, "split.csv", split_rows),
     }
+    paths["legacy_npz"] = root / "legacy_embeddings.npz"
+    paths["batch_npz"] = root / "batch_embeddings.npz"
+    np.savez_compressed(paths["legacy_npz"], embeddings=np.zeros((10, 3), dtype=np.float32))
+    np.savez_compressed(paths["batch_npz"], embeddings=np.ones((10, 3), dtype=np.float32))
+    forensic_columns = [
+        "group_token",
+        "classification",
+        "_batch",
+        "_manifest_row",
+        "study_id",
+        "subject_id",
+        "dedup_keep_candidate",
+        "source_manifest_row_fingerprint_sha256",
+    ]
+    paths["forensics"] = root / "duplicate_forensics_rows.csv"
+    pd.DataFrame(columns=forensic_columns).to_csv(paths["forensics"], index=False)
+    paths["lvot_predictions"] = write_csv(
+        root,
+        "lvot_predictions.csv",
+        [
+            {"target": "lvot_vti", "study_id": 1, "subject_id": 10, "split": "train", "target_value": 15.0},
+            {"target": "lvot_vti", "study_id": 2, "subject_id": 10, "split": "train", "target_value": 20.0},
+            {"target": "lvot_vti", "study_id": 3, "subject_id": 20, "split": "val", "target_value": 22.0},
+            {"target": "lvot_vti", "study_id": 4, "subject_id": 30, "split": "test", "target_value": 24.0},
+        ],
+    )
+    paths["tapse_predictions"] = write_csv(
+        root,
+        "tapse_predictions.csv",
+        [
+            {"target": "tapse", "study_id": 2, "subject_id": 10, "split": "train", "target_value": 16.0},
+            {"target": "tapse", "study_id": 4, "subject_id": 30, "split": "test", "target_value": 18.0},
+            {"target": "tapse", "study_id": 5, "subject_id": 40, "split": "test", "target_value": 21.0},
+        ],
+    )
     canonical = {
         "lvot_vti": {
             "target": "lvot_vti",
@@ -150,6 +235,7 @@ def make_fixture(root: Path) -> tuple[CohortFlowInputs, dict]:
         "allowed_batch_overlap_pairs": [],
     }
     paths["lineage"] = write_json(root, "lineage.json", metadata)
+    paths["forensic_provenance"] = root / "duplicate_forensics_summary.json"
     inputs = CohortFlowInputs(
         source_studies=paths["source"],
         eligible_studies=paths["eligible"],
@@ -157,12 +243,23 @@ def make_fixture(root: Path) -> tuple[CohortFlowInputs, dict]:
         dicom_audits=[paths["audits"]],
         extraction_manifests=[paths["extraction"]],
         embedding_batches={"legacy_stage_d_500": paths["legacy"], "batch_000": paths["batch"]},
+        embedding_batch_npzs={
+            "legacy_stage_d_500": paths["legacy_npz"],
+            "batch_000": paths["batch_npz"],
+        },
         final_study_embeddings=paths["final"],
         structured_measurements=paths["measures"],
         split_map=paths["split"],
         canonical_summaries=canonical_paths,
         lineage_metadata=paths["lineage"],
+        duplicate_forensics=paths["forensics"],
+        duplicate_forensics_provenance=paths["forensic_provenance"],
+        canonical_predictions={
+            "lvot_vti": paths["lvot_predictions"],
+            "tapse": paths["tapse_predictions"],
+        },
     )
+    refresh_forensic_evidence(inputs)
     return inputs, paths
 
 
@@ -183,6 +280,188 @@ class CohortFlowTests(unittest.TestCase):
         self.assertEqual(result.summary["outside_universe_retained_legacy_embeddings"], 1)
         lvot_mult = result.subject_multiplicity.query("target == 'lvot_vti' and studies_per_subject == 2")
         self.assertEqual(int(lvot_mult.iloc[0]["n_subjects"]), 1)
+
+    def test_legitimate_repeated_dicom_keys_preserve_both_clip_inputs(self) -> None:
+        batch = pd.read_csv(self.paths["batch"])
+        duplicate = dict(batch.iloc[0])
+        duplicate["embedding_idx"] = 3
+        batch = pd.concat([batch, pd.DataFrame([duplicate])], ignore_index=True)
+        batch.to_csv(self.paths["batch"], index=False)
+        final = pd.read_csv(self.paths["final"])
+        final.loc[final["study_id"] == 3, "n_clips"] = 2
+        final.to_csv(self.paths["final"], index=False)
+        pd.DataFrame(
+            [
+                {
+                    "group_token": "g1",
+                    "classification": "LEGITIMATE_DISTINCT_CLIPS",
+                    "_batch": "batch_000",
+                    "_manifest_row": row,
+                    "study_id": 3,
+                    "subject_id": 20,
+                    "dedup_keep_candidate": True,
+                }
+                for row in (0, 3)
+            ]
+        ).to_csv(self.paths["forensics"], index=False)
+        refresh_forensic_evidence(self.inputs)
+        result = reconstruct_cohort_flow(self.inputs)
+        self.assertEqual(result.invariants["status"], "ok")
+        stage = result.stages.set_index("stage")
+        self.assertEqual(
+            int(stage.loc["repeated_clip_rows_legitimate_distinct_clips", "n_rows"]), 2
+        )
+
+    def test_forensic_row_identity_uses_successful_embedding_ordinal(self) -> None:
+        batch = pd.read_csv(self.paths["batch"])
+        failed = dict(batch.iloc[0])
+        failed.update(
+            {
+                "dicom_filepath": "failed_before_successes.dcm",
+                "embedding_idx": -1,
+                "write_ok": False,
+            }
+        )
+        duplicate = dict(batch.iloc[0])
+        duplicate["embedding_idx"] = 3
+        batch = pd.concat(
+            [pd.DataFrame([failed]), batch, pd.DataFrame([duplicate])],
+            ignore_index=True,
+        )
+        batch.to_csv(self.paths["batch"], index=False)
+        final = pd.read_csv(self.paths["final"])
+        final.loc[final["study_id"] == 3, "n_clips"] = 2
+        final.to_csv(self.paths["final"], index=False)
+        pd.DataFrame(
+            [
+                {
+                    "group_token": "g1",
+                    "classification": "LEGITIMATE_DISTINCT_CLIPS",
+                    "_batch": "batch_000",
+                    "_manifest_row": row,
+                    "study_id": 3,
+                    "subject_id": 20,
+                    "dedup_keep_candidate": True,
+                }
+                for row in (0, 3)
+            ]
+        ).to_csv(self.paths["forensics"], index=False)
+        refresh_forensic_evidence(self.inputs)
+        result = reconstruct_cohort_flow(self.inputs)
+        self.assertEqual(result.invariants["status"], "ok")
+
+    def test_true_duplicate_rows_require_corrected_final_clip_count(self) -> None:
+        batch = pd.read_csv(self.paths["batch"])
+        duplicate = dict(batch.iloc[0])
+        duplicate["embedding_idx"] = 3
+        batch = pd.concat([batch, pd.DataFrame([duplicate])], ignore_index=True)
+        batch.to_csv(self.paths["batch"], index=False)
+        pd.DataFrame(
+            [
+                {
+                    "group_token": "g1",
+                    "classification": "TRUE_DUPLICATE_EMBEDDING_ROWS",
+                    "_batch": "batch_000",
+                    "_manifest_row": row,
+                    "study_id": 3,
+                    "subject_id": 20,
+                    "dedup_keep_candidate": row == 0,
+                }
+                for row in (0, 3)
+            ]
+        ).to_csv(self.paths["forensics"], index=False)
+        refresh_forensic_evidence(self.inputs)
+        result = reconstruct_cohort_flow(self.inputs)
+        self.assertEqual(result.invariants["status"], "ok")
+
+    def test_forensic_decision_identity_mismatch_fails_closed(self) -> None:
+        batch = pd.read_csv(self.paths["batch"])
+        duplicate = dict(batch.iloc[0])
+        duplicate["embedding_idx"] = 3
+        pd.concat([batch, pd.DataFrame([duplicate])], ignore_index=True).to_csv(
+            self.paths["batch"], index=False
+        )
+        pd.DataFrame(
+            [
+                {
+                    "group_token": "g1",
+                    "classification": "TRUE_DUPLICATE_EMBEDDING_ROWS",
+                    "_batch": "batch_000",
+                    "_manifest_row": row,
+                    "study_id": 999 if row == 0 else 3,
+                    "subject_id": 20,
+                    "dedup_keep_candidate": row == 0,
+                }
+                for row in (0, 3)
+            ]
+        ).to_csv(self.paths["forensics"], index=False)
+        refresh_forensic_evidence(self.inputs)
+        with self.assertRaisesRegex(Tier1BlockedError, "identity does not match"):
+            reconstruct_cohort_flow(self.inputs)
+
+    def test_stale_forensic_evidence_fails_when_source_manifest_changes(self) -> None:
+        batch = pd.read_csv(self.paths["batch"])
+        duplicate = dict(batch.iloc[0])
+        duplicate["embedding_idx"] = 3
+        pd.concat([batch, pd.DataFrame([duplicate])], ignore_index=True).to_csv(
+            self.paths["batch"], index=False
+        )
+        pd.DataFrame(
+            [
+                {
+                    "group_token": "g1",
+                    "classification": "LEGITIMATE_DISTINCT_CLIPS",
+                    "_batch": "batch_000",
+                    "_manifest_row": row,
+                    "study_id": 3,
+                    "subject_id": 20,
+                    "dedup_keep_candidate": True,
+                }
+                for row in (0, 3)
+            ]
+        ).to_csv(self.paths["forensics"], index=False)
+        refresh_forensic_evidence(self.inputs)
+
+        changed = pd.read_csv(self.paths["batch"])
+        changed.loc[0, "embedding_idx"] = 8
+        changed.to_csv(self.paths["batch"], index=False)
+        with self.assertRaisesRegex(Tier1BlockedError, "provenance is stale"):
+            reconstruct_cohort_flow(self.inputs)
+
+    def test_empty_forensic_decisions_remain_bound_to_source_manifests(self) -> None:
+        self.assertTrue(pd.read_csv(self.paths["forensics"]).empty)
+        changed = pd.read_csv(self.paths["batch"])
+        changed.loc[0, "embedding_idx"] = 8
+        changed.to_csv(self.paths["batch"], index=False)
+        with self.assertRaisesRegex(Tier1BlockedError, "provenance is stale"):
+            reconstruct_cohort_flow(self.inputs)
+
+    def test_extra_extraction_manifest_fails_forensic_binding(self) -> None:
+        extra = write_csv(
+            self.root,
+            "extra_extraction.csv",
+            [
+                {
+                    "study_id": 999,
+                    "subject_id": 9990,
+                    "dicom_filepath": "unexpected.dcm",
+                    "write_ok": True,
+                    "npz_path": "unexpected.npz",
+                }
+            ],
+        )
+        self.inputs.extraction_manifests = [*self.inputs.extraction_manifests, extra]
+        with self.assertRaisesRegex(Tier1BlockedError, "extraction-manifest set"):
+            reconstruct_cohort_flow(self.inputs)
+
+    def test_prediction_rows_must_match_reconstructed_target_cohort(self) -> None:
+        predictions = pd.read_csv(self.paths["lvot_predictions"])
+        predictions.loc[predictions["study_id"] == 3, "target_value"] = 999.0
+        predictions.to_csv(self.paths["lvot_predictions"], index=False)
+        result = reconstruct_cohort_flow(self.inputs)
+        self.assertEqual(result.invariants["status"], BLOCKED_LINEAGE)
+        checks = {item["check"]: item for item in result.invariants["checks"]}
+        self.assertFalse(checks["lvot_vti_prediction_labels_match_reconstruction"]["passed"])
 
     def test_schema_only_validation_does_not_compute_counts(self) -> None:
         payload = validate_cohort_input_schemas(self.inputs)
@@ -207,6 +486,8 @@ class CohortFlowTests(unittest.TestCase):
         ]
         for name, path in self.inputs.embedding_batches.items():
             command.extend(["--embedding-batch", f"{name}={path}"])
+        for name, path in self.inputs.embedding_batch_npzs.items():
+            command.extend(["--embedding-batch-npz", f"{name}={path}"])
         command.extend(
             [
                 "--final-study-embedding-manifest-csv",
@@ -219,8 +500,14 @@ class CohortFlowTests(unittest.TestCase):
         )
         for target, path in self.inputs.canonical_summaries.items():
             command.extend(["--canonical-summary", f"{target}={path}"])
+        for target, path in self.inputs.canonical_predictions.items():
+            command.extend(["--canonical-prediction", f"{target}={path}"])
         command.extend(
             [
+                "--duplicate-forensics-rows-csv",
+                str(self.inputs.duplicate_forensics),
+                "--duplicate-forensics-provenance-json",
+                str(self.inputs.duplicate_forensics_provenance),
                 "--lineage-metadata-json",
                 str(self.inputs.lineage_metadata),
                 "--output-dir",
@@ -244,11 +531,14 @@ class CohortFlowTests(unittest.TestCase):
     def test_restricted_target_cohort_retains_report_label_value(self) -> None:
         result = reconstruct_cohort_flow(self.inputs)
         destination = self.root / "restricted" / "reconciliation.csv"
-        write_cohort_flow_outputs(result, self.root / "safe", destination)
+        safe = self.root / "safe"
+        write_cohort_flow_outputs(result, safe, destination)
         lvot = pd.read_csv(destination.parent / "jdim_target_cohort_lvot_vti.csv")
         study_one = lvot[lvot["study_id"] == 1].iloc[0]
         self.assertEqual(float(study_one["target_value"]), 15.0)
         self.assertEqual(int(study_one["n_target_rows"]), 2)
+        with self.assertRaisesRegex(FileExistsError, "refusing to overwrite"):
+            write_cohort_flow_outputs(result, safe, destination)
 
     def test_declared_legacy_batch_reconciles_outside_member_separately(self) -> None:
         result = reconstruct_cohort_flow(self.inputs)
@@ -324,6 +614,7 @@ class CohortFlowTests(unittest.TestCase):
         batch = pd.read_csv(self.paths["batch"])
         batch.loc[batch["study_id"] == 3, "subject_id"] = 999
         batch.to_csv(self.paths["batch"], index=False)
+        refresh_forensic_evidence(self.inputs)
         with self.assertRaisesRegex(Tier1BlockedError, "conflicting subject"):
             reconstruct_cohort_flow(self.inputs)
 
@@ -334,6 +625,7 @@ class CohortFlowTests(unittest.TestCase):
         metadata = json.loads(self.paths["lineage"].read_text())
         metadata["split_map"]["expected_sha256"] = sha256_file(self.paths["split"])
         self.paths["lineage"].write_text(json.dumps(metadata))
+        refresh_forensic_evidence(self.inputs)
         with self.assertRaisesRegex(Tier1BlockedError, "invalid frozen split map"):
             reconstruct_cohort_flow(self.inputs)
 
@@ -385,6 +677,7 @@ class CohortFlowTests(unittest.TestCase):
             ignore_index=True,
         )
         batch.to_csv(self.paths["batch"], index=False)
+        refresh_forensic_evidence(self.inputs)
         result = reconstruct_cohort_flow(self.inputs)
         self.assertEqual(result.invariants["status"], BLOCKED_LINEAGE)
         overlap = [
@@ -414,9 +707,13 @@ class CohortFlowTests(unittest.TestCase):
             ignore_index=True,
         )
         batch.to_csv(self.paths["batch"], index=False)
+        refresh_forensic_evidence(self.inputs)
         metadata = json.loads(self.paths["lineage"].read_text())
         metadata["allowed_batch_overlap_pairs"] = ["legacy_stage_d_500|batch_000"]
         self.paths["lineage"].write_text(json.dumps(metadata))
+        final = pd.read_csv(self.paths["final"])
+        final.loc[final["study_id"] == 2, "n_clips"] = 2
+        final.to_csv(self.paths["final"], index=False)
         result = reconstruct_cohort_flow(self.inputs)
         self.assertEqual(result.invariants["status"], "ok")
         self.assertEqual(result.summary["final_study_embeddings"], 6)

@@ -19,8 +19,16 @@ from build_jdim_cohort_lineage_metadata import (  # noqa: E402
     parse_outside_universe_batches,
     parse_overlap_pairs,
 )
-from build_jdim_provenance_spec import parse_arguments, parse_file_specs  # noqa: E402
+from build_jdim_provenance_spec import (  # noqa: E402
+    parse_arguments,
+    parse_file_specs,
+    validate_corrected_completion_roles,
+)
+from jdim_tier1.corrected_completion import (  # noqa: E402
+    build_corrected_completion_manifest,
+)
 from jdim_tier1.safety import sanitize_for_safe_manifest  # noqa: E402
+from tests.jdim_tier1_corrected_fixture import build_valid_corrected_fixture  # noqa: E402
 
 
 class Tier1HandoffTests(unittest.TestCase):
@@ -116,6 +124,90 @@ class Tier1HandoffTests(unittest.TestCase):
         )
         self.assertEqual(payload["command"], "[REDACTED_PATH]")
 
+    def test_corrected_provenance_requires_complete_artifact_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir) / "corrected"
+            parents = {
+                "frozen_study_embedding_manifest": Path(tempdir) / "frozen_studies.csv",
+                "frozen_study_embedding_array": Path(tempdir) / "frozen_studies.npz",
+                "historical_clip_embedding_manifest": Path(tempdir) / "historical_clips.csv",
+                "historical_clip_embedding_array": Path(tempdir) / "historical_clips.npz",
+            }
+            for path in parents.values():
+                path.write_bytes(b"synthetic parent\n")
+            build_valid_corrected_fixture(
+                root,
+                Path(tempdir) / "comparison_sources",
+                aggregation_parents=parents,
+            )
+            completion = root / "aggregate_safe/corrected_analysis_completion_v1.json"
+            build_corrected_completion_manifest(root, completion)
+            files = {
+                role: {
+                    "path": str(path),
+                    "classification": "restricted",
+                }
+                for role, path in parents.items()
+            }
+            files.update(
+                {
+                    "corrected_study_embedding_manifest": {
+                        "path": str(
+                            root
+                            / "aggregation/restricted/corrected_study_embedding_manifest.csv"
+                        ),
+                        "classification": "restricted",
+                    },
+                    "corrected_study_embedding_array": {
+                        "path": str(root / "aggregation/restricted/corrected_study_embeddings.npz"),
+                        "classification": "restricted",
+                    },
+                    "corrected_clip_embedding_manifest": {
+                        "path": str(root / "aggregation/restricted/deduplicated_clip_manifest.csv"),
+                        "classification": "restricted",
+                    },
+                    "corrected_clip_embedding_array": {
+                        "path": str(root / "aggregation/restricted/deduplicated_clip_embeddings.npz"),
+                        "classification": "restricted",
+                    },
+                    "corrected_aggregation_provenance": {
+                        "path": str(
+                            root
+                            / "aggregation/restricted/corrected_aggregation_provenance_restricted.json"
+                        ),
+                        "classification": "restricted",
+                    },
+                    "corrected_main_comparison_provenance": {
+                        "path": str(
+                            root
+                            / "aggregate_safe/original_vs_corrected_main/original_vs_corrected_comparison_provenance.json"
+                        ),
+                        "classification": "aggregate_safe",
+                    },
+                    "corrected_hard_extremes_comparison_provenance": {
+                        "path": str(
+                            root
+                            / "aggregate_safe/original_vs_corrected_hard_extremes/original_vs_corrected_comparison_provenance.json"
+                        ),
+                        "classification": "aggregate_safe",
+                    },
+                    "corrected_analysis_completion": {
+                        "path": str(completion),
+                        "classification": "aggregate_safe",
+                    },
+                }
+            )
+            arguments = {"model_refit": True, "corrected_analysis_complete": True}
+            validate_corrected_completion_roles(files, arguments)
+            original_parent = files["historical_clip_embedding_array"]
+            files["historical_clip_embedding_array"] = files["historical_clip_embedding_manifest"]
+            with self.assertRaisesRegex(ValueError, "does not match aggregation provenance"):
+                validate_corrected_completion_roles(files, arguments)
+            files["historical_clip_embedding_array"] = original_parent
+            files.pop("corrected_hard_extremes_comparison_provenance")
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                validate_corrected_completion_roles(files, arguments)
+
     def test_scc_wrapper_has_valid_shell_syntax_and_help(self) -> None:
         wrapper = ROOT / "scripts" / "scc_run_jdim_tier1.sh"
         subprocess.run(["bash", "-n", str(wrapper)], cwd=ROOT, check=True)
@@ -128,6 +220,11 @@ class Tier1HandoffTests(unittest.TestCase):
         )
         self.assertIn("reviewer-metrics", completed.stdout)
         self.assertIn("audit-pilot", completed.stdout)
+        runbook = (ROOT / "docs" / "jdim_major_revision_tier1_runbook.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--manual-audit-completion-json", runbook)
+        self.assertIn("manual_audit_completion.json", runbook)
 
     def test_scc_handoff_resolves_explicit_inputs_from_isolated_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

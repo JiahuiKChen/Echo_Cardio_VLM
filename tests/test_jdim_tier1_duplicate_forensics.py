@@ -26,7 +26,11 @@ from jdim_tier1.duplicate_forensics import (  # noqa: E402
     analyze_duplicate_keys,
     write_duplicate_forensics_outputs,
 )
-from jdim_tier1.safety import BLOCKED_UNSAFE_OUTPUT, Tier1BlockedError  # noqa: E402
+from jdim_tier1.safety import (  # noqa: E402
+    BLOCKED_UNSAFE_OUTPUT,
+    Tier1BlockedError,
+    sha256_file,
+)
 
 
 class DuplicateForensicsTests(unittest.TestCase):
@@ -166,6 +170,46 @@ class DuplicateForensicsTests(unittest.TestCase):
         self.assertEqual(classification, LEGITIMATE_DISTINCT_CLIPS)
         self.assertEqual(result.status, "ok")
         self.assertFalse(bool(result.restricted_groups.iloc[0]["valid_dedup_rule"]))
+        self.assertTrue(
+            result.restricted_rows["source_manifest_row_fingerprint_sha256"]
+            .astype(str)
+            .str.fullmatch(r"[0-9a-f]{64}")
+            .all()
+        )
+
+    def test_manifest_row_is_successful_embedding_ordinal(self) -> None:
+        first = self._write_processed("ordinal_a.npz", np.zeros((4, 2, 2, 3)))
+        second = self._write_processed("ordinal_b.npz", np.ones((4, 2, 2, 3)))
+        rows = [
+            {
+                "study_id": 9,
+                "subject_id": 90,
+                "dicom_filepath": "failed.dcm",
+                "npz_path": str(first),
+                "embedding_idx": -1,
+                "write_ok": False,
+            },
+            {
+                "study_id": 1,
+                "subject_id": 10,
+                "dicom_filepath": "same.dcm",
+                "npz_path": str(first),
+                "window_index": 0,
+                "embedding_idx": 0,
+                "write_ok": True,
+            },
+            {
+                "study_id": 1,
+                "subject_id": 10,
+                "dicom_filepath": "same.dcm",
+                "npz_path": str(second),
+                "window_index": 1,
+                "embedding_idx": 1,
+                "write_ok": True,
+            },
+        ]
+        _, result = self._classify(self._inputs(rows, np.eye(2)))
+        self.assertEqual(list(result.restricted_rows["_manifest_row"]), [0, 1])
 
     def test_shared_npz_with_distinct_explicit_windows_is_legitimate(self) -> None:
         windows = np.stack(
@@ -300,6 +344,49 @@ class DuplicateForensicsTests(unittest.TestCase):
         self.assertTrue(bool(group["all_vectors_near_equal"]))
         self.assertTrue(bool(group["any_near_nonexact_vector_pair"]))
 
+    def test_near_equal_keeper_is_stable_under_source_manifest_reordering(self) -> None:
+        processed = self._write_processed("stable-near.npz", np.ones((3, 2, 2, 3)))
+        rows = [
+            {
+                "study_id": 1,
+                "subject_id": 10,
+                "dicom_filepath": "same.dcm",
+                "npz_path": str(processed),
+                "embedding_idx": index,
+                "write_ok": True,
+            }
+            for index in (0, 1)
+        ]
+        vectors = np.array([[1.0, 2.0], [1.0 + 5e-7, 2.0 - 5e-7]], dtype=np.float64)
+        first = analyze_duplicate_keys(self._inputs(rows, vectors))
+        first_keep = int(
+            first.restricted_rows.loc[first.restricted_rows["dedup_keep_candidate"], "embedding_idx"].iloc[0]
+        )
+        second = analyze_duplicate_keys(self._inputs(list(reversed(rows)), vectors))
+        second_keep = int(
+            second.restricted_rows.loc[second.restricted_rows["dedup_keep_candidate"], "embedding_idx"].iloc[0]
+        )
+        self.assertEqual(first_keep, second_keep)
+
+    def test_coarse_key_columns_use_explicit_lineage_allowlist(self) -> None:
+        processed = self._write_processed("unsafe-key.npz", np.ones((3, 2, 2, 3)))
+        rows = [
+            {
+                "study_id": 1,
+                "subject_id": 10,
+                "outcome": "same",
+                "dicom_filepath": "same.dcm",
+                "npz_path": str(processed),
+                "embedding_idx": index,
+                "write_ok": True,
+            }
+            for index in (0, 1)
+        ]
+        with self.assertRaisesRegex(ValueError, "coarse key cannot use"):
+            analyze_duplicate_keys(
+                self._inputs(rows, np.ones((2, 2)), coarse_key_columns=("study_id", "outcome"))
+            )
+
     def test_finer_dicom_identity_can_show_coarse_key_collision(self) -> None:
         first = self._write_processed("fine_a.npz", np.zeros((3, 2, 2, 3)))
         second = self._write_processed("fine_b.npz", np.ones((3, 2, 2, 3)))
@@ -362,6 +449,10 @@ class DuplicateForensicsTests(unittest.TestCase):
         self.assertTrue((safe / "duplicate_forensics_summary.json").exists())
         payload = json.loads((safe / "duplicate_forensics_summary.json").read_text())
         self.assertEqual(payload["status"], BLOCKED_DUPLICATE_SEMANTICS)
+        self.assertEqual(
+            payload["restricted_artifact_sha256"]["duplicate_forensics_rows.csv"],
+            sha256_file(restricted / "duplicate_forensics_rows.csv"),
+        )
         safe_text = "\n".join(path.read_text() for path in safe.iterdir())
         self.assertNotIn(str(self.root), safe_text)
         for forbidden in ("study_id", "subject_id", "dicom_filepath", "npz_path", "target_value", "y_pred"):

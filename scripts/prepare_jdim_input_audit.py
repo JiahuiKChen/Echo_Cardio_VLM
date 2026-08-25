@@ -12,12 +12,15 @@ from jdim_tier1.audit import (
     aggregate_audit_annotations,
     build_adjudication_queue,
     build_audit_sample,
+    derive_post_unblinding_value_matches,
+    load_manual_audit_completion,
     load_audit_config,
     write_audit_aggregates,
     write_adjudication_queue,
     write_audit_sample,
+    write_post_unblinding_value_matches,
 )
-from jdim_tier1.safety import Tier1BlockedError, parse_named_paths
+from jdim_tier1.safety import Tier1BlockedError, parse_named_paths, sha256_file
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,11 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     validate_inputs = subparsers.add_parser("validate-inputs")
     validate_inputs.add_argument("--config", type=Path, required=True)
     validate_inputs.add_argument("--cohort", action="append", default=[], metavar="TARGET=PATH")
+    validate_inputs.add_argument("--canonical-clip-manifest-csv", type=Path, required=True)
 
     for name in ("sample", "pilot"):
         command = subparsers.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
         command.add_argument("--cohort", action="append", default=[], metavar="TARGET=PATH")
+        command.add_argument("--canonical-clip-manifest-csv", type=Path, required=True)
         command.add_argument("--opaque-id-key-file", type=Path, required=True)
         command.add_argument("--restricted-output-root", type=Path, required=True)
         command.add_argument("--safe-output-dir", type=Path, required=True)
@@ -50,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--clip-annotations-csv", type=Path, required=True)
     aggregate.add_argument("--restricted-linkage-csv", type=Path, required=True)
     aggregate.add_argument("--restricted-sampling-design-csv", type=Path, required=True)
+    aggregate.add_argument("--restricted-second-reader-manifest-csv", type=Path, required=True)
+    aggregate.add_argument("--restricted-clip-roster-csv", type=Path, required=True)
+    aggregate.add_argument("--completed-adjudication-csv", type=Path, required=True)
     aggregate.add_argument("--safe-output-dir", type=Path, required=True)
     aggregate.add_argument("--bootstrap-n", type=int, default=2000)
 
@@ -58,6 +66,17 @@ def build_parser() -> argparse.ArgumentParser:
     adjudication.add_argument("--study-annotations-csv", type=Path, required=True)
     adjudication.add_argument("--clip-annotations-csv", type=Path, required=True)
     adjudication.add_argument("--restricted-output-csv", type=Path, required=True)
+
+    match = subparsers.add_parser("post-unblinding-match")
+    match.add_argument("--config", type=Path, required=True)
+    match.add_argument("--clip-annotations-csv", type=Path, required=True)
+    match.add_argument("--restricted-linkage-csv", type=Path, required=True)
+    match.add_argument("--restricted-sampling-design-csv", type=Path, required=True)
+    match.add_argument("--restricted-clip-roster-csv", type=Path, required=True)
+    match.add_argument("--completed-adjudication-csv", type=Path, required=True)
+    match.add_argument("--manual-audit-completion-json", type=Path, required=True)
+    match.add_argument("--restricted-output-csv", type=Path, required=True)
+    match.add_argument("--safe-output-dir", type=Path, required=True)
     return parser
 
 
@@ -85,6 +104,16 @@ def main() -> int:
                 missing = {"study_id", "subject_id", "split"} - set(header.columns)
                 if missing:
                     raise ValueError(f"{target} cohort schema missing {sorted(missing)}")
+            clip_header = pd.read_csv(args.canonical_clip_manifest_csv, nrows=0)
+            clip_missing = {"study_id", "subject_id"} - set(clip_header.columns)
+            if clip_missing or not {
+                "canonical_clip_id",
+                "embedding_idx",
+                "source_embedding_idx",
+            }.intersection(clip_header.columns):
+                raise ValueError(
+                    "canonical clip manifest must contain study/subject IDs and a stable clip index"
+                )
             print(
                 json.dumps(
                     {
@@ -101,6 +130,7 @@ def main() -> int:
         if args.command in {"sample", "pilot"}:
             cohort_paths = parse_named_paths(args.cohort, "audit cohort")
             cohorts = {target: pd.read_csv(path) for target, path in cohort_paths.items()}
+            canonical_clips = pd.read_csv(args.canonical_clip_manifest_csv)
             if not args.opaque_id_key_file.exists():
                 raise FileNotFoundError("Opaque audit ID key file is missing")
             key = args.opaque_id_key_file.read_bytes()
@@ -111,6 +141,7 @@ def main() -> int:
                 override = json.loads(args.allocation_override_json.read_text(encoding="utf-8"))
             result = build_audit_sample(
                 cohorts,
+                canonical_clips,
                 config,
                 config_hash,
                 key,
@@ -134,6 +165,40 @@ def main() -> int:
             print(json.dumps({"status": "ok", "n_adjudication_rows": int(len(queue))}, indent=2))
             return 0
 
+        if args.command == "post-unblinding-match":
+            clip = pd.read_csv(args.clip_annotations_csv)
+            linkage = pd.read_csv(args.restricted_linkage_csv)
+            design = pd.read_csv(args.restricted_sampling_design_csv)
+            clip_roster = pd.read_csv(args.restricted_clip_roster_csv)
+            adjudication_queue = pd.read_csv(args.completed_adjudication_csv)
+            audit_completion = load_manual_audit_completion(args.manual_audit_completion_json)
+            input_hashes = {
+                "clip_annotations": sha256_file(args.clip_annotations_csv),
+                "audit_linkage": sha256_file(args.restricted_linkage_csv),
+                "sampling_design": sha256_file(args.restricted_sampling_design_csv),
+                "clip_roster": sha256_file(args.restricted_clip_roster_csv),
+                "completed_adjudication": sha256_file(args.completed_adjudication_csv),
+                "manual_audit_completion": sha256_file(args.manual_audit_completion_json),
+            }
+            result = derive_post_unblinding_value_matches(
+                clip,
+                linkage,
+                design,
+                clip_roster,
+                adjudication_queue,
+                config,
+                config_hash,
+                audit_completion,
+                input_hashes,
+            )
+            write_post_unblinding_value_matches(
+                result,
+                args.restricted_output_csv,
+                args.safe_output_dir,
+            )
+            print(json.dumps({"status": "ok", "n_targets": int(len(result.safe_summary))}, indent=2))
+            return 0
+
         study = pd.read_csv(args.study_annotations_csv)
         try:
             clip = pd.read_csv(args.clip_annotations_csv)
@@ -141,6 +206,18 @@ def main() -> int:
             clip = pd.DataFrame()
         linkage = pd.read_csv(args.restricted_linkage_csv)
         design = pd.read_csv(args.restricted_sampling_design_csv)
+        second_reader_manifest = pd.read_csv(args.restricted_second_reader_manifest_csv)
+        clip_roster = pd.read_csv(args.restricted_clip_roster_csv)
+        adjudication_queue = pd.read_csv(args.completed_adjudication_csv)
+        input_hashes = {
+            "study_annotations": sha256_file(args.study_annotations_csv),
+            "clip_annotations": sha256_file(args.clip_annotations_csv),
+            "audit_linkage": sha256_file(args.restricted_linkage_csv),
+            "sampling_design": sha256_file(args.restricted_sampling_design_csv),
+            "second_reader_manifest": sha256_file(args.restricted_second_reader_manifest_csv),
+            "clip_roster": sha256_file(args.restricted_clip_roster_csv),
+            "completed_adjudication": sha256_file(args.completed_adjudication_csv),
+        }
         result = aggregate_audit_annotations(
             study,
             clip,
@@ -148,6 +225,10 @@ def main() -> int:
             design,
             config,
             config_hash,
+            second_reader_manifest,
+            clip_roster,
+            adjudication_queue,
+            input_hashes=input_hashes,
             n_bootstrap=args.bootstrap_n,
         )
         write_audit_aggregates(result, args.safe_output_dir)

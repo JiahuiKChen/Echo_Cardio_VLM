@@ -107,6 +107,7 @@ RUN_PROTOCOL_FIELDS = (
     "random_seed",
     "legacy_seed_arg",
     "hard_extremes_excluded",
+    "sklearn_version",
 )
 
 TARGET_PROTOCOL_FIELDS = (
@@ -546,6 +547,34 @@ def _successful_clip_manifest(frame: pd.DataFrame, n_embeddings: int) -> pd.Data
     return work.reset_index(drop=True)
 
 
+def _frozen_study_manifest(frame: pd.DataFrame, n_embeddings: int) -> pd.DataFrame:
+    require_columns(
+        frame,
+        ["study_idx", "study_id", "subject_id", "n_clips"],
+        "frozen study embedding manifest",
+    )
+    work = frame.copy()
+    for column in ("study_idx", "n_clips"):
+        work[column] = pd.to_numeric(work[column], errors="coerce")
+        if work[column].isna().any() or not np.all(work[column] == np.floor(work[column])):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"frozen study manifest has invalid {column}")
+        work[column] = work[column].astype(int)
+    if work["study_idx"].duplicated().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "frozen study manifest has duplicate study_idx values")
+    if set(work["study_idx"]) != set(range(n_embeddings)):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "frozen study manifest study_idx values do not exactly cover the embedding array",
+        )
+    if (work["n_clips"] <= 0).any() or work[["study_id", "subject_id"]].isna().any().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "frozen study manifest has invalid identity or clip counts")
+    work["_study"] = work["study_id"].map(_stable_id)
+    work["_subject"] = work["subject_id"].map(_stable_id)
+    if work["_study"].duplicated().any():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "frozen study manifest has duplicate study identities")
+    return work.sort_values("study_idx", kind="mergesort").reset_index(drop=True)
+
+
 def _validate_identity_against_decisions(
     manifest: pd.DataFrame,
     decision_groups: Mapping[frozenset[int], Mapping[str, Any]],
@@ -603,13 +632,22 @@ def _validate_identity_against_decisions(
 def _pool_studies(
     embeddings: np.ndarray,
     manifest: pd.DataFrame,
+    frozen_manifest: pd.DataFrame,
 ) -> tuple[np.ndarray, pd.DataFrame]:
     rows: list[dict[str, Any]] = []
     vectors: list[np.ndarray] = []
-    ordered = manifest.sort_values(["_study", "canonical_clip_id", "embedding_idx"], kind="mergesort")
-    for study, group in ordered.groupby("_study", sort=True):
+    manifest_studies = set(manifest["_study"])
+    frozen_studies = set(frozen_manifest["_study"])
+    if manifest_studies != frozen_studies:
+        raise Tier1BlockedError(
+            BLOCKED_CORRECTED_ANALYSIS,
+            "clip and frozen study stores contain different study identities",
+        )
+    for _, frozen_row in frozen_manifest.iterrows():
+        study = str(frozen_row["_study"])
+        group = manifest[manifest["_study"] == study].sort_values("embedding_idx", kind="mergesort")
         subjects = group["_subject"].drop_duplicates().tolist()
-        if len(subjects) != 1:
+        if len(subjects) != 1 or subjects[0] != str(frozen_row["_subject"]):
             raise Tier1BlockedError(BLOCKED_LINEAGE, f"study {study!r} maps to multiple subjects")
         source_indices = group["embedding_idx"].to_numpy(dtype=int)
         pooled = embeddings[source_indices].mean(axis=0).astype(np.float32)
@@ -618,8 +656,8 @@ def _pool_studies(
         rows.append(
             {
                 "study_idx": study_idx,
-                "study_id": group["study_id"].iloc[0],
-                "subject_id": group["subject_id"].iloc[0],
+                "study_id": frozen_row["study_id"],
+                "subject_id": frozen_row["subject_id"],
                 "n_clips": int(len(group)),
                 "embedding_l2_norm": float(np.linalg.norm(pooled)),
                 "_study": study,
@@ -692,16 +730,30 @@ def build_corrected_aggregation(
     forensic_evidence_file: Path,
     clip_manifest_csv: Path,
     clip_embedding_npz: Path,
+    frozen_study_manifest_csv: Path,
+    frozen_study_embedding_npz: Path,
 ) -> CorrectedAggregationResult:
     """Build corrected clip/study arrays in memory after complete forensic validation."""
 
-    for path in (forensic_evidence_file, clip_manifest_csv, clip_embedding_npz):
+    for path in (
+        forensic_evidence_file,
+        clip_manifest_csv,
+        clip_embedding_npz,
+        frozen_study_manifest_csv,
+        frozen_study_embedding_npz,
+    ):
         require_restricted_destination(path)
     embeddings = _load_embeddings(clip_embedding_npz, "clip")
     if not clip_manifest_csv.exists():
         raise Tier1BlockedError(BLOCKED_LINEAGE, "clip manifest is missing")
     raw_manifest = pd.read_csv(clip_manifest_csv)
     manifest = _successful_clip_manifest(raw_manifest, len(embeddings))
+    frozen_study_embeddings = _load_embeddings(frozen_study_embedding_npz, "frozen study")
+    if not frozen_study_manifest_csv.exists():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "frozen study manifest is missing")
+    frozen_manifest = _frozen_study_manifest(
+        pd.read_csv(frozen_study_manifest_csv), len(frozen_study_embeddings)
+    )
     if forensic_evidence_file.suffix.lower() != ".csv":
         raise Tier1BlockedError(
             BLOCKED_DUPLICATE_SEMANTICS,
@@ -755,9 +807,9 @@ def build_corrected_aggregation(
     )
     group_sizes = manifest.groupby("canonical_clip_id").size().to_dict()
     retained_manifest["dedup_group_size"] = retained_manifest["canonical_clip_id"].map(group_sizes).astype(int)
-    retained_manifest = retained_manifest.sort_values(
-        ["_study", "canonical_clip_id", "source_embedding_idx"], kind="mergesort"
-    ).reset_index(drop=True)
+    retained_manifest = retained_manifest.sort_values("source_embedding_idx", kind="mergesort").reset_index(
+        drop=True
+    )
     retained_manifest["embedding_idx"] = np.arange(len(retained_manifest), dtype=int)
     corrected_clip_embeddings = embeddings[
         retained_manifest["source_embedding_idx"].to_numpy(dtype=int)
@@ -766,9 +818,23 @@ def build_corrected_aggregation(
     original_for_pool = manifest.copy()
     corrected_for_pool = retained_manifest.copy()
     corrected_for_pool["embedding_idx"] = np.arange(len(corrected_for_pool), dtype=int)
-    original_study_embeddings, original_study_manifest = _pool_studies(embeddings, original_for_pool)
+    original_study_embeddings, original_study_manifest = _pool_studies(
+        embeddings, original_for_pool, frozen_manifest
+    )
+    replay_counts = original_study_manifest["n_clips"].to_numpy(dtype=int)
+    frozen_counts = frozen_manifest["n_clips"].to_numpy(dtype=int)
+    if not np.array_equal(replay_counts, frozen_counts):
+        raise Tier1BlockedError(
+            BLOCKED_CORRECTED_ANALYSIS,
+            "historical clip replay does not reproduce frozen study clip counts",
+        )
+    if not np.array_equal(original_study_embeddings, frozen_study_embeddings):
+        raise Tier1BlockedError(
+            BLOCKED_CORRECTED_ANALYSIS,
+            "historical clip replay does not exactly reproduce the frozen Phase 2 study embeddings",
+        )
     corrected_study_embeddings, corrected_study_manifest = _pool_studies(
-        corrected_clip_embeddings, corrected_for_pool
+        corrected_clip_embeddings, corrected_for_pool, frozen_manifest
     )
 
     original_index = original_study_manifest.set_index("_study")["study_idx"].astype(int)
@@ -835,8 +901,10 @@ def build_corrected_aggregation(
         "forensic_evidence_format": "duplicate_forensics_rows_v1",
         "canonical_identity_basis": identity_basis,
         "canonical_identity_target_prediction_independent": True,
-        "representative_rule": "explicit retained_embedding_idx, otherwise minimum original embedding_idx",
+        "representative_rule": "forensic content-derived keep candidate with immutable embedding-index tie-break",
         "pooling": "arithmetic mean of unique canonical clip embeddings per study",
+        "frozen_parent_replay_exact": True,
+        "frozen_parent_clip_counts_exact": True,
         "original_inputs_preserved": True,
         "input_files": {
             "forensic_evidence": {
@@ -850,6 +918,14 @@ def build_corrected_aggregation(
             "clip_embeddings": {
                 "path": str(clip_embedding_npz.resolve()),
                 "sha256": sha256_file(clip_embedding_npz),
+            },
+            "frozen_study_manifest": {
+                "path": str(frozen_study_manifest_csv.resolve()),
+                "sha256": sha256_file(frozen_study_manifest_csv),
+            },
+            "frozen_study_embeddings": {
+                "path": str(frozen_study_embedding_npz.resolve()),
+                "sha256": sha256_file(frozen_study_embedding_npz),
             },
         },
         "removed_source_embedding_indices": sorted(removed_indices),
@@ -931,15 +1007,28 @@ def write_corrected_aggregation(
         result.restricted_study_changes.to_csv(
             restricted / "study_embedding_changes_restricted.csv", index=False
         )
-        _write_json(
-            restricted / "corrected_aggregation_provenance_restricted.json",
-            result.restricted_provenance,
-        )
         result.aggregate_change_counts.to_csv(
             safe / "embedding_change_counts.csv", index=False
         )
         result.aggregate_change_distribution.to_csv(
             safe / "embedding_change_distribution.csv", index=False
+        )
+        output_paths = {
+            "corrected_clip_embedding_array": restricted / "deduplicated_clip_embeddings.npz",
+            "corrected_clip_embedding_manifest": restricted / "deduplicated_clip_manifest.csv",
+            "corrected_study_embedding_array": restricted / "corrected_study_embeddings.npz",
+            "corrected_study_embedding_manifest": restricted / "corrected_study_embedding_manifest.csv",
+            "study_embedding_changes_restricted": restricted / "study_embedding_changes_restricted.csv",
+            "embedding_change_counts": safe / "embedding_change_counts.csv",
+            "embedding_change_distribution": safe / "embedding_change_distribution.csv",
+        }
+        provenance = dict(result.restricted_provenance)
+        provenance["output_files"] = [
+            safe_file_record(role, path) for role, path in sorted(output_paths.items())
+        ]
+        _write_json(
+            restricted / "corrected_aggregation_provenance_restricted.json",
+            provenance,
         )
         os.replace(temporary, destination)
     except Exception:
@@ -974,7 +1063,7 @@ def _normalize_predictions(frame: pd.DataFrame, target: str, label: str) -> pd.D
     work = work.rename(columns=aliases)
     require_columns(
         work,
-        ["subject_id", "study_id", "split", "target_value", "pred_ridge"],
+        ["subject_id", "study_id", "split", "target_value", "pred_ridge", "pred_null_median"],
         label,
     )
     if "target" in work.columns:
@@ -1000,10 +1089,11 @@ def _normalize_predictions(frame: pd.DataFrame, target: str, label: str) -> pd.D
         raise Tier1BlockedError(BLOCKED_LINEAGE, f"{label} conflicts on study-to-subject mapping")
     if int((split_conflicts > 1).sum()):
         raise Tier1BlockedError(BLOCKED_LINEAGE, f"{label} contains subject split overlap")
-    if "pred_null_median" in work.columns:
-        work["pred_null_median"] = pd.to_numeric(work["pred_null_median"], errors="coerce")
-        if work["pred_null_median"].isna().any():
-            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{label} contains invalid null predictions")
+    work["pred_null_median"] = pd.to_numeric(work["pred_null_median"], errors="coerce")
+    if work["pred_null_median"].isna().any() or not np.isfinite(
+        work["pred_null_median"].to_numpy(dtype=float)
+    ).all():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, f"{label} contains invalid null predictions")
     return work.reset_index(drop=True)
 
 
@@ -1082,9 +1172,7 @@ def _pair_predictions(
             f"{target} original/corrected prediction row identity differs for "
             f"{len(original_keys.symmetric_difference(corrected_keys))} study keys",
         )
-    optional = ["pred_null_median"] if "pred_null_median" in original.columns else []
-    if ("pred_null_median" in original.columns) != ("pred_null_median" in corrected.columns):
-        raise Tier1BlockedError(BLOCKED_CORRECTED_ANALYSIS, f"{target} null-prediction schema differs")
+    null_columns = ["pred_null_median"]
     immutable_metadata = [
         column
         for column in ("n_target_rows", "outside_primary_range", "hard_invalid_or_extreme")
@@ -1101,10 +1189,10 @@ def _pair_predictions(
             f"{target} immutable prediction metadata schema differs: {metadata_schema_mismatch}",
         )
     merged = original[
-        key + ["_subject", "split", "target_value", "pred_ridge", *optional, *immutable_metadata]
+        key + ["_subject", "split", "target_value", "pred_ridge", *null_columns, *immutable_metadata]
     ].merge(
         corrected[
-            key + ["_subject", "split", "target_value", "pred_ridge", *optional, *immutable_metadata]
+            key + ["_subject", "split", "target_value", "pred_ridge", *null_columns, *immutable_metadata]
         ],
         on=key,
         how="inner",
@@ -1120,7 +1208,7 @@ def _pair_predictions(
         merged["target_value_corrected"].to_numpy(dtype=float),
     ):
         raise Tier1BlockedError(BLOCKED_CORRECTED_ANALYSIS, f"{target} observed report-label rows changed")
-    if optional and not np.array_equal(
+    if not np.array_equal(
         merged["pred_null_median_original"].to_numpy(dtype=float),
         merged["pred_null_median_corrected"].to_numpy(dtype=float),
     ):
@@ -1493,7 +1581,7 @@ def compare_original_corrected(
         "study_subject_mapping_verified": True,
         "frozen_split_verified": True,
         "observed_report_label_identity_verified": True,
-        "null_prediction_identity_verified_when_present": True,
+        "null_prediction_identity_verified": True,
         "run_protocol_verified": bool(protocol_verification),
         "run_protocol_verification": protocol_verification,
         "prediction_change_definition": "exact floating-point inequality after CSV parsing",
@@ -1525,9 +1613,24 @@ def write_original_corrected_comparison(
         result.aggregate_metrics.to_csv(
             temporary / "original_vs_corrected_aggregate_metrics.csv", index=False
         )
+        provenance = dict(result.safe_provenance)
+        provenance["output_files"] = [
+            safe_file_record(
+                "comparison_prediction_changes",
+                temporary / "original_vs_corrected_prediction_changes.csv",
+            ),
+            safe_file_record(
+                "comparison_prediction_metrics",
+                temporary / "original_vs_corrected_prediction_metrics.csv",
+            ),
+            safe_file_record(
+                "comparison_aggregate_metrics",
+                temporary / "original_vs_corrected_aggregate_metrics.csv",
+            ),
+        ]
         _write_json(
             temporary / "original_vs_corrected_comparison_provenance.json",
-            result.safe_provenance,
+            provenance,
         )
         os.replace(temporary, destination)
     except Exception:

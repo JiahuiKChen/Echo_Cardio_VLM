@@ -111,6 +111,11 @@ entry points are:
   is established.
 - `scripts/compare_jdim_original_corrected.py`: row/split/label/protocol
   identity checks and aggregate original-versus-corrected result comparisons.
+- `scripts/build_jdim_audit_reconstruction_pilot.py`: restricted replay of a
+  very small source-to-processed sample selected from the locked canonical clip
+  roster, exact source-manifest-row fingerprint and 16-frame selection checks,
+  durable restricted source/array/frame hashes, and opaque side-by-side contact
+  sheets without OCR or content annotation.
 - `scripts/build_jdim_provenance_spec.py`: restricted, explicit-role manifest
   specification builder that prevents accidental path disclosure in Git.
 - `scripts/scc_run_jdim_tier1.sh`: SCC execution wrapper for schema validation,
@@ -159,6 +164,29 @@ names. Export-safe outputs contain only sample counts, design weights,
 study-level proportions and confidence intervals, cluster-bootstrap clip
 summaries, reconstruction-failure counts, and agreement statistics.
 
+The sampler creates a restricted canonical clip roster containing every
+successful canonical clip for every sampled study. The opaque sample-manifest
+token hashes every persisted restricted linkage, sampling-design, and clip-roster
+field while exposing none of those fields to readers. Aggregate analysis
+requires the exact primary and assigned secondary study/clip rosters, complete
+configured outcomes, reader IDs reconciled across study and clip rows,
+independent primary and secondary readers, nonblank matching row-level sample tokens, and a
+completed adjudication file that exactly reconciles the independently generated
+queue. Missing, extra, stale, or unresolved adjudication rows fail closed.
+
+Study-level outcomes estimate design-weighted prevalence in the sampled target
+cohorts. Clip-level summaries are explicitly the unweighted sampled-clip
+composition with study-cluster bootstrap intervals; they are not labeled as
+population prevalence. Visible candidate values, units, and displayed precision
+are transcribed while readers remain blinded. Only after reads and adjudication
+are locked and a hash-bound manual-audit completion certificate is written may
+a restricted analyst compare those transcriptions with report labels using
+canonical units and half the displayed least-significant unit as tolerance.
+The post-unblinding tool rejects changed annotations, linkage, sampling design,
+clip roster, or adjudication files. Uncertain target specificity, unassessable
+candidates, and unresolved multiple values remain not assessable rather than
+being counted as nonmatches.
+
 ### Duplicate adjudication and conditional correction
 
 Repeated coarse keys are classified using restricted extraction lineage,
@@ -170,7 +198,11 @@ of duplication. Ambiguous groups stop with
 
 When true duplicate rows are confirmed, one representative is retained by the
 forensic rule, unique clip vectors are mean-pooled per study, and all original
-artifacts remain immutable. The corrected-analysis comparator requires exact
+artifacts remain immutable. Before correction is allowed, the historical clip
+store is replayed in immutable embedding-index order and must reproduce the
+frozen Phase 2 study identities, subjects, clip counts, and vectors exactly.
+This anchors any subsequent vector change to the adjudicated duplicate removal.
+The corrected-analysis comparator requires exact
 prediction-row, study/subject, observed-label, null-prediction, frozen-split,
 and stable-v2 protocol identity. It compares aggregate metrics without using a
 performance-based materiality threshold. Corrected results are canonical even
@@ -218,7 +250,8 @@ Aggregate-safe after disclosure review:
 
 - stage/target/split counts and multiplicity distributions;
 - performance points and confidence intervals;
-- study-level audit proportions and agreement statistics;
+- study-level audit proportions, unweighted sampled-clip composition, and
+  agreement statistics;
 - configuration, code, checkpoint, and input/output hashes;
 - software versions and path-free logical provenance.
 
