@@ -12,10 +12,12 @@
   },
   "batch_sources": {
     "legacy_stage_d_500": {
-      "source_class": "legacy"
+      "source_class": "legacy",
+      "outside_universe_policy": "declared_legacy_scope"
     },
     "batch_000": {
-      "source_class": "fullscale"
+      "source_class": "fullscale",
+      "outside_universe_policy": "canonical_only"
     }
   },
   "allowed_batch_overlap_pairs": []

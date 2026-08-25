@@ -42,6 +42,22 @@ def parse_overlap_pairs(values: list[str], batch_names: set[str]) -> list[str]:
     return sorted(set(pairs))
 
 
+def parse_outside_universe_batches(
+    values: list[str],
+    batches: dict[str, dict[str, str]],
+) -> set[str]:
+    declared: set[str] = set()
+    for value in values:
+        if value not in batches:
+            raise ValueError(f"Unknown outside-universe batch: {value!r}")
+        if batches[value]["source_class"] != "legacy":
+            raise ValueError(
+                f"Outside-universe retention may be declared only for legacy batches: {value!r}"
+            )
+        declared.add(value)
+    return declared
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mimic-iv-echo-release", required=True)
@@ -53,6 +69,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-generator", required=True)
     parser.add_argument("--batch-source", action="append", default=[], metavar="NAME=CLASS")
     parser.add_argument("--allow-batch-overlap", action="append", default=[], metavar="LEFT|RIGHT")
+    parser.add_argument(
+        "--allow-outside-universe-batch",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Declare a legacy batch whose outside-canonical-universe studies are retained "
+            "for provenance and must reconcile exactly with the final embedding manifest."
+        ),
+    )
     parser.add_argument("--output-json", type=Path, required=True)
     return parser.parse_args()
 
@@ -62,6 +88,11 @@ def main() -> int:
     if not args.split_map_csv.exists():
         raise FileNotFoundError(args.split_map_csv)
     batches = parse_name_class(args.batch_source)
+    outside_batches = parse_outside_universe_batches(args.allow_outside_universe_batch, batches)
+    for name, metadata in batches.items():
+        metadata["outside_universe_policy"] = (
+            "declared_legacy_scope" if name in outside_batches else "canonical_only"
+        )
     payload = {
         "protocol_version": "jdim-tier1-v1",
         "flow_structure": "parallel_branches",

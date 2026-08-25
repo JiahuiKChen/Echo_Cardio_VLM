@@ -75,7 +75,7 @@ def make_fixture(root: Path) -> tuple[CohortFlowInputs, dict]:
     ]
     final_rows = [
         {"study_id": row["study_id"], "subject_id": row["subject_id"], "study_idx": index, "n_clips": 1}
-        for index, row in enumerate(eligible_rows)
+        for index, row in enumerate(source_rows)
     ]
     measures = [
         {"study_id": 1, "subject_id": 10, "measurement": "lvot_vti", "result": 12.0, "unit": "cm"},
@@ -138,8 +138,14 @@ def make_fixture(root: Path) -> tuple[CohortFlowInputs, dict]:
             "expected_sha256": sha256_file(paths["split"]),
         },
         "batch_sources": {
-            "legacy_stage_d_500": {"source_class": "legacy"},
-            "batch_000": {"source_class": "fullscale"},
+            "legacy_stage_d_500": {
+                "source_class": "legacy",
+                "outside_universe_policy": "declared_legacy_scope",
+            },
+            "batch_000": {
+                "source_class": "fullscale",
+                "outside_universe_policy": "canonical_only",
+            },
         },
         "allowed_batch_overlap_pairs": [],
     }
@@ -172,7 +178,9 @@ class CohortFlowTests(unittest.TestCase):
     def test_valid_parallel_flow_and_multiple_studies_per_subject(self) -> None:
         result = reconstruct_cohort_flow(self.inputs)
         self.assertEqual(result.invariants["status"], "ok")
-        self.assertEqual(result.summary["final_study_embeddings"], 5)
+        self.assertEqual(result.summary["final_study_embeddings"], 6)
+        self.assertEqual(result.summary["canonical_universe_study_embeddings"], 5)
+        self.assertEqual(result.summary["outside_universe_retained_legacy_embeddings"], 1)
         lvot_mult = result.subject_multiplicity.query("target == 'lvot_vti' and studies_per_subject == 2")
         self.assertEqual(int(lvot_mult.iloc[0]["n_subjects"]), 1)
 
@@ -242,12 +250,63 @@ class CohortFlowTests(unittest.TestCase):
         self.assertEqual(float(study_one["target_value"]), 15.0)
         self.assertEqual(int(study_one["n_target_rows"]), 2)
 
-    def test_legacy_batch_retains_canonical_and_excludes_outside_member(self) -> None:
+    def test_declared_legacy_batch_reconciles_outside_member_separately(self) -> None:
         result = reconstruct_cohort_flow(self.inputs)
         legacy = result.batch_reconciliation.query("batch_name == 'legacy_stage_d_500'").iloc[0]
         self.assertEqual(int(legacy["n_studies_in_canonical_universe"]), 2)
         self.assertEqual(int(legacy["n_studies_outside_canonical_universe"]), 1)
-        self.assertEqual(result.summary["final_study_embeddings"], 5)
+        self.assertEqual(
+            int(legacy["n_declared_legacy_studies_outside_canonical_universe"]),
+            1,
+        )
+        self.assertEqual(result.summary["canonical_universe_study_embeddings"], 5)
+        self.assertEqual(result.summary["outside_universe_retained_legacy_embeddings"], 1)
+
+    def test_undeclared_outside_universe_batch_study_fails_closed(self) -> None:
+        metadata = json.loads(self.paths["lineage"].read_text())
+        metadata["batch_sources"]["legacy_stage_d_500"]["outside_universe_policy"] = (
+            "canonical_only"
+        )
+        self.paths["lineage"].write_text(json.dumps(metadata))
+        result = reconstruct_cohort_flow(self.inputs)
+        self.assertEqual(result.invariants["status"], BLOCKED_LINEAGE)
+        checks = {item["check"]: item for item in result.invariants["checks"]}
+        self.assertFalse(checks["no_undeclared_outside_universe_batch_studies"]["passed"])
+        self.assertFalse(checks["final_outside_universe_embeddings_are_declared_legacy"]["passed"])
+
+    def test_unexplained_final_outside_universe_study_fails_closed(self) -> None:
+        final = pd.read_csv(self.paths["final"])
+        final = pd.concat(
+            [
+                final,
+                pd.DataFrame(
+                    [
+                        {
+                            "study_id": 999,
+                            "subject_id": 9990,
+                            "study_idx": 99,
+                            "n_clips": 1,
+                        }
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        )
+        final.to_csv(self.paths["final"], index=False)
+        result = reconstruct_cohort_flow(self.inputs)
+        self.assertEqual(result.invariants["status"], BLOCKED_LINEAGE)
+        checks = {item["check"]: item for item in result.invariants["checks"]}
+        self.assertFalse(checks["final_outside_universe_embeddings_are_declared_legacy"]["passed"])
+
+    def test_canonical_intersection_matches_exactly_with_mixed_final_manifest(self) -> None:
+        result = reconstruct_cohort_flow(self.inputs)
+        checks = {item["check"]: item for item in result.invariants["checks"]}
+        self.assertTrue(
+            checks["canonical_batch_union_matches_final_manifest_canonical_intersection"]["passed"]
+        )
+        self.assertTrue(
+            checks["declared_legacy_outside_union_matches_final_manifest_outside_scope"]["passed"]
+        )
 
     def test_duplicate_canonical_study_key_blocks_manuscript_outputs(self) -> None:
         eligible = pd.read_csv(self.paths["eligible"])
@@ -360,7 +419,8 @@ class CohortFlowTests(unittest.TestCase):
         self.paths["lineage"].write_text(json.dumps(metadata))
         result = reconstruct_cohort_flow(self.inputs)
         self.assertEqual(result.invariants["status"], "ok")
-        self.assertEqual(result.summary["final_study_embeddings"], 5)
+        self.assertEqual(result.summary["final_study_embeddings"], 6)
+        self.assertEqual(result.summary["canonical_universe_study_embeddings"], 5)
 
     def test_canonical_split_mismatch_blocks(self) -> None:
         canonical = json.loads(self.inputs.canonical_summaries["tapse"].read_text())

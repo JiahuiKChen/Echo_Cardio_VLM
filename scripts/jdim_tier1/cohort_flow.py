@@ -34,6 +34,7 @@ from .safety import (
 
 VALID_SPLITS = ("train", "val", "test")
 TARGET_NAMES = ("lvot_vti", "tapse")
+OUTSIDE_UNIVERSE_POLICIES = {"canonical_only", "declared_legacy_scope"}
 
 
 @dataclass
@@ -97,6 +98,18 @@ class CohortFlowResult:
     invariants: dict[str, Any]
     provenance: dict[str, Any]
     restricted_reconciliation: pd.DataFrame
+
+
+@dataclass
+class EmbeddingBatchResult:
+    merged: pd.DataFrame
+    canonical_clips: pd.DataFrame
+    declared_outside_clips: pd.DataFrame
+    stages: list[dict[str, Any]]
+    canonical_studies: set[str]
+    declared_outside_studies: set[str]
+    undeclared_outside_studies: set[str]
+    reconciliation: pd.DataFrame
 
 
 def validate_cohort_input_schemas(inputs: CohortFlowInputs) -> dict[str, Any]:
@@ -290,6 +303,28 @@ def validate_lineage_metadata(
     )
     if invalid_batch_classes:
         missing.append(f"invalid batch source_class entries: {invalid_batch_classes}")
+    invalid_outside_policies = sorted(
+        name
+        for name in set(batch_names) & set(batch_meta)
+        if not isinstance(batch_meta[name], Mapping)
+        or batch_meta[name].get("outside_universe_policy", "canonical_only")
+        not in OUTSIDE_UNIVERSE_POLICIES
+    )
+    if invalid_outside_policies:
+        missing.append(f"invalid outside_universe_policy entries: {invalid_outside_policies}")
+    nonlegacy_outside_declarations = sorted(
+        name
+        for name in set(batch_names) & set(batch_meta)
+        if isinstance(batch_meta[name], Mapping)
+        and batch_meta[name].get("outside_universe_policy", "canonical_only")
+        == "declared_legacy_scope"
+        and batch_meta[name].get("source_class") != "legacy"
+    )
+    if nonlegacy_outside_declarations:
+        missing.append(
+            "outside-universe scope declared for nonlegacy batches: "
+            f"{nonlegacy_outside_declarations}"
+        )
     invalid_overlap_pairs: list[str] = []
     for raw_pair in metadata.get("allowed_batch_overlap_pairs", []):
         pair = str(raw_pair).split("|")
@@ -420,7 +455,7 @@ def _prepare_embedding_batches(
     eligible_studies: set[str],
     metadata: Mapping[str, Any],
     report: InvariantReport,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, Any]], set[str], pd.DataFrame]:
+) -> EmbeddingBatchResult:
     normalized: list[pd.DataFrame] = []
     batch_rows: list[dict[str, Any]] = []
     batch_study_sets: dict[str, set[str]] = {}
@@ -436,6 +471,13 @@ def _prepare_embedding_batches(
         frame = frame.drop_duplicates("_record", keep="first")
         frame["_batch"] = name
         frame["_in_canonical_universe"] = frame["_study"].isin(eligible_studies)
+        outside_policy = str(batch_meta[name].get("outside_universe_policy", "canonical_only"))
+        frame["_outside_scope_class"] = "canonical_universe"
+        outside_mask = ~frame["_in_canonical_universe"]
+        if outside_policy == "declared_legacy_scope":
+            frame.loc[outside_mask, "_outside_scope_class"] = "declared_legacy_scope"
+        else:
+            frame.loc[outside_mask, "_outside_scope_class"] = "undeclared_outside_scope"
         normalized.append(frame)
         studies = set(frame["_study"])
         batch_study_sets[name] = studies
@@ -444,6 +486,7 @@ def _prepare_embedding_batches(
             {
                 "batch_name": name,
                 "source_class": str(batch_meta[name].get("source_class", "unspecified")),
+                "outside_universe_policy": outside_policy,
                 "n_successful_clip_rows": int(len(frame)),
                 "n_unique_studies": int(len(studies)),
                 "n_unique_subjects": int(frame["_subject"].nunique()),
@@ -452,6 +495,16 @@ def _prepare_embedding_batches(
                 "n_studies_in_canonical_universe": int(frame.loc[frame["_in_canonical_universe"], "_study"].nunique()),
                 "n_studies_outside_canonical_universe": int(
                     frame.loc[~frame["_in_canonical_universe"], "_study"].nunique()
+                ),
+                "n_declared_legacy_studies_outside_canonical_universe": int(
+                    frame.loc[
+                        frame["_outside_scope_class"] == "declared_legacy_scope", "_study"
+                    ].nunique()
+                ),
+                "n_undeclared_studies_outside_canonical_universe": int(
+                    frame.loc[
+                        frame["_outside_scope_class"] == "undeclared_outside_scope", "_study"
+                    ].nunique()
                 ),
             }
         )
@@ -475,19 +528,61 @@ def _prepare_embedding_batches(
             )
 
     in_universe = merged[merged["_in_canonical_universe"]].copy()
-    deduplicated = in_universe.sort_values(["_study", "_batch", "_record"]).drop_duplicates("_record")
-    union_studies = set(deduplicated["_study"])
+    canonical_clips = in_universe.sort_values(["_study", "_batch", "_record"]).drop_duplicates("_record")
+    declared_outside_clips = (
+        merged.loc[merged["_outside_scope_class"] == "declared_legacy_scope"]
+        .sort_values(["_study", "_batch", "_record"])
+        .drop_duplicates("_record")
+    )
+    undeclared_outside = merged.loc[merged["_outside_scope_class"] == "undeclared_outside_scope"]
+    canonical_studies = set(canonical_clips["_study"])
+    declared_outside_studies = set(declared_outside_clips["_study"])
+    undeclared_outside_studies = set(undeclared_outside["_study"])
     report.add(
         "unique_canonical_study_keys_after_batch_deduplication",
-        len(union_studies) == deduplicated["_study"].nunique(),
-        deduplicated["_study"].nunique(),
-        len(union_studies),
+        len(canonical_studies) == canonical_clips["_study"].nunique(),
+        canonical_clips["_study"].nunique(),
+        len(canonical_studies),
+    )
+    report.add(
+        "no_undeclared_outside_universe_batch_studies",
+        not undeclared_outside_studies,
+        len(undeclared_outside_studies),
+        0,
     )
     stages = [
-        _stage("imaging", "successfully_embedded_clips_deduplicated", deduplicated),
-        _stage("imaging", "studies_with_at_least_one_usable_clip_embedding", deduplicated.drop_duplicates("_study")),
+        _stage("imaging", "canonical_universe_embedded_clips_deduplicated", canonical_clips),
+        _stage(
+            "imaging",
+            "canonical_universe_studies_with_usable_embeddings",
+            canonical_clips.drop_duplicates("_study"),
+        ),
+        _stage(
+            "imaging",
+            "outside_universe_declared_legacy_embedded_clips",
+            declared_outside_clips,
+        ),
+        _stage(
+            "imaging",
+            "outside_universe_declared_legacy_embedding_studies",
+            declared_outside_clips.drop_duplicates("_study"),
+        ),
+        _stage(
+            "imaging",
+            "outside_universe_undeclared_embedding_studies",
+            undeclared_outside.drop_duplicates("_study"),
+        ),
     ]
-    return merged, deduplicated, stages, union_studies, pd.DataFrame(batch_rows)
+    return EmbeddingBatchResult(
+        merged=merged,
+        canonical_clips=canonical_clips,
+        declared_outside_clips=declared_outside_clips,
+        stages=stages,
+        canonical_studies=canonical_studies,
+        declared_outside_studies=declared_outside_studies,
+        undeclared_outside_studies=undeclared_outside_studies,
+        reconciliation=pd.DataFrame(batch_rows),
+    )
 
 
 def _target_branch(
@@ -739,27 +834,50 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
     stage_rows.extend(dicom_stages)
 
     eligible_set = set(eligible["_study"])
-    merged_batches, deduplicated_clips, embedding_stages, embedded_union, batch_table = _prepare_embedding_batches(
+    embedding_result = _prepare_embedding_batches(
         batch_frames,
         eligible_set,
         metadata,
         report,
     )
-    stage_rows.extend(embedding_stages)
+    stage_rows.extend(embedding_result.stages)
     final_set = set(final_embeddings["_study"])
+    final_canonical_set = final_set & eligible_set
+    final_outside_set = final_set - eligible_set
     report.add(
-        "deduplicated_batch_union_matches_final_study_embedding_manifest",
-        embedded_union == final_set,
-        len(embedded_union.symmetric_difference(final_set)),
+        "canonical_batch_union_matches_final_manifest_canonical_intersection",
+        embedding_result.canonical_studies == final_canonical_set,
+        len(embedding_result.canonical_studies.symmetric_difference(final_canonical_set)),
         0,
     )
     report.add(
-        "final_embeddings_remain_within_pinned_analysis_universe",
-        final_set.issubset(eligible_set),
-        len(final_set - eligible_set),
+        "final_outside_universe_embeddings_are_declared_legacy",
+        final_outside_set.issubset(embedding_result.declared_outside_studies),
+        len(final_outside_set - embedding_result.declared_outside_studies),
         0,
     )
-    stage_rows.append(_stage("imaging", "final_deduplicated_study_embedding_union", final_embeddings))
+    report.add(
+        "declared_legacy_outside_union_matches_final_manifest_outside_scope",
+        embedding_result.declared_outside_studies == final_outside_set,
+        len(embedding_result.declared_outside_studies.symmetric_difference(final_outside_set)),
+        0,
+    )
+    final_canonical_embeddings = final_embeddings.loc[final_embeddings["_study"].isin(final_canonical_set)]
+    final_outside_embeddings = final_embeddings.loc[final_embeddings["_study"].isin(final_outside_set)]
+    stage_rows.extend(
+        [
+            _stage(
+                "imaging",
+                "final_manifest_canonical_universe_study_embeddings",
+                final_canonical_embeddings,
+            ),
+            _stage(
+                "imaging",
+                "final_manifest_outside_universe_retained_legacy_embeddings",
+                final_outside_embeddings,
+            ),
+        ]
+    )
 
     label_summaries: dict[str, Any] = {}
     target_summaries: dict[str, Any] = {}
@@ -778,7 +896,7 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         target_summary, target_stages, target_split_rows, subject_multiplicity, restricted = _intersection_branch(
             target,
             labels,
-            final_set,
+            final_canonical_set,
             split_frame,
             canonical,
             report,
@@ -798,7 +916,7 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         ("target split counts", split_output),
         ("label multiplicity", label_multiplicity),
         ("subject multiplicity", subject_multiplicity),
-        ("batch reconciliation", batch_table),
+        ("batch reconciliation", embedding_result.reconciliation),
     ):
         assert_export_safe_frame(frame, name)
 
@@ -808,12 +926,12 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
 
     restricted_base = eligible[["_study", "_subject"]].drop_duplicates().copy()
     batch_memberships = (
-        merged_batches[merged_batches["_in_canonical_universe"]]
+        embedding_result.merged[embedding_result.merged["_in_canonical_universe"]]
         .groupby("_study")["_batch"]
         .agg(lambda values: ";".join(sorted(set(values))))
     )
     restricted_base["embedding_batches"] = restricted_base["_study"].map(batch_memberships).fillna("")
-    restricted_base["final_embedding_present"] = restricted_base["_study"].isin(final_set)
+    restricted_base["final_embedding_present"] = restricted_base["_study"].isin(final_canonical_set)
     for target, labels in label_frames.items():
         restricted_base[f"{target}_label_present"] = restricted_base["_study"].isin(set(labels["_study"]))
         target_lookup = labels.set_index("_study")
@@ -848,6 +966,17 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         "eligible_subjects": int(eligible["_subject"].nunique()),
         "final_study_embeddings": int(len(final_set)),
         "final_embedding_subjects": int(final_embeddings["_subject"].nunique()),
+        "canonical_universe_study_embeddings": int(len(final_canonical_set)),
+        "canonical_universe_embedding_subjects": int(
+            final_canonical_embeddings["_subject"].nunique()
+        ),
+        "outside_universe_retained_legacy_embeddings": int(len(final_outside_set)),
+        "outside_universe_retained_legacy_subjects": int(
+            final_outside_embeddings["_subject"].nunique()
+        ),
+        "outside_universe_unexplained_embeddings": int(
+            len(final_outside_set - embedding_result.declared_outside_studies)
+        ),
         "label_branches": label_summaries,
         "target_intersections": target_summaries,
         "split_map_subjects": int(raw_split["subject_id"].nunique()),
@@ -904,7 +1033,7 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         target_splits=split_output,
         label_multiplicity=label_multiplicity,
         subject_multiplicity=subject_multiplicity,
-        batch_reconciliation=batch_table,
+        batch_reconciliation=embedding_result.reconciliation,
         invariants=report.payload(),
         provenance=provenance,
         restricted_reconciliation=restricted_reconciliation,
