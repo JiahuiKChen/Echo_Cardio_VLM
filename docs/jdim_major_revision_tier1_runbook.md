@@ -1,4 +1,4 @@
-# JDIM Major Revision Tier-1 SCC Runbook
+# JDIM Major Revision Lineage-Repair SCC Runbook
 
 This runbook executes the frozen post-hoc tooling for JDIM-D-26-02840 on SCC.
 It does not train or refit a model, regenerate predictions, change the subject
@@ -10,17 +10,15 @@ Do not proceed if the checked-out commit is dirty, the frozen Phase-2 artifacts
 are missing, the split-map lineage cannot be confirmed, or a cohort invariant
 returns `BLOCKED_MIXED_OR_UNRESOLVED_LINEAGE`.
 
-## 1. Pull the isolated branch
+## 1. Create an isolated worktree at the reviewed repair branch
 
 ```bash
 cd /restricted/project/mimicecho/code/Echo_Cardio_VLM
 git fetch origin
-if git show-ref --verify --quiet refs/heads/codex/jdim-major-revision-tier1; then
-  git switch codex/jdim-major-revision-tier1
-else
-  git switch --track origin/codex/jdim-major-revision-tier1
-fi
-git pull --ff-only origin codex/jdim-major-revision-tier1
+git worktree add --detach \
+  /restricted/project/mimicecho/code/Echo_Cardio_VLM_jdim_lineage_repair \
+  origin/codex/jdim-major-revision-lineage-repair
+cd /restricted/project/mimicecho/code/Echo_Cardio_VLM_jdim_lineage_repair
 git status --short
 git rev-parse HEAD
 ```
@@ -33,16 +31,30 @@ dirty checkout.
 ```bash
 module load python3/3.10.12
 module load google-cloud-sdk/455.0.0
-source ./scc_env.sh
+export JDIM_REPO_ROOT=/restricted/project/mimicecho/code/Echo_Cardio_VLM_jdim_lineage_repair
+export JDIM_CANONICAL_CODE_ROOT=/restricted/project/mimicecho/code/Echo_Cardio_VLM
+source "$JDIM_CANONICAL_CODE_ROOT/scc_env.sh"
 
-export JDIM_REPO="$PWD"
-export JDIM_PYTHON_BIN="$PWD/.venv-echoprime/bin/python"
-export JDIM_OUTPUT_ROOT=/restricted/project/mimicecho/outputs/jdim_major_revision_tier1_v1
+export JDIM_PYTHON_BIN="$JDIM_CANONICAL_CODE_ROOT/.venv-echoprime/bin/python"
+export JDIM_FULLSCALE_ROOT="$JDIM_CANONICAL_CODE_ROOT/outputs/cloud_cohorts/fullscale_all"
+export JDIM_LEGACY_ROOT="$JDIM_CANONICAL_CODE_ROOT/outputs/cloud_cohorts/stage_d_500study_scc"
+export JDIM_OUTPUT_ROOT=/restricted/project/mimicecho/outputs/jdim_major_revision_lineage_repair_v1
 export JDIM_PHASE2_ROOT=/restricted/project/mimicecho/outputs/tapse_lvot_vti_phase2_stable_v2
-export JDIM_FULLSCALE_ROOT="$PWD/outputs/cloud_cohorts/fullscale_all"
-export JDIM_LEGACY_ROOT="$PWD/outputs/cloud_cohorts/stage_d_500study_scc"
-export JDIM_SOURCE_STUDIES_CSV="$JDIM_OUTPUT_ROOT/restricted/lineage/mimic_iv_echo_source_studies.csv"
+export JDIM_SOURCE_STUDIES_CSV=/restricted/project/mimicecho/outputs/jdim_major_revision_tier1_v1/restricted/lineage/mimic_iv_echo_source_studies_v1.csv
 export JDIM_LINEAGE_JSON="$JDIM_OUTPUT_ROOT/restricted/lineage/jdim_cohort_lineage_v1.json"
+export JDIM_SELECTED_STUDIES_CSV="$JDIM_FULLSCALE_ROOT/manifests/all_eligible_studies.csv"
+export JDIM_STRUCTURED_MEASUREMENTS_CSV="$JDIM_FULLSCALE_ROOT/manifests/structured_measurements.csv"
+export JDIM_SPLIT_MAP_CSV="$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.csv"
+export JDIM_SPLIT_MAP_SUMMARY_JSON="$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.summary.json"
+export JDIM_STUDY_EMBEDDING_NPZ="$JDIM_FULLSCALE_ROOT/study_embeddings_512/study_embeddings_512.npz"
+export JDIM_STUDY_EMBEDDING_MANIFEST_CSV="$JDIM_FULLSCALE_ROOT/study_embeddings_512/study_embedding_manifest.csv"
+export JDIM_ENCODER_CHECKPOINT=/restricted/project/mimicecho/echoprime_weights/echo_prime_encoder.pt
+export JDIM_LVOT_SUMMARY_JSON="$JDIM_PHASE2_ROOT/lvot_vti/all_clips/imaging_baseline_summary.json"
+export JDIM_TAPSE_SUMMARY_JSON="$JDIM_PHASE2_ROOT/tapse/all_clips/imaging_baseline_summary.json"
+export JDIM_LVOT_PREDICTIONS_CSV="$JDIM_PHASE2_ROOT/lvot_vti/all_clips/imaging_baseline_predictions.csv"
+export JDIM_TAPSE_PREDICTIONS_CSV="$JDIM_PHASE2_ROOT/tapse/all_clips/imaging_baseline_predictions.csv"
+export JDIM_AUDIT_CONFIG="$JDIM_REPO_ROOT/configs/jdim_input_content_audit_v1.yaml"
+export JDIM_RESTRICTED_AUDIT_ROOT="$JDIM_OUTPUT_ROOT/restricted/input_content_audit"
 export JDIM_AUDIT_KEY_FILE="$JDIM_OUTPUT_ROOT/restricted/keys/jdim_audit_hmac_key.bin"
 export JDIM_BOOTSTRAP_N=2000
 export JDIM_SGE_PROJECT=mimicecho
@@ -56,9 +68,10 @@ test -x "$JDIM_PYTHON_BIN"
 "$JDIM_PYTHON_BIN" -c 'import numpy, pandas, scipy, sklearn; print("tier1_python_ok")'
 ```
 
-If SCC uses a different approved project root, Python module, or SGE project,
-change only the corresponding environment variable. Do not fall back to home
-storage for restricted artifacts.
+Every canonical input is explicit. If SCC uses another approved location,
+change only the corresponding variable and rerun `handoff-check`. Do not fall
+back to the isolated worktree or home storage for untracked inputs, environments,
+or restricted artifacts.
 
 ## 3. Export the official release source denominator
 
@@ -93,8 +106,8 @@ Inspect the existing frozen split summary and verify that it describes the
 already-used split. Do not regenerate the CSV.
 
 ```bash
-cat "$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.summary.json"
-sha256sum "$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.csv"
+cat "$JDIM_SPLIT_MAP_SUMMARY_JSON"
+sha256sum "$JDIM_SPLIT_MAP_CSV"
 ```
 
 At the pinned repository base, the full-scale fallback generator sorts unique
@@ -114,16 +127,20 @@ for path in "$JDIM_FULLSCALE_ROOT"/batches/batch_*_embeddings/clip_embedding_man
   BATCH_SOURCE_ARGS+=(--batch-source "${batch_name}=fullscale")
 done
 
+cd "$JDIM_REPO_ROOT"
 "$JDIM_PYTHON_BIN" scripts/build_jdim_cohort_lineage_metadata.py \
   --mimic-iv-echo-release "MIMIC-IV-ECHO v1.0" \
   --source-denominator-definition "Distinct subject_id-study_id pairs in physionet-data.mimiciv_echo.echo_record_list" \
   --imaging-lineage "fullscale_all batch clip manifests plus separately reconciled legacy Stage D batch; mean-pooled final study embeddings" \
   --label-lineage "structured measurements exported for the pinned all_eligible_studies universe; canonical target parsing and study-level median aggregation" \
-  --split-map-csv "$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.csv" \
+  --split-map-csv "$JDIM_SPLIT_MAP_CSV" \
   --split-version subject_split_map_v1 \
   --split-generator "confirmed fullscale inline fallback: echo-ai-fixed-split-seed-v1 NumPy shuffle; 0.70/0.15/remainder" \
   "${BATCH_SOURCE_ARGS[@]}" \
+  --allow-outside-universe-batch legacy_stage_d_500 \
   --output-json "$JDIM_LINEAGE_JSON"
+
+"$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" handoff-check
 ```
 
 Do not add `--allow-batch-overlap` preemptively. If the cohort tool detects an
@@ -133,7 +150,7 @@ document that the overlap is expected and legitimate.
 ## 5. Dry-run and schema validation
 
 ```bash
-scripts/scc_run_jdim_tier1.sh validate
+"$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" validate
 ```
 
 This validates headers, the pinned split hash, the audit configuration, and
@@ -145,11 +162,11 @@ metrics. A nonzero exit or any `BLOCKED_*` status stops execution.
 ```bash
 qsub -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_cohort_flow -j y \
   -o "$JDIM_OUTPUT_ROOT/logs" -l h_rt=04:00:00 -pe omp 2 -l mem_per_core=8G \
-  -b y "$PWD/scripts/scc_run_jdim_tier1.sh" cohort-flow
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" cohort-flow
 
 qsub -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_fixed_metrics -j y \
   -o "$JDIM_OUTPUT_ROOT/logs" -l h_rt=04:00:00 -pe omp 2 -l mem_per_core=8G \
-  -b y "$PWD/scripts/scc_run_jdim_tier1.sh" reviewer-metrics
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" reviewer-metrics
 ```
 
 The metrics job reads the unchanged all-split saved prediction CSVs, derives
@@ -180,7 +197,7 @@ scripts/scc_run_jdim_tier1.sh validate
 
 qsub -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_audit_pilot -j y \
   -o "$JDIM_OUTPUT_ROOT/logs" -l h_rt=01:00:00 -pe omp 1 -l mem_per_core=4G \
-  -b y "$PWD/scripts/scc_run_jdim_tier1.sh" audit-pilot
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" audit-pilot
 ```
 
 After the team confirms reconstruction feasibility and burden without recording
@@ -190,7 +207,7 @@ per target, proportional across the frozen splits):
 ```bash
 qsub -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_audit_sample -j y \
   -o "$JDIM_OUTPUT_ROOT/logs" -l h_rt=01:00:00 -pe omp 1 -l mem_per_core=4G \
-  -b y "$PWD/scripts/scc_run_jdim_tier1.sh" audit-sample
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" audit-sample
 ```
 
 The sampler does not open or reconstruct DICOMs. Pixel reconstruction and
@@ -264,13 +281,13 @@ export JDIM_RESTRICTED_PROVENANCE="$JDIM_OUTPUT_ROOT/restricted/lineage/jdim_pro
 export JDIM_SAFE_PROVENANCE="$JDIM_OUTPUT_ROOT/aggregate_safe/jdim_provenance_safe_v1.json"
 
 PROV_FILE_ARGS=(
-  --file "structured_measurements=restricted=$JDIM_FULLSCALE_ROOT/manifests/structured_measurements.csv"
-  --file "selected_study_universe=restricted=$JDIM_FULLSCALE_ROOT/manifests/all_eligible_studies.csv"
+  --file "structured_measurements=restricted=$JDIM_STRUCTURED_MEASUREMENTS_CSV"
+  --file "selected_study_universe=restricted=$JDIM_SELECTED_STUDIES_CSV"
   --file "source_study_denominator=restricted=$JDIM_SOURCE_STUDIES_CSV"
-  --file "embedding_manifest=restricted=$JDIM_FULLSCALE_ROOT/study_embeddings_512/study_embedding_manifest.csv"
-  --file "split_map=restricted=$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.csv"
-  --file "video_encoder_checkpoint=restricted=/restricted/project/mimicecho/echoprime_weights/echo_prime_encoder.pt"
-  --file "audit_configuration=aggregate_safe=$PWD/configs/jdim_input_content_audit_v1.yaml"
+  --file "embedding_manifest=restricted=$JDIM_STUDY_EMBEDDING_MANIFEST_CSV"
+  --file "split_map=restricted=$JDIM_SPLIT_MAP_CSV"
+  --file "video_encoder_checkpoint=restricted=$JDIM_ENCODER_CHECKPOINT"
+  --file "audit_configuration=aggregate_safe=$JDIM_AUDIT_CONFIG"
 )
 
 output_index=0
@@ -292,7 +309,7 @@ done < <(find "$JDIM_OUTPUT_ROOT/aggregate_safe" -type f ! -name 'jdim_provenanc
 
 "$JDIM_PYTHON_BIN" scripts/build_jdim_provenance_manifests.py \
   --spec-json "$JDIM_PROVENANCE_SPEC" \
-  --repo-root "$PWD" \
+  --repo-root "$JDIM_REPO_ROOT" \
   --restricted-output-json "$JDIM_RESTRICTED_PROVENANCE" \
   --safe-output-json "$JDIM_SAFE_PROVENANCE"
 

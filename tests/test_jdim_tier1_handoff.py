@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,11 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from build_jdim_cohort_lineage_metadata import parse_name_class, parse_overlap_pairs  # noqa: E402
+from build_jdim_cohort_lineage_metadata import (  # noqa: E402
+    parse_name_class,
+    parse_outside_universe_batches,
+    parse_overlap_pairs,
+)
 from build_jdim_provenance_spec import parse_arguments, parse_file_specs  # noqa: E402
 from jdim_tier1.safety import sanitize_for_safe_manifest  # noqa: E402
 
@@ -52,6 +57,8 @@ class Tier1HandoffTests(unittest.TestCase):
                     "legacy=legacy",
                     "--batch-source",
                     "batch_000=fullscale",
+                    "--allow-outside-universe-batch",
+                    "legacy",
                     "--output-json",
                     str(output),
                 ],
@@ -63,6 +70,14 @@ class Tier1HandoffTests(unittest.TestCase):
             self.assertEqual(json.loads(completed.stdout)["status"], "ok")
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["batch_sources"]["legacy"]["source_class"], "legacy")
+            self.assertEqual(
+                payload["batch_sources"]["legacy"]["outside_universe_policy"],
+                "declared_legacy_scope",
+            )
+            self.assertEqual(
+                payload["batch_sources"]["batch_000"]["outside_universe_policy"],
+                "canonical_only",
+            )
             self.assertEqual(len(payload["split_map"]["expected_sha256"]), 64)
 
     def test_lineage_batch_and_overlap_syntax_fails_closed(self) -> None:
@@ -73,6 +88,12 @@ class Tier1HandoffTests(unittest.TestCase):
             parse_overlap_pairs(["legacy|legacy"], batches)
         with self.assertRaisesRegex(ValueError, "Invalid declared overlap"):
             parse_overlap_pairs(["legacy|unknown"], batches)
+        parsed = parse_name_class(["legacy=legacy", "batch_000=fullscale"])
+        self.assertEqual(parse_outside_universe_batches(["legacy"], parsed), {"legacy"})
+        with self.assertRaisesRegex(ValueError, "only for legacy"):
+            parse_outside_universe_batches(["batch_000"], parsed)
+        with self.assertRaisesRegex(ValueError, "Unknown outside-universe batch"):
+            parse_outside_universe_batches(["missing"], parsed)
 
     def test_provenance_spec_parsers_require_safe_roles_and_absolute_files(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -107,6 +128,87 @@ class Tier1HandoffTests(unittest.TestCase):
         )
         self.assertIn("reviewer-metrics", completed.stdout)
         self.assertIn("audit-pilot", completed.stdout)
+
+    def test_scc_handoff_resolves_explicit_inputs_from_isolated_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            fullscale = root / "canonical_fullscale"
+            legacy = root / "canonical_legacy"
+            phase2 = root / "canonical_phase2"
+            output = root / "new_output"
+            audit_root = output / "restricted" / "audit"
+
+            required_files = {
+                "source": root / "source.csv",
+                "lineage": root / "lineage.json",
+                "selected": fullscale / "manifests" / "selected.csv",
+                "measures": fullscale / "manifests" / "measures.csv",
+                "split": fullscale / "manifests" / "split.csv",
+                "study_npz": fullscale / "study" / "study.npz",
+                "study_manifest": fullscale / "study" / "study.csv",
+                "checkpoint": root / "weights" / "encoder.pt",
+                "lvot_summary": phase2 / "lvot_summary.json",
+                "tapse_summary": phase2 / "tapse_summary.json",
+                "lvot_predictions": phase2 / "lvot_predictions.csv",
+                "tapse_predictions": phase2 / "tapse_predictions.csv",
+                "config": root / "audit_config.json",
+                "legacy_records": legacy / "manifests" / "selected_records.csv",
+                "legacy_audit": legacy / "audit" / "dicom_audit.csv",
+                "legacy_extraction": legacy / "extract_allclip" / "extraction_manifest.csv",
+                "legacy_embeddings": (
+                    legacy / "echoprime_embeddings_512" / "clip_embedding_manifest.csv"
+                ),
+                "batch_records": fullscale / "batches" / "batch_000_records.csv",
+                "batch_audit": fullscale / "batches" / "batch_000_audit" / "dicom_audit.csv",
+                "batch_extraction": fullscale / "batches" / "batch_000_extraction_manifest.csv",
+                "batch_embeddings": (
+                    fullscale
+                    / "batches"
+                    / "batch_000_embeddings"
+                    / "clip_embedding_manifest.csv"
+                ),
+            }
+            for path in required_files.values():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"synthetic\n")
+            output.mkdir(parents=True)
+            audit_root.mkdir(parents=True)
+
+            env = {
+                **os.environ,
+                "JDIM_REPO_ROOT": str(ROOT),
+                "JDIM_PYTHON_BIN": sys.executable,
+                "JDIM_FULLSCALE_ROOT": str(fullscale),
+                "JDIM_LEGACY_ROOT": str(legacy),
+                "JDIM_OUTPUT_ROOT": str(output),
+                "JDIM_PHASE2_ROOT": str(phase2),
+                "JDIM_SOURCE_STUDIES_CSV": str(required_files["source"]),
+                "JDIM_LINEAGE_JSON": str(required_files["lineage"]),
+                "JDIM_SELECTED_STUDIES_CSV": str(required_files["selected"]),
+                "JDIM_STRUCTURED_MEASUREMENTS_CSV": str(required_files["measures"]),
+                "JDIM_SPLIT_MAP_CSV": str(required_files["split"]),
+                "JDIM_STUDY_EMBEDDING_NPZ": str(required_files["study_npz"]),
+                "JDIM_STUDY_EMBEDDING_MANIFEST_CSV": str(
+                    required_files["study_manifest"]
+                ),
+                "JDIM_ENCODER_CHECKPOINT": str(required_files["checkpoint"]),
+                "JDIM_LVOT_SUMMARY_JSON": str(required_files["lvot_summary"]),
+                "JDIM_TAPSE_SUMMARY_JSON": str(required_files["tapse_summary"]),
+                "JDIM_LVOT_PREDICTIONS_CSV": str(required_files["lvot_predictions"]),
+                "JDIM_TAPSE_PREDICTIONS_CSV": str(required_files["tapse_predictions"]),
+                "JDIM_AUDIT_CONFIG": str(required_files["config"]),
+                "JDIM_RESTRICTED_AUDIT_ROOT": str(audit_root),
+            }
+            completed = subprocess.run(
+                ["bash", str(ROOT / "scripts" / "scc_run_jdim_tier1.sh"), "handoff-check"],
+                cwd=ROOT,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("repository/worktree root resolved explicitly", completed.stdout)
+            self.assertIn("selected universe", completed.stdout)
 
 
 if __name__ == "__main__":

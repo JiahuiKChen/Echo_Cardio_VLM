@@ -6,20 +6,34 @@ usage() {
 Run JDIM Tier-1 post-hoc tooling against frozen SCC artifacts.
 
 Required environment:
+  JDIM_REPO_ROOT        Exact isolated Git worktree containing this wrapper
+  JDIM_PYTHON_BIN       Exact Python executable
+  JDIM_FULLSCALE_ROOT   Canonical full-scale input root
+  JDIM_LEGACY_ROOT      Historical legacy Stage-D input root
   JDIM_OUTPUT_ROOT       Restricted root for Tier-1 outputs
   JDIM_PHASE2_ROOT       Frozen stable-v2 result root
   JDIM_SOURCE_STUDIES_CSV  Official release source-study denominator CSV
   JDIM_LINEAGE_JSON      Pinned path-free cohort lineage metadata JSON
+  JDIM_SELECTED_STUDIES_CSV  Canonical selected-study universe
+  JDIM_STRUCTURED_MEASUREMENTS_CSV  Structured report measurements
+  JDIM_SPLIT_MAP_CSV     Frozen subject split map
+  JDIM_STUDY_EMBEDDING_NPZ  Study-level embedding array
+  JDIM_STUDY_EMBEDDING_MANIFEST_CSV  Study-level embedding manifest
+  JDIM_ENCODER_CHECKPOINT  Frozen EchoPrime visual encoder checkpoint
+  JDIM_LVOT_SUMMARY_JSON, JDIM_TAPSE_SUMMARY_JSON
+  JDIM_LVOT_PREDICTIONS_CSV, JDIM_TAPSE_PREDICTIONS_CSV
+  JDIM_AUDIT_CONFIG      Locked input-content audit configuration
+  JDIM_RESTRICTED_AUDIT_ROOT  Restricted audit workspace
 
 Additional for audit-sample/audit-pilot:
   JDIM_AUDIT_KEY_FILE    Restricted file containing at least 16 random bytes
 
 Optional:
-  JDIM_FULLSCALE_ROOT, JDIM_LEGACY_ROOT, JDIM_PYTHON_BIN,
   JDIM_BOOTSTRAP_N, JDIM_NONIMAGE_PREDICTIONS
 
 Usage:
   scripts/scc_run_jdim_tier1.sh validate
+  scripts/scc_run_jdim_tier1.sh handoff-check
   scripts/scc_run_jdim_tier1.sh cohort-flow
   scripts/scc_run_jdim_tier1.sh reviewer-metrics
   scripts/scc_run_jdim_tier1.sh audit-sample
@@ -51,6 +65,14 @@ require_executable() {
   fi
 }
 
+require_directory() {
+  local path="$1"
+  if [[ ! -d "${path}" ]]; then
+    echo "[error] Required directory is missing: ${path}" >&2
+    exit 2
+  fi
+}
+
 require_absolute_outside_repo() {
   local path="$1"
   local label="$2"
@@ -71,7 +93,7 @@ if [[ -z "${MODE}" || "${MODE}" == "-h" || "${MODE}" == "--help" ]]; then
 fi
 
 case "${MODE}" in
-  validate|cohort-flow|reviewer-metrics|audit-sample|audit-pilot) ;;
+  validate|handoff-check|cohort-flow|reviewer-metrics|audit-sample|audit-pilot) ;;
   *)
     echo "[error] Unknown mode: ${MODE}" >&2
     usage
@@ -80,26 +102,74 @@ case "${MODE}" in
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DERIVED_REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+require_env JDIM_REPO_ROOT
+REPO_ROOT="$(cd "${JDIM_REPO_ROOT}" && pwd)"
+if [[ "${REPO_ROOT}" != "${DERIVED_REPO_ROOT}" ]]; then
+  echo "[error] JDIM_REPO_ROOT does not match the worktree containing this wrapper" >&2
+  exit 2
+fi
 cd "${REPO_ROOT}"
 
+require_env JDIM_PYTHON_BIN
+require_env JDIM_FULLSCALE_ROOT
+require_env JDIM_LEGACY_ROOT
 require_env JDIM_OUTPUT_ROOT
 require_env JDIM_PHASE2_ROOT
 require_env JDIM_SOURCE_STUDIES_CSV
 require_env JDIM_LINEAGE_JSON
+require_env JDIM_SELECTED_STUDIES_CSV
+require_env JDIM_STRUCTURED_MEASUREMENTS_CSV
+require_env JDIM_SPLIT_MAP_CSV
+require_env JDIM_STUDY_EMBEDDING_NPZ
+require_env JDIM_STUDY_EMBEDDING_MANIFEST_CSV
+require_env JDIM_ENCODER_CHECKPOINT
+require_env JDIM_LVOT_SUMMARY_JSON
+require_env JDIM_TAPSE_SUMMARY_JSON
+require_env JDIM_LVOT_PREDICTIONS_CSV
+require_env JDIM_TAPSE_PREDICTIONS_CSV
+require_env JDIM_AUDIT_CONFIG
+require_env JDIM_RESTRICTED_AUDIT_ROOT
 
-PY="${JDIM_PYTHON_BIN:-${REPO_ROOT}/.venv-echoprime/bin/python}"
-FULLSCALE="${JDIM_FULLSCALE_ROOT:-${REPO_ROOT}/outputs/cloud_cohorts/fullscale_all}"
-LEGACY="${JDIM_LEGACY_ROOT:-${REPO_ROOT}/outputs/cloud_cohorts/stage_d_500study_scc}"
+PY="${JDIM_PYTHON_BIN}"
+FULLSCALE="${JDIM_FULLSCALE_ROOT}"
+LEGACY="${JDIM_LEGACY_ROOT}"
 OUT="${JDIM_OUTPUT_ROOT}"
 PHASE2="${JDIM_PHASE2_ROOT}"
-CONFIG="${REPO_ROOT}/configs/jdim_input_content_audit_v1.yaml"
+SOURCE_STUDIES="${JDIM_SOURCE_STUDIES_CSV}"
+LINEAGE="${JDIM_LINEAGE_JSON}"
+SELECTED_STUDIES="${JDIM_SELECTED_STUDIES_CSV}"
+STRUCTURED_MEASUREMENTS="${JDIM_STRUCTURED_MEASUREMENTS_CSV}"
+SPLIT_MAP="${JDIM_SPLIT_MAP_CSV}"
+STUDY_EMBEDDING_NPZ="${JDIM_STUDY_EMBEDDING_NPZ}"
+STUDY_EMBEDDING_MANIFEST="${JDIM_STUDY_EMBEDDING_MANIFEST_CSV}"
+ENCODER_CHECKPOINT="${JDIM_ENCODER_CHECKPOINT}"
+LVOT_SUMMARY="${JDIM_LVOT_SUMMARY_JSON}"
+TAPSE_SUMMARY="${JDIM_TAPSE_SUMMARY_JSON}"
+LVOT_PREDICTIONS="${JDIM_LVOT_PREDICTIONS_CSV}"
+TAPSE_PREDICTIONS="${JDIM_TAPSE_PREDICTIONS_CSV}"
+CONFIG="${JDIM_AUDIT_CONFIG}"
+RESTRICTED_AUDIT_ROOT="${JDIM_RESTRICTED_AUDIT_ROOT}"
 BOOTSTRAP_N="${JDIM_BOOTSTRAP_N:-2000}"
 
 require_absolute_outside_repo "${OUT}" "JDIM_OUTPUT_ROOT"
+require_absolute_outside_repo "${RESTRICTED_AUDIT_ROOT}" "JDIM_RESTRICTED_AUDIT_ROOT"
 require_executable "${PY}"
-require_file "${JDIM_SOURCE_STUDIES_CSV}"
-require_file "${JDIM_LINEAGE_JSON}"
+require_directory "${FULLSCALE}"
+require_directory "${LEGACY}"
+require_directory "${PHASE2}"
+require_file "${SOURCE_STUDIES}"
+require_file "${LINEAGE}"
+require_file "${SELECTED_STUDIES}"
+require_file "${STRUCTURED_MEASUREMENTS}"
+require_file "${SPLIT_MAP}"
+require_file "${STUDY_EMBEDDING_NPZ}"
+require_file "${STUDY_EMBEDDING_MANIFEST}"
+require_file "${ENCODER_CHECKPOINT}"
+require_file "${LVOT_SUMMARY}"
+require_file "${TAPSE_SUMMARY}"
+require_file "${LVOT_PREDICTIONS}"
+require_file "${TAPSE_PREDICTIONS}"
 require_file "${CONFIG}"
 
 shopt -s nullglob
@@ -117,14 +187,6 @@ for path in "${EXPECTED_RECORDS[@]}" "${DICOM_AUDITS[@]}" "${EXTRACTIONS[@]}"; d
   require_file "${path}"
 done
 require_file "${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
-require_file "${FULLSCALE}/manifests/all_eligible_studies.csv"
-require_file "${FULLSCALE}/study_embeddings_512/study_embedding_manifest.csv"
-require_file "${FULLSCALE}/manifests/structured_measurements.csv"
-require_file "${FULLSCALE}/manifests/subject_split_map_v1.csv"
-require_file "${PHASE2}/lvot_vti/all_clips/imaging_baseline_summary.json"
-require_file "${PHASE2}/tapse/all_clips/imaging_baseline_summary.json"
-require_file "${PHASE2}/lvot_vti/all_clips/imaging_baseline_predictions.csv"
-require_file "${PHASE2}/tapse/all_clips/imaging_baseline_predictions.csv"
 
 EMBEDDING_ARGS=(
   --embedding-batch "legacy_stage_d_500=${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
@@ -136,24 +198,24 @@ for path in "${FULLSCALE_EMBEDDINGS[@]}"; do
 done
 
 COHORT_COMMON=(
-  --source-studies-csv "${JDIM_SOURCE_STUDIES_CSV}"
-  --eligible-studies-csv "${FULLSCALE}/manifests/all_eligible_studies.csv"
+  --source-studies-csv "${SOURCE_STUDIES}"
+  --eligible-studies-csv "${SELECTED_STUDIES}"
   --expected-records-csv "${EXPECTED_RECORDS[@]}"
   --dicom-audit-csv "${DICOM_AUDITS[@]}"
   --extraction-manifest-csv "${EXTRACTIONS[@]}"
   "${EMBEDDING_ARGS[@]}"
-  --final-study-embedding-manifest-csv "${FULLSCALE}/study_embeddings_512/study_embedding_manifest.csv"
-  --structured-measurements-csv "${FULLSCALE}/manifests/structured_measurements.csv"
-  --subject-split-map-csv "${FULLSCALE}/manifests/subject_split_map_v1.csv"
-  --canonical-summary "lvot_vti=${PHASE2}/lvot_vti/all_clips/imaging_baseline_summary.json"
-  --canonical-summary "tapse=${PHASE2}/tapse/all_clips/imaging_baseline_summary.json"
-  --lineage-metadata-json "${JDIM_LINEAGE_JSON}"
+  --final-study-embedding-manifest-csv "${STUDY_EMBEDDING_MANIFEST}"
+  --structured-measurements-csv "${STRUCTURED_MEASUREMENTS}"
+  --subject-split-map-csv "${SPLIT_MAP}"
+  --canonical-summary "lvot_vti=${LVOT_SUMMARY}"
+  --canonical-summary "tapse=${TAPSE_SUMMARY}"
+  --lineage-metadata-json "${LINEAGE}"
   --output-dir "${OUT}/aggregate_safe/cohort_flow"
 )
 
 METRIC_COMMON=(
-  --imaging-predictions "lvot_vti=${PHASE2}/lvot_vti/all_clips/imaging_baseline_predictions.csv"
-  --imaging-predictions "tapse=${PHASE2}/tapse/all_clips/imaging_baseline_predictions.csv"
+  --imaging-predictions "lvot_vti=${LVOT_PREDICTIONS}"
+  --imaging-predictions "tapse=${TAPSE_PREDICTIONS}"
   --output-dir "${OUT}/aggregate_safe/reviewer_metrics"
   --bootstrap-n "${BOOTSTRAP_N}"
   --bootstrap-seed 20260824
@@ -168,6 +230,13 @@ if [[ -n "${JDIM_NONIMAGE_PREDICTIONS:-}" ]]; then
 fi
 
 case "${MODE}" in
+  handoff-check)
+    printf '%s\n' \
+      "[ok] repository/worktree root resolved explicitly" \
+      "[ok] Python executable resolved explicitly" \
+      "[ok] canonical full-scale and legacy roots resolved explicitly" \
+      "[ok] selected universe, measurements, split, embeddings, checkpoint, predictions, and audit roots exist"
+    ;;
   validate)
     "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
     "${PY}" scripts/compute_jdim_fixed_prediction_metrics.py "${METRIC_COMMON[@]}" --schema-only
@@ -203,7 +272,7 @@ case "${MODE}" in
       --cohort "lvot_vti=${OUT}/restricted/cohort_flow/jdim_target_cohort_lvot_vti.csv" \
       --cohort "tapse=${OUT}/restricted/cohort_flow/jdim_target_cohort_tapse.csv" \
       --opaque-id-key-file "${JDIM_AUDIT_KEY_FILE}" \
-      --restricted-output-root "${OUT}/restricted/input_content_audit/${AUDIT_SUFFIX}" \
+      --restricted-output-root "${RESTRICTED_AUDIT_ROOT}/${AUDIT_SUFFIX}" \
       --safe-output-dir "${OUT}/aggregate_safe/input_content_audit/${AUDIT_SUFFIX}"
     ;;
 esac
