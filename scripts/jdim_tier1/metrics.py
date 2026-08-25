@@ -55,7 +55,8 @@ def validate_prediction_file_schemas(
         header = pd.read_csv(path, nrows=0)
         base = {"subject_id", "study_id", "split", "pred_null_median"}
         if not base.issubset(header.columns):
-            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} imaging prediction schema missing {sorted(base - set(header.columns))}")
+            missing = sorted(base - set(header.columns))
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} imaging prediction schema missing {missing}")
         if not {"target_value", "y_true"}.intersection(header.columns):
             raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} imaging prediction schema lacks observed values")
         if not {"pred_ridge", "y_pred"}.intersection(header.columns):
@@ -66,7 +67,8 @@ def validate_prediction_file_schemas(
         header = pd.read_csv(path, nrows=0)
         base = {"target", "subject_id", "study_id", "split"}
         if not base.issubset(header.columns):
-            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{name} prediction schema missing {sorted(base - set(header.columns))}")
+            missing = sorted(base - set(header.columns))
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{name} prediction schema missing {missing}")
         if not {"target_value", "y_true"}.intersection(header.columns):
             raise Tier1BlockedError(BLOCKED_LINEAGE, f"{name} prediction schema lacks observed values")
         prediction_columns = {"y_pred", "prediction", "pred_ridge"}.intersection(header.columns)
@@ -110,7 +112,8 @@ def normalize_imaging_predictions(frame: pd.DataFrame, target: str) -> pd.DataFr
     if "target" in out.columns:
         observed_targets = set(out["target"].dropna().astype(str))
         if observed_targets != {target}:
-            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} prediction file contains targets {sorted(observed_targets)}")
+            observed = sorted(observed_targets)
+            raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} prediction file contains targets {observed}")
     out["target"] = target
     out["subject_id"] = out["subject_id"].astype(str)
     out["study_id"] = out["study_id"].astype(str)
@@ -124,7 +127,10 @@ def normalize_imaging_predictions(frame: pd.DataFrame, target: str) -> pd.DataFr
             raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} predictions contain missing/non-numeric {column}")
     duplicate_studies = int(out.duplicated(["target", "study_id"]).sum())
     if duplicate_studies:
-        raise Tier1BlockedError(BLOCKED_LINEAGE, f"{target} imaging predictions duplicate {duplicate_studies} study rows")
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            f"{target} imaging predictions duplicate {duplicate_studies} study rows",
+        )
     subject_conflicts = out.groupby("study_id")["subject_id"].nunique()
     split_conflicts = out.groupby("subject_id")["split"].nunique()
     if int((subject_conflicts > 1).sum()):

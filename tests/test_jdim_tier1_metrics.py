@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -21,6 +23,7 @@ from jdim_tier1.metrics import (  # noqa: E402
     strict_pair_nonimage,
     subject_bootstrap,
     validate_fixed_prediction_request,
+    validate_prediction_file_schemas,
 )
 
 
@@ -116,7 +119,10 @@ class FixedMetricTests(unittest.TestCase):
         original_counts = test.groupby("subject_id").size().to_dict()
 
         def integrity(sample: pd.DataFrame) -> tuple[float]:
-            valid = all(count % original_counts[subject] == 0 for subject, count in sample.groupby("subject_id").size().items())
+            valid = all(
+                count % original_counts[subject] == 0
+                for subject, count in sample.groupby("subject_id").size().items()
+            )
             return (1.0 if valid else 0.0,)
 
         boot = subject_bootstrap(test, integrity, n_bootstrap=100, seed=7)
@@ -182,6 +188,39 @@ class FixedMetricTests(unittest.TestCase):
             self.assertNotIn("study_id", frame.columns)
             self.assertNotIn("subject_id", frame.columns)
             self.assertNotIn("target_value", frame.columns)
+
+    def test_prediction_schema_only_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            lvot = root / "lvot.csv"
+            tapse = root / "tapse.csv"
+            imaging_frame("lvot_vti").to_csv(lvot, index=False)
+            imaging_frame("tapse").to_csv(tapse, index=False)
+            payload = validate_prediction_file_schemas({"lvot_vti": lvot, "tapse": tapse})
+            self.assertEqual(payload["status"], "ok")
+            self.assertFalse(payload["row_level_metrics_computed"])
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "compute_jdim_fixed_prediction_metrics.py"),
+                    "--imaging-predictions",
+                    f"lvot_vti={lvot}",
+                    "--imaging-predictions",
+                    f"tapse={tapse}",
+                    "--output-dir",
+                    str(root / "unused"),
+                    "--restricted-inputs-acknowledged",
+                    "--schema-only",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            cli_payload = json.loads(completed.stdout)
+            self.assertEqual(cli_payload["status"], "ok")
+            self.assertFalse(cli_payload["row_level_metrics_computed"])
 
 
 if __name__ == "__main__":

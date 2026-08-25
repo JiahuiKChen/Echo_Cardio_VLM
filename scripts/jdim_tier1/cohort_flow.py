@@ -254,6 +254,8 @@ def validate_lineage_metadata(
     split_map: Path,
     report: InvariantReport,
 ) -> None:
+    if not split_map.exists():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "frozen split map is missing")
     required_text = (
         "mimic_iv_echo_release",
         "source_denominator_definition",
@@ -261,6 +263,8 @@ def validate_lineage_metadata(
         "label_lineage",
     )
     missing = [key for key in required_text if not str(metadata.get(key, "")).strip()]
+    if metadata.get("protocol_version") != PROTOCOL_VERSION:
+        missing.append(f"protocol_version={PROTOCOL_VERSION}")
     split_meta = metadata.get("split_map")
     if not isinstance(split_meta, Mapping):
         missing.append("split_map")
@@ -273,8 +277,26 @@ def validate_lineage_metadata(
         missing.append("batch_sources")
         batch_meta = {}
     missing_batches = sorted(set(batch_names) - set(batch_meta))
+    unexpected_batches = sorted(set(batch_meta) - set(batch_names))
     if missing_batches:
         missing.append(f"batch_sources entries: {missing_batches}")
+    if unexpected_batches:
+        missing.append(f"batch_sources not supplied as inputs: {unexpected_batches}")
+    invalid_batch_classes = sorted(
+        name
+        for name in set(batch_names) & set(batch_meta)
+        if not isinstance(batch_meta[name], Mapping)
+        or batch_meta[name].get("source_class") not in {"legacy", "fullscale"}
+    )
+    if invalid_batch_classes:
+        missing.append(f"invalid batch source_class entries: {invalid_batch_classes}")
+    invalid_overlap_pairs: list[str] = []
+    for raw_pair in metadata.get("allowed_batch_overlap_pairs", []):
+        pair = str(raw_pair).split("|")
+        if len(pair) != 2 or pair[0] == pair[1] or not set(pair).issubset(set(batch_names)):
+            invalid_overlap_pairs.append(str(raw_pair))
+    if invalid_overlap_pairs:
+        missing.append(f"invalid allowed_batch_overlap_pairs: {sorted(invalid_overlap_pairs)}")
     flow_structure = metadata.get("flow_structure")
     report.add(
         "parallel_flow_structure_declared",
@@ -346,7 +368,11 @@ def _prepare_dicom_branch(
     expected = _normalize_ids(expected, "expected DICOM records")
     audits = _normalize_ids(audits, "DICOM audits")
     extraction = _normalize_ids(extraction, "extraction manifests")
-    for frame, label in ((expected, "expected records"), (audits, "DICOM audits"), (extraction, "extraction manifests")):
+    for frame, label in (
+        (expected, "expected records"),
+        (audits, "DICOM audits"),
+        (extraction, "extraction manifests"),
+    ):
         frame["_record"] = _record_key(frame, label)
 
     expected_dup = int(expected.duplicated("_record").sum())
@@ -424,7 +450,9 @@ def _prepare_embedding_batches(
                 "n_studies_with_multiple_clips": int((study_counts > 1).sum()),
                 "n_duplicate_clip_keys_removed": duplicate_clip_keys,
                 "n_studies_in_canonical_universe": int(frame.loc[frame["_in_canonical_universe"], "_study"].nunique()),
-                "n_studies_outside_canonical_universe": int(frame.loc[~frame["_in_canonical_universe"], "_study"].nunique()),
+                "n_studies_outside_canonical_universe": int(
+                    frame.loc[~frame["_in_canonical_universe"], "_study"].nunique()
+                ),
             }
         )
 
@@ -624,7 +652,13 @@ def _intersection_branch(
             "notes": "",
         },
         _stage("intersection", "target_plus_embedding_studies", intersection, target=target),
-        _stage("intersection", "target_plus_embedding_studies_lacking_split", intersection, missing_split, target=target),
+        _stage(
+            "intersection",
+            "target_plus_embedding_studies_lacking_split",
+            intersection,
+            missing_split,
+            target=target,
+        ),
         _stage("intersection", "final_analysis_studies", final, target=target),
     ]
     summary = {
@@ -646,6 +680,8 @@ def _intersection_branch(
 
 def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
     report = InvariantReport()
+    if not inputs.lineage_metadata.exists():
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "missing lineage metadata JSON")
     metadata = json.loads(inputs.lineage_metadata.read_text(encoding="utf-8"))
     validate_lineage_metadata(metadata, list(inputs.embedding_batches), inputs.split_map, report)
 
@@ -780,6 +816,13 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
     restricted_base["final_embedding_present"] = restricted_base["_study"].isin(final_set)
     for target, labels in label_frames.items():
         restricted_base[f"{target}_label_present"] = restricted_base["_study"].isin(set(labels["_study"]))
+        target_lookup = labels.set_index("_study")
+        restricted_base[f"{target}_target_value"] = restricted_base["_study"].map(
+            target_lookup["target_value"].to_dict()
+        )
+        restricted_base[f"{target}_n_target_rows"] = restricted_base["_study"].map(
+            target_lookup["n_target_rows"].to_dict()
+        )
     restricted_intersections = pd.concat(restricted_target_frames, ignore_index=True)
     restricted_intersections = restricted_intersections.pivot(
         index=["_study", "_subject"], columns="target", values="split"
@@ -820,11 +863,26 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         ("frozen_split_map", inputs.split_map, len(raw_split), raw_split),
         ("lineage_metadata", inputs.lineage_metadata, None, None),
     ]
-    input_paths.extend((f"expected_records_{index}", path, None, None) for index, path in enumerate(inputs.expected_records))
-    input_paths.extend((f"dicom_audit_{index}", path, None, None) for index, path in enumerate(inputs.dicom_audits))
-    input_paths.extend((f"extraction_manifest_{index}", path, None, None) for index, path in enumerate(inputs.extraction_manifests))
-    input_paths.extend((f"embedding_batch_{name}", path, len(batch_frames[name]), batch_frames[name]) for name, path in inputs.embedding_batches.items())
-    input_paths.extend((f"canonical_summary_{target}", path, None, None) for target, path in inputs.canonical_summaries.items())
+    input_paths.extend(
+        (f"expected_records_{index}", path, None, None)
+        for index, path in enumerate(inputs.expected_records)
+    )
+    input_paths.extend(
+        (f"dicom_audit_{index}", path, None, None)
+        for index, path in enumerate(inputs.dicom_audits)
+    )
+    input_paths.extend(
+        (f"extraction_manifest_{index}", path, None, None)
+        for index, path in enumerate(inputs.extraction_manifests)
+    )
+    input_paths.extend(
+        (f"embedding_batch_{name}", path, len(batch_frames[name]), batch_frames[name])
+        for name, path in inputs.embedding_batches.items()
+    )
+    input_paths.extend(
+        (f"canonical_summary_{target}", path, None, None)
+        for target, path in inputs.canonical_summaries.items()
+    )
     files: list[dict[str, Any]] = []
     for role, path, row_count, frame in input_paths:
         record = safe_file_record(role, path, row_count)
@@ -891,6 +949,18 @@ def write_cohort_flow_outputs(
                 continue
             cohort = result.restricted_reconciliation.loc[
                 result.restricted_reconciliation[split_column].isin(VALID_SPLITS),
-                ["study_id", "subject_id", split_column],
-            ].rename(columns={split_column: "split"})
+                [
+                    "study_id",
+                    "subject_id",
+                    split_column,
+                    f"{target}_target_value",
+                    f"{target}_n_target_rows",
+                ],
+            ].rename(
+                columns={
+                    split_column: "split",
+                    f"{target}_target_value": "target_value",
+                    f"{target}_n_target_rows": "n_target_rows",
+                }
+            )
             cohort.to_csv(destination.parent / f"jdim_target_cohort_{target}.csv", index=False)

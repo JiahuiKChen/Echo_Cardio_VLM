@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -38,11 +39,15 @@ def make_cohorts() -> dict[str, pd.DataFrame]:
     lvot_rows = []
     for study in range(1, 13):
         split = "train" if study <= 7 else "val" if study <= 9 else "test"
-        lvot_rows.append({"study_id": study, "subject_id": 100 + study, "split": split})
+        lvot_rows.append(
+            {"study_id": study, "subject_id": 100 + study, "split": split, "target_value": 10.0 + study}
+        )
     tapse_rows = []
     for study in range(8, 18):
         split = "train" if study <= 13 else "val" if study <= 15 else "test"
-        tapse_rows.append({"study_id": study, "subject_id": 100 + study, "split": split})
+        tapse_rows.append(
+            {"study_id": study, "subject_id": 100 + study, "split": split, "target_value": 12.0 + study}
+        )
     return {"lvot_vti": pd.DataFrame(lvot_rows), "tapse": pd.DataFrame(tapse_rows)}
 
 
@@ -54,6 +59,24 @@ class AuditSamplingTests(unittest.TestCase):
     def test_proportional_largest_remainder(self) -> None:
         allocation = largest_remainder_allocation({"train": 70, "val": 15, "test": 15}, 60)
         self.assertEqual(allocation, {"train": 42, "val": 9, "test": 9})
+
+    def test_config_validation_cli_integration(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "prepare_jdim_input_audit.py"),
+                "validate-config",
+                "--config",
+                str(CONFIG_PATH),
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["configuration_sha256"], self.config_hash)
 
     def test_overlap_is_deduplicated_for_physical_review(self) -> None:
         result = build_audit_sample(
@@ -68,6 +91,12 @@ class AuditSamplingTests(unittest.TestCase):
         self.assertEqual(list(result.reader_manifest.columns), ["audit_id", "review_order"])
         self.assertNotIn("study_id", result.reader_manifest.columns)
         self.assertNotIn("split", result.reader_manifest.columns)
+        overlapping = result.linkage[result.linkage["target_membership"] == "lvot_vti;tapse"].iloc[0]
+        self.assertIn("lvot_vti_target_value", result.linkage.columns)
+        self.assertIn("tapse_target_value", result.linkage.columns)
+        self.assertTrue(pd.notna(overlapping["lvot_vti_target_value"]))
+        self.assertTrue(pd.notna(overlapping["tapse_target_value"]))
+        self.assertNotIn("lvot_vti_target_value", result.reader_manifest.columns)
 
     def test_sampling_is_deterministic(self) -> None:
         first = build_audit_sample(
@@ -169,8 +198,20 @@ class AuditAggregationTests(unittest.TestCase):
         base_values = {outcome: "no" for outcome in STUDY_OUTCOMES}
         self.study = pd.DataFrame(
             [
-                {"audit_id": "A1", "reader_id": "R1", "reader_role": "primary", **base_values, "spectral_doppler_present": "yes"},
-                {"audit_id": "A1", "reader_id": "R2", "reader_role": "secondary", **base_values, "spectral_doppler_present": "yes"},
+                {
+                    "audit_id": "A1",
+                    "reader_id": "R1",
+                    "reader_role": "primary",
+                    **base_values,
+                    "spectral_doppler_present": "yes",
+                },
+                {
+                    "audit_id": "A1",
+                    "reader_id": "R2",
+                    "reader_role": "secondary",
+                    **base_values,
+                    "spectral_doppler_present": "yes",
+                },
                 {"audit_id": "A2", "reader_id": "R1", "reader_role": "primary", **base_values},
                 {"audit_id": "A2", "reader_id": "R2", "reader_role": "secondary", **base_values},
             ]
@@ -247,7 +288,11 @@ class AuditAggregationTests(unittest.TestCase):
             self.config_hash,
             n_bootstrap=20,
         )
-        combined_columns = set(result.study_summary.columns) | set(result.clip_summary.columns) | set(result.agreement.columns)
+        combined_columns = (
+            set(result.study_summary.columns)
+            | set(result.clip_summary.columns)
+            | set(result.agreement.columns)
+        )
         self.assertNotIn("candidate_target_value", combined_columns)
         self.assertFalse(result.summary["candidate_values_exported"])
 

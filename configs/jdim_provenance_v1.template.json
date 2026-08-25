@@ -42,7 +42,11 @@
     "scripts/reconstruct_jdim_cohort_flow.py",
     "scripts/prepare_jdim_input_audit.py",
     "scripts/compute_jdim_fixed_prediction_metrics.py",
+    "scripts/build_jdim_cohort_lineage_metadata.py",
+    "scripts/build_jdim_provenance_spec.py",
     "scripts/build_jdim_provenance_manifests.py",
+    "scripts/scc_run_jdim_tier1.sh",
+    "docs/jdim_major_revision_tier1_runbook.md",
     "tests/test_jdim_tier1_*.py"
   ]
 }

@@ -14,6 +14,7 @@ import pandas as pd
 from . import PROTOCOL_VERSION
 from .safety import (
     BLOCKED_LINEAGE,
+    SAFE_ROLE_PATTERN,
     Tier1BlockedError,
     require_columns,
     require_restricted_destination,
@@ -72,8 +73,17 @@ def _validate_spec(spec: Mapping[str, Any]) -> None:
         raise ValueError("manifest_version must be jdim-provenance-v1")
     if not str(spec["mimic_iv_echo_release"]).strip():
         raise ValueError("mimic_iv_echo_release must be explicit")
+    if not str(spec["echoprime_code_release"]).strip():
+        raise ValueError("echoprime_code_release must be explicit")
+    if not isinstance(spec["script_arguments"], Mapping):
+        raise ValueError("script_arguments must be a mapping")
+    if not isinstance(spec["codex_assisted_artifacts"], list):
+        raise ValueError("codex_assisted_artifacts must be a list")
     if not isinstance(spec["files"], Mapping) or not spec["files"]:
         raise ValueError("files must be a nonempty logical-role mapping")
+    invalid_roles = [role for role in spec["files"] if not SAFE_ROLE_PATTERN.fullmatch(str(role))]
+    if invalid_roles:
+        raise ValueError(f"Logical file roles must be path-free identifiers: {invalid_roles}")
     roles = set(spec["files"])
     required_roles = {
         spec["split_map_role"],
@@ -97,6 +107,8 @@ def _file_metadata(role: str, raw: Any) -> tuple[dict[str, Any], dict[str, Any],
         classification = str(raw.get("classification", "restricted"))
     else:
         raise ValueError(f"Invalid file specification for {role}")
+    if classification not in {"restricted", "aggregate_safe"}:
+        raise ValueError(f"Invalid file classification for {role}: {classification!r}")
     if not path.is_absolute():
         raise ValueError(f"Provenance file path for {role} must be absolute")
     if not path.exists():

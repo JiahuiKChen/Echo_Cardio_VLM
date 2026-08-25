@@ -100,6 +100,16 @@ entry points are:
   training-derived tertiles, and paired delta-MAE from unchanged predictions.
 - `scripts/build_jdim_provenance_manifests.py`: separate restricted and
   export-safe reproducibility manifests.
+- `scripts/build_jdim_cohort_lineage_metadata.py`: path-free release, batch,
+  and frozen split-lineage declaration with the split-map hash computed from
+  the supplied artifact.
+- `scripts/build_jdim_provenance_spec.py`: restricted, explicit-role manifest
+  specification builder that prevents accidental path disclosure in Git.
+- `scripts/scc_run_jdim_tier1.sh`: SCC execution wrapper for schema validation,
+  cohort reconstruction, fixed-prediction metrics, and audit sampling.
+
+The exact later SCC commands and output classifications are documented in
+`docs/jdim_major_revision_tier1_runbook.md`.
 
 ## Input and output contracts
 

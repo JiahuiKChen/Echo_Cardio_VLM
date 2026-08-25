@@ -128,6 +128,17 @@ class ProvenanceManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be explicit"):
             build_provenance_manifests(self.spec, self.repo)
 
+    def test_missing_echoprime_release_is_rejected(self) -> None:
+        self.spec["echoprime_code_release"] = ""
+        with self.assertRaisesRegex(ValueError, "must be explicit"):
+            build_provenance_manifests(self.spec, self.repo)
+
+    def test_logical_roles_cannot_smuggle_paths_into_safe_manifest(self) -> None:
+        self.spec["files"]["/restricted/secret.csv"] = self.spec["files"].pop("embedding_manifest")
+        self.spec["embedding_manifest_role"] = "/restricted/secret.csv"
+        with self.assertRaisesRegex(ValueError, "path-free identifiers"):
+            build_provenance_manifests(self.spec, self.repo)
+
     def test_split_overlap_is_rejected(self) -> None:
         split = pd.read_csv(self.paths["split_map"])
         split = pd.concat([split, pd.DataFrame([{"subject_id": 1, "split": "test"}])], ignore_index=True)

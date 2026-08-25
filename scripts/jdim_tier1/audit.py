@@ -307,7 +307,11 @@ def build_audit_sample(
                     "source_n": source_n,
                     "sample_n": sample_n,
                     "design_weight": float(source_n / sample_n) if sample_n else np.nan,
-                    "allocation_method": "author_approved_override" if approved_override is not None else "proportional_largest_remainder",
+                    "allocation_method": (
+                        "author_approved_override"
+                        if approved_override is not None
+                        else "proportional_largest_remainder"
+                    ),
                 }
             )
 
@@ -330,8 +334,25 @@ def build_audit_sample(
             "target_membership": ";".join(sorted(set(group["target"]))),
             "target_strata": ";".join(sorted(set(group["target_stratum"]))),
         }
+        for target, target_group in group.groupby("target", sort=True):
+            for source_column in ("target_value", "n_target_rows"):
+                if source_column not in target_group.columns:
+                    continue
+                values = target_group[source_column].dropna().unique()
+                if len(values) == 1:
+                    row[f"{target}_{source_column}"] = values[0]
         for column in group.columns:
-            if column in {"study_id", "subject_id", "split", "target", "target_stratum", "audit_id", "_rank"}:
+            if column in {
+                "study_id",
+                "subject_id",
+                "split",
+                "target",
+                "target_stratum",
+                "target_value",
+                "n_target_rows",
+                "audit_id",
+                "_rank",
+            }:
                 continue
             nonnull = group[column].dropna().astype(str).unique()
             if len(nonnull) == 1:
@@ -377,7 +398,11 @@ def build_audit_sample(
         },
         "cross_target_overlap_studies": int(selected.groupby("study_id")["target"].nunique().gt(1).sum()),
         "second_reader_studies": int(len(second_reader_manifest)),
-        "allocation_method": "author_approved_override" if approved_override is not None else "proportional_largest_remainder",
+        "allocation_method": (
+            "author_approved_override"
+            if approved_override is not None
+            else "proportional_largest_remainder"
+        ),
         "excluded_from_prevalence_estimates": bool(technical_pilot),
     }
     return AuditSampleResult(
@@ -404,7 +429,8 @@ def write_audit_sample(
     result.reader_manifest.to_csv(restricted_root / "reader_manifest.csv", index=False)
     result.second_reader_manifest.to_csv(restricted_root / "second_reader_manifest.csv", index=False)
     result.study_template.to_csv(
-        restricted_root / ("technical_pilot_template.csv" if result.technical_pilot else "study_annotation_template.csv"),
+        restricted_root
+        / ("technical_pilot_template.csv" if result.technical_pilot else "study_annotation_template.csv"),
         index=False,
     )
     result.clip_template.to_csv(restricted_root / "clip_annotation_template.csv", index=False)
@@ -548,7 +574,8 @@ def write_adjudication_queue(queue: pd.DataFrame, restricted_output_csv: Path) -
 def _primary_annotations(annotations: pd.DataFrame) -> pd.DataFrame:
     require_columns(annotations, ["audit_id"], "study annotations")
     if "reader_role" in annotations.columns:
-        primary = annotations[annotations["reader_role"].astype(str).str.lower().isin({"primary", "adjudicated"})].copy()
+        roles = annotations["reader_role"].astype(str).str.lower()
+        primary = annotations[roles.isin({"primary", "adjudicated"})].copy()
         primary["_priority"] = primary["reader_role"].astype(str).str.lower().map({"primary": 0, "adjudicated": 1})
         primary = primary.sort_values(["audit_id", "_priority"]).drop_duplicates("audit_id", keep="last")
         return primary.drop(columns=["_priority"])
@@ -559,7 +586,8 @@ def _primary_clip_annotations(annotations: pd.DataFrame) -> pd.DataFrame:
     require_columns(annotations, ["audit_id", "clip_audit_id"], "clip annotations")
     keys = ["audit_id", "clip_audit_id"]
     if "reader_role" in annotations.columns:
-        primary = annotations[annotations["reader_role"].astype(str).str.lower().isin({"primary", "adjudicated"})].copy()
+        roles = annotations["reader_role"].astype(str).str.lower()
+        primary = annotations[roles.isin({"primary", "adjudicated"})].copy()
         primary["_priority"] = primary["reader_role"].astype(str).str.lower().map({"primary": 0, "adjudicated": 1})
         primary = primary.sort_values(keys + ["_priority"]).drop_duplicates(keys, keep="last")
         return primary.drop(columns=["_priority"])
@@ -571,7 +599,11 @@ def _expand_target_linkage(linkage: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, str]] = []
     for row in linkage.itertuples(index=False):
         memberships = str(row.target_membership).split(";")
-        strata = {item.split(":", 1)[0]: item.split(":", 1)[1] for item in str(row.target_strata).split(";") if ":" in item}
+        strata = {
+            item.split(":", 1)[0]: item.split(":", 1)[1]
+            for item in str(row.target_strata).split(";")
+            if ":" in item
+        }
         for target in memberships:
             rows.append({"audit_id": str(row.audit_id), "target": target, "split": strata.get(target, "")})
     return pd.DataFrame(rows)
@@ -585,7 +617,12 @@ def _study_summaries(
     primary = _primary_annotations(study_annotations)
     expanded = _expand_target_linkage(linkage)
     joined = expanded.merge(primary, on="audit_id", how="left", validate="many_to_one")
-    joined = joined.merge(design[["target", "split", "design_weight"]], on=["target", "split"], how="left", validate="many_to_one")
+    joined = joined.merge(
+        design[["target", "split", "design_weight"]],
+        on=["target", "split"],
+        how="left",
+        validate="many_to_one",
+    )
     rows: list[dict[str, Any]] = []
     for target, target_frame in joined.groupby("target", sort=True):
         for outcome in STUDY_OUTCOMES:
@@ -594,7 +631,11 @@ def _study_summaries(
             values = target_frame[outcome].astype(str).str.lower()
             assessable = values.isin({"yes", "no"})
             binary = values.loc[assessable].eq("yes").astype(float).to_numpy()
-            weights = pd.to_numeric(target_frame.loc[assessable, "design_weight"], errors="coerce").fillna(1.0).to_numpy()
+            weights = (
+                pd.to_numeric(target_frame.loc[assessable, "design_weight"], errors="coerce")
+                .fillna(1.0)
+                .to_numpy()
+            )
             estimate, low, high, n_eff = weighted_interval(binary, weights)
             rows.append(
                 {

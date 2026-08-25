@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from jdim_tier1.cohort_flow import (  # noqa: E402
     CohortFlowInputs,
     _target_branch,
     reconstruct_cohort_flow,
+    validate_cohort_input_schemas,
     write_cohort_flow_outputs,
 )
 from jdim_tier1.safety import BLOCKED_LINEAGE, Tier1BlockedError, sha256_file  # noqa: E402
@@ -58,7 +60,13 @@ def make_fixture(root: Path) -> tuple[CohortFlowInputs, dict]:
     legacy_rows = [
         {"study_id": 1, "subject_id": 10, "dicom_filepath": "d1.dcm", "embedding_idx": 0, "write_ok": True},
         {"study_id": 2, "subject_id": 10, "dicom_filepath": "d2.dcm", "embedding_idx": 1, "write_ok": True},
-        {"study_id": 6, "subject_id": 50, "dicom_filepath": "legacy_outside.dcm", "embedding_idx": 2, "write_ok": True},
+        {
+            "study_id": 6,
+            "subject_id": 50,
+            "dicom_filepath": "legacy_outside.dcm",
+            "embedding_idx": 2,
+            "write_ok": True,
+        },
     ]
     batch_rows = [
         {"study_id": 3, "subject_id": 20, "dicom_filepath": "d3.dcm", "embedding_idx": 0, "write_ok": True},
@@ -168,6 +176,55 @@ class CohortFlowTests(unittest.TestCase):
         lvot_mult = result.subject_multiplicity.query("target == 'lvot_vti' and studies_per_subject == 2")
         self.assertEqual(int(lvot_mult.iloc[0]["n_subjects"]), 1)
 
+    def test_schema_only_validation_does_not_compute_counts(self) -> None:
+        payload = validate_cohort_input_schemas(self.inputs)
+        self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload["row_level_analysis_executed"])
+        self.assertEqual(payload["canonical_targets_checked"], ["lvot_vti", "tapse"])
+
+    def test_cohort_cli_schema_only_integration(self) -> None:
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / "reconstruct_jdim_cohort_flow.py"),
+            "--source-studies-csv",
+            str(self.inputs.source_studies),
+            "--eligible-studies-csv",
+            str(self.inputs.eligible_studies),
+            "--expected-records-csv",
+            *map(str, self.inputs.expected_records),
+            "--dicom-audit-csv",
+            *map(str, self.inputs.dicom_audits),
+            "--extraction-manifest-csv",
+            *map(str, self.inputs.extraction_manifests),
+        ]
+        for name, path in self.inputs.embedding_batches.items():
+            command.extend(["--embedding-batch", f"{name}={path}"])
+        command.extend(
+            [
+                "--final-study-embedding-manifest-csv",
+                str(self.inputs.final_study_embeddings),
+                "--structured-measurements-csv",
+                str(self.inputs.structured_measurements),
+                "--subject-split-map-csv",
+                str(self.inputs.split_map),
+            ]
+        )
+        for target, path in self.inputs.canonical_summaries.items():
+            command.extend(["--canonical-summary", f"{target}={path}"])
+        command.extend(
+            [
+                "--lineage-metadata-json",
+                str(self.inputs.lineage_metadata),
+                "--output-dir",
+                str(self.root / "unused"),
+                "--schema-only",
+            ]
+        )
+        completed = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload["row_level_analysis_executed"])
+
     def test_repeated_target_rows_use_median(self) -> None:
         measures = pd.read_csv(self.paths["measures"])
         grouped, summary, _, multiplicity = _target_branch(measures, "lvot_vti")
@@ -175,6 +232,15 @@ class CohortFlowTests(unittest.TestCase):
         self.assertEqual(float(study_one["target_value"]), 15.0)
         self.assertEqual(summary["studies_with_multiple_numeric_values"], 1)
         self.assertEqual(int(multiplicity.query("eligible_rows_per_study == 2").iloc[0]["n_studies"]), 1)
+
+    def test_restricted_target_cohort_retains_report_label_value(self) -> None:
+        result = reconstruct_cohort_flow(self.inputs)
+        destination = self.root / "restricted" / "reconciliation.csv"
+        write_cohort_flow_outputs(result, self.root / "safe", destination)
+        lvot = pd.read_csv(destination.parent / "jdim_target_cohort_lvot_vti.csv")
+        study_one = lvot[lvot["study_id"] == 1].iloc[0]
+        self.assertEqual(float(study_one["target_value"]), 15.0)
+        self.assertEqual(int(study_one["n_target_rows"]), 2)
 
     def test_legacy_batch_retains_canonical_and_excludes_outside_member(self) -> None:
         result = reconstruct_cohort_flow(self.inputs)
@@ -226,6 +292,13 @@ class CohortFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(Tier1BlockedError, "split_map.expected_sha256"):
             reconstruct_cohort_flow(self.inputs)
 
+    def test_lineage_batch_set_must_match_supplied_inputs(self) -> None:
+        metadata = json.loads(self.paths["lineage"].read_text())
+        metadata["batch_sources"]["batch_999"] = {"source_class": "fullscale"}
+        self.paths["lineage"].write_text(json.dumps(metadata))
+        with self.assertRaisesRegex(Tier1BlockedError, "not supplied as inputs"):
+            reconstruct_cohort_flow(self.inputs)
+
     def test_invalid_forced_linear_flow_is_rejected(self) -> None:
         metadata = json.loads(self.paths["lineage"].read_text())
         metadata["flow_structure"] = "linear"
@@ -236,19 +309,49 @@ class CohortFlowTests(unittest.TestCase):
     def test_unexplained_cross_batch_overlap_fails_invariant(self) -> None:
         batch = pd.read_csv(self.paths["batch"])
         batch = pd.concat(
-            [batch, pd.DataFrame([{"study_id": 2, "subject_id": 10, "dicom_filepath": "duplicate_d2.dcm", "embedding_idx": 9, "write_ok": True}])],
+            [
+                batch,
+                pd.DataFrame(
+                    [
+                        {
+                            "study_id": 2,
+                            "subject_id": 10,
+                            "dicom_filepath": "duplicate_d2.dcm",
+                            "embedding_idx": 9,
+                            "write_ok": True,
+                        }
+                    ]
+                ),
+            ],
             ignore_index=True,
         )
         batch.to_csv(self.paths["batch"], index=False)
         result = reconstruct_cohort_flow(self.inputs)
         self.assertEqual(result.invariants["status"], BLOCKED_LINEAGE)
-        overlap = [check for check in result.invariants["checks"] if check["check"].startswith("batch_overlap_explained")]
+        overlap = [
+            check
+            for check in result.invariants["checks"]
+            if check["check"].startswith("batch_overlap_explained")
+        ]
         self.assertFalse(overlap[0]["passed"])
 
     def test_declared_cross_batch_overlap_is_reconciled(self) -> None:
         batch = pd.read_csv(self.paths["batch"])
         batch = pd.concat(
-            [batch, pd.DataFrame([{"study_id": 2, "subject_id": 10, "dicom_filepath": "duplicate_d2.dcm", "embedding_idx": 9, "write_ok": True}])],
+            [
+                batch,
+                pd.DataFrame(
+                    [
+                        {
+                            "study_id": 2,
+                            "subject_id": 10,
+                            "dicom_filepath": "duplicate_d2.dcm",
+                            "embedding_idx": 9,
+                            "write_ok": True,
+                        }
+                    ]
+                ),
+            ],
             ignore_index=True,
         )
         batch.to_csv(self.paths["batch"], index=False)

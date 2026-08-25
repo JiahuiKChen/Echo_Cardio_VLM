@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -41,6 +42,9 @@ FORBIDDEN_SAFE_COLUMNS = {
     "prediction",
     "residual",
 }
+
+SAFE_ROLE_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
+ABSOLUTE_PATH_TOKEN_PATTERN = re.compile(r"(?:^|[\s=:,;])(?:/|~/)\S+")
 
 
 class Tier1BlockedError(RuntimeError):
@@ -136,6 +140,9 @@ def assert_export_safe_frame(frame: pd.DataFrame, label: str) -> None:
 def safe_file_record(role: str, path: Path, row_count: int | None = None) -> dict[str, Any]:
     """Return path-free provenance for one file."""
 
+    if not SAFE_ROLE_PATTERN.fullmatch(str(role)):
+        raise ValueError(f"Logical file role must be a path-free identifier: {role!r}")
+
     record: dict[str, Any] = {
         "logical_role": role,
         "sha256": sha256_file(path),
@@ -168,7 +175,11 @@ def sanitize_for_safe_manifest(value: Any) -> Any:
         return [sanitize_for_safe_manifest(item) for item in value]
     if isinstance(value, str):
         expanded = os.path.expanduser(value)
-        if value.startswith(("/", "~")) or expanded.startswith("/"):
+        if (
+            value.startswith(("/", "~"))
+            or expanded.startswith("/")
+            or ABSOLUTE_PATH_TOKEN_PATTERN.search(value)
+        ):
             return "[REDACTED_PATH]"
     return value
 
@@ -199,6 +210,7 @@ def parse_named_paths(values: Sequence[str], label: str) -> dict[str, Path]:
         name = name.strip()
         if not name or name in parsed:
             raise ValueError(f"Duplicate or empty {label} name: {name!r}")
+        if not SAFE_ROLE_PATTERN.fullmatch(name):
+            raise ValueError(f"{label} name must be a path-free identifier: {name!r}")
         parsed[name] = Path(raw_path).expanduser()
     return parsed
-
