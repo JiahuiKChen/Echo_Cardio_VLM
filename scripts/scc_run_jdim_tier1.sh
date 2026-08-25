@@ -267,6 +267,7 @@ METRIC_COMMON=(
   --imaging-predictions "lvot_vti=${LVOT_PREDICTIONS}"
   --imaging-predictions "tapse=${TAPSE_PREDICTIONS}"
   --output-dir "${OUT}/aggregate_safe/reviewer_metrics"
+  --restricted-input-provenance-json "${OUT}/restricted/reviewer_metrics/fixed_prediction_metrics_input_provenance_restricted.json"
   --bootstrap-n "${BOOTSTRAP_N}"
   --bootstrap-seed 20260824
   --restricted-inputs-acknowledged
@@ -312,7 +313,8 @@ case "${MODE}" in
       --restricted-reconciliation-csv "${OUT}/restricted/cohort_flow/reconciliation.csv"
     ;;
   reviewer-metrics)
-    if [[ -e "${OUT}/aggregate_safe/reviewer_metrics" ]]; then
+    if [[ -e "${OUT}/aggregate_safe/reviewer_metrics" || \
+          -e "${OUT}/restricted/reviewer_metrics/fixed_prediction_metrics_input_provenance_restricted.json" ]]; then
       echo "[error] Refusing to overwrite fixed original reviewer metrics" >&2
       exit 2
     fi
@@ -350,7 +352,8 @@ case "${MODE}" in
       "${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips" \
       "${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips_exclude_hard_extremes" \
       "${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes" \
-      "${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics"; do
+      "${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics" \
+      "${CORRECTED_ROOT}/restricted/reviewer_metrics"; do
       if [[ -e "${output_dir}" ]]; then
         echo "[error] Refusing to overwrite corrected analysis output: ${output_dir}" >&2
         exit 2
@@ -393,6 +396,7 @@ case "${MODE}" in
       --imaging-predictions "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips/imaging_baseline_predictions.csv"
       --imaging-predictions "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips/imaging_baseline_predictions.csv"
       --output-dir "${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics"
+      --restricted-input-provenance-json "${CORRECTED_ROOT}/restricted/reviewer_metrics/fixed_prediction_metrics_input_provenance_restricted.json"
       --bootstrap-n "${BOOTSTRAP_N}"
       --bootstrap-seed 20260824
       --restricted-inputs-acknowledged
@@ -431,6 +435,9 @@ case "${MODE}" in
       --corrected-results "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips" \
       --corrected-results "reviewer_metrics=${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics" \
       --frozen-split-map-csv "${SPLIT_MAP}" \
+      --original-reviewer-input-provenance-json "${OUT}/restricted/reviewer_metrics/fixed_prediction_metrics_input_provenance_restricted.json" \
+      --corrected-reviewer-input-provenance-json "${CORRECTED_ROOT}/restricted/reviewer_metrics/fixed_prediction_metrics_input_provenance_restricted.json" \
+      --restricted-input-provenance-json "${CORRECTED_ROOT}/restricted/comparisons/original_vs_corrected_main/input_provenance_restricted.json" \
       --output-root "${CORRECTED_ROOT}/aggregate_safe/original_vs_corrected_main"
     "${PY}" scripts/compare_jdim_original_corrected.py \
       --original-predictions "lvot_vti=${PHASE2}/lvot_vti/all_clips_exclude_hard_extremes/imaging_baseline_predictions.csv" \
@@ -446,6 +453,7 @@ case "${MODE}" in
       --corrected-results "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips_exclude_hard_extremes" \
       --corrected-results "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes" \
       --frozen-split-map-csv "${SPLIT_MAP}" \
+      --restricted-input-provenance-json "${CORRECTED_ROOT}/restricted/comparisons/original_vs_corrected_hard_extremes/input_provenance_restricted.json" \
       --output-root "${CORRECTED_ROOT}/aggregate_safe/original_vs_corrected_hard_extremes"
     "${PY}" scripts/validate_jdim_corrected_completion.py \
       --corrected-root "${CORRECTED_ROOT}" \

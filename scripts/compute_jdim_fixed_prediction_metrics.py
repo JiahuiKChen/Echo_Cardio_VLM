@@ -11,6 +11,7 @@ import pandas as pd
 from jdim_tier1.metrics import (
     compute_fixed_prediction_metrics,
     validate_prediction_file_schemas,
+    write_fixed_metric_input_provenance,
     write_fixed_metric_outputs,
 )
 from jdim_tier1.safety import Tier1BlockedError, parse_named_paths
@@ -33,6 +34,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional frozen row-level comparator prediction CSV.",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--restricted-input-provenance-json",
+        type=Path,
+        help="New restricted path-bearing input manifest; required outside schema-only mode.",
+    )
     parser.add_argument("--bootstrap-n", type=int, default=2000)
     parser.add_argument("--bootstrap-seed", type=int, default=20260824)
     parser.add_argument(
@@ -57,6 +63,10 @@ def main() -> int:
         if args.schema_only:
             print(json.dumps(validate_prediction_file_schemas(imaging_paths, nonimage_paths), indent=2))
             return 0
+        if args.restricted_input_provenance_json is None:
+            raise ValueError(
+                "--restricted-input-provenance-json is required outside schema-only mode"
+            )
         imaging = {target: pd.read_csv(path) for target, path in imaging_paths.items()}
         nonimage = {name: pd.read_csv(path) for name, path in nonimage_paths.items()}
         result = compute_fixed_prediction_metrics(
@@ -66,6 +76,12 @@ def main() -> int:
             nonimage_sources=nonimage_paths,
             n_bootstrap=args.bootstrap_n,
             seed=args.bootstrap_seed,
+        )
+        write_fixed_metric_input_provenance(
+            result,
+            imaging_paths,
+            nonimage_paths,
+            args.restricted_input_provenance_json,
         )
         write_fixed_metric_outputs(result, args.output_dir)
     except Tier1BlockedError as exc:

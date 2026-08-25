@@ -110,7 +110,9 @@ entry points are:
   clip deduplication and study-level mean reaggregation when true duplication
   is established.
 - `scripts/compare_jdim_original_corrected.py`: row/split/label/protocol
-  identity checks and aggregate original-versus-corrected result comparisons.
+  identity checks and aggregate original-versus-corrected result comparisons,
+  with a hash-bound restricted manifest for every original, corrected, and
+  frozen-split source file.
 - `scripts/build_jdim_audit_reconstruction_pilot.py`: restricted replay of a
   very small source-to-processed sample selected from the locked canonical clip
   roster, exact source-manifest-row fingerprint and 16-frame selection checks,
@@ -223,7 +225,10 @@ Paired improvement is `MAE_comparator - MAE_imaging_Ridge`; positive values
 favor imaging. Ineligible non-image comparisons produce
 `PAIRED_NONIMAGE_COMPARISON_UNAVAILABLE` with aggregate reason counts.
 
-Only aggregate CSV/JSON files are written. No model library, alpha argument,
+The result tables and redacted provenance are aggregate-safe. A separate
+restricted manifest records the absolute source paths and hashes and is bound
+to the safe provenance by SHA-256; the same safe provenance hashes every metric
+output and the training-tertile boundary file. No model library, alpha argument,
 threshold optimizer, or prediction writer is present.
 
 ### Provenance manifests
@@ -263,6 +268,9 @@ Aggregate-safe after disclosure review:
 - Safe manifests identify files by logical role, never basename or path.
 - Frozen tertile JSON records the training source split, quantile method,
   sample counts, and source-file hash.
+- Corrected completion revalidates both safe and path-bearing input manifests,
+  every original/corrected comparison source, and the fixed reviewer-metric
+  protocol before certifying the workflow.
 - Real runs require a clean Git checkout and record branch and commit.
 
 ## Tests

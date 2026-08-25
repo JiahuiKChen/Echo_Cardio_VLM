@@ -24,6 +24,7 @@ from .safety import (
     assert_export_safe_frame,
     require_columns,
     require_restricted_destination,
+    restricted_file_record,
     safe_file_record,
     sha256_file,
 )
@@ -93,6 +94,10 @@ SUPPORTED_AGGREGATE_TABLES: dict[str, tuple[str, ...]] = {
     "training_tertile_test_error.csv": ("target", "model_name", "range_group"),
     "paired_delta_mae.csv": ("target", "comparator"),
 }
+REVIEWER_SUPPORT_FILES = (
+    "training_tertile_boundaries.json",
+    "fixed_prediction_metrics_provenance.json",
+)
 
 RUN_PROTOCOL_FIELDS = (
     "target",
@@ -156,6 +161,7 @@ class OriginalCorrectedComparison:
     prediction_metrics: pd.DataFrame
     aggregate_metrics: pd.DataFrame
     safe_provenance: dict[str, Any]
+    restricted_provenance: dict[str, Any]
 
 
 def _stable_scalar(value: Any, column: str) -> str:
@@ -1355,11 +1361,12 @@ def _compare_one_aggregate_table(
 def _compare_aggregate_directories(
     original_dirs: Mapping[str, Path],
     corrected_dirs: Mapping[str, Path],
-) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+) -> tuple[pd.DataFrame, list[dict[str, Any]], list[dict[str, Any]]]:
     if set(original_dirs) != set(corrected_dirs):
         raise Tier1BlockedError(BLOCKED_CORRECTED_ANALYSIS, "original/corrected aggregate target scopes differ")
     frames: list[pd.DataFrame] = []
     records: list[dict[str, Any]] = []
+    restricted_records: list[dict[str, Any]] = []
     for target_scope in sorted(original_dirs):
         original_dir = original_dirs[target_scope]
         corrected_dir = corrected_dirs[target_scope]
@@ -1386,6 +1393,41 @@ def _compare_aggregate_directories(
                     safe_file_record(f"corrected_{target_scope}_{filename}", new_path, len(new_frame)),
                 ]
             )
+            restricted_records.extend(
+                [
+                    restricted_file_record(
+                        f"original_{target_scope}_{filename}", old_path, len(old_frame)
+                    ),
+                    restricted_file_record(
+                        f"corrected_{target_scope}_{filename}", new_path, len(new_frame)
+                    ),
+                ]
+            )
+        if target_scope == "reviewer_metrics":
+            for filename in REVIEWER_SUPPORT_FILES:
+                old_path = original_dir / filename
+                new_path = corrected_dir / filename
+                if not old_path.is_file() or not new_path.is_file():
+                    raise Tier1BlockedError(
+                        BLOCKED_CORRECTED_ANALYSIS,
+                        f"reviewer-metric support file is missing: {filename}",
+                    )
+                records.extend(
+                    [
+                        safe_file_record(f"original_{target_scope}_{filename}", old_path),
+                        safe_file_record(f"corrected_{target_scope}_{filename}", new_path),
+                    ]
+                )
+                restricted_records.extend(
+                    [
+                        restricted_file_record(
+                            f"original_{target_scope}_{filename}", old_path
+                        ),
+                        restricted_file_record(
+                            f"corrected_{target_scope}_{filename}", new_path
+                        ),
+                    ]
+                )
         if found == 0:
             raise Tier1BlockedError(
                 BLOCKED_CORRECTED_ANALYSIS,
@@ -1393,7 +1435,7 @@ def _compare_aggregate_directories(
             )
     output = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     assert_export_safe_frame(output, "aggregate metric comparison")
-    return output, records
+    return output, records, restricted_records
 
 
 def _validate_main_metrics_against_predictions(
@@ -1541,6 +1583,7 @@ def compare_original_corrected(
     corrected_run_summaries: Mapping[str, Mapping[str, Any]] | None = None,
     metric_tolerance: float = 1e-6,
     input_records: Sequence[dict[str, Any]] | None = None,
+    restricted_input_records: Sequence[dict[str, Any]] | None = None,
 ) -> OriginalCorrectedComparison:
     """Prove row/split identity and compare aggregate-safe outcomes."""
 
@@ -1557,7 +1600,7 @@ def compare_original_corrected(
         )
         paired[target] = _pair_predictions(original, corrected, target, split_map)
     prediction_changes, prediction_metrics = _prediction_summaries(paired)
-    aggregate_metrics, aggregate_records = _compare_aggregate_directories(
+    aggregate_metrics, aggregate_records, restricted_aggregate_records = _compare_aggregate_directories(
         original_aggregate_dirs, corrected_aggregate_dirs
     )
     _validate_main_metrics_against_predictions(prediction_metrics, aggregate_metrics, metric_tolerance)
@@ -1590,18 +1633,43 @@ def compare_original_corrected(
         "targets": sorted(paired),
         "input_files": [*(input_records or []), *aggregate_records],
     }
+    restricted_provenance = {
+        "schema_version": "jdim-original-corrected-input-provenance-v1",
+        "status": "ORIGINAL_CORRECTED_INPUTS_LOCKED",
+        "input_files": [
+            *(restricted_input_records or []),
+            *restricted_aggregate_records,
+        ],
+    }
     return OriginalCorrectedComparison(
         prediction_changes=prediction_changes,
         prediction_metrics=prediction_metrics,
         aggregate_metrics=aggregate_metrics,
         safe_provenance=provenance,
+        restricted_provenance=restricted_provenance,
     )
 
 
 def write_original_corrected_comparison(
     result: OriginalCorrectedComparison,
     output_root: Path,
+    restricted_input_provenance_json: Path,
 ) -> Path:
+    output_destination = require_restricted_destination(output_root)
+    if output_destination.exists():
+        raise FileExistsError(
+            f"refusing to overwrite existing output root: {output_destination}"
+        )
+    restricted_destination = require_restricted_destination(
+        restricted_input_provenance_json
+    )
+    if restricted_destination.exists():
+        raise FileExistsError(
+            "refusing to overwrite comparison input provenance: "
+            f"{restricted_destination}"
+        )
+    restricted_destination.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(restricted_destination, result.restricted_provenance)
     destination, temporary = _atomic_output_root(output_root)
     try:
         result.prediction_changes.to_csv(
@@ -1614,6 +1682,9 @@ def write_original_corrected_comparison(
             temporary / "original_vs_corrected_aggregate_metrics.csv", index=False
         )
         provenance = dict(result.safe_provenance)
+        provenance["restricted_input_manifest_sha256"] = sha256_file(
+            restricted_destination
+        )
         provenance["output_files"] = [
             safe_file_record(
                 "comparison_prediction_changes",

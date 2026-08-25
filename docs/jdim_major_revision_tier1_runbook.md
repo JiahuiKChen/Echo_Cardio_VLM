@@ -315,7 +315,9 @@ qsub -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_fixed_metrics -j y \
 
 The metrics job reads the unchanged all-split saved prediction CSVs, derives
 tertiles from training labels only, and evaluates the held-out test rows. It
-does not refit Ridge or the null model. Set `JDIM_NONIMAGE_PREDICTIONS` only if
+does not refit Ridge or the null model. It writes a restricted path-bearing
+input manifest whose hash is recorded in the aggregate-safe metrics provenance.
+Set `JDIM_NONIMAGE_PREDICTIONS` only if
 unchanged row-level comparator predictions with exact study, subject, split,
 and target values exist, for example:
 
@@ -509,8 +511,11 @@ if [[ -f "$CORRECTED_COMPLETION" ]]; then
     --file "corrected_clip_embedding_manifest=restricted=$JDIM_CORRECTED_ROOT/aggregation/restricted/deduplicated_clip_manifest.csv"
     --file "corrected_clip_embedding_array=restricted=$JDIM_CORRECTED_ROOT/aggregation/restricted/deduplicated_clip_embeddings.npz"
     --file "corrected_aggregation_provenance=restricted=$JDIM_CORRECTED_ROOT/aggregation/restricted/corrected_aggregation_provenance_restricted.json"
+    --file "corrected_reviewer_metrics_input_provenance=restricted=$JDIM_CORRECTED_ROOT/restricted/reviewer_metrics/fixed_prediction_metrics_input_provenance_restricted.json"
     --file "corrected_main_comparison_provenance=aggregate_safe=$JDIM_CORRECTED_ROOT/aggregate_safe/original_vs_corrected_main/original_vs_corrected_comparison_provenance.json"
+    --file "corrected_main_comparison_input_provenance=restricted=$JDIM_CORRECTED_ROOT/restricted/comparisons/original_vs_corrected_main/input_provenance_restricted.json"
     --file "corrected_hard_extremes_comparison_provenance=aggregate_safe=$JDIM_CORRECTED_ROOT/aggregate_safe/original_vs_corrected_hard_extremes/original_vs_corrected_comparison_provenance.json"
+    --file "corrected_hard_extremes_comparison_input_provenance=restricted=$JDIM_CORRECTED_ROOT/restricted/comparisons/original_vs_corrected_hard_extremes/input_provenance_restricted.json"
     --file "corrected_analysis_completion=aggregate_safe=$CORRECTED_COMPLETION"
   )
 elif [[ -e "$JDIM_CORRECTED_ROOT" ]]; then

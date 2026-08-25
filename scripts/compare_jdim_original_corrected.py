@@ -15,6 +15,7 @@ from jdim_tier1.corrected_analysis import (
 from jdim_tier1.safety import (
     parse_named_paths,
     require_restricted_destination,
+    restricted_file_record,
     safe_file_record,
 )
 
@@ -71,6 +72,22 @@ def parse_args() -> argparse.Namespace:
         help="New aggregate-safe output root; an existing path is refused.",
     )
     parser.add_argument(
+        "--restricted-input-provenance-json",
+        type=Path,
+        required=True,
+        help="New restricted path-bearing input manifest for this comparison.",
+    )
+    parser.add_argument(
+        "--original-reviewer-input-provenance-json",
+        type=Path,
+        help="Restricted source manifest for original fixed reviewer metrics.",
+    )
+    parser.add_argument(
+        "--corrected-reviewer-input-provenance-json",
+        type=Path,
+        help="Restricted source manifest for corrected fixed reviewer metrics.",
+    )
+    parser.add_argument(
         "--metric-tolerance",
         type=float,
         default=1e-6,
@@ -79,9 +96,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_named_csvs(paths: dict[str, Path], label: str) -> tuple[dict[str, pd.DataFrame], list[dict]]:
+def _load_named_csvs(
+    paths: dict[str, Path],
+    label: str,
+) -> tuple[dict[str, pd.DataFrame], list[dict], list[dict]]:
     frames: dict[str, pd.DataFrame] = {}
     records: list[dict] = []
+    restricted_records: list[dict] = []
     for target, path in paths.items():
         require_restricted_destination(path)
         if not path.exists():
@@ -89,12 +110,19 @@ def _load_named_csvs(paths: dict[str, Path], label: str) -> tuple[dict[str, pd.D
         frame = pd.read_csv(path)
         frames[target] = frame
         records.append(safe_file_record(f"{label}_{target}", path, len(frame)))
-    return frames, records
+        restricted_records.append(
+            restricted_file_record(f"{label}_{target}", path, len(frame))
+        )
+    return frames, records, restricted_records
 
 
-def _load_named_jsons(paths: dict[str, Path], label: str) -> tuple[dict[str, dict], list[dict]]:
+def _load_named_jsons(
+    paths: dict[str, Path],
+    label: str,
+) -> tuple[dict[str, dict], list[dict], list[dict]]:
     payloads: dict[str, dict] = {}
     records: list[dict] = []
+    restricted_records: list[dict] = []
     for target, path in paths.items():
         require_restricted_destination(path)
         if not path.exists():
@@ -104,7 +132,8 @@ def _load_named_jsons(paths: dict[str, Path], label: str) -> tuple[dict[str, dic
             raise ValueError(f"{label} for {target} must be a JSON object")
         payloads[target] = payload
         records.append(safe_file_record(f"{label}_{target}", path))
-    return payloads, records
+        restricted_records.append(restricted_file_record(f"{label}_{target}", path))
+    return payloads, records, restricted_records
 
 
 def main() -> int:
@@ -120,28 +149,72 @@ def main() -> int:
     original_summary_paths = parse_named_paths(args.original_summary, "original summary")
     corrected_summary_paths = parse_named_paths(args.corrected_summary, "corrected summary")
 
-    original_predictions, original_records = _load_named_csvs(
-        original_prediction_paths, "original_predictions"
-    )
-    corrected_predictions, corrected_records = _load_named_csvs(
-        corrected_prediction_paths, "corrected_predictions"
-    )
-    original_summaries, original_summary_records = _load_named_jsons(
-        original_summary_paths, "original_summary"
-    )
-    corrected_summaries, corrected_summary_records = _load_named_jsons(
-        corrected_summary_paths, "corrected_summary"
-    )
+    (
+        original_predictions,
+        original_records,
+        original_restricted_records,
+    ) = _load_named_csvs(original_prediction_paths, "original_predictions")
+    (
+        corrected_predictions,
+        corrected_records,
+        corrected_restricted_records,
+    ) = _load_named_csvs(corrected_prediction_paths, "corrected_predictions")
+    (
+        original_summaries,
+        original_summary_records,
+        original_summary_restricted_records,
+    ) = _load_named_jsons(original_summary_paths, "original_summary")
+    (
+        corrected_summaries,
+        corrected_summary_records,
+        corrected_summary_restricted_records,
+    ) = _load_named_jsons(corrected_summary_paths, "corrected_summary")
     require_restricted_destination(args.frozen_split_map_csv)
     if not args.frozen_split_map_csv.exists():
         raise FileNotFoundError(f"missing frozen split map: {args.frozen_split_map_csv}")
     split_map = pd.read_csv(args.frozen_split_map_csv)
+    reviewer_paths = {
+        "original_reviewer_metrics_input_provenance": (
+            args.original_reviewer_input_provenance_json
+        ),
+        "corrected_reviewer_metrics_input_provenance": (
+            args.corrected_reviewer_input_provenance_json
+        ),
+    }
+    supplied_reviewer_paths = {
+        role: path for role, path in reviewer_paths.items() if path is not None
+    }
+    if supplied_reviewer_paths and len(supplied_reviewer_paths) != len(reviewer_paths):
+        raise ValueError(
+            "original and corrected reviewer input provenance must be supplied together"
+        )
+    for path in supplied_reviewer_paths.values():
+        require_restricted_destination(path)
+        if not path.is_file():
+            raise FileNotFoundError(path)
     input_records = [
         *original_records,
         *corrected_records,
         *original_summary_records,
         *corrected_summary_records,
         safe_file_record("frozen_split_map", args.frozen_split_map_csv, len(split_map)),
+        *[
+            safe_file_record(role, path)
+            for role, path in sorted(supplied_reviewer_paths.items())
+        ],
+    ]
+    restricted_input_records = [
+        *original_restricted_records,
+        *corrected_restricted_records,
+        *original_summary_restricted_records,
+        *corrected_summary_restricted_records,
+        restricted_file_record(
+            "frozen_split_map", args.frozen_split_map_csv, len(split_map)
+        ),
+        *[
+            restricted_file_record(role, path)
+            for role, path in sorted(supplied_reviewer_paths.items())
+        ],
     ]
 
     result = compare_original_corrected(
@@ -154,8 +227,13 @@ def main() -> int:
         corrected_run_summaries=corrected_summaries,
         metric_tolerance=args.metric_tolerance,
         input_records=input_records,
+        restricted_input_records=restricted_input_records,
     )
-    destination = write_original_corrected_comparison(result, args.output_root)
+    destination = write_original_corrected_comparison(
+        result,
+        args.output_root,
+        args.restricted_input_provenance_json,
+    )
     print(
         json.dumps(
             {

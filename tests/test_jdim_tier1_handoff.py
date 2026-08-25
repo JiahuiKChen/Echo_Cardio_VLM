@@ -177,6 +177,13 @@ class Tier1HandoffTests(unittest.TestCase):
                         ),
                         "classification": "restricted",
                     },
+                    "corrected_reviewer_metrics_input_provenance": {
+                        "path": str(
+                            root
+                            / "restricted/reviewer_metrics/fixed_prediction_metrics_input_provenance_restricted.json"
+                        ),
+                        "classification": "restricted",
+                    },
                     "corrected_main_comparison_provenance": {
                         "path": str(
                             root
@@ -184,12 +191,26 @@ class Tier1HandoffTests(unittest.TestCase):
                         ),
                         "classification": "aggregate_safe",
                     },
+                    "corrected_main_comparison_input_provenance": {
+                        "path": str(
+                            root
+                            / "restricted/comparisons/original_vs_corrected_main/input_provenance_restricted.json"
+                        ),
+                        "classification": "restricted",
+                    },
                     "corrected_hard_extremes_comparison_provenance": {
                         "path": str(
                             root
                             / "aggregate_safe/original_vs_corrected_hard_extremes/original_vs_corrected_comparison_provenance.json"
                         ),
                         "classification": "aggregate_safe",
+                    },
+                    "corrected_hard_extremes_comparison_input_provenance": {
+                        "path": str(
+                            root
+                            / "restricted/comparisons/original_vs_corrected_hard_extremes/input_provenance_restricted.json"
+                        ),
+                        "classification": "restricted",
                     },
                     "corrected_analysis_completion": {
                         "path": str(completion),

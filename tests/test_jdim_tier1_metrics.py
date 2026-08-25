@@ -25,6 +25,7 @@ from jdim_tier1.metrics import (  # noqa: E402
     validate_fixed_prediction_request,
     validate_prediction_file_schemas,
 )
+from jdim_tier1.safety import sha256_file  # noqa: E402
 
 
 def imaging_frame(target: str = "lvot_vti") -> pd.DataFrame:
@@ -221,6 +222,62 @@ class FixedMetricTests(unittest.TestCase):
             cli_payload = json.loads(completed.stdout)
             self.assertEqual(cli_payload["status"], "ok")
             self.assertFalse(cli_payload["row_level_metrics_computed"])
+
+    def test_cli_binds_safe_metrics_to_restricted_source_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            lvot = root / "lvot.csv"
+            tapse = root / "tapse.csv"
+            output = root / "aggregate_safe"
+            restricted = root / "restricted" / "fixed_metric_inputs.json"
+            imaging_frame("lvot_vti").to_csv(lvot, index=False)
+            imaging_frame("tapse").to_csv(tapse, index=False)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "compute_jdim_fixed_prediction_metrics.py"),
+                    "--imaging-predictions",
+                    f"lvot_vti={lvot}",
+                    "--imaging-predictions",
+                    f"tapse={tapse}",
+                    "--output-dir",
+                    str(output),
+                    "--restricted-input-provenance-json",
+                    str(restricted),
+                    "--bootstrap-n",
+                    "10",
+                    "--restricted-inputs-acknowledged",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            safe = json.loads(
+                (output / "fixed_prediction_metrics_provenance.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            pathful = json.loads(restricted.read_text(encoding="utf-8"))
+            self.assertEqual(
+                safe["restricted_input_manifest_sha256"], sha256_file(restricted)
+            )
+            self.assertEqual(
+                {record["logical_role"] for record in pathful["input_files"]},
+                {"imaging_predictions_lvot_vti", "imaging_predictions_tapse"},
+            )
+            self.assertEqual(
+                {record["logical_role"] for record in safe["output_files"]},
+                {
+                    "continuous_calibration_metrics",
+                    "training_tertile_test_error",
+                    "paired_delta_mae",
+                    "training_tertile_boundaries",
+                },
+            )
+            self.assertTrue(
+                all(Path(record["path"]).is_absolute() for record in pathful["input_files"])
+            )
 
 
 if __name__ == "__main__":

@@ -16,7 +16,10 @@ from .safety import (
     Tier1BlockedError,
     assert_export_safe_frame,
     require_columns,
+    require_restricted_destination,
+    restricted_file_record,
     safe_file_record,
+    sha256_file,
     write_json,
     write_safe_csv,
 )
@@ -557,8 +560,81 @@ def compute_fixed_prediction_metrics(
 
 def write_fixed_metric_outputs(result: FixedMetricResult, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_safe_csv(output_dir / "continuous_calibration_metrics.csv", result.calibration, "calibration metrics")
-    write_safe_csv(output_dir / "training_tertile_test_error.csv", result.range_error, "range error metrics")
-    write_safe_csv(output_dir / "paired_delta_mae.csv", result.paired_delta_mae, "paired delta MAE")
-    write_json(output_dir / "training_tertile_boundaries.json", result.tertile_boundaries)
+    output_paths = {
+        "continuous_calibration_metrics": output_dir
+        / "continuous_calibration_metrics.csv",
+        "training_tertile_test_error": output_dir / "training_tertile_test_error.csv",
+        "paired_delta_mae": output_dir / "paired_delta_mae.csv",
+        "training_tertile_boundaries": output_dir / "training_tertile_boundaries.json",
+    }
+    write_safe_csv(
+        output_paths["continuous_calibration_metrics"],
+        result.calibration,
+        "calibration metrics",
+    )
+    write_safe_csv(
+        output_paths["training_tertile_test_error"],
+        result.range_error,
+        "range error metrics",
+    )
+    write_safe_csv(
+        output_paths["paired_delta_mae"], result.paired_delta_mae, "paired delta MAE"
+    )
+    write_json(
+        output_paths["training_tertile_boundaries"], result.tertile_boundaries
+    )
+    result.provenance["output_files"] = [
+        safe_file_record(role, path) for role, path in sorted(output_paths.items())
+    ]
     write_json(output_dir / "fixed_prediction_metrics_provenance.json", result.provenance)
+
+
+def write_fixed_metric_input_provenance(
+    result: FixedMetricResult,
+    imaging_sources: Mapping[str, Path],
+    nonimage_sources: Mapping[str, Path] | None,
+    output_json: Path,
+) -> dict[str, Any]:
+    """Write the path-bearing source manifest and bind its hash to safe provenance."""
+
+    destination = require_restricted_destination(output_json)
+    if destination.exists():
+        raise FileExistsError(
+            f"refusing to overwrite fixed-metric input provenance: {destination}"
+        )
+    records: list[dict[str, Any]] = []
+    for target, path in sorted(imaging_sources.items()):
+        row_count = len(normalize_imaging_predictions(pd.read_csv(path), target))
+        records.append(
+            restricted_file_record(
+                f"imaging_predictions_{target}", path, row_count
+            )
+        )
+    for name, path in sorted((nonimage_sources or {}).items()):
+        row_count = len(normalize_comparator_predictions(pd.read_csv(path), name))
+        records.append(
+            restricted_file_record(
+                f"nonimage_predictions_{name}", path, row_count
+            )
+        )
+    safe_records = [
+        {key: value for key, value in record.items() if key != "path"}
+        for record in records
+    ]
+    if safe_records != sorted(
+        result.provenance.get("input_files", []),
+        key=lambda item: str(item.get("logical_role", "")),
+    ):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "fixed-metric restricted inputs do not match the computed safe provenance",
+        )
+    payload = {
+        "schema_version": "jdim-fixed-prediction-metrics-input-provenance-v1",
+        "status": "FIXED_PREDICTION_INPUTS_LOCKED",
+        "input_files": records,
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    write_json(destination, payload)
+    result.provenance["restricted_input_manifest_sha256"] = sha256_file(destination)
+    return payload

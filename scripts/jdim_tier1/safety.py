@@ -153,6 +153,20 @@ def safe_file_record(role: str, path: Path, row_count: int | None = None) -> dic
     return record
 
 
+def restricted_file_record(
+    role: str,
+    path: Path,
+    row_count: int | None = None,
+) -> dict[str, Any]:
+    """Return path-bearing provenance for storage in a restricted manifest."""
+
+    resolved = path.expanduser().resolve()
+    return {
+        "path": str(resolved),
+        **safe_file_record(role, resolved, row_count),
+    }
+
+
 def schema_hash(frame: pd.DataFrame) -> str:
     schema = [(str(column), str(dtype)) for column, dtype in frame.dtypes.items()]
     return sha256_json(schema)
