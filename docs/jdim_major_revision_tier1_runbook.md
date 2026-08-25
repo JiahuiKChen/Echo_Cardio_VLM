@@ -1,14 +1,18 @@
 # JDIM Major Revision Lineage-Repair SCC Runbook
 
-This runbook executes the frozen post-hoc tooling for JDIM-D-26-02840 on SCC.
-It does not train or refit a model, regenerate predictions, change the subject
-split, optimize thresholds, or inspect DICOM pixels. Row-level source files,
-predictions, audit linkage, annotations, and provenance specifications must stay
-under approved restricted storage.
+This runbook executes the lineage repair and frozen-protocol revision tooling
+for JDIM-D-26-02840 on SCC. It does not change the subject split, target
+definitions, median label aggregation, model family, alpha grid, validation-only
+selection, preprocessing, or thresholds. A downstream Ridge refit is permitted
+only if restricted forensics confirm true unintended duplicate weighting; the
+refit then uses corrected embeddings and the unchanged stable-v2 protocol.
+Row-level source files, predictions, audit linkage, annotations, and provenance
+specifications must stay under approved restricted storage.
 
 Do not proceed if the checked-out commit is dirty, the frozen Phase-2 artifacts
 are missing, the split-map lineage cannot be confirmed, or a cohort invariant
-returns `BLOCKED_MIXED_OR_UNRESOLVED_LINEAGE`.
+returns `BLOCKED_MIXED_OR_UNRESOLVED_LINEAGE`. Duplicate ambiguity returns
+`BLOCKED_DUPLICATE_SEMANTICS_UNRESOLVED` and stops cohort/audit work.
 
 ## 1. Create an isolated worktree at the reviewed repair branch
 
@@ -48,6 +52,8 @@ export JDIM_SPLIT_MAP_CSV="$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.c
 export JDIM_SPLIT_MAP_SUMMARY_JSON="$JDIM_FULLSCALE_ROOT/manifests/subject_split_map_v1.summary.json"
 export JDIM_STUDY_EMBEDDING_NPZ="$JDIM_FULLSCALE_ROOT/study_embeddings_512/study_embeddings_512.npz"
 export JDIM_STUDY_EMBEDDING_MANIFEST_CSV="$JDIM_FULLSCALE_ROOT/study_embeddings_512/study_embedding_manifest.csv"
+export JDIM_CLIP_EMBEDDING_NPZ="$JDIM_FULLSCALE_ROOT/merged_clip_embeddings_512/clip_embeddings_512.npz"
+export JDIM_CLIP_EMBEDDING_MANIFEST_CSV="$JDIM_FULLSCALE_ROOT/merged_clip_embeddings_512/clip_embedding_manifest.csv"
 export JDIM_ENCODER_CHECKPOINT=/restricted/project/mimicecho/echoprime_weights/echo_prime_encoder.pt
 export JDIM_LVOT_SUMMARY_JSON="$JDIM_PHASE2_ROOT/lvot_vti/all_clips/imaging_baseline_summary.json"
 export JDIM_TAPSE_SUMMARY_JSON="$JDIM_PHASE2_ROOT/tapse/all_clips/imaging_baseline_summary.json"
@@ -56,7 +62,10 @@ export JDIM_TAPSE_PREDICTIONS_CSV="$JDIM_PHASE2_ROOT/tapse/all_clips/imaging_bas
 export JDIM_AUDIT_CONFIG="$JDIM_REPO_ROOT/configs/jdim_input_content_audit_v1.yaml"
 export JDIM_RESTRICTED_AUDIT_ROOT="$JDIM_OUTPUT_ROOT/restricted/input_content_audit"
 export JDIM_AUDIT_KEY_FILE="$JDIM_OUTPUT_ROOT/restricted/keys/jdim_audit_hmac_key.bin"
+export JDIM_CORRECTED_ROOT=/restricted/project/mimicecho/outputs/jdim_major_revision_duplicate_corrected_v1
 export JDIM_BOOTSTRAP_N=2000
+export JDIM_PHASE2_RANDOM_SEED=1337
+export JDIM_PHASE2_RIDGE_ALPHAS=0.01,0.03,0.1,0.3,1,3,10,30,100,300,1000
 export JDIM_SGE_PROJECT=mimicecho
 
 mkdir -p "$JDIM_OUTPUT_ROOT/restricted/lineage"
@@ -64,11 +73,14 @@ mkdir -p "$JDIM_OUTPUT_ROOT/restricted/keys"
 mkdir -p "$JDIM_OUTPUT_ROOT/aggregate_safe"
 mkdir -p "$JDIM_OUTPUT_ROOT/logs"
 
+test ! -e "$JDIM_CORRECTED_ROOT"
+
 test -x "$JDIM_PYTHON_BIN"
 "$JDIM_PYTHON_BIN" -c 'import numpy, pandas, scipy, sklearn; print("tier1_python_ok")'
 ```
 
-Every canonical input is explicit. If SCC uses another approved location,
+Every canonical input is explicit. `test ! -e` protects the proposed immutable
+corrected root; use a new versioned root if a prior attempt exists. If SCC uses another approved location,
 change only the corresponding variable and rerun `handoff-check`. Do not fall
 back to the isolated worktree or home storage for untracked inputs, environments,
 or restricted artifacts.
@@ -157,7 +169,96 @@ This validates headers, the pinned split hash, the audit configuration, and
 saved-prediction schemas. It does not compute cohort counts or reviewer
 metrics. A nonzero exit or any `BLOCKED_*` status stops execution.
 
-## 6. Submit cohort-flow and fixed-prediction jobs
+## 6. Adjudicate repeated clip keys before cohort or audit work
+
+```bash
+qsub -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_dup_forensics -j y \
+  -o "$JDIM_OUTPUT_ROOT/logs" -l h_rt=08:00:00 -pe omp 2 -l mem_per_core=16G \
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" duplicate-forensics
+```
+
+This job opens processed NPZ arrays only for repeated groups, compares the
+frozen vectors, and writes row-level evidence under
+`$JDIM_OUTPUT_ROOT/restricted/duplicate_forensics`. Only the parallel
+`aggregate_safe/duplicate_forensics` summaries may be inspected outside the
+restricted row evidence.
+
+Require exit status 0 unless the aggregate summary explicitly reports
+`BLOCKED_DUPLICATE_SEMANTICS_UNRESOLVED`. Then follow exactly one branch:
+
+- All groups `LEGITIMATE_DISTINCT_CLIPS` or `KEY_GRANULARITY_TOO_COARSE`: do not
+  deduplicate. Keep the original clip/study embeddings and predictions, refine
+  the documented clip key, and proceed to section 8.
+- At least one `TRUE_DUPLICATE_MANIFEST_ROWS` or
+  `TRUE_DUPLICATE_EMBEDDING_ROWS`, with no ambiguity: execute section 7. The
+  corrected analysis becomes canonical regardless of performance direction.
+- Any `AMBIGUOUS_REQUIRES_AUTHOR_REVIEW`: stop with
+  `BLOCKED_DUPLICATE_SEMANTICS_UNRESOLVED`. Do not run cohort flow, sampling, or
+  any corrected analysis until the restricted evidence is resolved.
+
+Do not infer duplicate status from a shared DICOM key alone, and do not use
+targets, predictions, residuals, or performance to choose the retained row.
+
+## 7. Build and compare corrected analyses only when true duplicates exist
+
+First compute the unchanged reviewer metrics from the original predictions so
+the later comparison has an exact original counterpart:
+
+```bash
+ORIGINAL_JOB=$(qsub -terse -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_fixed_original -j y \
+  -o "$JDIM_OUTPUT_ROOT/logs" -l h_rt=04:00:00 -pe omp 2 -l mem_per_core=8G \
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" reviewer-metrics)
+```
+
+Then submit the correction stages with scheduler dependencies:
+
+```bash
+AGG_JOB=$(qsub -terse -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_correct_agg -j y \
+  -o "$JDIM_OUTPUT_ROOT/logs" -l h_rt=04:00:00 -pe omp 2 -l mem_per_core=16G \
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" corrected-aggregation)
+
+ANALYSIS_JOB=$(qsub -terse -hold_jid "$AGG_JOB" -cwd -V -P "$JDIM_SGE_PROJECT" \
+  -N jdim_correct_models -j y -o "$JDIM_OUTPUT_ROOT/logs" \
+  -l h_rt=12:00:00 -pe omp 4 -l mem_per_core=16G \
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" corrected-analysis)
+
+qsub -cwd -V -P "$JDIM_SGE_PROJECT" -hold_jid "$ANALYSIS_JOB,$ORIGINAL_JOB" \
+  -N jdim_correct_compare -j y -o "$JDIM_OUTPUT_ROOT/logs" \
+  -l h_rt=04:00:00 -pe omp 2 -l mem_per_core=8G \
+  -b y "$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" corrected-comparison
+```
+
+The aggregation refuses unresolved groups, incomplete one-to-one mapping,
+materially divergent vectors, unstable canonical identity, and every existing
+output root. The comparison verifies exact study rows, subjects, labels, null
+predictions, frozen splits, solver, feature standardization, alpha grid,
+bootstrap settings, random seed, hard-extreme rule, and target/cohort counts.
+Selected alpha may change because the corrected representation changes; it is
+still selected on validation only.
+
+The wrapper reruns primary all-clips and hard-extreme analyses. Before declaring
+all dependent results reconciled, inspect the original Phase-2 directory for
+view-filtered runs. If a removed source clip was selected by any saved
+view-filtered manifest, regenerate that study embedding with the corrected
+unique clip store and rerun the corresponding stable-v2 analysis. If this
+input-level trace cannot be established, stop with
+`BLOCKED_CORRECTED_ANALYSIS_REPRODUCTION`; do not assume the sensitivity is
+unaffected.
+
+After successful correction, repoint the cohort and audit source to the
+corrected canonical study store:
+
+```bash
+export JDIM_STUDY_EMBEDDING_NPZ="$JDIM_CORRECTED_ROOT/aggregation/restricted/corrected_study_embeddings.npz"
+export JDIM_STUDY_EMBEDDING_MANIFEST_CSV="$JDIM_CORRECTED_ROOT/aggregation/restricted/corrected_study_embedding_manifest.csv"
+"$JDIM_REPO_ROOT/scripts/scc_run_jdim_tier1.sh" handoff-check
+```
+
+## 8. Run repaired cohort flow and original fixed metrics when no correction was needed
+
+If section 7 ran, submit only cohort flow below because the original and
+corrected metric jobs are already complete. If no correction was required,
+submit both cohort flow and fixed metrics:
 
 ```bash
 qsub -cwd -V -P "$JDIM_SGE_PROJECT" -N jdim_cohort_flow -j y \
@@ -182,7 +283,7 @@ export JDIM_NONIMAGE_PREDICTIONS="demographics=/absolute/restricted/path/to/demo
 If exact paired comparator rows do not exist, leave the variable unset and
 report the paired non-image comparison as unavailable.
 
-## 7. Generate the technical pilot and main audit manifests
+## 9. Generate the technical pilot and main audit manifests
 
 Wait for the cohort-flow job to finish successfully. Then create one restricted
 opaque-ID key and submit the technical manifest pilot. The pilot records only
@@ -215,7 +316,7 @@ human review occur later under the approved restricted workflow, using the
 opaque reader manifest. Never expose the linkage CSV or target values to
 readers.
 
-## 8. Monitor and account for jobs
+## 10. Monitor and account for jobs
 
 ```bash
 qstat -u "$(whoami)"
@@ -226,7 +327,7 @@ qacct -j <JOB_ID>
 
 Require exit status 0 in `qacct` and a terminal `[done]` line in each log.
 
-## 9. Validate aggregate-safe outputs
+## 11. Validate aggregate-safe outputs
 
 ```bash
 test -s "$JDIM_OUTPUT_ROOT/aggregate_safe/cohort_flow/cohort_flow_invariants.json"
@@ -248,7 +349,7 @@ fi
 The invariant JSON must report `status: ok`. Do not export any aggregate-safe
 directory until this scan passes and the team has reviewed every table.
 
-## 10. Aggregate completed manual annotations
+## 12. Aggregate completed manual annotations
 
 After blinded reading and adjudication, keep all annotation inputs restricted:
 
@@ -269,7 +370,7 @@ After blinded reading and adjudication, keep all annotation inputs restricted:
   --bootstrap-n 2000
 ```
 
-## 11. Build restricted and export-safe provenance manifests
+## 13. Build restricted and export-safe provenance manifests
 
 Confirm the EchoPrime release against the existing SCC clone and checkpoint.
 The pinned project documentation identifies public EchoPrime release `v1.0.0`

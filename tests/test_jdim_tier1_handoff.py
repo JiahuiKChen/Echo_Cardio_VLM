@@ -136,6 +136,7 @@ class Tier1HandoffTests(unittest.TestCase):
             legacy = root / "canonical_legacy"
             phase2 = root / "canonical_phase2"
             output = root / "new_output"
+            corrected = root / "corrected_output"
             audit_root = output / "restricted" / "audit"
 
             required_files = {
@@ -146,6 +147,8 @@ class Tier1HandoffTests(unittest.TestCase):
                 "split": fullscale / "manifests" / "split.csv",
                 "study_npz": fullscale / "study" / "study.npz",
                 "study_manifest": fullscale / "study" / "study.csv",
+                "clip_npz": fullscale / "merged" / "clips.npz",
+                "clip_manifest": fullscale / "merged" / "clips.csv",
                 "checkpoint": root / "weights" / "encoder.pt",
                 "lvot_summary": phase2 / "lvot_summary.json",
                 "tapse_summary": phase2 / "tapse_summary.json",
@@ -158,6 +161,9 @@ class Tier1HandoffTests(unittest.TestCase):
                 "legacy_embeddings": (
                     legacy / "echoprime_embeddings_512" / "clip_embedding_manifest.csv"
                 ),
+                "legacy_embedding_npz": (
+                    legacy / "echoprime_embeddings_512" / "clip_embeddings_512.npz"
+                ),
                 "batch_records": fullscale / "batches" / "batch_000_records.csv",
                 "batch_audit": fullscale / "batches" / "batch_000_audit" / "dicom_audit.csv",
                 "batch_extraction": fullscale / "batches" / "batch_000_extraction_manifest.csv",
@@ -166,6 +172,12 @@ class Tier1HandoffTests(unittest.TestCase):
                     / "batches"
                     / "batch_000_embeddings"
                     / "clip_embedding_manifest.csv"
+                ),
+                "batch_embedding_npz": (
+                    fullscale
+                    / "batches"
+                    / "batch_000_embeddings"
+                    / "clip_embeddings_512.npz"
                 ),
             }
             for path in required_files.values():
@@ -191,6 +203,10 @@ class Tier1HandoffTests(unittest.TestCase):
                 "JDIM_STUDY_EMBEDDING_MANIFEST_CSV": str(
                     required_files["study_manifest"]
                 ),
+                "JDIM_CLIP_EMBEDDING_NPZ": str(required_files["clip_npz"]),
+                "JDIM_CLIP_EMBEDDING_MANIFEST_CSV": str(
+                    required_files["clip_manifest"]
+                ),
                 "JDIM_ENCODER_CHECKPOINT": str(required_files["checkpoint"]),
                 "JDIM_LVOT_SUMMARY_JSON": str(required_files["lvot_summary"]),
                 "JDIM_TAPSE_SUMMARY_JSON": str(required_files["tapse_summary"]),
@@ -198,6 +214,7 @@ class Tier1HandoffTests(unittest.TestCase):
                 "JDIM_TAPSE_PREDICTIONS_CSV": str(required_files["tapse_predictions"]),
                 "JDIM_AUDIT_CONFIG": str(required_files["config"]),
                 "JDIM_RESTRICTED_AUDIT_ROOT": str(audit_root),
+                "JDIM_CORRECTED_ROOT": str(corrected),
             }
             completed = subprocess.run(
                 ["bash", str(ROOT / "scripts" / "scc_run_jdim_tier1.sh"), "handoff-check"],
@@ -209,6 +226,7 @@ class Tier1HandoffTests(unittest.TestCase):
             )
             self.assertIn("repository/worktree root resolved explicitly", completed.stdout)
             self.assertIn("selected universe", completed.stdout)
+            self.assertIn("output roots are explicit and separate", completed.stdout)
 
 
 if __name__ == "__main__":

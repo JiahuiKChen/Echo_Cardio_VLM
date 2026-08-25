@@ -19,23 +19,31 @@ Required environment:
   JDIM_SPLIT_MAP_CSV     Frozen subject split map
   JDIM_STUDY_EMBEDDING_NPZ  Study-level embedding array
   JDIM_STUDY_EMBEDDING_MANIFEST_CSV  Study-level embedding manifest
+  JDIM_CLIP_EMBEDDING_NPZ   Historically merged clip-level embedding array
+  JDIM_CLIP_EMBEDDING_MANIFEST_CSV  Historically merged clip manifest
   JDIM_ENCODER_CHECKPOINT  Frozen EchoPrime visual encoder checkpoint
   JDIM_LVOT_SUMMARY_JSON, JDIM_TAPSE_SUMMARY_JSON
   JDIM_LVOT_PREDICTIONS_CSV, JDIM_TAPSE_PREDICTIONS_CSV
   JDIM_AUDIT_CONFIG      Locked input-content audit configuration
   JDIM_RESTRICTED_AUDIT_ROOT  Restricted audit workspace
+  JDIM_CORRECTED_ROOT     New immutable root for duplicate-corrected artifacts
 
 Additional for audit-sample/audit-pilot:
   JDIM_AUDIT_KEY_FILE    Restricted file containing at least 16 random bytes
 
 Optional:
   JDIM_BOOTSTRAP_N, JDIM_NONIMAGE_PREDICTIONS
+  JDIM_PHASE2_RANDOM_SEED, JDIM_PHASE2_RIDGE_ALPHAS
 
 Usage:
   scripts/scc_run_jdim_tier1.sh validate
   scripts/scc_run_jdim_tier1.sh handoff-check
   scripts/scc_run_jdim_tier1.sh cohort-flow
   scripts/scc_run_jdim_tier1.sh reviewer-metrics
+  scripts/scc_run_jdim_tier1.sh duplicate-forensics
+  scripts/scc_run_jdim_tier1.sh corrected-aggregation
+  scripts/scc_run_jdim_tier1.sh corrected-analysis
+  scripts/scc_run_jdim_tier1.sh corrected-comparison
   scripts/scc_run_jdim_tier1.sh audit-sample
   scripts/scc_run_jdim_tier1.sh audit-pilot
 EOF
@@ -93,7 +101,7 @@ if [[ -z "${MODE}" || "${MODE}" == "-h" || "${MODE}" == "--help" ]]; then
 fi
 
 case "${MODE}" in
-  validate|handoff-check|cohort-flow|reviewer-metrics|audit-sample|audit-pilot) ;;
+  validate|handoff-check|cohort-flow|reviewer-metrics|duplicate-forensics|corrected-aggregation|corrected-analysis|corrected-comparison|audit-sample|audit-pilot) ;;
   *)
     echo "[error] Unknown mode: ${MODE}" >&2
     usage
@@ -123,6 +131,8 @@ require_env JDIM_STRUCTURED_MEASUREMENTS_CSV
 require_env JDIM_SPLIT_MAP_CSV
 require_env JDIM_STUDY_EMBEDDING_NPZ
 require_env JDIM_STUDY_EMBEDDING_MANIFEST_CSV
+require_env JDIM_CLIP_EMBEDDING_NPZ
+require_env JDIM_CLIP_EMBEDDING_MANIFEST_CSV
 require_env JDIM_ENCODER_CHECKPOINT
 require_env JDIM_LVOT_SUMMARY_JSON
 require_env JDIM_TAPSE_SUMMARY_JSON
@@ -130,6 +140,7 @@ require_env JDIM_LVOT_PREDICTIONS_CSV
 require_env JDIM_TAPSE_PREDICTIONS_CSV
 require_env JDIM_AUDIT_CONFIG
 require_env JDIM_RESTRICTED_AUDIT_ROOT
+require_env JDIM_CORRECTED_ROOT
 
 PY="${JDIM_PYTHON_BIN}"
 FULLSCALE="${JDIM_FULLSCALE_ROOT}"
@@ -143,6 +154,8 @@ STRUCTURED_MEASUREMENTS="${JDIM_STRUCTURED_MEASUREMENTS_CSV}"
 SPLIT_MAP="${JDIM_SPLIT_MAP_CSV}"
 STUDY_EMBEDDING_NPZ="${JDIM_STUDY_EMBEDDING_NPZ}"
 STUDY_EMBEDDING_MANIFEST="${JDIM_STUDY_EMBEDDING_MANIFEST_CSV}"
+CLIP_EMBEDDING_NPZ="${JDIM_CLIP_EMBEDDING_NPZ}"
+CLIP_EMBEDDING_MANIFEST="${JDIM_CLIP_EMBEDDING_MANIFEST_CSV}"
 ENCODER_CHECKPOINT="${JDIM_ENCODER_CHECKPOINT}"
 LVOT_SUMMARY="${JDIM_LVOT_SUMMARY_JSON}"
 TAPSE_SUMMARY="${JDIM_TAPSE_SUMMARY_JSON}"
@@ -150,10 +163,18 @@ LVOT_PREDICTIONS="${JDIM_LVOT_PREDICTIONS_CSV}"
 TAPSE_PREDICTIONS="${JDIM_TAPSE_PREDICTIONS_CSV}"
 CONFIG="${JDIM_AUDIT_CONFIG}"
 RESTRICTED_AUDIT_ROOT="${JDIM_RESTRICTED_AUDIT_ROOT}"
+CORRECTED_ROOT="${JDIM_CORRECTED_ROOT}"
 BOOTSTRAP_N="${JDIM_BOOTSTRAP_N:-2000}"
+PHASE2_RANDOM_SEED="${JDIM_PHASE2_RANDOM_SEED:-1337}"
+PHASE2_RIDGE_ALPHAS="${JDIM_PHASE2_RIDGE_ALPHAS:-0.01,0.03,0.1,0.3,1,3,10,30,100,300,1000}"
 
 require_absolute_outside_repo "${OUT}" "JDIM_OUTPUT_ROOT"
 require_absolute_outside_repo "${RESTRICTED_AUDIT_ROOT}" "JDIM_RESTRICTED_AUDIT_ROOT"
+require_absolute_outside_repo "${CORRECTED_ROOT}" "JDIM_CORRECTED_ROOT"
+if [[ "${CORRECTED_ROOT}" == "${OUT}" || "${CORRECTED_ROOT}" == "${OUT}/"* || "${OUT}" == "${CORRECTED_ROOT}/"* ]]; then
+  echo "[error] JDIM_CORRECTED_ROOT and JDIM_OUTPUT_ROOT must be separate immutable roots" >&2
+  exit 2
+fi
 require_executable "${PY}"
 require_directory "${FULLSCALE}"
 require_directory "${LEGACY}"
@@ -165,6 +186,8 @@ require_file "${STRUCTURED_MEASUREMENTS}"
 require_file "${SPLIT_MAP}"
 require_file "${STUDY_EMBEDDING_NPZ}"
 require_file "${STUDY_EMBEDDING_MANIFEST}"
+require_file "${CLIP_EMBEDDING_NPZ}"
+require_file "${CLIP_EMBEDDING_MANIFEST}"
 require_file "${ENCODER_CHECKPOINT}"
 require_file "${LVOT_SUMMARY}"
 require_file "${TAPSE_SUMMARY}"
@@ -191,10 +214,25 @@ require_file "${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
 EMBEDDING_ARGS=(
   --embedding-batch "legacy_stage_d_500=${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
 )
+FORENSIC_ARGS=(
+  --extraction-manifest "legacy_stage_d_500=${LEGACY}/extract_allclip/extraction_manifest.csv"
+  --embedding-manifest "legacy_stage_d_500=${LEGACY}/echoprime_embeddings_512/clip_embedding_manifest.csv"
+  --embedding-npz "legacy_stage_d_500=${LEGACY}/echoprime_embeddings_512/clip_embeddings_512.npz"
+)
+require_file "${LEGACY}/echoprime_embeddings_512/clip_embeddings_512.npz"
 for path in "${FULLSCALE_EMBEDDINGS[@]}"; do
   batch_dir="$(basename "$(dirname "${path}")")"
   batch_name="${batch_dir%_embeddings}"
   EMBEDDING_ARGS+=(--embedding-batch "${batch_name}=${path}")
+  batch_extraction="${FULLSCALE}/batches/${batch_name}_extraction_manifest.csv"
+  batch_npz="$(dirname "${path}")/clip_embeddings_512.npz"
+  require_file "${batch_extraction}"
+  require_file "${batch_npz}"
+  FORENSIC_ARGS+=(
+    --extraction-manifest "${batch_name}=${batch_extraction}"
+    --embedding-manifest "${batch_name}=${path}"
+    --embedding-npz "${batch_name}=${batch_npz}"
+  )
 done
 
 COHORT_COMMON=(
@@ -235,7 +273,8 @@ case "${MODE}" in
       "[ok] repository/worktree root resolved explicitly" \
       "[ok] Python executable resolved explicitly" \
       "[ok] canonical full-scale and legacy roots resolved explicitly" \
-      "[ok] selected universe, measurements, split, embeddings, checkpoint, predictions, and audit roots exist"
+      "[ok] selected universe, measurements, split, study/clip embeddings, checkpoint, predictions, and audit roots exist" \
+      "[ok] lineage-repair and duplicate-corrected output roots are explicit and separate"
     ;;
   validate)
     "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
@@ -256,6 +295,131 @@ case "${MODE}" in
     ;;
   reviewer-metrics)
     "${PY}" scripts/compute_jdim_fixed_prediction_metrics.py "${METRIC_COMMON[@]}"
+    ;;
+  duplicate-forensics)
+    "${PY}" scripts/forensic_jdim_duplicate_keys.py \
+      "${FORENSIC_ARGS[@]}" \
+      --subject-split-map-csv "${SPLIT_MAP}" \
+      --target-cohort "lvot_vti=${LVOT_PREDICTIONS}" \
+      --target-cohort "tapse=${TAPSE_PREDICTIONS}" \
+      --restricted-output-dir "${OUT}/restricted/duplicate_forensics" \
+      --safe-output-dir "${OUT}/aggregate_safe/duplicate_forensics"
+    ;;
+  corrected-aggregation)
+    require_file "${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv"
+    "${PY}" scripts/build_jdim_corrected_study_embeddings.py \
+      --forensic-evidence-file "${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv" \
+      --clip-manifest-csv "${CLIP_EMBEDDING_MANIFEST}" \
+      --clip-embedding-npz "${CLIP_EMBEDDING_NPZ}" \
+      --output-root "${CORRECTED_ROOT}/aggregation"
+    ;;
+  corrected-analysis)
+    CORRECTED_STUDY_NPZ="${CORRECTED_ROOT}/aggregation/restricted/corrected_study_embeddings.npz"
+    CORRECTED_STUDY_MANIFEST="${CORRECTED_ROOT}/aggregation/restricted/corrected_study_embedding_manifest.csv"
+    require_file "${CORRECTED_STUDY_NPZ}"
+    require_file "${CORRECTED_STUDY_MANIFEST}"
+    for output_dir in \
+      "${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips" \
+      "${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips" \
+      "${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips_exclude_hard_extremes" \
+      "${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes" \
+      "${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics"; do
+      if [[ -e "${output_dir}" ]]; then
+        echo "[error] Refusing to overwrite corrected analysis output: ${output_dir}" >&2
+        exit 2
+      fi
+    done
+    for target in lvot_vti tapse; do
+      "${PY}" scripts/run_tapse_lvot_vti_imaging_baseline.py \
+        --structured-measurements-csv "${STRUCTURED_MEASUREMENTS}" \
+        --study-embedding-npz "${CORRECTED_STUDY_NPZ}" \
+        --study-embedding-manifest "${CORRECTED_STUDY_MANIFEST}" \
+        --subject-split-map-csv "${SPLIT_MAP}" \
+        --target "${target}" \
+        --analysis-label all_clips_study_embeddings_stable_v2 \
+        --ridge-solver svd \
+        --standardize-features \
+        --ridge-alphas "${PHASE2_RIDGE_ALPHAS}" \
+        --random-seed "${PHASE2_RANDOM_SEED}" \
+        --n-bootstrap "${BOOTSTRAP_N}" \
+        --bootstrap-unit subject \
+        --allow-restricted-patient-outputs \
+        --output-dir "${CORRECTED_ROOT}/restricted/analyses/${target}/all_clips"
+      "${PY}" scripts/run_tapse_lvot_vti_imaging_baseline.py \
+        --structured-measurements-csv "${STRUCTURED_MEASUREMENTS}" \
+        --study-embedding-npz "${CORRECTED_STUDY_NPZ}" \
+        --study-embedding-manifest "${CORRECTED_STUDY_MANIFEST}" \
+        --subject-split-map-csv "${SPLIT_MAP}" \
+        --target "${target}" \
+        --analysis-label all_clips_study_embeddings_stable_v2_exclude_hard_extremes \
+        --ridge-solver svd \
+        --standardize-features \
+        --ridge-alphas "${PHASE2_RIDGE_ALPHAS}" \
+        --random-seed "${PHASE2_RANDOM_SEED}" \
+        --n-bootstrap "${BOOTSTRAP_N}" \
+        --bootstrap-unit subject \
+        --exclude-hard-extremes \
+        --allow-restricted-patient-outputs \
+        --output-dir "${CORRECTED_ROOT}/restricted/analyses/${target}/all_clips_exclude_hard_extremes"
+    done
+    CORRECTED_METRIC_ARGS=(
+      --imaging-predictions "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips/imaging_baseline_predictions.csv"
+      --imaging-predictions "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips/imaging_baseline_predictions.csv"
+      --output-dir "${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics"
+      --bootstrap-n "${BOOTSTRAP_N}"
+      --bootstrap-seed 20260824
+      --restricted-inputs-acknowledged
+    )
+    if [[ -n "${JDIM_NONIMAGE_PREDICTIONS:-}" ]]; then
+      read -r -a NONIMAGE_ITEMS <<< "${JDIM_NONIMAGE_PREDICTIONS}"
+      for item in "${NONIMAGE_ITEMS[@]}"; do
+        CORRECTED_METRIC_ARGS+=(--nonimage-predictions "${item}")
+      done
+    fi
+    "${PY}" scripts/compute_jdim_fixed_prediction_metrics.py "${CORRECTED_METRIC_ARGS[@]}"
+    ;;
+  corrected-comparison)
+    for path in \
+      "${OUT}/aggregate_safe/reviewer_metrics" \
+      "${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics" \
+      "${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips" \
+      "${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips" \
+      "${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips_exclude_hard_extremes" \
+      "${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes"; do
+      require_directory "${path}"
+    done
+    "${PY}" scripts/compare_jdim_original_corrected.py \
+      --original-predictions "lvot_vti=${LVOT_PREDICTIONS}" \
+      --original-predictions "tapse=${TAPSE_PREDICTIONS}" \
+      --corrected-predictions "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips/imaging_baseline_predictions.csv" \
+      --corrected-predictions "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips/imaging_baseline_predictions.csv" \
+      --original-summary "lvot_vti=${LVOT_SUMMARY}" \
+      --original-summary "tapse=${TAPSE_SUMMARY}" \
+      --corrected-summary "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips/imaging_baseline_summary.json" \
+      --corrected-summary "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips/imaging_baseline_summary.json" \
+      --original-results "lvot_vti=${PHASE2}/lvot_vti/all_clips" \
+      --original-results "tapse=${PHASE2}/tapse/all_clips" \
+      --original-results "reviewer_metrics=${OUT}/aggregate_safe/reviewer_metrics" \
+      --corrected-results "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips" \
+      --corrected-results "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips" \
+      --corrected-results "reviewer_metrics=${CORRECTED_ROOT}/aggregate_safe/reviewer_metrics" \
+      --frozen-split-map-csv "${SPLIT_MAP}" \
+      --output-root "${CORRECTED_ROOT}/aggregate_safe/original_vs_corrected_main"
+    "${PY}" scripts/compare_jdim_original_corrected.py \
+      --original-predictions "lvot_vti=${PHASE2}/lvot_vti/all_clips_exclude_hard_extremes/imaging_baseline_predictions.csv" \
+      --original-predictions "tapse=${PHASE2}/tapse/all_clips_exclude_hard_extremes/imaging_baseline_predictions.csv" \
+      --corrected-predictions "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips_exclude_hard_extremes/imaging_baseline_predictions.csv" \
+      --corrected-predictions "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes/imaging_baseline_predictions.csv" \
+      --original-summary "lvot_vti=${PHASE2}/lvot_vti/all_clips_exclude_hard_extremes/imaging_baseline_summary.json" \
+      --original-summary "tapse=${PHASE2}/tapse/all_clips_exclude_hard_extremes/imaging_baseline_summary.json" \
+      --corrected-summary "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips_exclude_hard_extremes/imaging_baseline_summary.json" \
+      --corrected-summary "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes/imaging_baseline_summary.json" \
+      --original-results "lvot_vti=${PHASE2}/lvot_vti/all_clips_exclude_hard_extremes" \
+      --original-results "tapse=${PHASE2}/tapse/all_clips_exclude_hard_extremes" \
+      --corrected-results "lvot_vti=${CORRECTED_ROOT}/restricted/analyses/lvot_vti/all_clips_exclude_hard_extremes" \
+      --corrected-results "tapse=${CORRECTED_ROOT}/restricted/analyses/tapse/all_clips_exclude_hard_extremes" \
+      --frozen-split-map-csv "${SPLIT_MAP}" \
+      --output-root "${CORRECTED_ROOT}/aggregate_safe/original_vs_corrected_hard_extremes"
     ;;
   audit-sample|audit-pilot)
     require_env JDIM_AUDIT_KEY_FILE

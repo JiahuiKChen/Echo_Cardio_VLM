@@ -103,10 +103,19 @@ entry points are:
 - `scripts/build_jdim_cohort_lineage_metadata.py`: path-free release, batch,
   and frozen split-lineage declaration with the split-map hash computed from
   the supplied artifact.
+- `scripts/forensic_jdim_duplicate_keys.py`: restricted processed-input and
+  frozen-vector adjudication for repeated coarse clip keys, with separate
+  aggregate-safe classification and impact summaries.
+- `scripts/build_jdim_corrected_study_embeddings.py`: fail-closed canonical
+  clip deduplication and study-level mean reaggregation when true duplication
+  is established.
+- `scripts/compare_jdim_original_corrected.py`: row/split/label/protocol
+  identity checks and aggregate original-versus-corrected result comparisons.
 - `scripts/build_jdim_provenance_spec.py`: restricted, explicit-role manifest
   specification builder that prevents accidental path disclosure in Git.
 - `scripts/scc_run_jdim_tier1.sh`: SCC execution wrapper for schema validation,
-  cohort reconstruction, fixed-prediction metrics, and audit sampling.
+  duplicate forensics, conditional correction, cohort reconstruction,
+  fixed-prediction metrics, and audit sampling.
 
 The exact later SCC commands and output classifications are documented in
 `docs/jdim_major_revision_tier1_runbook.md`.
@@ -149,6 +158,23 @@ contain target values, predictions, residuals, filenames, source IDs, or split
 names. Export-safe outputs contain only sample counts, design weights,
 study-level proportions and confidence intervals, cluster-bootstrap clip
 summaries, reconstruction-failure counts, and agreement statistics.
+
+### Duplicate adjudication and conditional correction
+
+Repeated coarse keys are classified using restricted extraction lineage,
+processed-array hashes, explicit window/frame provenance when present, and
+frozen vector equality. Targets, predictions, residuals, and performance are
+not classification inputs. A shared DICOM key alone is insufficient evidence
+of duplication. Ambiguous groups stop with
+`BLOCKED_DUPLICATE_SEMANTICS_UNRESOLVED`.
+
+When true duplicate rows are confirmed, one representative is retained by the
+forensic rule, unique clip vectors are mean-pooled per study, and all original
+artifacts remain immutable. The corrected-analysis comparator requires exact
+prediction-row, study/subject, observed-label, null-prediction, frozen-split,
+and stable-v2 protocol identity. It compares aggregate metrics without using a
+performance-based materiality threshold. Corrected results are canonical even
+when performance declines.
 
 ### Fixed-prediction reviewer metrics
 
