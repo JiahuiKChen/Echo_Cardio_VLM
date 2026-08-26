@@ -169,6 +169,13 @@ CONFIG="${JDIM_AUDIT_CONFIG}"
 RESTRICTED_AUDIT_ROOT="${JDIM_RESTRICTED_AUDIT_ROOT}"
 CORRECTED_ROOT="${JDIM_CORRECTED_ROOT}"
 DECISION_ROOT="${JDIM_DUPLICATE_DECISION_ROOT:-${OUT}}"
+if [[ -n "${JDIM_DUPLICATE_DECISION_ROOT:-}" ]]; then
+  DECISION_ROWS="${DECISION_ROOT}/restricted/duplicate_forensics_rows.csv"
+  DECISION_SUMMARY="${DECISION_ROOT}/aggregate_safe/duplicate_forensics_summary.json"
+else
+  DECISION_ROWS="${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv"
+  DECISION_SUMMARY="${OUT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json"
+fi
 BOOTSTRAP_N="${JDIM_BOOTSTRAP_N:-2000}"
 PHASE2_RANDOM_SEED="${JDIM_PHASE2_RANDOM_SEED:-1337}"
 PHASE2_RIDGE_ALPHAS="${JDIM_PHASE2_RIDGE_ALPHAS:-0.01,0.03,0.1,0.3,1,3,10,30,100,300,1000}"
@@ -260,8 +267,8 @@ COHORT_COMMON=(
   --canonical-summary "tapse=${TAPSE_SUMMARY}"
   --canonical-prediction "lvot_vti=${LVOT_PREDICTIONS}"
   --canonical-prediction "tapse=${TAPSE_PREDICTIONS}"
-  --duplicate-forensics-rows-csv "${DECISION_ROOT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv"
-  --duplicate-forensics-provenance-json "${DECISION_ROOT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json"
+  --duplicate-forensics-rows-csv "${DECISION_ROWS}"
+  --duplicate-forensics-provenance-json "${DECISION_SUMMARY}"
   --lineage-metadata-json "${LINEAGE}"
   --output-dir "${OUT}/aggregate_safe/cohort_flow"
 )
@@ -293,8 +300,7 @@ case "${MODE}" in
       "[ok] lineage-repair and duplicate-corrected output roots are explicit and separate"
     ;;
   validate)
-    if [[ -f "${DECISION_ROOT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv" && \
-          -f "${DECISION_ROOT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json" ]]; then
+    if [[ -f "${DECISION_ROWS}" && -f "${DECISION_SUMMARY}" ]]; then
       "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
     else
       echo "[deferred] cohort schema/hash validation awaits duplicate-forensics outputs"
@@ -333,12 +339,12 @@ case "${MODE}" in
       --safe-output-dir "${OUT}/aggregate_safe/duplicate_forensics"
     ;;
   corrected-aggregation)
-    require_file "${DECISION_ROOT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv"
-    require_file "${DECISION_ROOT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json"
+    require_file "${DECISION_ROWS}"
+    require_file "${DECISION_SUMMARY}"
     "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
     "${PY}" scripts/build_jdim_corrected_study_embeddings.py \
-      --forensic-evidence-file "${DECISION_ROOT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv" \
-      --forensic-provenance-json "${DECISION_ROOT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json" \
+      --forensic-evidence-file "${DECISION_ROWS}" \
+      --forensic-provenance-json "${DECISION_SUMMARY}" \
       --clip-manifest-csv "${CLIP_EMBEDDING_MANIFEST}" \
       --clip-embedding-npz "${CLIP_EMBEDDING_NPZ}" \
       --frozen-study-manifest-csv "${STUDY_EMBEDDING_MANIFEST}" \

@@ -95,6 +95,7 @@ def resolve_duplicate_decisions(
             "subject_id",
             "source_manifest_row_fingerprint_sha256",
             "embedding_vector_sha256",
+            "embedding_idx",
         ],
         "prior duplicate rows",
     )
