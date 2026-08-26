@@ -37,6 +37,7 @@ CORRECTION_NOT_REQUIRED = "CORRECTED_AGGREGATION_NOT_REQUIRED"
 
 VALID_SPLITS = {"train", "val", "test"}
 TRUE_DUPLICATE_CLASSES = {
+    "TRUE_DUPLICATE_EXPECTED_ROWS",
     "TRUE_DUPLICATE_MANIFEST_ROWS",
     "TRUE_DUPLICATE_EMBEDDING_ROWS",
 }
@@ -422,10 +423,22 @@ def _decisions_from_restricted_evidence(
                 for value in group["processed_array_sha256"]
                 if str(value).strip() and str(value).strip().lower() != "nan"
             }
-            if len(processed_hashes) != 1:
+            provenance_hashes = {
+                str(value).strip()
+                for value in group.get(
+                    "semantic_clip_identity_sha256", pd.Series(dtype=str)
+                )
+                if str(value).strip() and str(value).strip().lower() != "nan"
+            }
+            identity_hashes = (
+                provenance_hashes
+                if classification == "TRUE_DUPLICATE_EXPECTED_ROWS"
+                else processed_hashes
+            )
+            if len(identity_hashes) != 1:
                 raise Tier1BlockedError(
                     BLOCKED_CANONICAL_IDENTITY,
-                    f"true-duplicate forensic group {group_number} lacks one processed-input identity",
+                    f"true-duplicate forensic group {group_number} lacks one supported semantic-input identity",
                 )
             keep_rows = [
                 int(index)
@@ -440,7 +453,7 @@ def _decisions_from_restricted_evidence(
             retained = row_mapping[keep_rows[0]]
             canonical = hashlib.sha256(
                 json.dumps(
-                    ["forensic_true_duplicate_v1", str(token), next(iter(processed_hashes))],
+                    ["forensic_true_duplicate_v2", str(token), next(iter(identity_hashes))],
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
@@ -772,6 +785,7 @@ def build_corrected_aggregation(
     )
     identity_basis = [
         "forensic_group_token",
+        "semantic_clip_identity_sha256_for_provenance_resolved_expected_rows",
         "processed_array_sha256",
         "processed_array_selector",
         "stable_manifest_path_window_identity_for_unreviewed_rows",
@@ -907,7 +921,7 @@ def build_corrected_aggregation(
         "forensic_evidence_format": "duplicate_forensics_rows_v1",
         "canonical_identity_basis": identity_basis,
         "canonical_identity_target_prediction_independent": True,
-        "representative_rule": "forensic content-derived keep candidate with immutable embedding-index tie-break",
+        "representative_rule": "forensic provenance- or content-derived keep candidate with immutable embedding-index tie-break",
         "pooling": "arithmetic mean of unique canonical clip embeddings per study",
         "frozen_parent_replay_exact": True,
         "frozen_parent_clip_counts_exact": True,
