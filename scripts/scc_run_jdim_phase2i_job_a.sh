@@ -128,7 +128,12 @@ fi
 
 RESTORE_RESTRICTED="${OUT}/restricted/restoration"
 RESTORE_SAFE="${OUT}/aggregate_safe/restoration"
-JOB_A_COMMAND="export JDIM_PHASE2I_SOURCE_COMMIT=${SOURCE_COMMIT}\nexport JDIM_PHASE2I_OUTPUT_ROOT=/restricted/project/mimicecho/outputs/jdim_phase2i_restoration_v2\n${REPO}/scripts/scc_run_jdim_phase2i_job_a.sh preflight\nmkdir -p /restricted/project/mimicecho/outputs/jdim_phase2i_scheduler_logs_v1\nqsub -cwd -V -P mimicecho -N jdim_phase2i_a -j y -o /restricted/project/mimicecho/outputs/jdim_phase2i_scheduler_logs_v1 -l h_rt=12:00:00 -pe omp 2 -l mem_per_core=8G -b y ${REPO}/scripts/scc_run_jdim_phase2i_job_a.sh run"
+JOB_A_COMMAND="$(printf '%s\n' \
+  "export JDIM_PHASE2I_SOURCE_COMMIT=${SOURCE_COMMIT}" \
+  "export JDIM_PHASE2I_OUTPUT_ROOT=/restricted/project/mimicecho/outputs/jdim_phase2i_restoration_v2" \
+  "${REPO}/scripts/scc_run_jdim_phase2i_job_a.sh preflight" \
+  "mkdir -p /restricted/project/mimicecho/outputs/jdim_phase2i_scheduler_logs_v1" \
+  "qsub -cwd -v JDIM_PHASE2I_SOURCE_COMMIT=${SOURCE_COMMIT},JDIM_PHASE2I_OUTPUT_ROOT=/restricted/project/mimicecho/outputs/jdim_phase2i_restoration_v2 -P mimicecho -N jdim_phase2i_a -j y -o /restricted/project/mimicecho/outputs/jdim_phase2i_scheduler_logs_v1 -l h_rt=12:00:00 -pe omp 2 -l mem_per_core=8G -b y ${REPO}/scripts/scc_run_jdim_phase2i_job_a.sh run")"
 "${PY}" scripts/run_jdim_phase2i.py restore-sources \
   --restoration-manifest-csv "${RESTORATION_MANIFEST}" \
   --restricted-output-root "${RESTORE_RESTRICTED}" \

@@ -54,6 +54,11 @@ def _replay_row(**overrides: object) -> dict[str, object]:
 
 
 class Phase2ITierTests(unittest.TestCase):
+    def test_job_a_retry_command_uses_real_lines_and_minimal_qsub_environment(self) -> None:
+        wrapper = (ROOT / "scripts" / "scc_run_jdim_phase2i_job_a.sh").read_text()
+        self.assertIn("printf '%s\\n'", wrapper)
+        self.assertNotIn("qsub -cwd -V", wrapper)
+
     def test_retained_or_bitwise_replay_is_tier_a(self) -> None:
         common = {
             "equivalent_replay_verified": False,
@@ -177,7 +182,11 @@ class Phase2ITierTests(unittest.TestCase):
             )
             self.assertEqual(result.safe_summary["status"], BLOCKED_OFFICIAL_SOURCE_AUTHENTICATION)
             self.assertEqual(result.safe_summary["requested_files"], 1)
-            self.assertTrue((root / "restricted" / "official_source_authentication_action.md").is_file())
+            action = root / "restricted" / "official_source_authentication_action.md"
+            self.assertTrue(action.is_file())
+            action_text = action.read_text()
+            self.assertNotIn("\\nexport", action_text)
+            self.assertNotIn("qsub -cwd -V", action_text)
 
 
 class Phase2IInterfaceTests(unittest.TestCase):
