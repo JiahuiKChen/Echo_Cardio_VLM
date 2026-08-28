@@ -23,6 +23,7 @@ import pandas as pd
 
 
 FLOAT_TOLERANCE = 2e-6
+FIELD_POLICY_VERSION = "PHASE2F_FINALIZER_FIELD_POLICY_V1"
 LEGACY_FINALIZER_SHA256 = (
     "0f697b61d3b79e2e5fedb204678f0f6a8a95e66e5ff7ffe5ed60e500a99cb6c5"
 )
@@ -113,6 +114,14 @@ WORKFLOW_HASHES = {
     "echoview_dependency_matrix": (
         "aggregate_safe/dependency_audit/c1_echoview_dependency_v2.csv",
         "a5b86960aa2fe924274b79599d6cce001e392b4b50589768bfb056c3d324aa53",
+    ),
+    "changed_input_matrix": (
+        "aggregate_safe/dependency_audit/c1_changed_input_matrix_v2.csv",
+        "5f38f299a1469938eaeecccaffaa5adc7ee39da99a8c379bb7c7419a40c0fdae",
+    ),
+    "dependency_audit_summary": (
+        "aggregate_safe/dependency_audit/c1_dependency_audit_summary_v2.json",
+        "09a0560cc0114a5ad90d58c6b0f7fc0376aac4c14fbeff2d259c93588133b58d",
     ),
 }
 
@@ -219,6 +228,44 @@ CORRECTED_HASHES = {
         "restricted/analyses/lvot_vti/echoview_a5c_or_other_0.95_mean/imaging_baseline_metrics.csv",
         "8b1430407643cbef2c2bdbbba6acefd9773ac7d27154193fe6a81666d000d64c",
     ),
+    "nonimage_metrics": (
+        "restricted/nonimage_analyses/phase2_nonimage_baseline_metrics.csv",
+        "f070aad981c2a611931a046c4f681259511a8b44e2554a2b9e7b4e7136e00b60",
+    ),
+    "nonimage_binary_metrics": (
+        "restricted/nonimage_analyses/phase2_nonimage_baseline_binary_metrics.csv",
+        "3206a6bd5f51bbc3729f1517c9bd407b9a1f4709e01c43cbcdd0152d8489f79c",
+    ),
+    "nonimage_bootstrap_ci": (
+        "restricted/nonimage_analyses/phase2_nonimage_baseline_bootstrap_ci.csv",
+        "df390180dc873c7cfa7f16f08a98edc4c7c0b8e39913665a9dacc8d8dd2f496c",
+    ),
+    "nonimage_binary_bootstrap_ci": (
+        "restricted/nonimage_analyses/phase2_nonimage_baseline_binary_bootstrap_ci.csv",
+        "d1963458b1ec128bdff07ee88529d0058055cffb8333726d2a02c9939dd19b5f",
+    ),
+    "nonimage_alpha_selection": (
+        "restricted/nonimage_analyses/phase2_nonimage_baseline_alpha_selection.csv",
+        "500c13c719d2247158da89deeb2eb49ffbf26a185360a698c80b7e3b584d5e6a",
+    ),
+}
+
+ORIGINAL_NONIMAGE_HASHES = {
+    "phase2_nonimage_baseline_metrics.csv": (
+        "24247413d06581dfabc39044500e8d9df13670b1b14601f7d88f3d4b2861896f"
+    ),
+    "phase2_nonimage_baseline_binary_metrics.csv": (
+        "0d10b7d91ab31c9dd027776e50bbbc6f7c76ca2b1efa206ce75c5298552765be"
+    ),
+    "phase2_nonimage_baseline_bootstrap_ci.csv": (
+        "e3bbf26094cf221098961a1cd174c51fc6d29d4153e29f3135a067fc6f1e8954"
+    ),
+    "phase2_nonimage_baseline_binary_bootstrap_ci.csv": (
+        "50bbf4712518ecc89fd6c919c4abda8565f0a1bb6e035247729f3c4350e111e6"
+    ),
+    "phase2_nonimage_baseline_alpha_selection.csv": (
+        "9ac9a2ecd8cfcd2d97c91b9036e383eafe75bfde5c8cb716cca685f183a5d260"
+    ),
 }
 
 NONIMAGE_FILENAMES = (
@@ -241,6 +288,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-map-csv", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--expected-source-commit", required=True)
+    parser.add_argument("--field-policy", type=Path, default=None)
+    parser.add_argument("--preflight-only", action="store_true")
     return parser.parse_args()
 
 
@@ -273,6 +322,512 @@ def verify_hashes(
             raise ValueError(f"hash mismatch for {role}: {actual}")
         records.append(file_record(role, path))
     return records
+
+
+def load_field_policy(repo_root: Path, policy_path: Path | None) -> tuple[dict[str, Any], Path]:
+    path = (
+        policy_path
+        if policy_path is not None
+        else repo_root / "configs/phase2f_finalizer_field_policy_v1.json"
+    ).resolve()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != FIELD_POLICY_VERSION:
+        raise ValueError("unexpected Phase 2F field-policy version")
+    if payload.get("floating_point_absolute_tolerance") != FLOAT_TOLERANCE:
+        raise ValueError("field-policy floating-point tolerance changed")
+    allowed = set(payload.get("allowed_categories", []))
+    if not allowed:
+        raise ValueError("field-policy category list is empty")
+    for table_name, table_policy in payload.get("nonimage_tables", {}).items():
+        fields = table_policy.get("fields", {})
+        if not fields:
+            raise ValueError(f"field policy is empty for {table_name}")
+        unknown = set(fields.values()) - allowed
+        if unknown:
+            raise ValueError(f"unknown categories for {table_name}: {sorted(unknown)}")
+        row_identity = set(table_policy.get("row_identity_fields", []))
+        if not row_identity or not row_identity.issubset(fields):
+            raise ValueError(f"invalid row-identity policy for {table_name}")
+    packet_fields = payload.get("comparison_packet_fields", {})
+    if not packet_fields or set(packet_fields.values()) - allowed:
+        raise ValueError("comparison-packet field policy is incomplete")
+    selection = payload.get("selection_protocol", {})
+    alpha_grid = selection.get("alpha_grid", [])
+    if not alpha_grid or len(alpha_grid) != len(set(alpha_grid)):
+        raise ValueError("selection alpha grid is empty or duplicated")
+    required_selection = {
+        "selection_split": "val",
+        "selection_metric": "mean_absolute_error",
+        "tie_breaking_rule": "first alpha in frozen grid with a strictly lower validation MAE",
+        "test_data_used_for_selection": False,
+        "ridge_solver": "svd",
+        "features_standardized": True,
+    }
+    for field, expected in required_selection.items():
+        if selection.get(field) != expected:
+            raise ValueError(f"selection protocol changed: {field}")
+    return payload, path
+
+
+def normalized_json_leaf_paths(value: Any, prefix: str = "") -> set[str]:
+    if isinstance(value, dict):
+        paths: set[str] = set()
+        for key, item in value.items():
+            paths.update(normalized_json_leaf_paths(item, f"{prefix}/{key}"))
+        return paths
+    if isinstance(value, list):
+        if not value:
+            return {f"{prefix}/[]"}
+        paths: set[str] = set()
+        for item in value:
+            paths.update(normalized_json_leaf_paths(item, f"{prefix}/[]"))
+        return paths
+    return {prefix}
+
+
+def validate_comparison_packet_fields(
+    workflow_root: Path, policy: dict[str, Any]
+) -> list[dict[str, Any]]:
+    expected_paths = set(policy["comparison_packet_fields"])
+    summaries: list[dict[str, Any]] = []
+    for role, (relative, _) in sorted(PACKET_HASHES.items()):
+        path = workflow_root / relative
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        actual_paths = normalized_json_leaf_paths(payload)
+        if actual_paths != expected_paths:
+            missing = sorted(expected_paths - actual_paths)
+            unknown = sorted(actual_paths - expected_paths)
+            raise ValueError(
+                f"unclassified comparison-packet fields for {role}: "
+                f"missing={missing}, unknown={unknown}"
+            )
+        if (
+            payload.get("status")
+            != "HISTORICAL_AGGREGATES_COPIED_AND_CORRELATIONS_RECOMPUTED"
+            or payload.get("model_refit") is not False
+            or payload.get("prediction_regeneration") is not False
+            or payload.get("historical_outputs_modified") is not False
+            or payload.get("prediction_rows_modified") is not False
+            or payload.get("correlations_computed_directly_from_saved_test_predictions")
+            is not True
+            or payload.get("bootstrap_n") != 2000
+            or payload.get("bootstrap_seed") != 1337
+        ):
+            raise ValueError(f"comparison-packet protocol changed for {role}")
+        categories: dict[str, int] = {}
+        for category in policy["comparison_packet_fields"].values():
+            categories[category] = categories.get(category, 0) + 1
+        summaries.append(
+            {
+                "logical_role": role,
+                "classified_field_count": len(actual_paths),
+                "category_counts": categories,
+                "all_fields_classified": True,
+            }
+        )
+    return summaries
+
+
+def validate_original_nonimage_hashes(phase2_root: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    root = phase2_root / "nonimage_baselines"
+    for filename, expected_hash in sorted(ORIGINAL_NONIMAGE_HASHES.items()):
+        path = root / filename
+        actual = sha256_file(path)
+        if actual != expected_hash:
+            raise ValueError(f"historical non-image output changed: {filename}")
+        records.append(file_record(f"historical_nonimage_{filename}", path))
+    return records
+
+
+def _strict_bool(value: Any, label: str) -> bool:
+    if not isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{label} is not Boolean")
+    return bool(value)
+
+
+def validate_analysis_dependencies(
+    workflow_root: Path, policy: dict[str, Any]
+) -> list[dict[str, Any]]:
+    matrix = pd.read_csv(
+        workflow_root
+        / "aggregate_safe/dependency_audit/c1_changed_input_matrix_v2.csv"
+    )
+    required = {
+        "analysis_family",
+        "input_changed",
+        "rerun",
+        "reuse_certificate",
+        "status",
+    }
+    if not required.issubset(matrix.columns):
+        raise ValueError("changed-input matrix schema changed")
+    records: list[dict[str, Any]] = []
+    for baseline_tier, expected in sorted(policy["analysis_dependencies"].items()):
+        rows = matrix.loc[matrix["analysis_family"].eq(expected["analysis_family"])]
+        if len(rows) != 1:
+            raise ValueError(f"dependency row missing for {baseline_tier}")
+        row = rows.iloc[0]
+        input_changed = _strict_bool(row["input_changed"], "input_changed")
+        rerun = _strict_bool(row["rerun"], "rerun")
+        reused = _strict_bool(row["reuse_certificate"], "reuse_certificate")
+        if input_changed != (expected["input_status"] == "INPUT_CHANGED"):
+            raise ValueError(f"input status changed for {baseline_tier}")
+        if rerun != expected["rerun"] or reused != expected["formally_reused"]:
+            raise ValueError(f"rerun/reuse status changed for {baseline_tier}")
+        records.append(
+            {
+                "baseline_tier": baseline_tier,
+                "analysis_family": expected["analysis_family"],
+                "input_status": expected["input_status"],
+                "corrected_model_rerun": rerun,
+                "formally_reused": reused,
+            }
+        )
+    return records
+
+
+def validate_table_schema(
+    source_label: str,
+    original: pd.DataFrame,
+    corrected: pd.DataFrame,
+    policy: dict[str, Any],
+) -> dict[str, str]:
+    table_policy = policy["nonimage_tables"].get(source_label)
+    if table_policy is None:
+        raise ValueError(f"unclassified finalizer table: {source_label}")
+    classified = table_policy["fields"]
+    expected = set(classified)
+    for label, frame in (("historical", original), ("corrected", corrected)):
+        actual = set(frame.columns)
+        if actual != expected:
+            raise ValueError(
+                f"unclassified fields in {label} {source_label}: "
+                f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+            )
+    return classified
+
+
+def _stable_key(value: Any) -> str:
+    if _is_missing(value):
+        return "<NA>"
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _affected_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    affected = {"study_metadata", "demographics_plus_study_metadata"}
+    return frame.loc[frame["baseline_tier"].isin(affected)].copy()
+
+
+def _pair_table_rows(
+    source_label: str,
+    original: pd.DataFrame,
+    corrected: pd.DataFrame,
+    keys: tuple[str, ...],
+) -> pd.DataFrame:
+    original = _affected_rows(original)
+    corrected = _affected_rows(corrected)
+    if original.empty or corrected.empty:
+        raise ValueError(f"affected non-image rows missing in {source_label}")
+    if original.duplicated(list(keys)).any() or corrected.duplicated(list(keys)).any():
+        raise ValueError(f"duplicate row keys in {source_label}")
+    original["_key"] = original[list(keys)].apply(
+        lambda row: tuple(_stable_key(value) for value in row), axis=1
+    )
+    corrected["_key"] = corrected[list(keys)].apply(
+        lambda row: tuple(_stable_key(value) for value in row), axis=1
+    )
+    if set(original["_key"]) != set(corrected["_key"]):
+        raise ValueError(f"row identity changed in affected non-image {source_label}")
+    return original.merge(
+        corrected,
+        on="_key",
+        how="inner",
+        suffixes=("_original", "_corrected"),
+        validate="one_to_one",
+    )
+
+
+def _selected_row(group: pd.DataFrame, label: str) -> pd.Series:
+    selected = group.loc[group["selected"].map(lambda value: _strict_bool(value, label))]
+    if len(selected) != 1:
+        raise ValueError(f"{label} must contain exactly one selected alpha")
+    return selected.iloc[0]
+
+
+def _deterministic_best_alpha(group: pd.DataFrame, alpha_grid: list[float]) -> float:
+    indexed = group.set_index("alpha", drop=False)
+    best_alpha = alpha_grid[0]
+    best_metric = math.inf
+    for alpha in alpha_grid:
+        if alpha not in indexed.index:
+            raise ValueError("alpha grid is incomplete")
+        metric = float(indexed.loc[alpha, "val_mae"])
+        if not math.isfinite(metric):
+            raise ValueError("validation MAE is not finite")
+        if metric < best_metric:
+            best_alpha = alpha
+            best_metric = metric
+    return float(best_alpha)
+
+
+def validate_alpha_selection(
+    original: pd.DataFrame,
+    corrected: pd.DataFrame,
+    policy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    validate_table_schema("alpha_selection", original, corrected, policy)
+    original = _affected_rows(original)
+    corrected = _affected_rows(corrected)
+    group_fields = ["target", "baseline_tier", "model"]
+    original_groups = {
+        tuple(key if isinstance(key, tuple) else (key,)): frame
+        for key, frame in original.groupby(group_fields, sort=False)
+    }
+    corrected_groups = {
+        tuple(key if isinstance(key, tuple) else (key,)): frame
+        for key, frame in corrected.groupby(group_fields, sort=False)
+    }
+    if set(original_groups) != set(corrected_groups):
+        raise ValueError("alpha-selection analysis identity changed")
+    alpha_grid = [float(value) for value in policy["selection_protocol"]["alpha_grid"]]
+    records: list[dict[str, Any]] = []
+    observed_changes: list[dict[str, Any]] = []
+    for key in sorted(original_groups):
+        historical = original_groups[key]
+        current = corrected_groups[key]
+        if historical["alpha"].astype(float).tolist() != alpha_grid:
+            raise ValueError(f"historical alpha grid changed for {key}")
+        if current["alpha"].astype(float).tolist() != alpha_grid:
+            raise ValueError(f"corrected alpha grid changed for {key}")
+        historical_selected = _selected_row(historical, f"historical {key}")
+        corrected_selected = _selected_row(current, f"corrected {key}")
+        historical_alpha = float(historical_selected["alpha"])
+        corrected_alpha = float(corrected_selected["alpha"])
+        if historical_alpha != _deterministic_best_alpha(historical, alpha_grid):
+            raise ValueError(f"historical selected alpha is not the validation optimum: {key}")
+        if corrected_alpha != _deterministic_best_alpha(current, alpha_grid):
+            raise ValueError(f"corrected selected alpha is not the validation optimum: {key}")
+        baseline_tier = str(key[1])
+        dependency = policy["analysis_dependencies"][baseline_tier]
+        changed = historical_alpha != corrected_alpha
+        if changed and dependency["input_status"] != "INPUT_CHANGED":
+            raise ValueError(f"selected alpha changed for unchanged analysis: {key}")
+        current_by_alpha = current.set_index("alpha")
+        record = {
+            "target": str(key[0]),
+            "baseline_tier": baseline_tier,
+            "model": str(key[2]),
+            "input_status": dependency["input_status"],
+            "historical_selected_alpha": historical_alpha,
+            "corrected_selected_alpha": corrected_alpha,
+            "historical_selected_validation_mae": float(historical_selected["val_mae"]),
+            "corrected_validation_mae_at_historical_alpha": float(
+                current_by_alpha.loc[historical_alpha, "val_mae"]
+            ),
+            "corrected_selected_validation_mae": float(corrected_selected["val_mae"]),
+            "corrected_selected_minus_historical_candidate_validation_mae": float(
+                corrected_selected["val_mae"]
+                - current_by_alpha.loc[historical_alpha, "val_mae"]
+            ),
+            "selected_alpha_changed": changed,
+            "exactly_one_selected_historical": True,
+            "exactly_one_selected_corrected": True,
+            "corrected_alpha_is_deterministic_validation_optimum": True,
+            "alpha_grid_unchanged": True,
+            "validation_split_unchanged": True,
+            "selection_metric_unchanged": True,
+            "test_data_used_for_selection": False,
+            "selection_status": "VALIDATED",
+        }
+        records.append(record)
+        if changed:
+            observed_changes.append(
+                {
+                    "target": record["target"],
+                    "baseline_tier": baseline_tier,
+                    "model": record["model"],
+                    "historical_alpha": historical_alpha,
+                    "corrected_alpha": corrected_alpha,
+                }
+            )
+    expected_changes = policy["selection_protocol"].get(
+        "expected_current_selected_alpha_changes", []
+    )
+    if observed_changes != expected_changes:
+        raise ValueError(
+            f"selected-alpha change set differs from policy: {observed_changes}"
+        )
+    return records
+
+
+def validate_confusion_matrices(
+    original: pd.DataFrame,
+    corrected: pd.DataFrame,
+    policy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    validate_table_schema("binary_metrics", original, corrected, policy)
+    keys = tuple(policy["nonimage_tables"]["binary_metrics"]["row_identity_fields"])
+    merged = _pair_table_rows("binary_metrics", original, corrected, keys)
+    changes: list[dict[str, Any]] = []
+    for _, row in merged.iterrows():
+        historical = {name: int(row[f"{name}_original"]) for name in ("tp", "fp", "tn", "fn")}
+        current = {name: int(row[f"{name}_corrected"]) for name in ("tp", "fp", "tn", "fn")}
+        historical_n = int(row["n_original"])
+        corrected_n = int(row["n_corrected"])
+        historical_positive = historical["tp"] + historical["fn"]
+        corrected_positive = current["tp"] + current["fn"]
+        historical_negative = historical["tn"] + historical["fp"]
+        corrected_negative = current["tn"] + current["fp"]
+        if historical_n != corrected_n:
+            raise ValueError("cohort N changed in binary metrics")
+        if historical_positive != corrected_positive:
+            raise ValueError("observed-positive count changed in binary metrics")
+        if historical_negative != corrected_negative:
+            raise ValueError("observed-negative count changed in binary metrics")
+        if historical_positive + historical_negative != historical_n:
+            raise ValueError("historical confusion cells do not sum to N")
+        if corrected_positive + corrected_negative != corrected_n:
+            raise ValueError("corrected confusion cells do not sum to N")
+        if float(row["prevalence_original"]) != float(row["prevalence_corrected"]):
+            raise ValueError("observed prevalence changed in binary metrics")
+        if historical != current:
+            baseline_tier = str(row["baseline_tier_original"])
+            if policy["analysis_dependencies"][baseline_tier]["input_status"] != "INPUT_CHANGED":
+                raise ValueError("confusion counts changed for unchanged input")
+            record = {
+                "target": str(row["target_original"]),
+                "baseline_tier": baseline_tier,
+                "split": str(row["split_original"]),
+                "model": str(row["model_original"]),
+                "threshold_label": str(row["threshold_label_original"]),
+                "threshold_value": float(row["threshold_value_original"]),
+                "historical": historical,
+                "corrected": current,
+                "historical_observed_positive": historical_positive,
+                "corrected_observed_positive": corrected_positive,
+                "historical_observed_negative": historical_negative,
+                "corrected_observed_negative": corrected_negative,
+                "historical_n": historical_n,
+                "corrected_n": corrected_n,
+                "invariants_passed": True,
+            }
+            changes.append(record)
+    if changes != policy.get("expected_current_confusion_changes", []):
+        expected = policy.get("expected_current_confusion_changes", [])
+        comparable = [
+            {
+                key: value
+                for key, value in record.items()
+                if key
+                in {
+                    "target",
+                    "baseline_tier",
+                    "split",
+                    "model",
+                    "threshold_label",
+                    "threshold_value",
+                    "historical",
+                    "corrected",
+                }
+            }
+            for record in changes
+        ]
+        if comparable != expected:
+            raise ValueError(f"confusion-matrix change set differs from policy: {comparable}")
+    return changes
+
+
+def validate_metric_selected_alphas(
+    original_metrics: pd.DataFrame,
+    corrected_metrics: pd.DataFrame,
+    alpha_records: list[dict[str, Any]],
+) -> None:
+    for record in alpha_records:
+        criteria = (
+            original_metrics["target"].eq(record["target"])
+            & original_metrics["baseline_tier"].eq(record["baseline_tier"])
+            & original_metrics["model"].eq(record["model"])
+        )
+        historical = original_metrics.loc[criteria, "selected_alpha"].dropna().unique()
+        criteria = (
+            corrected_metrics["target"].eq(record["target"])
+            & corrected_metrics["baseline_tier"].eq(record["baseline_tier"])
+            & corrected_metrics["model"].eq(record["model"])
+        )
+        current = corrected_metrics.loc[criteria, "selected_alpha"].dropna().unique()
+        if historical.tolist() != [record["historical_selected_alpha"]]:
+            raise ValueError("historical metrics selected alpha disagrees with selection table")
+        if current.tolist() != [record["corrected_selected_alpha"]]:
+            raise ValueError("corrected metrics selected alpha disagrees with selection table")
+
+
+def semantic_preflight(
+    args: argparse.Namespace, policy: dict[str, Any], policy_path: Path
+) -> dict[str, Any]:
+    selection_source = args.repo_root / policy["selection_protocol"]["selection_source"]
+    if sha256_file(selection_source) != policy["selection_protocol"]["selection_source_sha256"]:
+        raise ValueError("non-image alpha-selection source changed")
+    dependency_records = validate_analysis_dependencies(args.workflow_root, policy)
+    packet_records = validate_comparison_packet_fields(args.workflow_root, policy)
+    historical_root = args.phase2_root / "nonimage_baselines"
+    corrected_root = args.corrected_root / "restricted/nonimage_analyses"
+    tables: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
+    table_inventory: list[dict[str, Any]] = []
+    for source_label, table_policy in sorted(policy["nonimage_tables"].items()):
+        filename = table_policy["filename"]
+        original = pd.read_csv(historical_root / filename)
+        corrected = pd.read_csv(corrected_root / filename)
+        fields = validate_table_schema(source_label, original, corrected, policy)
+        tables[source_label] = (original, corrected)
+        counts: dict[str, int] = {}
+        for category in fields.values():
+            counts[category] = counts.get(category, 0) + 1
+        table_inventory.append(
+            {
+                "source_table": source_label,
+                "classified_field_count": len(fields),
+                "category_counts": counts,
+                "all_fields_classified": True,
+            }
+        )
+    alpha_records = validate_alpha_selection(*tables["alpha_selection"], policy)
+    confusion_records = validate_confusion_matrices(*tables["binary_metrics"], policy)
+    validate_metric_selected_alphas(*tables["metrics"], alpha_records)
+    comparison_rows = 0
+    for source_label, table_policy in sorted(policy["nonimage_tables"].items()):
+        comparison_rows += len(
+            compare_nonimage_table(
+                historical_root / table_policy["filename"],
+                corrected_root / table_policy["filename"],
+                source_label,
+                tuple(table_policy["row_identity_fields"]),
+                policy=policy,
+                semantic_checks_complete=True,
+            )
+        )
+    return {
+        "status": "PHASE2F_ACTUAL_PACKET_PREFLIGHT_PASSED",
+        "field_policy_version": policy["schema_version"],
+        "field_policy_sha256": sha256_file(policy_path),
+        "all_actual_fields_classified": True,
+        "comparison_packet_count": len(packet_records),
+        "comparison_packet_field_inventory": packet_records,
+        "nonimage_table_field_inventory": table_inventory,
+        "analysis_dependencies": dependency_records,
+        "selection_protocol": {
+            key: value
+            for key, value in policy["selection_protocol"].items()
+            if key not in {"expected_current_selected_alpha_changes"}
+        },
+        "nonimage_alpha_selection_verification": alpha_records,
+        "nonimage_confusion_matrix_changes": confusion_records,
+        "semantic_comparison_rows_traversed": comparison_rows,
+        "certificate_written": False,
+        "scientific_analysis_rerun": False,
+    }
 
 
 def _is_missing(value: Any) -> bool:
@@ -372,84 +927,109 @@ def compare_nonimage_table(
     corrected_path: Path,
     source_label: str,
     keys: tuple[str, ...],
+    *,
+    policy: dict[str, Any],
+    semantic_checks_complete: bool = False,
 ) -> pd.DataFrame:
-    """Drop-in replacement for the preserved finalizer's failing comparator."""
+    """Compare one non-image table using field meaning and input dependency."""
 
     original = pd.read_csv(original_path)
     corrected = pd.read_csv(corrected_path)
+    classified = validate_table_schema(source_label, original, corrected, policy)
+    expected_keys = tuple(
+        policy["nonimage_tables"][source_label]["row_identity_fields"]
+    )
+    if keys != expected_keys:
+        raise ValueError(f"row-identity policy changed for {source_label}")
     for frame, label in ((original, "original"), (corrected, "corrected")):
         missing = set(keys) - set(frame.columns)
         if missing:
             raise ValueError(f"{label} {source_label} lacks keys: {sorted(missing)}")
         if "baseline_tier" not in frame.columns:
             raise ValueError(f"{label} {source_label} lacks baseline_tier")
-    affected = {"study_metadata", "demographics_plus_study_metadata"}
-    original = original[original["baseline_tier"].isin(affected)].copy()
-    corrected = corrected[corrected["baseline_tier"].isin(affected)].copy()
-    if corrected.empty or original.empty:
-        raise ValueError(f"affected nonimage rows missing in {source_label}")
-    if corrected.duplicated(list(keys)).any() or original.duplicated(list(keys)).any():
-        raise ValueError(f"duplicate row keys in {source_label}")
-
-    def stable_key(value: Any) -> str:
-        if _is_missing(value):
-            return "<NA>"
-        if isinstance(value, (float, np.floating)) and float(value).is_integer():
-            return str(int(value))
-        return str(value)
-
-    original["_key"] = original[list(keys)].apply(
-        lambda row: tuple(stable_key(value) for value in row), axis=1
-    )
-    corrected["_key"] = corrected[list(keys)].apply(
-        lambda row: tuple(stable_key(value) for value in row), axis=1
-    )
-    if set(original["_key"]) != set(corrected["_key"]):
-        raise ValueError(f"row identity changed in affected nonimage {source_label}")
-    merged = original.merge(
-        corrected,
-        on="_key",
-        how="inner",
-        suffixes=("_original", "_corrected"),
-        validate="one_to_one",
-    )
-    numeric_columns = [
-        column
-        for column in original.columns
-        if column not in {*keys, "_key"}
-        and column in corrected.columns
-        and pd.api.types.is_numeric_dtype(original[column])
-        and pd.api.types.is_numeric_dtype(corrected[column])
-    ]
+    if not semantic_checks_complete:
+        if source_label == "alpha_selection":
+            validate_alpha_selection(original, corrected, policy)
+        if source_label == "binary_metrics":
+            validate_confusion_matrices(original, corrected, policy)
+    merged = _pair_table_rows(source_label, original, corrected, keys)
+    compared_fields = [field for field in classified if field not in keys]
+    exact_categories = {
+        "cohort_invariant",
+        "identity_invariant",
+        "observed_distribution_invariant",
+        "protocol_boolean",
+        "protocol_invariant",
+    }
+    derived_categories = {
+        "derived_float_output",
+        "derived_integer_output",
+        "diagnostic_output",
+        "selected_alpha_output",
+        "selection_boolean_output",
+        "validation_metric_output",
+    }
     rows: list[dict[str, Any]] = []
     for _, row in merged.iterrows():
         key_text = "|".join(
-            f"{key}={stable_key(row[f'{key}_original'])}" for key in keys
+            f"{key}={_stable_key(row[f'{key}_original'])}" for key in keys
         )
-        for metric in numeric_columns:
+        baseline_tier = _stable_key(row["baseline_tier_original"])
+        input_status = policy["analysis_dependencies"][baseline_tier][
+            "input_status"
+        ]
+        for metric in compared_fields:
+            category = classified[metric]
             comparison = compare_scalar_values(
                 row[f"{metric}_original"],
                 row[f"{metric}_corrected"],
                 apply_float_tolerance=False,
             )
-            if comparison["comparison_type"] != "floating_point" and not comparison[
-                "within_policy"
-            ]:
+            if (
+                comparison["comparison_type"] == "matching_missingness"
+                and not comparison["exact_match"]
+            ):
                 raise ValueError(
-                    f"exact scalar mismatch in {source_label}: {key_text}|metric={metric}"
+                    f"missingness changed in {source_label}: {key_text}|field={metric}"
+                )
+            difference_allowed = False
+            semantic_within_policy = bool(comparison["exact_match"])
+            if category in exact_categories:
+                if not comparison["exact_match"]:
+                    raise ValueError(
+                        f"exact invariant changed in {source_label}: "
+                        f"{key_text}|field={metric}"
+                    )
+            elif category in derived_categories:
+                difference_allowed = input_status == "INPUT_CHANGED"
+                if not difference_allowed and not comparison["exact_match"]:
+                    raise ValueError(
+                        f"derived output changed for reused input in {source_label}: "
+                        f"{key_text}|field={metric}"
+                    )
+                semantic_within_policy = bool(
+                    comparison["exact_match"] or difference_allowed
+                )
+            else:
+                raise ValueError(
+                    f"unsupported field category in {source_label}: {metric}={category}"
                 )
             rows.append(
                 {
                     "source_table": source_label,
-                    "target": stable_key(row["target_original"]),
-                    "baseline_tier": stable_key(row["baseline_tier_original"]),
+                    "target": _stable_key(row["target_original"]),
+                    "baseline_tier": baseline_tier,
                     "stratum": key_text,
                     "metric": metric,
                     **comparison,
+                    "policy_category": category,
+                    "analysis_input_status": input_status,
+                    "difference_allowed": difference_allowed,
+                    "within_policy": semantic_within_policy,
                     "status": (
                         "UNCHANGED"
                         if comparison["exact_match"]
-                        else "NUMERICALLY_CHANGED"
+                        else "ACCEPTED_DERIVED_CHANGE"
                     ),
                 }
             )
@@ -465,16 +1045,25 @@ def load_legacy_finalizer(path: Path) -> ModuleType:
     return module
 
 
-def patch_legacy_finalizer(module: ModuleType) -> None:
-    module.compare_nonimage_table = compare_nonimage_table
+def patch_legacy_finalizer(module: ModuleType, policy: dict[str, Any]) -> None:
+    module.compare_nonimage_table = lambda old, new, label, keys: compare_nonimage_table(
+        old,
+        new,
+        label,
+        keys,
+        policy=policy,
+        semantic_checks_complete=True,
+    )
 
 
-def run_legacy_finalizer(args: argparse.Namespace, output_root: Path) -> Path:
+def run_legacy_finalizer(
+    args: argparse.Namespace, output_root: Path, policy: dict[str, Any]
+) -> Path:
     finalizer_path = args.workflow_root / "commands/finalize_phase2e_aggregate_safe.py"
     if sha256_file(finalizer_path) != LEGACY_FINALIZER_SHA256:
         raise ValueError("preserved finalizer hash changed")
     module = load_legacy_finalizer(finalizer_path)
-    patch_legacy_finalizer(module)
+    patch_legacy_finalizer(module, policy)
     prior_argv = sys.argv
     sys.argv = [
         str(finalizer_path),
@@ -617,9 +1206,14 @@ def main() -> int:
         "output_root",
     ):
         setattr(args, name, getattr(args, name).resolve())
+    if args.field_policy is not None:
+        args.field_policy = args.field_policy.resolve()
     if args.output_root.exists():
         raise FileExistsError(f"refusing to overwrite {args.output_root}")
 
+    field_policy, field_policy_path = load_field_policy(
+        args.repo_root, args.field_policy
+    )
     source = verify_repo(args.repo_root, args.expected_source_commit)
     reconciliation_records = verify_hashes(
         args.reconciliation_root, RECONCILIATION_HASHES
@@ -628,6 +1222,7 @@ def main() -> int:
     packet_records = verify_hashes(args.workflow_root, PACKET_HASHES)
     decision_records = verify_hashes(args.decision_root, DECISION_HASHES)
     corrected_records = verify_hashes(args.corrected_root, CORRECTED_HASHES)
+    historical_nonimage_records = validate_original_nonimage_hashes(args.phase2_root)
     if sha256_file(args.split_map_csv) != SPLIT_MAP_SHA256:
         raise ValueError("split-map hash mismatch")
     split_record = file_record("frozen_subject_split_map", args.split_map_csv)
@@ -647,12 +1242,39 @@ def main() -> int:
         row.get("selected_alpha_original") != row.get("selected_alpha_corrected")
         for row in identities
     ):
-        raise ValueError("selected alpha changed")
+        raise ValueError("primary imaging selected alpha changed")
     rounded_changes = reconciliation.rounded_continuous_metric_changes(
         args.corrected_root
     )
     if rounded_changes:
         raise ValueError("rounded manuscript metrics changed")
+
+    semantic = semantic_preflight(args, field_policy, field_policy_path)
+    primary_alpha_comparison = [
+        {
+            "analysis_label": row.get("analysis_label"),
+            "target": row.get("target"),
+            "selected_alpha_historical": row.get("selected_alpha_original"),
+            "selected_alpha_corrected": row.get("selected_alpha_corrected"),
+            "selected_alpha_changed": (
+                row.get("selected_alpha_original")
+                != row.get("selected_alpha_corrected")
+            ),
+        }
+        for row in identities
+    ]
+    if args.preflight_only:
+        preflight = {
+            **semantic,
+            **source,
+            "primary_imaging_alpha_comparison": primary_alpha_comparison,
+            "primary_imaging_selected_alphas_changed": False,
+            "rounded_primary_metrics_changed": False,
+            "output_root_created": False,
+        }
+        validate_export_safe(preflight)
+        print(json.dumps(json_clean(preflight), indent=2, sort_keys=True))
+        return 0
 
     args.output_root.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(
@@ -662,7 +1284,7 @@ def main() -> int:
     )
     try:
         legacy_root = temporary / "intermediate/legacy_finalizer"
-        legacy_certificate = run_legacy_finalizer(args, legacy_root)
+        legacy_certificate = run_legacy_finalizer(args, legacy_root, field_policy)
         safe_root = temporary / "aggregate_safe"
         safe_root.mkdir(parents=True)
         for filename in (
@@ -673,6 +1295,10 @@ def main() -> int:
         ):
             shutil.copy2(legacy_root / filename, safe_root / filename)
         copy_locked_evidence(args, safe_root)
+        shutil.copy2(
+            field_policy_path,
+            safe_root / "phase2f_finalizer_field_policy_v1.json",
+        )
 
         canonical_inventory = reconciliation.analysis_output_inventory(
             args.corrected_root, reconciliation.SPECS, "canonical_corrected", True
@@ -702,24 +1328,57 @@ def main() -> int:
             "analysis_family",
         ].astype(str).tolist()
 
-        policy = {
-            "schema_version": "jdim-phase2f-scalar-comparison-policy-v1",
-            "status": "TYPE_AWARE_SCALAR_POLICY_LOCKED",
+        comparison_policy = {
+            "schema_version": FIELD_POLICY_VERSION,
+            "status": "SEMANTIC_FIELD_POLICY_LOCKED",
             "boolean_policy": "Python bool and NumPy bool_ use exact equality; arithmetic is prohibited",
-            "integer_and_count_policy": "exact equality",
+            "integer_and_count_policy": "cohort and observed-label counts are exact; named derived prediction counts may change only for INPUT_CHANGED reruns",
             "identity_policy": "strings, labels, hashes, target, split, path identity, and protocol fields use exact equality",
             "missingness_policy": "matching missingness and type-compatible interpretation required; missing is not false",
             "floating_point_policy": "absolute tolerance of 2e-6 applies only to deterministic scalar metrics reconstructed from hash-verified historical serialized packets",
             "floating_point_absolute_tolerance": FLOAT_TOLERANCE,
+            "selected_alpha_policy": "exact for INPUT_UNCHANGED analyses; validation-optimum output for INPUT_CHANGED reruns under the frozen selection protocol",
+            "exact_invariant_categories": [
+                "cohort_invariant",
+                "identity_invariant",
+                "observed_distribution_invariant",
+                "protocol_boolean",
+                "protocol_invariant",
+                "source_identity",
+            ],
+            "conditional_derived_output_categories": [
+                "derived_float_output",
+                "derived_integer_output",
+                "diagnostic_output",
+                "selected_alpha_output",
+                "selection_boolean_output",
+                "validation_metric_output",
+            ],
+            "analysis_dependencies": semantic["analysis_dependencies"],
+            "all_actual_fields_classified": semantic["all_actual_fields_classified"],
             "performance_direction_used_for_selection": False,
         }
-        write_json(safe_root / "phase2f_scalar_comparison_policy.json", policy)
+        write_json(
+            safe_root / "phase2f_scalar_comparison_policy.json",
+            comparison_policy,
+        )
+
+        nonimage_alpha_records = semantic["nonimage_alpha_selection_verification"]
+        nonimage_alpha_changes = [
+            row for row in nonimage_alpha_records if row["selected_alpha_changed"]
+        ]
 
         completion = {
             "schema_version": "jdim-phase2f-corrected-output-canonical-v1",
             "status": "PHASE2E_CORRECTED_OUTPUTS_CANONICAL",
             **source,
             "finalizer_script_sha256": sha256_file(Path(__file__).resolve()),
+            "field_policy_version": field_policy["schema_version"],
+            "field_policy_sha256": sha256_file(field_policy_path),
+            "field_policy_manifest": file_record(
+                "phase2f_finalizer_field_policy",
+                safe_root / "phase2f_finalizer_field_policy_v1.json",
+            ),
             "preserved_finalizer_sha256": LEGACY_FINALIZER_SHA256,
             "preserved_finalizer_certificate": file_record(
                 "preserved_finalizer_certificate", legacy_certificate
@@ -750,8 +1409,10 @@ def main() -> int:
             "comparison_packet_hashes": packet_records,
             "passed_comparison_and_reconciliation_hashes": reconciliation_records,
             "dependency_and_reuse_hashes": workflow_records,
+            "historical_nonimage_output_hashes": historical_nonimage_records,
             "frozen_split_map": split_record,
-            "exact_comparison_policy": policy,
+            "semantic_comparison_policy": comparison_policy,
+            "actual_packet_preflight": semantic,
             "duplicate_correction": {
                 "duplicate_expected_list_row_pairs": 32,
                 "rows_removed": 32,
@@ -759,9 +1420,20 @@ def main() -> int:
                 "retention_rule": "one deterministic row per provenance-defined semantic clip",
             },
             "affected_analyses_repeated_under_unchanged_protocol": True,
-            "selected_alphas_changed": False,
-            "rounded_manuscript_results_changed": False,
-            "scientific_conclusions_changed": False,
+            "primary_imaging_alpha_comparison": primary_alpha_comparison,
+            "primary_imaging_selected_alphas_changed": False,
+            "secondary_nonimage_alpha_selection": nonimage_alpha_records,
+            "secondary_nonimage_selected_alpha_changes": nonimage_alpha_changes,
+            "secondary_nonimage_selected_alphas_changed": bool(
+                nonimage_alpha_changes
+            ),
+            "any_selected_alpha_changed": bool(nonimage_alpha_changes),
+            "confusion_matrix_invariant_checks": semantic[
+                "nonimage_confusion_matrix_changes"
+            ],
+            "rounded_primary_manuscript_metrics_changed": False,
+            "model_conclusions_changed": False,
+            "study_conclusions_changed": False,
             "performance_direction_used_for_selection": False,
             "canonical_corrected_output_inventory": canonical_inventory,
             "superseded_historical_output_inventory": superseded_inventory,
@@ -799,9 +1471,12 @@ def main() -> int:
             {
                 "status": "PHASE2E_CORRECTED_OUTPUTS_CANONICAL",
                 "completion_certificate_sha256": sha256_file(final_certificate),
-                "selected_alphas_changed": False,
-                "rounded_manuscript_results_changed": False,
-                "scientific_conclusions_changed": False,
+                "primary_imaging_selected_alphas_changed": False,
+                "secondary_nonimage_selected_alphas_changed": bool(
+                    nonimage_alpha_changes
+                ),
+                "rounded_primary_manuscript_metrics_changed": False,
+                "study_conclusions_changed": False,
             },
             indent=2,
             sort_keys=True,

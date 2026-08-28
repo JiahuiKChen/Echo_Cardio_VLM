@@ -1,0 +1,262 @@
+{
+  "schema_version": "PHASE2F_FINALIZER_FIELD_POLICY_V1",
+  "floating_point_absolute_tolerance": 0.000002,
+  "allowed_categories": [
+    "cohort_invariant",
+    "derived_float_output",
+    "derived_integer_output",
+    "diagnostic_output",
+    "identity_invariant",
+    "observed_distribution_invariant",
+    "protocol_boolean",
+    "protocol_invariant",
+    "selected_alpha_output",
+    "selection_boolean_output",
+    "source_identity",
+    "validation_metric_output"
+  ],
+  "analysis_dependencies": {
+    "demographics": {
+      "analysis_family": "Demographics baseline",
+      "input_status": "INPUT_UNCHANGED",
+      "rerun": false,
+      "formally_reused": true
+    },
+    "demographics_plus_study_metadata": {
+      "analysis_family": "Combined baseline",
+      "input_status": "INPUT_CHANGED",
+      "rerun": true,
+      "formally_reused": false
+    },
+    "study_metadata": {
+      "analysis_family": "Acquisition baseline",
+      "input_status": "INPUT_CHANGED",
+      "rerun": true,
+      "formally_reused": false
+    }
+  },
+  "selection_protocol": {
+    "alpha_grid": [
+      0.01,
+      0.03,
+      0.1,
+      0.3,
+      1.0,
+      3.0,
+      10.0,
+      30.0,
+      100.0,
+      300.0,
+      1000.0
+    ],
+    "selection_split": "val",
+    "selection_metric": "mean_absolute_error",
+    "tie_breaking_rule": "first alpha in frozen grid with a strictly lower validation MAE",
+    "test_data_used_for_selection": false,
+    "ridge_solver": "svd",
+    "features_standardized": true,
+    "selection_source": "scripts/run_phase2_nonimage_baselines.py",
+    "selection_source_sha256": "e3e7a8919b21a2704105fce2c401c0c328fe1249a29165ccdc1ddbffe03184aa",
+    "expected_current_selected_alpha_changes": [
+      {
+        "baseline_tier": "study_metadata",
+        "corrected_alpha": 300.0,
+        "historical_alpha": 100.0,
+        "model": "ridge",
+        "target": "tapse"
+      }
+    ]
+  },
+  "expected_current_confusion_changes": [
+    {
+      "baseline_tier": "demographics_plus_study_metadata",
+      "corrected": {
+        "fn": 891,
+        "fp": 7,
+        "tn": 1754,
+        "tp": 2
+      },
+      "historical": {
+        "fn": 890,
+        "fp": 8,
+        "tn": 1753,
+        "tp": 3
+      },
+      "model": "ridge",
+      "split": "train",
+      "target": "lvot_vti",
+      "threshold_label": "low_lt_20cm",
+      "threshold_value": 20.0
+    }
+  ],
+  "comparison_packet_fields": {
+    "/bootstrap_n": "protocol_invariant",
+    "/bootstrap_seed": "protocol_invariant",
+    "/correlations_computed_directly_from_saved_test_predictions": "protocol_boolean",
+    "/historical_outputs_modified": "protocol_boolean",
+    "/input_files/[]/logical_role": "source_identity",
+    "/input_files/[]/path": "source_identity",
+    "/input_files/[]/row_count": "source_identity",
+    "/input_files/[]/sha256": "source_identity",
+    "/input_files/[]/size_bytes": "source_identity",
+    "/model_refit": "protocol_boolean",
+    "/output_files/[]/logical_role": "source_identity",
+    "/output_files/[]/path": "source_identity",
+    "/output_files/[]/row_count": "source_identity",
+    "/output_files/[]/sha256": "source_identity",
+    "/output_files/[]/size_bytes": "source_identity",
+    "/prediction_regeneration": "protocol_boolean",
+    "/prediction_rows_modified": "protocol_boolean",
+    "/schema_version": "protocol_invariant",
+    "/status": "protocol_invariant"
+  },
+  "nonimage_tables": {
+    "alpha_selection": {
+      "filename": "phase2_nonimage_baseline_alpha_selection.csv",
+      "row_identity_fields": [
+        "target",
+        "baseline_tier",
+        "model",
+        "alpha"
+      ],
+      "fields": {
+        "alpha": "protocol_invariant",
+        "baseline_tier": "identity_invariant",
+        "model": "protocol_invariant",
+        "selected": "selection_boolean_output",
+        "target": "identity_invariant",
+        "val_mae": "validation_metric_output",
+        "warning_count": "diagnostic_output",
+        "warning_messages": "diagnostic_output"
+      }
+    },
+    "binary_bootstrap_ci": {
+      "filename": "phase2_nonimage_baseline_binary_bootstrap_ci.csv",
+      "row_identity_fields": [
+        "target",
+        "baseline_tier",
+        "model",
+        "threshold_label",
+        "threshold_value",
+        "metric"
+      ],
+      "fields": {
+        "baseline_tier": "identity_invariant",
+        "ci_lower_2_5": "derived_float_output",
+        "ci_upper_97_5": "derived_float_output",
+        "mean": "derived_float_output",
+        "metric": "protocol_invariant",
+        "model": "protocol_invariant",
+        "n_bootstrap": "protocol_invariant",
+        "n_negative": "cohort_invariant",
+        "n_positive": "cohort_invariant",
+        "n_valid_bootstrap": "derived_integer_output",
+        "status": "protocol_invariant",
+        "target": "identity_invariant",
+        "threshold_label": "protocol_invariant",
+        "threshold_value": "protocol_invariant"
+      }
+    },
+    "binary_metrics": {
+      "filename": "phase2_nonimage_baseline_binary_metrics.csv",
+      "row_identity_fields": [
+        "target",
+        "baseline_tier",
+        "split",
+        "model",
+        "threshold_label",
+        "threshold_value"
+      ],
+      "fields": {
+        "accuracy": "derived_float_output",
+        "analysis_label": "protocol_invariant",
+        "auroc_continuous_score": "derived_float_output",
+        "average_precision_continuous_score": "derived_float_output",
+        "baseline_tier": "identity_invariant",
+        "f1": "derived_float_output",
+        "fn": "derived_integer_output",
+        "fp": "derived_integer_output",
+        "model": "protocol_invariant",
+        "n": "cohort_invariant",
+        "npv": "derived_float_output",
+        "ppv": "derived_float_output",
+        "predicted_positive_rate": "derived_float_output",
+        "prevalence": "observed_distribution_invariant",
+        "sensitivity": "derived_float_output",
+        "specificity": "derived_float_output",
+        "split": "identity_invariant",
+        "target": "identity_invariant",
+        "threshold_label": "protocol_invariant",
+        "threshold_value": "protocol_invariant",
+        "tn": "derived_integer_output",
+        "tp": "derived_integer_output"
+      }
+    },
+    "bootstrap_ci": {
+      "filename": "phase2_nonimage_baseline_bootstrap_ci.csv",
+      "row_identity_fields": [
+        "target",
+        "baseline_tier",
+        "model",
+        "metric"
+      ],
+      "fields": {
+        "baseline_tier": "identity_invariant",
+        "bootstrap_unit": "protocol_invariant",
+        "ci_lower_2_5": "derived_float_output",
+        "ci_upper_97_5": "derived_float_output",
+        "mean": "derived_float_output",
+        "metric": "protocol_invariant",
+        "model": "protocol_invariant",
+        "n_bootstrap": "protocol_invariant",
+        "split": "identity_invariant",
+        "target": "identity_invariant"
+      }
+    },
+    "metrics": {
+      "filename": "phase2_nonimage_baseline_metrics.csv",
+      "row_identity_fields": [
+        "target",
+        "baseline_tier",
+        "split",
+        "model"
+      ],
+      "fields": {
+        "baseline_tier": "identity_invariant",
+        "bias_pred_minus_true": "derived_float_output",
+        "bland_altman_lower": "derived_float_output",
+        "bland_altman_upper": "derived_float_output",
+        "calibration_intercept_true_on_pred": "derived_float_output",
+        "calibration_slope_true_on_pred": "derived_float_output",
+        "delta_mae_vs_imaging_ridge": "derived_float_output",
+        "delta_r2_vs_imaging_ridge": "derived_float_output",
+        "imaging_ridge_mae": "derived_float_output",
+        "imaging_ridge_r2": "derived_float_output",
+        "imaging_ridge_rmse": "derived_float_output",
+        "mae": "derived_float_output",
+        "mae_over_train_iqr": "derived_float_output",
+        "median_absolute_error": "derived_float_output",
+        "model": "protocol_invariant",
+        "n_studies": "cohort_invariant",
+        "n_subjects": "cohort_invariant",
+        "pearson": "derived_float_output",
+        "r2": "derived_float_output",
+        "rmse": "derived_float_output",
+        "selected_alpha": "selected_alpha_output",
+        "skip_reason": "protocol_invariant",
+        "spearman": "derived_float_output",
+        "split": "identity_invariant",
+        "status": "protocol_invariant",
+        "target": "identity_invariant",
+        "target_iqr": "observed_distribution_invariant",
+        "target_median": "observed_distribution_invariant",
+        "target_phase2_role": "protocol_invariant",
+        "target_unit": "protocol_invariant",
+        "within_2_cm": "derived_float_output",
+        "within_3_cm": "derived_float_output",
+        "within_3_mm": "derived_float_output",
+        "within_5_mm": "derived_float_output"
+      }
+    }
+  }
+}

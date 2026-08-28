@@ -21,6 +21,34 @@ from phase2f_finalize import (  # noqa: E402
 )
 
 
+def synthetic_policy() -> dict:
+    return {
+        "analysis_dependencies": {
+            "study_metadata": {
+                "input_status": "INPUT_CHANGED",
+            }
+        },
+        "nonimage_tables": {
+            "metrics": {
+                "row_identity_fields": [
+                    "target",
+                    "baseline_tier",
+                    "split",
+                    "model",
+                ],
+                "fields": {
+                    "target": "identity_invariant",
+                    "baseline_tier": "identity_invariant",
+                    "split": "identity_invariant",
+                    "model": "protocol_invariant",
+                    "input_changed": "protocol_boolean",
+                    "mae": "derived_float_output",
+                },
+            }
+        },
+    }
+
+
 class Phase2FFinalizerTests(unittest.TestCase):
     def test_equal_python_booleans_pass(self) -> None:
         result = compare_scalar_values(True, True)
@@ -70,22 +98,28 @@ class Phase2FFinalizerTests(unittest.TestCase):
                 "split": ["test"],
                 "model": ["ridge"],
             }
-            original = pd.DataFrame({**base, "input_changed": [False]})
-            corrected = pd.DataFrame({**base, "input_changed": [True]})
+            original = pd.DataFrame(
+                {**base, "input_changed": [False], "mae": [3.64]}
+            )
+            corrected = pd.DataFrame(
+                {**base, "input_changed": [True], "mae": [3.64]}
+            )
             original.to_csv(root / "old.csv", index=False)
             corrected.to_csv(root / "new.csv", index=False)
-            with self.assertRaisesRegex(ValueError, "exact scalar mismatch"):
+            with self.assertRaisesRegex(ValueError, "exact invariant changed"):
                 compare_nonimage_table(
                     root / "old.csv",
                     root / "new.csv",
                     "metrics",
                     ("target", "baseline_tier", "split", "model"),
+                    policy=synthetic_policy(),
+                    semantic_checks_complete=True,
                 )
 
     def test_preserved_finalizer_fixture_generates_certificate(self) -> None:
         fixture = ROOT / "tests/fixtures/phase2e_finalizer_boolean_fixture.py"
         module = load_legacy_finalizer(fixture)
-        patch_legacy_finalizer(module)
+        patch_legacy_finalizer(module, synthetic_policy())
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             frame = pd.DataFrame(
