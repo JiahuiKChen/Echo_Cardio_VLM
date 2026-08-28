@@ -215,6 +215,13 @@
     },
     "metrics": {
       "filename": "phase2_nonimage_baseline_metrics.csv",
+      "historical_only_fields": [
+        "delta_mae_vs_imaging_ridge",
+        "delta_r2_vs_imaging_ridge",
+        "imaging_ridge_mae",
+        "imaging_ridge_r2",
+        "imaging_ridge_rmse"
+      ],
       "row_identity_fields": [
         "target",
         "baseline_tier",

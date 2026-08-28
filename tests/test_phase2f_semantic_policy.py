@@ -236,6 +236,75 @@ class DerivedCountPolicyTests(unittest.TestCase):
         return self._paths
 
 
+class SchemaPresencePolicyTests(unittest.TestCase):
+    def test_declared_historical_only_field_is_classified_but_not_compared(self) -> None:
+        policy = {
+            "analysis_dependencies": {
+                "study_metadata": {"input_status": "INPUT_CHANGED"}
+            },
+            "nonimage_tables": {
+                "metrics": {
+                    "row_identity_fields": [
+                        "target",
+                        "baseline_tier",
+                        "split",
+                        "model",
+                    ],
+                    "historical_only_fields": ["legacy_delta"],
+                    "fields": {
+                        "target": "identity_invariant",
+                        "baseline_tier": "identity_invariant",
+                        "split": "identity_invariant",
+                        "model": "protocol_invariant",
+                        "mae": "derived_float_output",
+                        "legacy_delta": "derived_float_output",
+                    },
+                }
+            },
+        }
+        keys = {
+            "target": ["tapse"],
+            "baseline_tier": ["study_metadata"],
+            "split": ["test"],
+            "model": ["ridge"],
+        }
+        historical = pd.DataFrame({**keys, "mae": [3.2], "legacy_delta": [0.4]})
+        corrected = pd.DataFrame({**keys, "mae": [3.1]})
+        validate_table_schema("metrics", historical, corrected, policy)
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            historical.to_csv(root / "old.csv", index=False)
+            corrected.to_csv(root / "new.csv", index=False)
+            compared = compare_nonimage_table(
+                root / "old.csv",
+                root / "new.csv",
+                "metrics",
+                tuple(policy["nonimage_tables"]["metrics"]["row_identity_fields"]),
+                policy=policy,
+                semantic_checks_complete=True,
+            )
+        self.assertEqual(compared["metric"].tolist(), ["mae"])
+        self.assertNotIn("legacy_delta", set(compared["metric"]))
+        with self.assertRaisesRegex(ValueError, "missing=\\['mae'\\]"):
+            validate_table_schema(
+                "metrics", historical, corrected.drop(columns=["mae"]), policy
+            )
+        with self.assertRaisesRegex(ValueError, "unknown=\\['new_metric'\\]"):
+            validate_table_schema(
+                "metrics", historical, corrected.assign(new_metric=1.0), policy
+            )
+
+        locked = real_policy()
+        locked["nonimage_tables"]["metrics"]["historical_only_fields"].append(
+            "mae"
+        )
+        with tempfile.TemporaryDirectory() as tempdir:
+            policy_path = Path(tempdir) / "field_policy.json"
+            policy_path.write_text(json.dumps(locked), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "locked allowlist"):
+                load_field_policy(ROOT, policy_path)
+
+
 class PacketSchemaTests(unittest.TestCase):
     def test_every_current_packet_field_is_classified(self) -> None:
         policy = real_policy()

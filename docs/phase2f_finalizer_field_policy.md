@@ -18,3 +18,8 @@ The preflight checks the exact schema of every current table and every leaf
 field in the nine comparison provenance packets. Any unknown field, changed
 protocol invariant, invalid alpha selection, changed prevalence, or changed
 source hash fails before scheduler submission.
+
+The historical metrics table contains five derived imaging-comparator
+enrichment fields that are absent from the corrected non-image model output.
+Their historical-only presence is declared explicitly in the manifest; all
+shared fields remain subject to the semantic comparison policy.

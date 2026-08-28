@@ -24,6 +24,17 @@ import pandas as pd
 
 FLOAT_TOLERANCE = 2e-6
 FIELD_POLICY_VERSION = "PHASE2F_FINALIZER_FIELD_POLICY_V1"
+HISTORICAL_ONLY_FIELDS = {
+    "metrics": frozenset(
+        {
+            "delta_mae_vs_imaging_ridge",
+            "delta_r2_vs_imaging_ridge",
+            "imaging_ridge_mae",
+            "imaging_ridge_r2",
+            "imaging_ridge_rmse",
+        }
+    )
+}
 LEGACY_FINALIZER_SHA256 = (
     "0f697b61d3b79e2e5fedb204678f0f6a8a95e66e5ff7ffe5ed60e500a99cb6c5"
 )
@@ -348,6 +359,18 @@ def load_field_policy(repo_root: Path, policy_path: Path | None) -> tuple[dict[s
         row_identity = set(table_policy.get("row_identity_fields", []))
         if not row_identity or not row_identity.issubset(fields):
             raise ValueError(f"invalid row-identity policy for {table_name}")
+        historical_only = set(table_policy.get("historical_only_fields", []))
+        locked_historical_only = set(HISTORICAL_ONLY_FIELDS.get(table_name, ()))
+        if historical_only != locked_historical_only:
+            raise ValueError(
+                f"historical-only fields differ from locked allowlist for {table_name}"
+            )
+        if not historical_only.issubset(fields) or historical_only & row_identity:
+            raise ValueError(f"invalid historical-only field policy for {table_name}")
+        if any(fields[field] != "derived_float_output" for field in historical_only):
+            raise ValueError(
+                f"historical-only fields must be derived floats for {table_name}"
+            )
     packet_fields = payload.get("comparison_packet_fields", {})
     if not packet_fields or set(packet_fields.values()) - allowed:
         raise ValueError("comparison-packet field policy is incomplete")
@@ -498,12 +521,15 @@ def validate_table_schema(
         raise ValueError(f"unclassified finalizer table: {source_label}")
     classified = table_policy["fields"]
     expected = set(classified)
+    historical_only = set(table_policy.get("historical_only_fields", []))
     for label, frame in (("historical", original), ("corrected", corrected)):
         actual = set(frame.columns)
-        if actual != expected:
+        expected_for_source = expected if label == "historical" else expected - historical_only
+        if actual != expected_for_source:
             raise ValueError(
                 f"unclassified fields in {label} {source_label}: "
-                f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+                f"missing={sorted(expected_for_source - actual)}, "
+                f"unknown={sorted(actual - expected_for_source)}"
             )
     return classified
 
@@ -790,6 +816,9 @@ def semantic_preflight(
                 "source_table": source_label,
                 "classified_field_count": len(fields),
                 "category_counts": counts,
+                "historical_only_fields": sorted(
+                    table_policy.get("historical_only_fields", [])
+                ),
                 "all_fields_classified": True,
             }
         )
@@ -953,7 +982,14 @@ def compare_nonimage_table(
         if source_label == "binary_metrics":
             validate_confusion_matrices(original, corrected, policy)
     merged = _pair_table_rows(source_label, original, corrected, keys)
-    compared_fields = [field for field in classified if field not in keys]
+    historical_only = set(
+        policy["nonimage_tables"][source_label].get("historical_only_fields", [])
+    )
+    compared_fields = [
+        field
+        for field in classified
+        if field not in keys and field not in historical_only
+    ]
     exact_categories = {
         "cohort_invariant",
         "identity_invariant",
@@ -1335,6 +1371,7 @@ def main() -> int:
             "integer_and_count_policy": "cohort and observed-label counts are exact; named derived prediction counts may change only for INPUT_CHANGED reruns",
             "identity_policy": "strings, labels, hashes, target, split, path identity, and protocol fields use exact equality",
             "missingness_policy": "matching missingness and type-compatible interpretation required; missing is not false",
+            "asymmetric_schema_policy": "manifest-declared historical-only derived enrichment fields are classified but excluded from paired comparison because no corrected counterpart exists",
             "floating_point_policy": "absolute tolerance of 2e-6 applies only to deterministic scalar metrics reconstructed from hash-verified historical serialized packets",
             "floating_point_absolute_tolerance": FLOAT_TOLERANCE,
             "selected_alpha_policy": "exact for INPUT_UNCHANGED analyses; validation-optimum output for INPUT_CHANGED reruns under the frozen selection protocol",
