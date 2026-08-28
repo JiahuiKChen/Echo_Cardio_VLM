@@ -25,6 +25,8 @@ try:
     from jdim_tier1.audit import canonical_clip_source_row_sha256  # noqa: E402
     from jdim_tier1.audit_reconstruction import (  # noqa: E402
         BLOCKED_AUDIT_RECONSTRUCTION,
+        BLOCKED_AUDIT_SOURCE_RESTORATION,
+        assess_audit_source_availability,
         build_contact_sheet,
         build_reconstruction_pilot,
         model_seen_frames,
@@ -91,6 +93,86 @@ class AuditReconstructionTests(unittest.TestCase):
         np.testing.assert_array_equal(selected, frames[:32:2])
         sheet = build_contact_sheet(selected.astype(np.uint8), selected.astype(np.uint8))
         self.assertEqual(sheet.shape, (1016, 1792, 3))
+
+    def test_full_locked_roster_source_availability_preserves_roster(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_root = root / "dicoms"
+            data_root.mkdir()
+            (data_root / "sample.dcm").write_bytes(b"source")
+            processed = root / "processed.npz"
+            processed.write_bytes(b"processed")
+            linkage = root / "audit_linkage.csv"
+            pd.DataFrame(
+                [{"audit_id": "audit-opaque", "study_id": 100, "subject_id": 10, "review_order": 1}]
+            ).to_csv(linkage, index=False)
+            manifest = root / "canonical_clips.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "study_id": 100,
+                        "subject_id": 10,
+                        "embedding_idx": 0,
+                        "canonical_clip_id": "a" * 64,
+                        "dicom_filepath": "sample.dcm",
+                        "output_path": str(processed),
+                        "write_ok": True,
+                    }
+                ]
+            ).to_csv(manifest, index=False)
+            roster = self._write_roster(root, manifest)
+            linkage_before = linkage.read_bytes()
+            result = assess_audit_source_availability(
+                linkage,
+                roster,
+                manifest,
+                data_root,
+                root / "restricted_availability",
+                root / "safe_availability",
+            )
+            self.assertEqual(result.safe_summary["status"], "ok")
+            self.assertEqual(result.safe_summary["studies_technically_ready_for_reconstruction"], 1)
+            self.assertEqual(linkage.read_bytes(), linkage_before)
+            self.assertEqual(len(result.ready_linkage), 1)
+
+    def test_missing_source_blocks_only_restoration_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            data_root = root / "dicoms"
+            data_root.mkdir()
+            processed = root / "processed.npz"
+            processed.write_bytes(b"processed")
+            linkage = root / "audit_linkage.csv"
+            pd.DataFrame(
+                [{"audit_id": "audit-opaque", "study_id": 100, "subject_id": 10, "review_order": 1}]
+            ).to_csv(linkage, index=False)
+            manifest = root / "canonical_clips.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "study_id": 100,
+                        "subject_id": 10,
+                        "embedding_idx": 0,
+                        "canonical_clip_id": "a" * 64,
+                        "dicom_filepath": "missing.dcm",
+                        "output_path": str(processed),
+                        "write_ok": True,
+                    }
+                ]
+            ).to_csv(manifest, index=False)
+            roster = self._write_roster(root, manifest)
+            result = assess_audit_source_availability(
+                linkage,
+                roster,
+                manifest,
+                data_root,
+                root / "restricted_availability",
+                root / "safe_availability",
+            )
+            self.assertEqual(result.safe_summary["status"], BLOCKED_AUDIT_SOURCE_RESTORATION)
+            self.assertEqual(result.safe_summary["studies_requiring_secure_restoration"], 1)
+            self.assertTrue(result.ready_linkage.empty)
+            self.assertEqual(len(result.restoration_rows), 1)
 
     def test_reconstruction_pilot_replays_source_and_writes_only_safe_aggregate(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

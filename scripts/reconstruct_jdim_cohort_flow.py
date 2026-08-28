@@ -10,6 +10,7 @@ from jdim_tier1.cohort_flow import (
     CohortFlowInputs,
     reconstruct_cohort_flow,
     validate_cohort_input_schemas,
+    validate_cohort_output_generation,
     write_cohort_flow_outputs,
 )
 from jdim_tier1.safety import Tier1BlockedError, parse_named_paths
@@ -49,6 +50,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lineage-metadata-json", type=Path, required=True)
     parser.add_argument("--duplicate-forensics-rows-csv", type=Path, required=True)
     parser.add_argument("--duplicate-forensics-provenance-json", type=Path, required=True)
+    parser.add_argument("--duplicate-metadata-summary-json", type=Path, required=True)
+    parser.add_argument("--duplicate-metadata-groups-csv", type=Path, required=True)
+    parser.add_argument("--duplicate-metadata-stage-rows-csv", type=Path, required=True)
+    parser.add_argument("--corrected-clip-embedding-manifest-csv", type=Path, required=True)
     parser.add_argument(
         "--canonical-prediction",
         action="append",
@@ -62,6 +67,11 @@ def parse_args() -> argparse.Namespace:
         "--schema-only",
         action="store_true",
         help="Validate file headers, declared lineage, and pinned hashes without computing cohort counts.",
+    )
+    parser.add_argument(
+        "--no-write-preflight",
+        action="store_true",
+        help="Run the complete cohort and output-validation path without writing artifacts.",
     )
     return parser.parse_args()
 
@@ -95,11 +105,18 @@ def main() -> int:
             duplicate_forensics=args.duplicate_forensics_rows_csv,
             duplicate_forensics_provenance=args.duplicate_forensics_provenance_json,
             canonical_predictions=canonical_predictions,
+            duplicate_metadata_summary=args.duplicate_metadata_summary_json,
+            duplicate_metadata_groups=args.duplicate_metadata_groups_csv,
+            duplicate_metadata_stage_rows=args.duplicate_metadata_stage_rows_csv,
+            corrected_clip_embeddings=args.corrected_clip_embedding_manifest_csv,
         )
         if args.schema_only:
             print(json.dumps(validate_cohort_input_schemas(inputs), indent=2))
             return 0
         result = reconstruct_cohort_flow(inputs)
+        if args.no_write_preflight:
+            print(json.dumps(validate_cohort_output_generation(result), indent=2))
+            return 0
         write_cohort_flow_outputs(result, args.output_dir, args.restricted_reconciliation_csv)
     except Tier1BlockedError as exc:
         print(json.dumps({"status": exc.status, "detail": exc.detail}, indent=2))

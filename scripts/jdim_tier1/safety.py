@@ -14,6 +14,9 @@ import pandas as pd
 
 BLOCKED_LINEAGE = "BLOCKED_MIXED_OR_UNRESOLVED_LINEAGE"
 BLOCKED_UNSAFE_OUTPUT = "BLOCKED_UNSAFE_OUTPUT_PATH"
+BLOCKED_UNDECLARED_DUPLICATE_METADATA = "BLOCKED_UNDECLARED_DUPLICATE_METADATA"
+BLOCKED_UNDECLARED_LEGACY_SCOPE = "BLOCKED_UNDECLARED_LEGACY_SCOPE"
+BLOCKED_COHORT_CANONICAL_MISMATCH = "BLOCKED_COHORT_CANONICAL_MISMATCH"
 
 FORBIDDEN_SAFE_COLUMNS = {
     "subject_id",
@@ -71,6 +74,13 @@ def sha256_json(value: Any) -> str:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def canonical_id_set_sha256(values: Iterable[Any]) -> str:
+    """Hash a normalized identifier set without exporting its members."""
+
+    normalized = sorted({str(value).strip() for value in values if str(value).strip()})
+    return sha256_json(normalized)
 
 
 def git_root(start: Path | None = None) -> Path | None:

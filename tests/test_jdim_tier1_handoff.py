@@ -36,6 +36,9 @@ class Tier1HandoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             split = root / "subject_split_map_v1.csv"
+            selected = root / "selected.csv"
+            legacy_manifest = root / "legacy.csv"
+            batch_manifest = root / "batch_000.csv"
             output = root / "lineage.json"
             pd.DataFrame(
                 [
@@ -43,6 +46,21 @@ class Tier1HandoffTests(unittest.TestCase):
                     {"subject_id": 2, "split": "test"},
                 ]
             ).to_csv(split, index=False)
+            pd.DataFrame(
+                [
+                    {"study_id": 10, "subject_id": 1},
+                    {"study_id": 20, "subject_id": 2},
+                ]
+            ).to_csv(selected, index=False)
+            pd.DataFrame(
+                [
+                    {"study_id": 10, "subject_id": 1, "write_ok": True},
+                    {"study_id": 30, "subject_id": 3, "write_ok": True},
+                ]
+            ).to_csv(legacy_manifest, index=False)
+            pd.DataFrame(
+                [{"study_id": 20, "subject_id": 2, "write_ok": True}]
+            ).to_csv(batch_manifest, index=False)
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -67,6 +85,14 @@ class Tier1HandoffTests(unittest.TestCase):
                     "batch_000=fullscale",
                     "--allow-outside-universe-batch",
                     "legacy",
+                    "--selected-studies-csv",
+                    str(selected),
+                    "--selected-universe-selection-rule",
+                    "synthetic deterministic selection",
+                    "--batch-study-manifest",
+                    f"legacy={legacy_manifest}",
+                    "--batch-study-manifest",
+                    f"batch_000={batch_manifest}",
                     "--output-json",
                     str(output),
                 ],
@@ -87,6 +113,12 @@ class Tier1HandoffTests(unittest.TestCase):
                 "canonical_only",
             )
             self.assertEqual(len(payload["split_map"]["expected_sha256"]), 64)
+            self.assertEqual(
+                payload["batch_sources"]["legacy"]["declared_legacy_scope"][
+                    "outside_selected_universe_count"
+                ],
+                1,
+            )
 
     def test_lineage_batch_and_overlap_syntax_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "path-like"):

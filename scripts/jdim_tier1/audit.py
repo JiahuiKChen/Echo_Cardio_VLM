@@ -730,6 +730,42 @@ def write_audit_sample(
     )
     result.clip_template.to_csv(restricted_root / "clip_annotation_template.csv", index=False)
     result.sampling_design.to_csv(restricted_root / "sampling_design_restricted.csv", index=False)
+    packet_text = {
+        "reader_instructions.md": (
+            "# Blinded JDIM Input-Content Audit\n\n"
+            "Review studies in `reader_manifest.csv` order using only opaque audit IDs. "
+            "Do not access report labels, predictions, residuals, split assignments, or source "
+            "identifiers. Record only the prespecified study- and clip-level fields. Do not use OCR.\n"
+        ),
+        "adjudication_guide.md": (
+            "# Adjudication Guide\n\n"
+            "Independently second-read the assigned subset. Queue every positive, uncertain, or "
+            "discordant finding for blinded adjudication. Lock reader forms before any restricted "
+            "post-unblinding comparison with report-label values.\n"
+        ),
+        "secure_save_procedure.md": (
+            "# Secure Save Procedure\n\n"
+            "Keep all row-level forms and linkage files in this restricted output root. Save only "
+            "completed CSV templates with their existing columns and opaque identifiers. Do not "
+            "export screenshots, source paths, identifiers, or candidate values to aggregate-safe storage.\n"
+        ),
+        "source_restoration_action_sheet.md": (
+            "# Source Restoration Action Sheet\n\n"
+            "Use `source_restoration_manifest.csv` only within restricted storage. Restore the "
+            "declared source DICOM and processed input for the locked roster; do not replace a "
+            "sampled study with a convenience study. Re-run only source availability and the bounded "
+            "technical reconstruction pilot after restoration.\n"
+        ),
+        "disclosure_safe_aggregation_plan.md": (
+            "# Disclosure-Safe Aggregation Plan\n\n"
+            "Aggregate only after primary reads, second reads, and adjudication are complete. Export "
+            "counts, proportions, confidence intervals, reconstruction-failure rates, agreement "
+            "statistics, and configuration hashes. Keep identifiers, paths, target values, predictions, "
+            "residuals, transcribed candidate values, and split assignments restricted.\n"
+        ),
+    }
+    for name, content in packet_text.items():
+        (restricted_root / name).write_text(content, encoding="utf-8")
     write_json(
         restricted_root / "sampling_provenance_restricted.json",
         {
@@ -743,6 +779,7 @@ def write_audit_sample(
                 "study_annotation_template.csv" if not result.technical_pilot else "technical_pilot_template.csv",
                 "clip_annotation_template.csv",
                 "sampling_design_restricted.csv",
+                *packet_text,
             ],
         },
     )
@@ -752,6 +789,30 @@ def write_audit_sample(
     assert_export_safe_frame(safe_design, "audit sampling design summary")
     write_safe_csv(safe_output_dir / "audit_sampling_counts.csv", safe_design, "audit sampling counts")
     write_json(safe_output_dir / "audit_sampling_summary.json", result.safe_summary)
+    restricted_artifacts = {
+        name: sha256_file(restricted_root / name)
+        for name in (
+            "audit_linkage.csv",
+            "canonical_clip_roster_restricted.csv",
+            "reader_manifest.csv",
+            "second_reader_manifest.csv",
+            "sampling_design_restricted.csv",
+            "study_annotation_template.csv"
+            if not result.technical_pilot
+            else "technical_pilot_template.csv",
+            "clip_annotation_template.csv",
+            *packet_text,
+        )
+    }
+    write_json(
+        safe_output_dir / "audit_roster_lock.json",
+        {
+            "status": "AUDIT_ROSTER_LOCKED",
+            **result.safe_summary,
+            "restricted_artifact_sha256": restricted_artifacts,
+            "roster_lock_independent_of_source_availability": True,
+        },
+    )
 
 
 def wilson_interval(successes: float, total: float, z: float = 1.959963984540054) -> tuple[float, float]:

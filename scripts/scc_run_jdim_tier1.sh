@@ -37,11 +37,13 @@ Optional:
   JDIM_BOOTSTRAP_N, JDIM_NONIMAGE_PREDICTIONS
   JDIM_PHASE2_RANDOM_SEED, JDIM_PHASE2_RIDGE_ALPHAS
   JDIM_DUPLICATE_DECISION_ROOT  Separate resolved-decision root; defaults to JDIM_OUTPUT_ROOT
+  JDIM_DUPLICATE_METADATA_ROOT  Approved metadata-resolution packet root
 
 Usage:
   scripts/scc_run_jdim_tier1.sh validate
   scripts/scc_run_jdim_tier1.sh handoff-check
   scripts/scc_run_jdim_tier1.sh cohort-flow
+  scripts/scc_run_jdim_tier1.sh cohort-preflight
   scripts/scc_run_jdim_tier1.sh reviewer-metrics
   scripts/scc_run_jdim_tier1.sh duplicate-forensics
   scripts/scc_run_jdim_tier1.sh corrected-aggregation
@@ -105,7 +107,7 @@ if [[ -z "${MODE}" || "${MODE}" == "-h" || "${MODE}" == "--help" ]]; then
 fi
 
 case "${MODE}" in
-  validate|handoff-check|cohort-flow|reviewer-metrics|duplicate-forensics|corrected-aggregation|corrected-analysis|corrected-comparison|audit-sample|audit-pilot|audit-reconstruct-pilot) ;;
+  validate|handoff-check|cohort-flow|cohort-preflight|reviewer-metrics|duplicate-forensics|corrected-aggregation|corrected-analysis|corrected-comparison|audit-sample|audit-pilot|audit-reconstruct-pilot) ;;
   *)
     echo "[error] Unknown mode: ${MODE}" >&2
     usage
@@ -175,6 +177,20 @@ if [[ -n "${JDIM_DUPLICATE_DECISION_ROOT:-}" ]]; then
 else
   DECISION_ROWS="${OUT}/restricted/duplicate_forensics/duplicate_forensics_rows.csv"
   DECISION_SUMMARY="${OUT}/aggregate_safe/duplicate_forensics/duplicate_forensics_summary.json"
+fi
+METADATA_ROOT="${JDIM_DUPLICATE_METADATA_ROOT:-}"
+DUPLICATE_METADATA_ARGS=()
+if [[ -n "${METADATA_ROOT}" ]]; then
+  require_directory "${METADATA_ROOT}"
+  require_file "${METADATA_ROOT}/aggregate_safe/duplicate_metadata_summary.json"
+  require_file "${METADATA_ROOT}/restricted/metadata_group_classification.csv"
+  require_file "${METADATA_ROOT}/restricted/metadata_stage_rows.csv"
+  DUPLICATE_METADATA_ARGS=(
+    --duplicate-metadata-summary-json "${METADATA_ROOT}/aggregate_safe/duplicate_metadata_summary.json"
+    --duplicate-metadata-groups-csv "${METADATA_ROOT}/restricted/metadata_group_classification.csv"
+    --duplicate-metadata-stage-rows-csv "${METADATA_ROOT}/restricted/metadata_stage_rows.csv"
+    --corrected-clip-embedding-manifest-csv "${CLIP_EMBEDDING_MANIFEST}"
+  )
 fi
 BOOTSTRAP_N="${JDIM_BOOTSTRAP_N:-2000}"
 PHASE2_RANDOM_SEED="${JDIM_PHASE2_RANDOM_SEED:-1337}"
@@ -272,6 +288,9 @@ COHORT_COMMON=(
   --lineage-metadata-json "${LINEAGE}"
   --output-dir "${OUT}/aggregate_safe/cohort_flow"
 )
+if [[ -n "${METADATA_ROOT}" ]]; then
+  COHORT_COMMON+=("${DUPLICATE_METADATA_ARGS[@]}")
+fi
 
 METRIC_COMMON=(
   --imaging-predictions "lvot_vti=${LVOT_PREDICTIONS}"
@@ -301,6 +320,10 @@ case "${MODE}" in
     ;;
   validate)
     if [[ -f "${DECISION_ROWS}" && -f "${DECISION_SUMMARY}" ]]; then
+      if [[ -z "${METADATA_ROOT}" ]]; then
+        echo "[error] JDIM_DUPLICATE_METADATA_ROOT is required for cohort validation" >&2
+        exit 2
+      fi
       "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
     else
       echo "[deferred] cohort schema/hash validation awaits duplicate-forensics outputs"
@@ -317,9 +340,22 @@ case "${MODE}" in
     fi
     ;;
   cohort-flow)
+    if [[ -z "${METADATA_ROOT}" ]]; then
+      echo "[error] JDIM_DUPLICATE_METADATA_ROOT is required for cohort reconstruction" >&2
+      exit 2
+    fi
     "${PY}" scripts/reconstruct_jdim_cohort_flow.py \
       "${COHORT_COMMON[@]}" \
       --restricted-reconciliation-csv "${OUT}/restricted/cohort_flow/reconciliation.csv"
+    ;;
+  cohort-preflight)
+    if [[ -z "${METADATA_ROOT}" ]]; then
+      echo "[error] JDIM_DUPLICATE_METADATA_ROOT is required for cohort preflight" >&2
+      exit 2
+    fi
+    "${PY}" scripts/reconstruct_jdim_cohort_flow.py \
+      "${COHORT_COMMON[@]}" \
+      --no-write-preflight
     ;;
   reviewer-metrics)
     if [[ -e "${OUT}/aggregate_safe/reviewer_metrics" || \
@@ -341,6 +377,10 @@ case "${MODE}" in
   corrected-aggregation)
     require_file "${DECISION_ROWS}"
     require_file "${DECISION_SUMMARY}"
+    if [[ -z "${METADATA_ROOT}" ]]; then
+      echo "[error] JDIM_DUPLICATE_METADATA_ROOT is required for cohort validation" >&2
+      exit 2
+    fi
     "${PY}" scripts/reconstruct_jdim_cohort_flow.py "${COHORT_COMMON[@]}" --schema-only
     "${PY}" scripts/build_jdim_corrected_study_embeddings.py \
       --forensic-evidence-file "${DECISION_ROWS}" \

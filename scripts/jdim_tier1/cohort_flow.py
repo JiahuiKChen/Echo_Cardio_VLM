@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -20,9 +21,13 @@ from run_tapse_lvot_vti_imaging_baseline import (
 from . import PROTOCOL_VERSION
 from .duplicate_forensics import source_manifest_row_fingerprint
 from .safety import (
+    BLOCKED_COHORT_CANONICAL_MISMATCH,
     BLOCKED_LINEAGE,
+    BLOCKED_UNDECLARED_DUPLICATE_METADATA,
+    BLOCKED_UNDECLARED_LEGACY_SCOPE,
     Tier1BlockedError,
     assert_export_safe_frame,
+    canonical_id_set_sha256,
     require_columns,
     require_restricted_destination,
     safe_file_record,
@@ -50,6 +55,18 @@ TRUE_DUPLICATE_CLASSES = {
     "TRUE_DUPLICATE_MANIFEST_ROWS",
     "TRUE_DUPLICATE_EMBEDDING_ROWS",
 }
+APPROVED_METADATA_DUPLICATE_GROUPS = 32
+APPROVED_METADATA_DUPLICATE_MEMBER_ROWS = 64
+APPROVED_METADATA_DUPLICATE_BATCH = "batch_000"
+APPROVED_METADATA_DUPLICATE_CLASS = "TRUE_DUPLICATE_EXPECTED_ROWS"
+METADATA_PACKET_STAGES = (
+    "expected_records",
+    "dicom_audit",
+    "cine_candidates",
+    "extraction_manifest",
+    "batch_embedding_manifest",
+    "merged_embedding_manifest",
+)
 
 
 @dataclass
@@ -104,6 +121,10 @@ class CohortFlowInputs:
     duplicate_forensics: Path
     duplicate_forensics_provenance: Path
     canonical_predictions: Mapping[str, Path]
+    duplicate_metadata_summary: Path | None = None
+    duplicate_metadata_groups: Path | None = None
+    duplicate_metadata_stage_rows: Path | None = None
+    corrected_clip_embeddings: Path | None = None
 
 
 @dataclass
@@ -129,6 +150,17 @@ class EmbeddingBatchResult:
     declared_outside_studies: set[str]
     undeclared_outside_studies: set[str]
     reconciliation: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class MetadataDuplicatePolicy:
+    key_to_token: Mapping[tuple[str, str], str]
+    key_to_subject: Mapping[tuple[str, str], str]
+    expected_batch: str
+    n_groups: int
+    n_member_rows: int
+    n_duplicate_rows: int
+    packet_hashes: Mapping[str, str]
 
 
 def validate_cohort_input_schemas(inputs: CohortFlowInputs) -> dict[str, Any]:
@@ -176,6 +208,39 @@ def validate_cohort_input_schemas(inputs: CohortFlowInputs) -> dict[str, Any]:
             False,
         )
     )
+    duplicate_packet_roles = (
+        (
+            "duplicate metadata groups",
+            inputs.duplicate_metadata_groups,
+            ("group_token", "classification", "first_duplicate_stage"),
+            False,
+        ),
+        (
+            "duplicate metadata stage rows",
+            inputs.duplicate_metadata_stage_rows,
+            ("group_token", "stage", "study_id", "subject_id", "dicom_filepath"),
+            False,
+        ),
+        (
+            "corrected clip embedding manifest",
+            inputs.corrected_clip_embeddings,
+            ("study_id", "subject_id", "dicom_filepath", "forensic_classification"),
+            False,
+        ),
+    )
+    if any(path is not None for _, path, _, _ in duplicate_packet_roles):
+        if inputs.duplicate_metadata_summary is None or any(
+            path is None for _, path, _, _ in duplicate_packet_roles
+        ):
+            raise Tier1BlockedError(
+                BLOCKED_UNDECLARED_DUPLICATE_METADATA,
+                "the approved duplicate metadata packet must be supplied in full",
+            )
+        roles.extend(
+            (label, path, required, needs_key)
+            for label, path, required, needs_key in duplicate_packet_roles
+            if path is not None
+        )
     roles.extend(
         (f"DICOM audit {index}", path, ("study_id", "subject_id", "read_ok", "is_multiframe"), True)
         for index, path in enumerate(inputs.dicom_audits)
@@ -230,6 +295,16 @@ def _read_many(paths: Sequence[Path], label: str) -> pd.DataFrame:
     for index, path in enumerate(paths):
         frame = _read_csv(path, f"{label}[{index}]").copy()
         frame["_source_index"] = index
+        path_text = str(path)
+        match = re.search(r"(?:^|[/_])(batch_\d{3})(?:[/_]|$)", path_text)
+        batch_name = (
+            match.group(1)
+            if match
+            else "legacy_stage_d_500"
+            if "stage_d_500" in path_text or "legacy" in path_text.lower()
+            else f"input_{index:03d}"
+        )
+        frame["_source_batch"] = batch_name
         frames.append(frame)
     return pd.concat(frames, ignore_index=True, sort=False)
 
@@ -425,6 +500,235 @@ def _record_key(frame: pd.DataFrame, label: str) -> pd.Series:
     )
 
 
+def _metadata_key(frame: pd.DataFrame, label: str) -> pd.Series:
+    require_columns(frame, ["study_id", "dicom_filepath"], label)
+    studies = frame["study_id"].astype(str).str.strip()
+    paths = frame["dicom_filepath"].astype(str).str.strip()
+    if studies.eq("").any() or paths.eq("").any():
+        raise Tier1BlockedError(
+            BLOCKED_UNDECLARED_DUPLICATE_METADATA,
+            f"{label} contains an empty approved duplicate key component",
+        )
+    return pd.Series(list(zip(studies, paths)), index=frame.index, dtype=object)
+
+
+def _block_duplicate_metadata(detail: str) -> None:
+    raise Tier1BlockedError(BLOCKED_UNDECLARED_DUPLICATE_METADATA, detail)
+
+
+def _validate_metadata_duplicate_policy(
+    inputs: CohortFlowInputs,
+    forensic_payload: Mapping[str, Any],
+    forensic_rows: pd.DataFrame,
+    report: InvariantReport,
+) -> MetadataDuplicatePolicy | None:
+    packet_paths = (
+        inputs.duplicate_metadata_summary,
+        inputs.duplicate_metadata_groups,
+        inputs.duplicate_metadata_stage_rows,
+        inputs.corrected_clip_embeddings,
+    )
+    if all(path is None for path in packet_paths):
+        return None
+    if any(path is None for path in packet_paths):
+        _block_duplicate_metadata("the approved duplicate-metadata packet is incomplete")
+    summary_path, groups_path, stage_rows_path, corrected_path = packet_paths
+    assert summary_path is not None
+    assert groups_path is not None
+    assert stage_rows_path is not None
+    assert corrected_path is not None
+    if not all(path.is_file() for path in (summary_path, groups_path, stage_rows_path, corrected_path)):
+        _block_duplicate_metadata("one or more approved duplicate-metadata artifacts are missing")
+
+    resolution = forensic_payload.get("metadata_resolution")
+    if not isinstance(resolution, Mapping):
+        _block_duplicate_metadata("duplicate-forensics provenance lacks metadata_resolution")
+    observed_hashes = {
+        "metadata_summary_sha256": sha256_file(summary_path),
+        "metadata_group_classification_sha256": sha256_file(groups_path),
+        "metadata_stage_rows_sha256": sha256_file(stage_rows_path),
+        "corrected_clip_manifest_sha256": sha256_file(corrected_path),
+    }
+    for field in ("metadata_summary_sha256", "metadata_group_classification_sha256"):
+        if observed_hashes[field] != str(resolution.get(field, "")):
+            _block_duplicate_metadata(f"{field} does not match the approved decision packet")
+
+    try:
+        metadata_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        _block_duplicate_metadata(f"invalid duplicate-metadata summary: {exc}")
+    expected_stage_hash = (
+        metadata_summary.get("restricted_evidence_packet_sha256", {}).get(
+            "metadata_stage_rows.csv"
+        )
+        if isinstance(metadata_summary.get("restricted_evidence_packet_sha256"), Mapping)
+        else None
+    )
+    if expected_stage_hash != observed_hashes["metadata_stage_rows_sha256"]:
+        _block_duplicate_metadata("metadata stage rows do not match the approved metadata packet")
+    if metadata_summary.get("status") != "DUPLICATE_SEMANTICS_RESOLVED_FROM_PROVENANCE":
+        _block_duplicate_metadata("duplicate-metadata summary is not provenance-resolved")
+
+    groups = _read_csv(groups_path, "duplicate metadata group classifications")
+    require_columns(
+        groups,
+        [
+            "group_token",
+            "classification",
+            "first_duplicate_stage",
+            "semantic_identity_equal_all_stages",
+            "n_expected_records_rows",
+            "n_dicom_audit_rows",
+            "n_cine_candidates_rows",
+            "n_extraction_manifest_rows",
+            "n_batch_embedding_manifest_rows",
+            "n_merged_embedding_manifest_rows",
+        ],
+        "duplicate metadata group classifications",
+    )
+    groups["group_token"] = groups["group_token"].astype(str).str.strip()
+    group_tokens = set(groups["group_token"])
+    count_columns = [column for column in groups if column.startswith("n_") and column.endswith("_rows")]
+    exact_group_packet = (
+        len(groups) == APPROVED_METADATA_DUPLICATE_GROUPS
+        and groups["group_token"].nunique() == APPROVED_METADATA_DUPLICATE_GROUPS
+        and groups["group_token"].ne("").all()
+        and groups["classification"].astype(str).eq(APPROVED_METADATA_DUPLICATE_CLASS).all()
+        and groups["first_duplicate_stage"].astype(str).eq("expected_records").all()
+        and _bool_series(groups, "semantic_identity_equal_all_stages").all()
+        and all(pd.to_numeric(groups[column], errors="coerce").eq(2).all() for column in count_columns)
+    )
+    if not exact_group_packet:
+        _block_duplicate_metadata("the group-classification packet is not the exact approved 32-pair set")
+
+    stage_rows = _read_csv(stage_rows_path, "duplicate metadata stage rows")
+    require_columns(
+        stage_rows,
+        ["group_token", "stage", "stage_row_ordinal", "study_id", "subject_id", "dicom_filepath"],
+        "duplicate metadata stage rows",
+    )
+    stage_rows["group_token"] = stage_rows["group_token"].astype(str).str.strip()
+    stage_rows["stage"] = stage_rows["stage"].astype(str).str.strip()
+    exact_stage_packet = (
+        len(stage_rows) == APPROVED_METADATA_DUPLICATE_MEMBER_ROWS * len(METADATA_PACKET_STAGES)
+        and set(stage_rows["group_token"]) == group_tokens
+        and set(stage_rows["stage"]) == set(METADATA_PACKET_STAGES)
+        and stage_rows.groupby(["stage", "group_token"]).size().eq(2).all()
+        and stage_rows.groupby("stage").size().eq(APPROVED_METADATA_DUPLICATE_MEMBER_ROWS).all()
+    )
+    if not exact_stage_packet:
+        _block_duplicate_metadata("metadata stage rows do not contain exactly two rows per approved group and stage")
+
+    decisions = _normalize_ids(forensic_rows, "duplicate forensic decisions")
+    require_columns(
+        decisions,
+        [
+            "group_token",
+            "classification",
+            "_batch",
+            "dicom_filepath",
+            "dedup_keep_candidate",
+        ],
+        "duplicate forensic decisions",
+    )
+    decisions["group_token"] = decisions["group_token"].astype(str).str.strip()
+    decision_sizes = decisions.groupby("group_token").size()
+    keep_counts = decisions.assign(
+        _keeper=_bool_series(decisions, "dedup_keep_candidate")
+    ).groupby("group_token")["_keeper"].sum()
+    exact_decisions = (
+        len(decisions) == APPROVED_METADATA_DUPLICATE_MEMBER_ROWS
+        and set(decisions["group_token"]) == group_tokens
+        and decision_sizes.eq(2).all()
+        and decisions["_batch"].astype(str).eq(APPROVED_METADATA_DUPLICATE_BATCH).all()
+        and decisions["classification"].astype(str).eq(APPROVED_METADATA_DUPLICATE_CLASS).all()
+        and decisions["_study"].nunique() == 1
+        and decisions["_subject"].nunique() == 1
+        and keep_counts.eq(1).all()
+    )
+    if not exact_decisions:
+        _block_duplicate_metadata("forensic decision rows are not the approved 64 batch_000 rows")
+    if "semantic_clip_identity_sha256" in decisions.columns and not decisions.groupby(
+        "group_token"
+    )["semantic_clip_identity_sha256"].nunique().eq(1).all():
+        _block_duplicate_metadata("an approved group has conflicting semantic clip identity")
+
+    decisions["_metadata_key"] = _metadata_key(decisions, "duplicate forensic decisions")
+    if decisions.groupby("group_token")["_metadata_key"].nunique().ne(1).any():
+        _block_duplicate_metadata("an approved group maps to more than one metadata key")
+    if decisions.groupby("group_token")["_subject"].nunique().ne(1).any():
+        _block_duplicate_metadata("an approved group maps to more than one subject")
+    group_keys = decisions.groupby("group_token")["_metadata_key"].first().to_dict()
+    group_subjects = decisions.groupby("group_token")["_subject"].first().to_dict()
+    key_to_token = {key: token for token, key in group_keys.items()}
+    key_to_subject = {group_keys[token]: subject for token, subject in group_subjects.items()}
+    if len(key_to_token) != APPROVED_METADATA_DUPLICATE_GROUPS:
+        _block_duplicate_metadata("approved group tokens do not map one-to-one to metadata keys")
+
+    stage_rows["_metadata_key"] = _metadata_key(stage_rows, "duplicate metadata stage rows")
+    for stage, frame in stage_rows.groupby("stage", sort=True):
+        observed = frame.groupby("group_token")["_metadata_key"].agg(lambda values: set(values))
+        if any(values != {group_keys[token]} for token, values in observed.items()):
+            _block_duplicate_metadata(f"{stage} packet rows do not match approved metadata keys")
+
+    corrected = _normalize_ids(
+        _read_csv(corrected_path, "corrected clip embedding manifest"),
+        "corrected clip embedding manifest",
+    )
+    require_columns(
+        corrected,
+        ["dicom_filepath", "forensic_classification", "dedup_group_size"],
+        "corrected clip embedding manifest",
+    )
+    if "write_ok" in corrected.columns:
+        corrected = corrected.loc[_bool_series(corrected, "write_ok")].copy()
+    corrected["_metadata_key"] = _metadata_key(corrected, "corrected clip embedding manifest")
+    approved_corrected = corrected.loc[corrected["_metadata_key"].isin(key_to_token)]
+    marked_duplicate = corrected.loc[
+        corrected["forensic_classification"].astype(str).eq(APPROVED_METADATA_DUPLICATE_CLASS)
+        | pd.to_numeric(corrected["dedup_group_size"], errors="coerce").fillna(1).gt(1)
+    ]
+    exact_retention = (
+        len(approved_corrected) == APPROVED_METADATA_DUPLICATE_GROUPS
+        and approved_corrected.groupby("_metadata_key").size().eq(1).all()
+        and approved_corrected["forensic_classification"].astype(str).eq(
+            APPROVED_METADATA_DUPLICATE_CLASS
+        ).all()
+        and pd.to_numeric(approved_corrected["dedup_group_size"], errors="coerce").eq(2).all()
+        and set(marked_duplicate["_metadata_key"]) == set(key_to_token)
+    )
+    if not exact_retention:
+        _block_duplicate_metadata("corrected clip manifest does not retain exactly one row per approved group")
+
+    report.add(
+        "approved_duplicate_metadata_packet_exactly_32_groups",
+        True,
+        APPROVED_METADATA_DUPLICATE_GROUPS,
+        APPROVED_METADATA_DUPLICATE_GROUPS,
+    )
+    report.add(
+        "approved_duplicate_metadata_packet_exactly_64_member_rows",
+        True,
+        APPROVED_METADATA_DUPLICATE_MEMBER_ROWS,
+        APPROVED_METADATA_DUPLICATE_MEMBER_ROWS,
+    )
+    report.add(
+        "corrected_clip_manifest_retains_one_semantic_clip_per_approved_group",
+        True,
+        len(approved_corrected),
+        APPROVED_METADATA_DUPLICATE_GROUPS,
+    )
+    return MetadataDuplicatePolicy(
+        key_to_token=key_to_token,
+        key_to_subject=key_to_subject,
+        expected_batch=APPROVED_METADATA_DUPLICATE_BATCH,
+        n_groups=APPROVED_METADATA_DUPLICATE_GROUPS,
+        n_member_rows=APPROVED_METADATA_DUPLICATE_MEMBER_ROWS,
+        n_duplicate_rows=APPROVED_METADATA_DUPLICATE_GROUPS,
+        packet_hashes=observed_hashes,
+    )
+
+
 def _study_subject_pairs(frame: pd.DataFrame, label: str) -> pd.DataFrame:
     normalized = _normalize_ids(frame, label, require_subject=True)
     return normalized[["_study", "_subject"]].drop_duplicates()
@@ -518,6 +822,57 @@ def validate_lineage_metadata(
             "outside-universe scope declared for nonlegacy batches: "
             f"{nonlegacy_outside_declarations}"
         )
+    declared_legacy_batches = sorted(
+        name
+        for name in set(batch_names) & set(batch_meta)
+        if isinstance(batch_meta[name], Mapping)
+        and batch_meta[name].get("outside_universe_policy", "canonical_only")
+        == "declared_legacy_scope"
+    )
+    selected_scope = metadata.get("selected_analysis_universe")
+    if declared_legacy_batches:
+        if not isinstance(selected_scope, Mapping):
+            missing.append("selected_analysis_universe")
+        else:
+            for key in (
+                "study_count",
+                "subject_count",
+                "study_set_sha256",
+                "source_sha256",
+                "deterministic_selection_rule",
+            ):
+                if selected_scope.get(key) in (None, ""):
+                    missing.append(f"selected_analysis_universe.{key}")
+        scope_fields = (
+            "version",
+            "legacy_studies_total",
+            "legacy_study_set_sha256",
+            "inside_selected_universe_count",
+            "inside_selected_universe_study_set_sha256",
+            "outside_selected_universe_count",
+            "outside_selected_universe_study_set_sha256",
+            "later_fullscale_overlap_count",
+            "later_fullscale_overlap_study_set_sha256",
+            "deduplicated_canonical_contribution_count",
+            "deduplicated_canonical_contribution_study_set_sha256",
+        )
+        for name in declared_legacy_batches:
+            scope = batch_meta[name].get("declared_legacy_scope")
+            if not isinstance(scope, Mapping):
+                missing.append(f"batch_sources.{name}.declared_legacy_scope")
+                continue
+            for key in scope_fields:
+                if scope.get(key) in (None, ""):
+                    missing.append(f"batch_sources.{name}.declared_legacy_scope.{key}")
+    unexpected_scope = sorted(
+        name
+        for name in set(batch_names) & set(batch_meta)
+        if isinstance(batch_meta[name], Mapping)
+        and "declared_legacy_scope" in batch_meta[name]
+        and name not in declared_legacy_batches
+    )
+    if unexpected_scope:
+        missing.append(f"unexpected declared_legacy_scope entries: {unexpected_scope}")
     invalid_overlap_pairs: list[str] = []
     for raw_pair in metadata.get("allowed_batch_overlap_pairs", []):
         pair = str(raw_pair).split("|")
@@ -592,7 +947,14 @@ def _prepare_dicom_branch(
     audits: pd.DataFrame,
     extraction: pd.DataFrame,
     report: InvariantReport,
-) -> tuple[list[dict[str, Any]], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    duplicate_policy: MetadataDuplicatePolicy | None = None,
+) -> tuple[
+    list[dict[str, Any]],
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[str, dict[str, int]],
+]:
     expected = _normalize_ids(expected, "expected DICOM records")
     audits = _normalize_ids(audits, "DICOM audits")
     extraction = _normalize_ids(extraction, "extraction manifests")
@@ -603,16 +965,75 @@ def _prepare_dicom_branch(
     ):
         frame["_record"] = _record_key(frame, label)
 
-    expected_dup = int(expected.duplicated("_record").sum())
-    audit_dup = int(audits.duplicated("_record").sum())
-    extraction_dup = int(extraction.duplicated("_record").sum())
-    report.add("unique_expected_dicom_keys", expected_dup == 0, expected_dup, 0)
-    report.add("unique_dicom_audit_keys_after_union", audit_dup == 0, audit_dup, 0)
-    report.add("unique_extraction_keys_after_union", extraction_dup == 0, extraction_dup, 0)
+    def adjudicate(
+        frame: pd.DataFrame,
+        packet_stage: str,
+        invariant_name: str,
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
+        repeated_mask = frame.duplicated("_record", keep=False)
+        repeated = frame.loc[repeated_mask].copy()
+        duplicate_rows = int(frame.duplicated("_record").sum())
+        if duplicate_policy is None:
+            if duplicate_rows:
+                _block_duplicate_metadata(
+                    f"{packet_stage} contains duplicate metadata without an approved packet"
+                )
+        else:
+            repeated["_metadata_key"] = _metadata_key(
+                repeated,
+                f"{packet_stage} duplicate rows",
+            )
+            observed_keys = set(repeated["_metadata_key"])
+            group_sizes = repeated.groupby("_metadata_key").size()
+            expected_keys = set(duplicate_policy.key_to_token)
+            exact = (
+                len(repeated) == duplicate_policy.n_member_rows
+                and duplicate_rows == duplicate_policy.n_duplicate_rows
+                and observed_keys == expected_keys
+                and group_sizes.eq(2).all()
+                and set(repeated["_source_batch"].astype(str))
+                == {duplicate_policy.expected_batch}
+                and all(
+                    set(group["_subject"].astype(str))
+                    == {duplicate_policy.key_to_subject[key]}
+                    for key, group in repeated.groupby("_metadata_key", sort=False)
+                )
+            )
+            if not exact:
+                _block_duplicate_metadata(
+                    f"{packet_stage} does not exactly match the approved 32 batch_000 groups"
+                )
+            report.add(
+                f"{packet_stage}_approved_duplicate_groups_exact",
+                True,
+                len(observed_keys),
+                duplicate_policy.n_groups,
+            )
+        adjudicated = frame.drop_duplicates("_record", keep="first").copy()
+        post_duplicates = int(adjudicated.duplicated("_record").sum())
+        report.add(invariant_name, post_duplicates == 0, post_duplicates, 0)
+        return adjudicated, {
+            "raw_manifest_rows": int(len(frame)),
+            "provenance_resolved_duplicate_member_rows": int(len(repeated)),
+            "provenance_resolved_duplicate_rows": duplicate_rows,
+            "adjudicated_unique_clip_rows": int(len(adjudicated)),
+        }
 
-    expected = expected.drop_duplicates("_record", keep="first")
-    audits = audits.drop_duplicates("_record", keep="first")
-    extraction = extraction.drop_duplicates("_record", keep="first")
+    expected, expected_counts = adjudicate(
+        expected,
+        "expected_records",
+        "unique_expected_dicom_keys_after_adjudication",
+    )
+    audits, audit_counts = adjudicate(
+        audits,
+        "dicom_audit",
+        "unique_dicom_audit_keys_after_adjudication",
+    )
+    extraction, extraction_counts = adjudicate(
+        extraction,
+        "extraction_manifest",
+        "unique_extraction_keys_after_adjudication",
+    )
 
     missing_audit = len(set(expected["_record"]) - set(audits["_record"]))
     unexpected_audit = len(set(audits["_record"]) - set(expected["_record"]))
@@ -632,6 +1053,22 @@ def _prepare_dicom_branch(
     )
 
     stages = [
+        {
+            "branch": "imaging",
+            "target": "",
+            "stage": f"{stage_name}_{count_name}",
+            "n_rows": int(value),
+            "n_studies": None,
+            "n_subjects": None,
+            "notes": "Raw and provenance-adjudicated metadata counts are reported separately.",
+        }
+        for stage_name, counts in (
+            ("expected_records", expected_counts),
+            ("dicom_audit", audit_counts),
+            ("extraction_manifest", extraction_counts),
+        )
+        for count_name, value in counts.items()
+    ] + [
         _stage("imaging", "expected_dicom_records", expected),
         _stage("imaging", "readable_dicom_records", audits, read_ok),
         _stage("imaging", "unreadable_dicom_records", audits, ~read_ok),
@@ -640,7 +1077,11 @@ def _prepare_dicom_branch(
         _stage("imaging", "successfully_extracted_clips", extraction, extracted_ok),
         _stage("imaging", "failed_clip_extractions", extraction, ~extracted_ok),
     ]
-    return stages, expected, audits, extraction
+    return stages, expected, audits, extraction, {
+        "expected_records": expected_counts,
+        "dicom_audit": audit_counts,
+        "extraction_manifest": extraction_counts,
+    }
 
 
 def _prepare_embedding_batches(
@@ -710,6 +1151,72 @@ def _prepare_embedding_batches(
             }
         )
 
+    fullscale_union = set().union(
+        *(
+            batch_study_sets[name]
+            for name in batch_study_sets
+            if batch_meta[name].get("source_class") == "fullscale"
+        )
+    )
+    for row in batch_rows:
+        name = str(row["batch_name"])
+        if row["outside_universe_policy"] != "declared_legacy_scope":
+            continue
+        studies = batch_study_sets[name]
+        inside = studies & eligible_studies
+        outside = studies - eligible_studies
+        later_overlap = studies & fullscale_union
+        canonical_contribution = inside - fullscale_union
+        observed_scope = {
+            "version": "jdim-declared-legacy-scope-v1",
+            "legacy_studies_total": len(studies),
+            "legacy_study_set_sha256": canonical_id_set_sha256(studies),
+            "inside_selected_universe_count": len(inside),
+            "inside_selected_universe_study_set_sha256": canonical_id_set_sha256(inside),
+            "outside_selected_universe_count": len(outside),
+            "outside_selected_universe_study_set_sha256": canonical_id_set_sha256(outside),
+            "later_fullscale_overlap_count": len(later_overlap),
+            "later_fullscale_overlap_study_set_sha256": canonical_id_set_sha256(later_overlap),
+            "deduplicated_canonical_contribution_count": len(canonical_contribution),
+            "deduplicated_canonical_contribution_study_set_sha256": canonical_id_set_sha256(
+                canonical_contribution
+            ),
+        }
+        declared_scope = batch_meta[name].get("declared_legacy_scope")
+        if not isinstance(declared_scope, Mapping) or dict(declared_scope) != observed_scope:
+            raise Tier1BlockedError(
+                BLOCKED_UNDECLARED_LEGACY_SCOPE,
+                f"{name} study sets do not match the exact declared legacy scope",
+            )
+        row.update(
+            {
+                "legacy_studies_total": len(studies),
+                "legacy_studies_inside_selected_universe": len(inside),
+                "declared_legacy_outside_analysis_universe": len(outside),
+                "later_fullscale_overlap": len(later_overlap),
+                "deduplicated_canonical_universe_contribution": len(canonical_contribution),
+                "legacy_study_set_sha256": observed_scope["legacy_study_set_sha256"],
+                "inside_selected_universe_study_set_sha256": observed_scope[
+                    "inside_selected_universe_study_set_sha256"
+                ],
+                "outside_selected_universe_study_set_sha256": observed_scope[
+                    "outside_selected_universe_study_set_sha256"
+                ],
+                "later_fullscale_overlap_study_set_sha256": observed_scope[
+                    "later_fullscale_overlap_study_set_sha256"
+                ],
+                "deduplicated_canonical_contribution_study_set_sha256": observed_scope[
+                    "deduplicated_canonical_contribution_study_set_sha256"
+                ],
+            }
+        )
+        report.add(
+            f"declared_legacy_scope_exact__{name}",
+            True,
+            observed_scope["outside_selected_universe_count"],
+            declared_scope["outside_selected_universe_count"],
+        )
+
     merged = pd.concat(normalized, ignore_index=True, sort=False)
     merged, forensic_counts = _apply_forensic_clip_decisions(merged, forensic_rows, report)
     for row in batch_rows:
@@ -762,6 +1269,11 @@ def _prepare_embedding_batches(
         len(undeclared_outside_studies),
         0,
     )
+    if undeclared_outside_studies:
+        raise Tier1BlockedError(
+            BLOCKED_UNDECLARED_LEGACY_SCOPE,
+            "an embedding batch contains studies outside the exact declared legacy scope",
+        )
     stages = [
         _stage("imaging", "canonical_universe_embedded_clips_forensically_adjudicated", canonical_clips),
         _stage(
@@ -776,7 +1288,7 @@ def _prepare_embedding_batches(
         ),
         _stage(
             "imaging",
-            "outside_universe_declared_legacy_embedding_studies",
+            "declared_legacy_outside_analysis_universe",
             declared_outside_clips.drop_duplicates("_study"),
         ),
         _stage(
@@ -1041,6 +1553,16 @@ def _intersection_branch(
             int(final["_subject"].nunique()),
             int(expected_subjects),
         )
+    if split_counts != expected_splits or final["_study"].nunique() != expected_joined:
+        raise Tier1BlockedError(
+            BLOCKED_COHORT_CANONICAL_MISMATCH,
+            f"{target} reconstructed split or total diverges from the locked canonical analysis",
+        )
+    if expected_subjects is not None and final["_subject"].nunique() != int(expected_subjects):
+        raise Tier1BlockedError(
+            BLOCKED_COHORT_CANONICAL_MISMATCH,
+            f"{target} reconstructed subject count diverges from the locked canonical analysis",
+        )
 
     overlap_counts: dict[str, int] = {}
     subjects_by_split = {
@@ -1176,6 +1698,12 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         for name, path in inputs.embedding_batches.items()
     }
     forensic_rows = _read_csv(inputs.duplicate_forensics, "duplicate forensic decisions")
+    duplicate_metadata_policy = _validate_metadata_duplicate_policy(
+        inputs,
+        forensic_provenance,
+        forensic_rows,
+        report,
+    )
     canonical_prediction_frames = {
         target: _read_csv(path, f"{target} canonical predictions")
         for target, path in inputs.canonical_predictions.items()
@@ -1218,12 +1746,40 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         len(set(eligible["_study"]) - set(source["_study"])),
         0,
     )
+    declared_selected = metadata.get("selected_analysis_universe")
+    if isinstance(declared_selected, Mapping):
+        observed_selected = {
+            "study_count": int(eligible["_study"].nunique()),
+            "subject_count": int(eligible["_subject"].nunique()),
+            "study_set_sha256": canonical_id_set_sha256(eligible["_study"]),
+            "source_sha256": sha256_file(inputs.eligible_studies),
+            "deterministic_selection_rule": str(
+                declared_selected.get("deterministic_selection_rule", "")
+            ),
+        }
+        if dict(declared_selected) != observed_selected:
+            raise Tier1BlockedError(
+                BLOCKED_UNDECLARED_LEGACY_SCOPE,
+                "selected analysis universe does not match its hash-pinned lineage declaration",
+            )
+        report.add(
+            "selected_analysis_universe_matches_declared_hash",
+            True,
+            observed_selected["study_set_sha256"],
+            declared_selected["study_set_sha256"],
+        )
 
     stage_rows: list[dict[str, Any]] = [
         _stage("imaging", "official_release_source_studies", source),
         _stage("imaging", "project_eligible_studies", eligible),
     ]
-    dicom_stages, expected, audits, extraction = _prepare_dicom_branch(expected, audits, extraction, report)
+    dicom_stages, expected, audits, extraction, metadata_adjudication = _prepare_dicom_branch(
+        expected,
+        audits,
+        extraction,
+        report,
+        duplicate_metadata_policy,
+    )
     stage_rows.extend(dicom_stages)
 
     eligible_set = set(eligible["_study"])
@@ -1256,6 +1812,29 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         len(embedding_result.declared_outside_studies.symmetric_difference(final_outside_set)),
         0,
     )
+    manifest_identity = final_set == (
+        embedding_result.canonical_studies | embedding_result.declared_outside_studies
+    )
+    report.add(
+        "final_manifest_equals_canonical_union_declared_legacy_after_study_deduplication",
+        manifest_identity,
+        len(
+            final_set.symmetric_difference(
+                embedding_result.canonical_studies
+                | embedding_result.declared_outside_studies
+            )
+        ),
+        0,
+    )
+    if (
+        not final_outside_set.issubset(embedding_result.declared_outside_studies)
+        or embedding_result.declared_outside_studies != final_outside_set
+        or not manifest_identity
+    ):
+        raise Tier1BlockedError(
+            BLOCKED_UNDECLARED_LEGACY_SCOPE,
+            "final embedding manifest does not reconcile to canonical plus declared legacy scope",
+        )
     final_canonical_embeddings = final_embeddings.loc[final_embeddings["_study"].isin(final_canonical_set)]
     final_outside_embeddings = final_embeddings.loc[final_embeddings["_study"].isin(final_outside_set)]
     stage_rows.extend(
@@ -1304,6 +1883,18 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
     label_frames: dict[str, pd.DataFrame] = {}
     for target in TARGET_NAMES:
         labels, label_summary, label_stages, label_multiplicity = _target_branch(measures, target)
+        outside_labels = set(labels["_study"]) & final_outside_set
+        report.add(
+            f"{target}_declared_legacy_outside_studies_do_not_enter_target_labels",
+            not outside_labels,
+            len(outside_labels),
+            0,
+        )
+        if outside_labels:
+            raise Tier1BlockedError(
+                BLOCKED_UNDECLARED_LEGACY_SCOPE,
+                f"declared legacy outside-universe studies entered the {target} label cohort",
+            )
         label_frames[target] = labels
         label_summaries[target] = label_summary
         stage_rows.extend(label_stages)
@@ -1323,6 +1914,21 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
             canonical_prediction_frames[target],
             report,
         )
+        prediction_studies = set(
+            canonical_prediction_frames[target]["study_id"].astype(str)
+        )
+        outside_predictions = prediction_studies & final_outside_set
+        report.add(
+            f"{target}_declared_legacy_outside_studies_receive_no_canonical_split",
+            not outside_predictions,
+            len(outside_predictions),
+            0,
+        )
+        if outside_predictions:
+            raise Tier1BlockedError(
+                BLOCKED_UNDECLARED_LEGACY_SCOPE,
+                f"declared legacy outside-universe studies entered canonical {target} predictions",
+            )
         target_summaries[target] = target_summary
         stage_rows.extend(target_stages)
         split_rows.extend(target_split_rows)
@@ -1399,12 +2005,32 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
         "outside_universe_unexplained_embeddings": int(
             len(final_outside_set - embedding_result.declared_outside_studies)
         ),
+        "declared_legacy_outside_analysis_universe": int(len(final_outside_set)),
+        "declared_legacy_outside_analysis_universe_study_set_sha256": canonical_id_set_sha256(
+            final_outside_set
+        ),
+        "canonical_universe_study_set_sha256": canonical_id_set_sha256(final_canonical_set),
+        "final_manifest_study_set_sha256": canonical_id_set_sha256(final_set),
+        "metadata_duplicate_adjudication": metadata_adjudication,
+        "selected_studies_per_subject_distribution": {
+            str(int(studies_per_subject)): int(n_subjects)
+            for studies_per_subject, n_subjects in eligible.groupby("_subject")["_study"]
+            .nunique()
+            .value_counts()
+            .sort_index()
+            .items()
+        },
         "label_branches": label_summaries,
         "target_intersections": target_summaries,
         "split_map_subjects": int(raw_split["subject_id"].nunique()),
         "split_map_sha256": sha256_file(inputs.split_map),
         "duplicate_forensics_provenance_sha256": sha256_file(
             inputs.duplicate_forensics_provenance
+        ),
+        "duplicate_metadata_packet_hashes": (
+            dict(duplicate_metadata_policy.packet_hashes)
+            if duplicate_metadata_policy is not None
+            else None
         ),
         "all_invariants_passed": report.passed,
     }
@@ -1424,6 +2050,27 @@ def reconstruct_cohort_flow(inputs: CohortFlowInputs) -> CohortFlowResult:
             None,
         ),
     ]
+    if inputs.duplicate_metadata_summary is not None:
+        input_paths.append(
+            ("duplicate_metadata_summary", inputs.duplicate_metadata_summary, None, None)
+        )
+    if inputs.duplicate_metadata_groups is not None:
+        input_paths.append(
+            ("duplicate_metadata_groups", inputs.duplicate_metadata_groups, None, None)
+        )
+    if inputs.duplicate_metadata_stage_rows is not None:
+        input_paths.append(
+            (
+                "duplicate_metadata_stage_rows",
+                inputs.duplicate_metadata_stage_rows,
+                None,
+                None,
+            )
+        )
+    if inputs.corrected_clip_embeddings is not None:
+        input_paths.append(
+            ("corrected_clip_embedding_manifest", inputs.corrected_clip_embeddings, None, None)
+        )
     input_paths.extend(
         (f"expected_records_{index}", path, None, None)
         for index, path in enumerate(inputs.expected_records)
@@ -1500,6 +2147,7 @@ def write_cohort_flow_outputs(
     write_json(output_dir / "cohort_flow_invariants.json", result.invariants)
     if result.invariants["status"] != "ok":
         raise Tier1BlockedError(BLOCKED_LINEAGE, "one or more cohort-flow invariants failed")
+    validate_cohort_output_generation(result)
     write_json(output_dir / "cohort_flow_summary.json", result.summary)
     write_safe_csv(output_dir / "cohort_flow_stages.csv", result.stages, "cohort stages")
     write_safe_csv(output_dir / "cohort_flow_target_splits.csv", result.target_splits, "target split counts")
@@ -1519,6 +2167,84 @@ def write_cohort_flow_outputs(
         "batch reconciliation",
     )
     write_json(output_dir / "cohort_flow_provenance.json", result.provenance)
+    write_safe_csv(
+        output_dir / "supplementary_cohort_flow_table.csv",
+        result.stages,
+        "supplementary cohort-flow table",
+    )
+    summary = result.summary
+    targets = summary["target_intersections"]
+    diagram = (
+        "flowchart LR\n"
+        f"  A[Official MIMIC-IV-ECHO studies: {summary['source_studies']}] --> "
+        f"B[Selected analysis universe: {summary['eligible_studies']}]\n"
+        f"  B --> C[Corrected canonical embedding studies: {summary['canonical_universe_study_embeddings']}]\n"
+        f"  B --> D[LVOT VTI report-label studies: {targets['lvot_vti']['target_positive_studies']}]\n"
+        f"  B --> E[TAPSE report-label studies: {targets['tapse']['target_positive_studies']}]\n"
+        f"  C --> F[LVOT VTI final cohort: {targets['lvot_vti']['final_analysis_studies']}]\n"
+        f"  D --> F\n"
+        f"  C --> G[TAPSE final cohort: {targets['tapse']['final_analysis_studies']}]\n"
+        f"  E --> G\n"
+        f"  H[Declared legacy outside analysis universe: {summary['declared_legacy_outside_analysis_universe']}] -. excluded .-> F\n"
+        "  H -. excluded .-> G\n"
+    )
+    (output_dir / "cohort_flow_diagram.mmd").write_text(diagram, encoding="utf-8")
+    methods_text = (
+        f"We reconstructed imaging and structured-label lineage as parallel branches from "
+        f"MIMIC-IV-ECHO {summary['mimic_iv_echo_release']}. The official source contained "
+        f"{summary['source_studies']:,} studies from {summary['source_subjects']:,} subjects; "
+        f"the deterministic selected analysis universe contained {summary['eligible_studies']:,} "
+        f"studies from {summary['eligible_subjects']:,} subjects. Historical metadata unions "
+        "retained their raw rows, while the 32 hash-pinned provenance-resolved duplicate pairs "
+        "were adjudicated to one semantic clip per group. Structured LVOT VTI and TAPSE rows "
+        "were parsed using the unchanged target definitions and aggregated by the study median. "
+        "Final target-plus-embedding cohorts used the frozen subject-level train, validation, "
+        "and test assignment."
+    )
+    lvot_splits = targets["lvot_vti"]["split_study_counts"]
+    tapse_splits = targets["tapse"]["split_study_counts"]
+    results_text = (
+        f"The corrected canonical embedding universe contained "
+        f"{summary['canonical_universe_study_embeddings']:,} studies. The final LVOT VTI cohort "
+        f"contained {targets['lvot_vti']['final_analysis_studies']:,} studies "
+        f"({lvot_splits['train']:,} train, {lvot_splits['val']:,} validation, "
+        f"{lvot_splits['test']:,} test), and the final TAPSE cohort contained "
+        f"{targets['tapse']['final_analysis_studies']:,} studies "
+        f"({tapse_splits['train']:,} train, {tapse_splits['val']:,} validation, "
+        f"{tapse_splits['test']:,} test). No subject overlapped across splits."
+    )
+    duplicate_disclosure = (
+        "During revision-stage provenance review, we identified duplicate manifest rows "
+        "affecting one training study. We retained one row per provenance-defined semantic "
+        "clip and repeated all affected analyses using the unchanged prespecified protocol. "
+        "The correction did not alter rounded primary performance estimates or study conclusions."
+    )
+    reviewer_text = methods_text + " " + results_text + " " + duplicate_disclosure
+    for name, value in (
+        ("manuscript_methods_insertion.txt", methods_text),
+        ("manuscript_results_insertion.txt", results_text),
+        ("reviewer_1_comment_2_insertion.txt", reviewer_text),
+        ("duplicate_correction_disclosure.txt", duplicate_disclosure),
+    ):
+        (output_dir / name).write_text(value + "\n", encoding="utf-8")
+    lock_files = sorted(
+        path for path in output_dir.iterdir() if path.is_file() and path.name != "cohort_flow_lock.json"
+    )
+    write_json(
+        output_dir / "cohort_flow_lock.json",
+        {
+            "status": "JDIM_COHORT_FLOW_LOCKED",
+            "protocol_version": summary["protocol_version"],
+            "target_endpoints": {
+                target: {
+                    "total": targets[target]["final_analysis_studies"],
+                    "split_study_counts": targets[target]["split_study_counts"],
+                }
+                for target in TARGET_NAMES
+            },
+            "artifacts": [safe_file_record(path.stem, path) for path in lock_files],
+        },
+    )
     if restricted_reconciliation_csv is not None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         result.restricted_reconciliation.to_csv(destination, index=False)
@@ -1543,3 +2269,51 @@ def write_cohort_flow_outputs(
                 }
             )
             cohort.to_csv(destination.parent / f"jdim_target_cohort_{target}.csv", index=False)
+
+
+def validate_cohort_output_generation(result: CohortFlowResult) -> dict[str, Any]:
+    """Traverse every output policy without creating an output directory."""
+
+    if result.invariants["status"] != "ok":
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "one or more cohort-flow invariants failed")
+    for label, frame in (
+        ("cohort stages", result.stages),
+        ("target split counts", result.target_splits),
+        ("label multiplicity", result.label_multiplicity),
+        ("subject multiplicity", result.subject_multiplicity),
+        ("batch reconciliation", result.batch_reconciliation),
+    ):
+        assert_export_safe_frame(frame, label)
+    required_restricted = {"study_id", "subject_id"}
+    if not required_restricted.issubset(result.restricted_reconciliation.columns):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "restricted cohort reconciliation lacks study and subject identity",
+        )
+    return {
+        "status": "ok",
+        "mode": "no_write_preflight",
+        "output_generation_validated": True,
+        "invariant_checks": int(result.invariants["n_checks"]),
+        "approved_duplicate_groups": int(
+            result.summary["metadata_duplicate_adjudication"]["expected_records"][
+                "provenance_resolved_duplicate_rows"
+            ]
+        ),
+        "declared_legacy_outside_analysis_universe": int(
+            result.summary["declared_legacy_outside_analysis_universe"]
+        ),
+        "target_endpoints": {
+            target: {
+                "total": result.summary["target_intersections"][target][
+                    "final_analysis_studies"
+                ],
+                "split_study_counts": result.summary["target_intersections"][target][
+                    "split_study_counts"
+                ],
+            }
+            for target in TARGET_NAMES
+        },
+        "row_level_output_written": False,
+        "aggregate_output_written": False,
+    }

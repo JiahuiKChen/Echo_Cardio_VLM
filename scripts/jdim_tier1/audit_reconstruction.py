@@ -36,6 +36,7 @@ from .safety import (
 
 
 BLOCKED_AUDIT_RECONSTRUCTION = "BLOCKED_AUDIT_RECONSTRUCTION"
+BLOCKED_AUDIT_SOURCE_RESTORATION = "BLOCKED_AUDIT_SOURCE_RESTORATION"
 MODEL_SOURCE_FRAME_POSITIONS = tuple(range(0, 32, 2))
 DICOM_PATH_COLUMNS = ("dicom_filepath", "source_dicom_path", "dicom_path", "dicom_abs_path")
 PROCESSED_PATH_COLUMNS = ("output_path", "processed_npz_path", "npz_path")
@@ -44,6 +45,15 @@ PROCESSED_PATH_COLUMNS = ("output_path", "processed_npz_path", "npz_path")
 @dataclass(frozen=True)
 class ReconstructionPilotResult:
     restricted_rows: pd.DataFrame
+    safe_summary: dict[str, Any]
+    output_root: Path
+
+
+@dataclass(frozen=True)
+class SourceAvailabilityResult:
+    restricted_rows: pd.DataFrame
+    restoration_rows: pd.DataFrame
+    ready_linkage: pd.DataFrame
     safe_summary: dict[str, Any]
     output_root: Path
 
@@ -128,6 +138,210 @@ def _successful_manifest(frame: pd.DataFrame) -> pd.DataFrame:
         raise Tier1BlockedError(BLOCKED_AUDIT_RECONSTRUCTION, "clip manifest lacks a stable clip order")
     work["source_manifest_row"] = np.arange(len(work), dtype=int)
     return work.sort_values(["_study", *order_columns], kind="mergesort").reset_index(drop=True)
+
+
+def _existing_source_path(raw: str, dicom_data_root: Path) -> Path:
+    candidate = _resolve_path(raw, dicom_data_root)
+    if candidate.is_file():
+        return candidate
+    rooted = (dicom_data_root / raw.lstrip("/")).resolve()
+    return rooted if rooted.is_file() else candidate
+
+
+def assess_audit_source_availability(
+    audit_linkage_csv: Path,
+    clip_roster_csv: Path,
+    clip_manifest_csv: Path,
+    dicom_data_root: Path,
+    output_root: Path,
+    safe_output_dir: Path,
+    max_ready_pilot_studies: int = 6,
+) -> SourceAvailabilityResult:
+    """Assess every locked roster study without changing the sampling design."""
+
+    for path in (
+        audit_linkage_csv,
+        clip_roster_csv,
+        clip_manifest_csv,
+        dicom_data_root,
+        output_root,
+        safe_output_dir,
+    ):
+        require_restricted_destination(path)
+    if max_ready_pilot_studies < 1:
+        raise ValueError("max_ready_pilot_studies must be positive")
+    if output_root.exists() or safe_output_dir.exists():
+        raise FileExistsError("refusing to overwrite source-availability outputs")
+
+    linkage = pd.read_csv(audit_linkage_csv)
+    require_columns(linkage, ["audit_id", "study_id", "subject_id", "review_order"], "audit linkage")
+    if linkage["audit_id"].astype(str).duplicated().any():
+        raise Tier1BlockedError(BLOCKED_AUDIT_RECONSTRUCTION, "audit linkage contains duplicate audit IDs")
+    linkage["_study"] = linkage["study_id"].map(_stable_id)
+    linkage["_subject"] = linkage["subject_id"].map(_stable_id)
+
+    roster = pd.read_csv(clip_roster_csv)
+    require_columns(
+        roster,
+        [
+            "audit_id",
+            "clip_audit_id",
+            "study_id",
+            "subject_id",
+            "source_manifest_row",
+            "source_manifest_row_sha256",
+        ],
+        "locked canonical clip roster",
+    )
+    roster["_study"] = roster["study_id"].map(_stable_id)
+    roster["_subject"] = roster["subject_id"].map(_stable_id)
+    roster["source_manifest_row"] = pd.to_numeric(roster["source_manifest_row"], errors="coerce")
+    if roster["source_manifest_row"].isna().any() or not np.all(
+        roster["source_manifest_row"] == np.floor(roster["source_manifest_row"])
+    ):
+        raise Tier1BlockedError(BLOCKED_AUDIT_RECONSTRUCTION, "clip roster has invalid source rows")
+    roster["source_manifest_row"] = roster["source_manifest_row"].astype(int)
+
+    manifest = _successful_manifest(pd.read_csv(clip_manifest_csv))
+    manifest_base = clip_manifest_csv.parent
+    clip_rows: list[dict[str, Any]] = []
+    restoration_rows: list[dict[str, Any]] = []
+    for _, roster_row in roster.iterrows():
+        matches = manifest[manifest["source_manifest_row"].eq(int(roster_row["source_manifest_row"]))]
+        unique_linkage = len(matches) == 1
+        raw_dicom = ""
+        raw_npz = ""
+        source_exists = False
+        processed_exists = False
+        linkage_error = ""
+        if unique_linkage:
+            clip = matches.iloc[0]
+            unique_linkage = (
+                clip["_study"] == str(roster_row["_study"])
+                and clip["_subject"] == str(roster_row["_subject"])
+                and canonical_clip_source_row_sha256(clip)
+                == str(roster_row["source_manifest_row_sha256"]).strip().lower()
+            )
+            if unique_linkage:
+                try:
+                    raw_dicom = _first_path(clip, DICOM_PATH_COLUMNS, "source DICOM")
+                    raw_npz = _first_path(clip, PROCESSED_PATH_COLUMNS, "processed NPZ")
+                    source_exists = _existing_source_path(raw_dicom, dicom_data_root).is_file()
+                    processed_exists = _resolve_path(raw_npz, manifest_base).is_file()
+                except Tier1BlockedError as exc:
+                    linkage_error = exc.detail
+                    unique_linkage = False
+            else:
+                linkage_error = "locked source-row identity or fingerprint mismatch"
+        else:
+            linkage_error = "locked source row did not map one-to-one"
+        record = {
+            "audit_id": str(roster_row["audit_id"]),
+            "clip_audit_id": str(roster_row["clip_audit_id"]),
+            "study_id": roster_row["study_id"],
+            "subject_id": roster_row["subject_id"],
+            "unique_linkage": bool(unique_linkage),
+            "processed_input_available": bool(processed_exists),
+            "source_dicom_available": bool(source_exists),
+            "technically_ready": bool(unique_linkage and processed_exists and source_exists),
+            "linkage_error": linkage_error,
+        }
+        clip_rows.append(record)
+        if not record["technically_ready"]:
+            restoration_rows.append(
+                {
+                    **record,
+                    "declared_source_dicom": raw_dicom,
+                    "declared_processed_input": raw_npz,
+                    "restoration_need": ";".join(
+                        item
+                        for item, needed in (
+                            ("unique_linkage", not unique_linkage),
+                            ("processed_input", not processed_exists),
+                            ("source_dicom", not source_exists),
+                        )
+                        if needed
+                    ),
+                }
+            )
+
+    clip_availability = pd.DataFrame(clip_rows)
+    if set(clip_availability["audit_id"].astype(str)) != set(linkage["audit_id"].astype(str)):
+        raise Tier1BlockedError(
+            BLOCKED_AUDIT_RECONSTRUCTION,
+            "locked roster and linkage do not contain the same physical studies",
+        )
+    study_availability = (
+        clip_availability.groupby("audit_id", sort=False)
+        .agg(
+            study_id=("study_id", "first"),
+            subject_id=("subject_id", "first"),
+            canonical_clip_count=("clip_audit_id", "size"),
+            unique_linkage=("unique_linkage", "all"),
+            processed_input_available=("processed_input_available", "all"),
+            source_dicom_available=("source_dicom_available", "all"),
+            technically_ready=("technically_ready", "all"),
+        )
+        .reset_index()
+    )
+    ready_ids = set(
+        study_availability.loc[study_availability["technically_ready"], "audit_id"].astype(str)
+    )
+    ready_linkage = (
+        linkage.loc[linkage["audit_id"].astype(str).isin(ready_ids)]
+        .sort_values(["review_order", "audit_id"], kind="mergesort")
+        .head(max_ready_pilot_studies)
+        .drop(columns=["_study", "_subject"])
+    )
+    restoration = pd.DataFrame(restoration_rows)
+    locked_studies = int(len(study_availability))
+    technically_ready = int(study_availability["technically_ready"].sum())
+    summary = {
+        "status": "ok" if technically_ready else BLOCKED_AUDIT_SOURCE_RESTORATION,
+        "locked_roster_studies": locked_studies,
+        "locked_roster_clips": int(len(clip_availability)),
+        "studies_with_stored_processed_inputs_available": int(
+            study_availability["processed_input_available"].sum()
+        ),
+        "studies_with_source_dicoms_available": int(
+            study_availability["source_dicom_available"].sum()
+        ),
+        "studies_requiring_secure_restoration": int(
+            (~study_availability["technically_ready"]).sum()
+        ),
+        "studies_lacking_unique_linkage": int((~study_availability["unique_linkage"]).sum()),
+        "studies_technically_ready_for_reconstruction": technically_ready,
+        "pilot_ready_subset_studies": int(len(ready_linkage)),
+        "audit_linkage_sha256": sha256_file(audit_linkage_csv),
+        "canonical_clip_roster_sha256": sha256_file(clip_roster_csv),
+        "canonical_clip_manifest_sha256": sha256_file(clip_manifest_csv),
+        "full_locked_roster_assessed": True,
+        "roster_modified": False,
+        "ocr_used": False,
+        "clinical_content_annotations_recorded": False,
+    }
+    assert_export_safe_frame(pd.DataFrame([summary]), "source availability summary")
+
+    output_root.mkdir(parents=True)
+    clip_availability.to_csv(output_root / "source_availability_clip_rows.csv", index=False)
+    study_availability.to_csv(output_root / "source_availability_study_rows.csv", index=False)
+    restoration.to_csv(output_root / "source_restoration_manifest.csv", index=False)
+    ready_linkage.to_csv(output_root / "technically_ready_pilot_linkage.csv", index=False)
+    write_json(output_root / "source_availability_restricted_summary.json", summary)
+    safe_output_dir.mkdir(parents=True)
+    write_json(safe_output_dir / "source_availability_summary.json", summary)
+    write_safe_csv(
+        safe_output_dir / "source_availability_summary.csv",
+        pd.DataFrame([summary]),
+        "source availability summary",
+    )
+    return SourceAvailabilityResult(
+        restricted_rows=study_availability,
+        restoration_rows=restoration,
+        ready_linkage=ready_linkage,
+        safe_summary=summary,
+        output_root=output_root,
+    )
 
 
 def _display_rgb(frame: np.ndarray, size: int = 224) -> np.ndarray:

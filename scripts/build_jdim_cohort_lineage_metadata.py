@@ -6,7 +6,18 @@ import argparse
 import json
 from pathlib import Path
 
-from jdim_tier1.safety import SAFE_ROLE_PATTERN, sha256_file, write_json
+import pandas as pd
+
+from jdim_tier1.safety import (
+    SAFE_ROLE_PATTERN,
+    canonical_id_set_sha256,
+    parse_named_paths,
+    sha256_file,
+    write_json,
+)
+
+
+DECLARED_LEGACY_SCOPE_VERSION = "jdim-declared-legacy-scope-v1"
 
 
 def parse_name_class(values: list[str]) -> dict[str, dict[str, str]]:
@@ -79,8 +90,106 @@ def parse_args() -> argparse.Namespace:
             "for provenance and must reconcile exactly with the final embedding manifest."
         ),
     )
+    parser.add_argument(
+        "--selected-studies-csv",
+        type=Path,
+        default=None,
+        help="Selected canonical study universe used to hash declared legacy scope.",
+    )
+    parser.add_argument(
+        "--selected-universe-selection-rule",
+        default=None,
+        help="Path-free description of the deterministic selected-universe rule.",
+    )
+    parser.add_argument(
+        "--batch-study-manifest",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="Successful clip manifest used to hash each batch study set.",
+    )
     parser.add_argument("--output-json", type=Path, required=True)
     return parser.parse_args()
+
+
+def _successful_study_set(path: Path) -> set[str]:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    frame = pd.read_csv(path)
+    if "study_id" not in frame.columns:
+        raise ValueError(f"Batch study manifest lacks study_id: {path.name}")
+    if "write_ok" in frame.columns:
+        values = frame["write_ok"]
+        if pd.api.types.is_bool_dtype(values):
+            keep = values.fillna(False).astype(bool)
+        else:
+            keep = values.astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y"})
+        frame = frame.loc[keep]
+    studies = {str(value).strip() for value in frame["study_id"] if str(value).strip()}
+    if not studies:
+        raise ValueError(f"Batch study manifest contains no successful studies: {path.name}")
+    return studies
+
+
+def _selected_universe(path: Path) -> tuple[set[str], int]:
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    frame = pd.read_csv(path)
+    missing = {"study_id", "subject_id"} - set(frame.columns)
+    if missing:
+        raise ValueError(f"Selected study universe missing columns: {sorted(missing)}")
+    normalized = frame[["study_id", "subject_id"]].astype(str)
+    if normalized.eq("").any().any():
+        raise ValueError("Selected study universe contains empty identifiers")
+    if normalized.groupby("study_id")["subject_id"].nunique().gt(1).any():
+        raise ValueError("Selected study universe maps a study to multiple subjects")
+    return set(normalized["study_id"]), int(normalized["subject_id"].nunique())
+
+
+def build_declared_scope_metadata(
+    batches: dict[str, dict[str, str]],
+    outside_batches: set[str],
+    manifests: dict[str, Path],
+    selected_studies: set[str],
+) -> None:
+    if set(manifests) != set(batches):
+        raise ValueError(
+            "--batch-study-manifest names must exactly match --batch-source names"
+        )
+    study_sets = {name: _successful_study_set(path) for name, path in manifests.items()}
+    fullscale_union = set().union(
+        *(study_sets[name] for name, item in batches.items() if item["source_class"] == "fullscale")
+    )
+    for name, metadata in batches.items():
+        studies = study_sets[name]
+        metadata.update(
+            {
+                "successful_study_count": len(studies),
+                "successful_study_set_sha256": canonical_id_set_sha256(studies),
+                "source_manifest_sha256": sha256_file(manifests[name]),
+            }
+        )
+        if name not in outside_batches:
+            continue
+        inside = studies & selected_studies
+        outside = studies - selected_studies
+        later_overlap = studies & fullscale_union
+        canonical_contribution = inside - fullscale_union
+        metadata["declared_legacy_scope"] = {
+            "version": DECLARED_LEGACY_SCOPE_VERSION,
+            "legacy_studies_total": len(studies),
+            "legacy_study_set_sha256": canonical_id_set_sha256(studies),
+            "inside_selected_universe_count": len(inside),
+            "inside_selected_universe_study_set_sha256": canonical_id_set_sha256(inside),
+            "outside_selected_universe_count": len(outside),
+            "outside_selected_universe_study_set_sha256": canonical_id_set_sha256(outside),
+            "later_fullscale_overlap_count": len(later_overlap),
+            "later_fullscale_overlap_study_set_sha256": canonical_id_set_sha256(later_overlap),
+            "deduplicated_canonical_contribution_count": len(canonical_contribution),
+            "deduplicated_canonical_contribution_study_set_sha256": canonical_id_set_sha256(
+                canonical_contribution
+            ),
+        }
 
 
 def main() -> int:
@@ -92,6 +201,33 @@ def main() -> int:
     for name, metadata in batches.items():
         metadata["outside_universe_policy"] = (
             "declared_legacy_scope" if name in outside_batches else "canonical_only"
+        )
+    selected_payload = None
+    if outside_batches:
+        if args.selected_studies_csv is None:
+            raise ValueError("--selected-studies-csv is required for declared legacy scope")
+        if not str(args.selected_universe_selection_rule or "").strip():
+            raise ValueError(
+                "--selected-universe-selection-rule is required for declared legacy scope"
+            )
+        manifests = parse_named_paths(args.batch_study_manifest, "batch study manifest")
+        selected_studies, selected_subjects = _selected_universe(args.selected_studies_csv)
+        build_declared_scope_metadata(
+            batches,
+            outside_batches,
+            manifests,
+            selected_studies,
+        )
+        selected_payload = {
+            "study_count": len(selected_studies),
+            "subject_count": selected_subjects,
+            "study_set_sha256": canonical_id_set_sha256(selected_studies),
+            "source_sha256": sha256_file(args.selected_studies_csv),
+            "deterministic_selection_rule": str(args.selected_universe_selection_rule).strip(),
+        }
+    elif args.batch_study_manifest or args.selected_studies_csv is not None:
+        raise ValueError(
+            "Selected-universe and batch manifests are accepted only with declared legacy scope"
         )
     payload = {
         "protocol_version": "jdim-tier1-v1",
@@ -108,6 +244,8 @@ def main() -> int:
         "batch_sources": batches,
         "allowed_batch_overlap_pairs": parse_overlap_pairs(args.allow_batch_overlap, set(batches)),
     }
+    if selected_payload is not None:
+        payload["selected_analysis_universe"] = selected_payload
     write_json(args.output_json, payload)
     print(json.dumps({"status": "ok", "output_json": str(args.output_json), "batch_count": len(batches)}, indent=2))
     return 0
