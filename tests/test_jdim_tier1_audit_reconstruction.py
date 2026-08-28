@@ -293,7 +293,7 @@ class AuditReconstructionTests(unittest.TestCase):
             npz = root / "wrong.npz"
             np.savez_compressed(
                 npz,
-                frames=np.zeros((32, 224, 224, 3), dtype=np.uint8),
+                frames=np.full((32, 224, 224, 3), 255, dtype=np.uint8),
                 sampled_indices=np.arange(32, dtype=np.int32),
                 source_num_frames=np.array([len(raw)], dtype=np.int32),
             )
