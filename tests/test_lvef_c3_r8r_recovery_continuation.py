@@ -196,6 +196,12 @@ def test_r8r_scientific_scope_and_public_interfaces_are_fixed() -> None:
         "--submit-continuation",
         "--run-continuation-array-task",
         "--run-continuation-finalizer",
+        "--submit-batch16-recovery",
+        "--run-batch16-recovery",
+        "--validate-batch16-recovery",
+        "--submit-continuation-17-19",
+        "--run-continuation-17-19-array-task",
+        "--run-r8u-continuation-finalizer",
     }
     assert not option_strings.intersection(
         {

@@ -277,6 +277,147 @@ R8R_CONTINUATION_CAPACITY_KEYS = frozenset(
     }
 )
 
+# Phase 1I-R8U capacity is one fixed recovery of original Task 16 followed by
+# the still-unrun original Tasks 17--19.  The retained Task-16 raw files and
+# failed partial extraction cache are already represented in the observed
+# usage/file counts, so they are bound as baseline evidence and contribute
+# exactly zero incremental bytes and file slots.  Only fresh work is charged:
+# Tasks 17--19 raw files and retry space, one rolling largest fresh extraction
+# envelope across Tasks 16--19, fresh embeddings across Tasks 16--19, and the
+# established control/finalization burdens.
+R8U_ORIGINAL_PLAN_SHA256 = R8R_ORIGINAL_PLAN_SHA256
+R8U_ORIGINAL_ATTEMPT_ID = R8R_ORIGINAL_ATTEMPT_ID
+R8U_ORIGINAL_SCIENTIFIC_COMMIT = R8R_ORIGINAL_SCIENTIFIC_COMMIT
+R8U_RECOVERY_TASK = 16
+R8U_RECOVERY_BATCH_INDEX = 15
+R8U_RECOVERY_BATCH_ID = "c3_batch_015"
+R8U_CONTINUATION_FIRST_TASK = 17
+R8U_CONTINUATION_LAST_TASK = 19
+R8U_CONTINUATION_TASK_COUNT = 3
+R8U_CONTINUATION_FIRST_BATCH_INDEX = 16
+R8U_EXCLUSIVE_LAST_BATCH_INDEX = 19
+R8U_FRESH_PIPELINE_BATCH_COUNT = 4
+R8U_BATCH16_RAW_OBJECT_FILES_BASELINE = 18_677
+R8U_FAILED_PARTIAL_FILES_BASELINE = 4_757
+R8U_FAILED_PARTIAL_BYTES_BASELINE = 8_583_119_701
+R8U_EXTRACTED_BYTES_PER_OBJECT = R8R_EXTRACTED_BYTES_PER_OBJECT
+R8U_CLIP_EMBEDDING_BYTES_PER_OBJECT = R8R_CLIP_EMBEDDING_BYTES_PER_OBJECT
+R8U_STUDY_EMBEDDING_BYTES_PER_STUDY = R8R_STUDY_EMBEDDING_BYTES_PER_STUDY
+R8U_RETAINED_EXTRACTED_AUDIT_BYTES = R8R_RETAINED_EXTRACTED_AUDIT_BYTES
+R8U_MANIFEST_AND_METADATA_BYTES = R8R_MANIFEST_AND_METADATA_BYTES
+R8U_LOG_BYTES = R8R_LOG_BYTES
+R8U_PRESERVATION_AND_FINALIZATION_BYTES = (
+    R8R_PRESERVATION_AND_FINALIZATION_BYTES
+)
+R8U_SAFETY_BYTES = R8R_SAFETY_BYTES
+R8U_QUOTA_RESERVE_BYTES = 200_000_000_000
+R8U_PHYSICAL_RESERVE_BYTES = 200_000_000_000
+R8U_FIXED_CONTROL_FILE_DEMAND = R8R_FIXED_CONTROL_FILE_DEMAND
+R8U_CAPACITY_STATUS_PASS = (
+    "PASS_BATCH16_RECOVERY_AND_17_19_WITH_200GB_RESERVE"
+)
+R8U_CAPACITY_STATUS_BLOCKED = "BLOCKED"
+R8U_CAPACITY_ARTIFACT_TYPE = (
+    "lvef_c3_r8u_batch16_recovery_capacity_v1"
+)
+R8U_CAPACITY_ZERO_EFFECT_KEYS = frozenset(
+    {
+        "cloud_requests",
+        "qsub_submissions",
+        "scheduler_jobs_submitted",
+        "dicom_body_reads",
+        "npz_body_reads",
+        "gpu_executions",
+        "echoprime_executions",
+        "embedding_generations",
+        "model_fitting",
+        "prediction_generation",
+        "confirmatory_performance_accesses",
+        "files_moved",
+        "files_deleted",
+        "writes_performed",
+    }
+)
+R8U_CAPACITY_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "blocking_reason_codes",
+        "original_attempt_id",
+        "original_plan_sha256",
+        "original_scientific_governing_commit",
+        "recovery_task",
+        "recovery_batch_id",
+        "continuation_first_task",
+        "continuation_last_task",
+        "continuation_task_count",
+        "fresh_pipeline_batch_count",
+        "fresh_pipeline_studies",
+        "fresh_pipeline_objects",
+        "fresh_pipeline_source_bytes",
+        "continuation_studies",
+        "continuation_objects",
+        "continuation_source_bytes",
+        "largest_fresh_pipeline_batch_objects",
+        "largest_continuation_batch_source_bytes",
+        "batch16_raw_reused",
+        "batch16_raw_object_files_baseline",
+        "batch16_raw_source_bytes_baseline",
+        "failed_partial_files_baseline",
+        "failed_partial_bytes_baseline",
+        "batch16_redownload_demand_bytes",
+        "baseline_batch16_raw_bytes_added_to_increment",
+        "baseline_failed_partial_bytes_added_to_increment",
+        "baseline_batch16_raw_files_added_to_demand",
+        "baseline_failed_partial_files_added_to_demand",
+        "continuation_raw_source_demand_bytes",
+        "largest_continuation_transfer_retry_demand_bytes",
+        "largest_rolling_fresh_extracted_cache_demand_bytes",
+        "fresh_clip_embedding_upper_bound_bytes",
+        "fresh_study_embedding_upper_bound_bytes",
+        "retained_extracted_audit_demand_bytes",
+        "manifest_and_metadata_demand_bytes",
+        "log_demand_bytes",
+        "preservation_and_finalization_demand_bytes",
+        "safety_demand_bytes",
+        "r8u_increment_bytes",
+        "continuation_raw_object_file_demand",
+        "largest_rolling_fresh_object_file_demand",
+        "fixed_control_file_demand",
+        "required_file_slots",
+        "research_quota_bytes",
+        "research_usage_bytes",
+        "research_quota_remaining_bytes",
+        "research_file_quota",
+        "research_files_used",
+        "research_file_slots_remaining",
+        "research_filesystem_total_bytes",
+        "research_filesystem_used_bytes",
+        "research_filesystem_available_bytes",
+        "projected_research_usage_bytes",
+        "required_quota_reserve_bytes",
+        "required_physical_reserve_bytes",
+        "quota_slack_after_r8u_bytes",
+        "physical_slack_after_r8u_bytes",
+        "quota_margin_beyond_reserve_bytes",
+        "physical_margin_beyond_reserve_bytes",
+        "file_slot_margin_after_demand",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "native_capacity_snapshot_captures",
+        "native_quota_file_captures",
+        "capacity_command_captures",
+        "pquota_command_captures",
+        "findmnt_command_captures",
+        "df_command_captures",
+        "native_quota_authority_read_only",
+        "pquota_display_crosscheck",
+        *R8U_CAPACITY_ZERO_EFFECT_KEYS,
+    }
+)
+
 # The historical Phase 1E-F receipt above deliberately remains bound to the
 # exact allocation that existed when it was captured.  Fresh-successor
 # admission is a different authority: it is expected to observe a changed
@@ -3697,6 +3838,482 @@ def validate_fixed_r8r_continuation_capacity(
     ):
         raise PostReallocationCapacityError(
             "R8R_CONTINUATION_CAPACITY_ARITHMETIC_INVALID"
+        )
+    return dict(value)
+
+
+def _fixed_r8u_recovery_batches(
+    plan: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], list[Mapping[str, Any]]]:
+    """Bind the original plan to Batch 16 recovery and Tasks 17--19."""
+
+    if not isinstance(plan, Mapping):
+        raise PostReallocationCapacityError("R8U_FIXED_PLAN_SCHEMA_INVALID")
+    try:
+        plan_payload = json.dumps(
+            plan,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    except (AttributeError, TypeError, UnicodeEncodeError, ValueError) as exc:
+        raise PostReallocationCapacityError(
+            "R8U_FIXED_PLAN_SCHEMA_INVALID"
+        ) from exc
+    if _sha(plan_payload) != R8U_ORIGINAL_PLAN_SHA256:
+        raise PostReallocationCapacityError("R8U_FIXED_PLAN_SHA256_MISMATCH")
+
+    authority = plan.get("authority")
+    cohort = plan.get("cohort")
+    batches = plan.get("batches")
+    if (
+        plan.get("schema_version") != 3
+        or plan.get("artifact_type")
+        != "lvef_c3_restricted_immutable_batch_plan_v3"
+        or not isinstance(authority, Mapping)
+        or authority.get("git_commit") != R8U_ORIGINAL_SCIENTIFIC_COMMIT
+        or not isinstance(cohort, Mapping)
+        or not isinstance(batches, list)
+        or len(batches) != R8U_CONTINUATION_LAST_TASK
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_FIXED_PLAN_AUTHORITY_INVALID"
+        )
+
+    integer_fields = ("n_studies", "n_objects", "source_bytes")
+    for ordinal, batch in enumerate(batches):
+        if (
+            not isinstance(batch, Mapping)
+            or batch.get("batch_id") != f"c3_batch_{ordinal:03d}"
+            or batch.get("ordinal") != ordinal
+            or any(
+                not isinstance(batch.get(field), int)
+                or isinstance(batch.get(field), bool)
+                or int(batch[field]) <= 0
+                for field in integer_fields
+            )
+            or int(batch["n_studies"])
+            != (30 if ordinal == 18 else 250)
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_FIXED_PLAN_TOPOLOGY_INVALID"
+            )
+
+    full_aggregates = (
+        sum(int(batch["n_studies"]) for batch in batches),
+        sum(int(batch["n_objects"]) for batch in batches),
+        sum(int(batch["source_bytes"]) for batch in batches),
+    )
+    if (
+        full_aggregates
+        != (
+            R8R_ORIGINAL_STUDIES,
+            R8R_ORIGINAL_OBJECTS,
+            R8R_ORIGINAL_SOURCE_BYTES,
+        )
+        or cohort.get("selected_studies") != R8R_ORIGINAL_STUDIES
+        or cohort.get("normalized_source_objects") != R8R_ORIGINAL_OBJECTS
+        or cohort.get("selected_source_bytes") != R8R_ORIGINAL_SOURCE_BYTES
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_FIXED_PLAN_AGGREGATE_INVALID"
+        )
+
+    recovery = batches[R8U_RECOVERY_BATCH_INDEX]
+    continuation = batches[
+        R8U_CONTINUATION_FIRST_BATCH_INDEX:R8U_EXCLUSIVE_LAST_BATCH_INDEX
+    ]
+    if (
+        recovery.get("batch_id") != R8U_RECOVERY_BATCH_ID
+        or int(recovery["n_objects"])
+        != R8U_BATCH16_RAW_OBJECT_FILES_BASELINE
+        or len(continuation) != R8U_CONTINUATION_TASK_COUNT
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_FIXED_PLAN_RECOVERY_TOPOLOGY_INVALID"
+        )
+    return recovery, continuation
+
+
+def _derive_fixed_r8u_capacity_demands(
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Purely derive fixed R8U baseline evidence and incremental demand."""
+
+    recovery, continuation = _fixed_r8u_recovery_batches(plan)
+    fresh_pipeline = [recovery, *continuation]
+    fresh_studies = sum(int(row["n_studies"]) for row in fresh_pipeline)
+    fresh_objects = sum(int(row["n_objects"]) for row in fresh_pipeline)
+    fresh_source_bytes = sum(
+        int(row["source_bytes"]) for row in fresh_pipeline
+    )
+    continuation_studies = sum(
+        int(row["n_studies"]) for row in continuation
+    )
+    continuation_objects = sum(
+        int(row["n_objects"]) for row in continuation
+    )
+    continuation_source_bytes = sum(
+        int(row["source_bytes"]) for row in continuation
+    )
+    largest_fresh_objects = max(
+        int(row["n_objects"]) for row in fresh_pipeline
+    )
+    largest_continuation_source_bytes = max(
+        int(row["source_bytes"]) for row in continuation
+    )
+    rolling_extracted_bytes = (
+        largest_fresh_objects * R8U_EXTRACTED_BYTES_PER_OBJECT
+    )
+    clip_embedding_bytes = (
+        fresh_objects * R8U_CLIP_EMBEDDING_BYTES_PER_OBJECT
+    )
+    study_embedding_bytes = (
+        fresh_studies * R8U_STUDY_EMBEDDING_BYTES_PER_STUDY
+    )
+    r8u_increment = sum(
+        (
+            continuation_source_bytes,
+            largest_continuation_source_bytes,
+            rolling_extracted_bytes,
+            clip_embedding_bytes,
+            study_embedding_bytes,
+            R8U_RETAINED_EXTRACTED_AUDIT_BYTES,
+            R8U_MANIFEST_AND_METADATA_BYTES,
+            R8U_LOG_BYTES,
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES,
+            R8U_SAFETY_BYTES,
+        )
+    )
+    required_file_slots = (
+        continuation_objects
+        + largest_fresh_objects
+        + R8U_FIXED_CONTROL_FILE_DEMAND
+    )
+    return {
+        "recovery_task": R8U_RECOVERY_TASK,
+        "recovery_batch_id": R8U_RECOVERY_BATCH_ID,
+        "continuation_first_task": R8U_CONTINUATION_FIRST_TASK,
+        "continuation_last_task": R8U_CONTINUATION_LAST_TASK,
+        "continuation_task_count": R8U_CONTINUATION_TASK_COUNT,
+        "fresh_pipeline_batch_count": len(fresh_pipeline),
+        "fresh_pipeline_studies": fresh_studies,
+        "fresh_pipeline_objects": fresh_objects,
+        "fresh_pipeline_source_bytes": fresh_source_bytes,
+        "continuation_studies": continuation_studies,
+        "continuation_objects": continuation_objects,
+        "continuation_source_bytes": continuation_source_bytes,
+        "largest_fresh_pipeline_batch_objects": largest_fresh_objects,
+        "largest_continuation_batch_source_bytes": (
+            largest_continuation_source_bytes
+        ),
+        "batch16_raw_reused": True,
+        "batch16_raw_object_files_baseline": int(recovery["n_objects"]),
+        "batch16_raw_source_bytes_baseline": int(recovery["source_bytes"]),
+        "failed_partial_files_baseline": R8U_FAILED_PARTIAL_FILES_BASELINE,
+        "failed_partial_bytes_baseline": R8U_FAILED_PARTIAL_BYTES_BASELINE,
+        "batch16_redownload_demand_bytes": 0,
+        "baseline_batch16_raw_bytes_added_to_increment": 0,
+        "baseline_failed_partial_bytes_added_to_increment": 0,
+        "baseline_batch16_raw_files_added_to_demand": 0,
+        "baseline_failed_partial_files_added_to_demand": 0,
+        "continuation_raw_source_demand_bytes": continuation_source_bytes,
+        "largest_continuation_transfer_retry_demand_bytes": (
+            largest_continuation_source_bytes
+        ),
+        "largest_rolling_fresh_extracted_cache_demand_bytes": (
+            rolling_extracted_bytes
+        ),
+        "fresh_clip_embedding_upper_bound_bytes": clip_embedding_bytes,
+        "fresh_study_embedding_upper_bound_bytes": study_embedding_bytes,
+        "retained_extracted_audit_demand_bytes": (
+            R8U_RETAINED_EXTRACTED_AUDIT_BYTES
+        ),
+        "manifest_and_metadata_demand_bytes": (
+            R8U_MANIFEST_AND_METADATA_BYTES
+        ),
+        "log_demand_bytes": R8U_LOG_BYTES,
+        "preservation_and_finalization_demand_bytes": (
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES
+        ),
+        "safety_demand_bytes": R8U_SAFETY_BYTES,
+        "r8u_increment_bytes": r8u_increment,
+        "continuation_raw_object_file_demand": continuation_objects,
+        "largest_rolling_fresh_object_file_demand": largest_fresh_objects,
+        "fixed_control_file_demand": R8U_FIXED_CONTROL_FILE_DEMAND,
+        "required_file_slots": required_file_slots,
+    }
+
+
+def probe_fixed_r8u_batch16_recovery_capacity(
+    plan: Mapping[str, Any],
+    *,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Adjudicate fixed Batch 16 recovery plus Tasks 17--19 once.
+
+    Retained Batch-16 raw files and failed partial NPZs are baseline evidence:
+    the native usage and file counts already include them, so this arithmetic
+    cannot charge them again.  Batch 16 has no redownload envelope.  Fresh
+    demand consists of Tasks 17--19 raw/retry space, one rolling largest
+    extraction cache across Tasks 16--19, all fresh embeddings, and fixed
+    control/finalization burdens.  Quota and physical margins each retain
+    exactly 200,000,000,000 bytes, with the established 100,000 control-file
+    allowance.  The live native/pquota/findmnt/df snapshot is captured once.
+    """
+
+    demands = _derive_fixed_r8u_capacity_demands(plan)
+    snapshot = _capture_current_capacity_snapshot(
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
+        process_runner=process_runner,
+    )
+    native = snapshot["native"]
+    dfs = snapshot["dfs"]
+    increment = int(demands["r8u_increment_bytes"])
+    required_file_slots = int(demands["required_file_slots"])
+
+    research_quota = int(native["research"]["quota_kib"]) * 1024
+    research_usage = int(native["research"]["usage_kib"]) * 1024
+    research_file_quota = int(native["research"]["file_quota"])
+    research_files_used = int(native["research"]["files_used"])
+    physical_available = int(dfs["research"]["available"])
+    projected_usage = research_usage + increment
+    quota_slack = research_quota - projected_usage
+    physical_slack = physical_available - increment
+    quota_margin = quota_slack - R8U_QUOTA_RESERVE_BYTES
+    physical_margin = physical_slack - R8U_PHYSICAL_RESERVE_BYTES
+    file_slots_remaining = research_file_quota - research_files_used
+    file_margin = file_slots_remaining - required_file_slots
+    gates = {
+        "quota_reserve_gate_passed": quota_margin >= 0,
+        "physical_reserve_gate_passed": physical_margin >= 0,
+        "file_slot_gate_passed": file_margin >= 0,
+    }
+    blocking_reason_codes = [
+        code
+        for field, code in (
+            (
+                "quota_reserve_gate_passed",
+                "R8U_QUOTA_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "physical_reserve_gate_passed",
+                "R8U_PHYSICAL_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "file_slot_gate_passed",
+                "R8U_FILE_SLOTS_INSUFFICIENT",
+            ),
+        )
+        if gates[field] is not True
+    ]
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": R8U_CAPACITY_ARTIFACT_TYPE,
+        "status": (
+            R8U_CAPACITY_STATUS_PASS
+            if not blocking_reason_codes
+            else R8U_CAPACITY_STATUS_BLOCKED
+        ),
+        "blocking_reason_codes": blocking_reason_codes,
+        "original_attempt_id": R8U_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": R8U_ORIGINAL_PLAN_SHA256,
+        "original_scientific_governing_commit": (
+            R8U_ORIGINAL_SCIENTIFIC_COMMIT
+        ),
+        **demands,
+        "research_quota_bytes": research_quota,
+        "research_usage_bytes": research_usage,
+        "research_quota_remaining_bytes": research_quota - research_usage,
+        "research_file_quota": research_file_quota,
+        "research_files_used": research_files_used,
+        "research_file_slots_remaining": file_slots_remaining,
+        "research_filesystem_total_bytes": int(dfs["research"]["total"]),
+        "research_filesystem_used_bytes": int(dfs["research"]["used"]),
+        "research_filesystem_available_bytes": physical_available,
+        "projected_research_usage_bytes": projected_usage,
+        "required_quota_reserve_bytes": R8U_QUOTA_RESERVE_BYTES,
+        "required_physical_reserve_bytes": R8U_PHYSICAL_RESERVE_BYTES,
+        "quota_slack_after_r8u_bytes": quota_slack,
+        "physical_slack_after_r8u_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "file_slot_margin_after_demand": file_margin,
+        **gates,
+        "native_capacity_snapshot_captures": int(
+            snapshot["native_capacity_snapshot_captures"]
+        ),
+        "native_quota_file_captures": int(
+            snapshot["native_quota_file_captures"]
+        ),
+        "capacity_command_captures": int(
+            snapshot["capacity_command_captures"]
+        ),
+        "pquota_command_captures": int(
+            snapshot["pquota_command_captures"]
+        ),
+        "findmnt_command_captures": int(
+            snapshot["findmnt_command_captures"]
+        ),
+        "df_command_captures": int(snapshot["df_command_captures"]),
+        "native_quota_authority_read_only": True,
+        "pquota_display_crosscheck": str(
+            snapshot["pquota_display_crosscheck"]
+        ),
+        **{key: 0 for key in R8U_CAPACITY_ZERO_EFFECT_KEYS},
+    }
+    if set(result) != R8U_CAPACITY_KEYS:
+        raise PostReallocationCapacityError("R8U_CAPACITY_SCHEMA_INVALID")
+    return validate_fixed_r8u_batch16_recovery_capacity(plan, result)
+
+
+def validate_fixed_r8u_batch16_recovery_capacity(
+    plan: Mapping[str, Any], value: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Purely replay every fixed R8U demand, margin, gate, and status."""
+
+    demands = _derive_fixed_r8u_capacity_demands(plan)
+    if not isinstance(value, Mapping) or set(value) != R8U_CAPACITY_KEYS:
+        raise PostReallocationCapacityError("R8U_CAPACITY_SCHEMA_INVALID")
+
+    text_fields = {
+        "artifact_type",
+        "status",
+        "original_attempt_id",
+        "original_plan_sha256",
+        "original_scientific_governing_commit",
+        "recovery_batch_id",
+        "pquota_display_crosscheck",
+    }
+    boolean_fields = {
+        "batch16_raw_reused",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "native_quota_authority_read_only",
+    }
+    special_fields = text_fields | boolean_fields | {"blocking_reason_codes"}
+    integer_fields = R8U_CAPACITY_KEYS - special_fields
+    if (
+        any(type(value.get(key)) is not int for key in integer_fields)
+        or any(type(value.get(key)) is not bool for key in boolean_fields)
+        or any(type(value.get(key)) is not str for key in text_fields)
+        or not isinstance(value.get("blocking_reason_codes"), list)
+    ):
+        raise PostReallocationCapacityError("R8U_CAPACITY_SCHEMA_INVALID")
+
+    quota = int(value["research_quota_bytes"])
+    usage = int(value["research_usage_bytes"])
+    file_quota = int(value["research_file_quota"])
+    files_used = int(value["research_files_used"])
+    filesystem_total = int(value["research_filesystem_total_bytes"])
+    filesystem_used = int(value["research_filesystem_used_bytes"])
+    physical_available = int(value["research_filesystem_available_bytes"])
+    if (
+        min(
+            quota,
+            usage,
+            file_quota,
+            files_used,
+            filesystem_total,
+            filesystem_used,
+            physical_available,
+        )
+        < 0
+        or quota == 0
+        or file_quota == 0
+        or filesystem_total == 0
+        or quota % 1024 != 0
+        or usage % 1024 != 0
+        or quota < EXPECTED_RESEARCH_QUOTA_KIB * 1024
+        or file_quota < EXPECTED_RESEARCH_FILE_QUOTA
+        or usage > quota
+        or files_used > file_quota
+        or filesystem_used + physical_available > filesystem_total
+    ):
+        raise PostReallocationCapacityError("R8U_CAPACITY_SCHEMA_INVALID")
+
+    increment = int(demands["r8u_increment_bytes"])
+    required_file_slots = int(demands["required_file_slots"])
+    projected_usage = usage + increment
+    quota_slack = quota - projected_usage
+    physical_slack = physical_available - increment
+    quota_margin = quota_slack - R8U_QUOTA_RESERVE_BYTES
+    physical_margin = physical_slack - R8U_PHYSICAL_RESERVE_BYTES
+    file_slots_remaining = file_quota - files_used
+    file_margin = file_slots_remaining - required_file_slots
+    gates = {
+        "quota_reserve_gate_passed": quota_margin >= 0,
+        "physical_reserve_gate_passed": physical_margin >= 0,
+        "file_slot_gate_passed": file_margin >= 0,
+    }
+    blocking_reason_codes = [
+        code
+        for key, code in (
+            (
+                "quota_reserve_gate_passed",
+                "R8U_QUOTA_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "physical_reserve_gate_passed",
+                "R8U_PHYSICAL_RESERVE_INSUFFICIENT",
+            ),
+            ("file_slot_gate_passed", "R8U_FILE_SLOTS_INSUFFICIENT"),
+        )
+        if gates[key] is not True
+    ]
+    expected = {
+        "schema_version": 1,
+        "artifact_type": R8U_CAPACITY_ARTIFACT_TYPE,
+        "status": (
+            R8U_CAPACITY_STATUS_PASS
+            if not blocking_reason_codes
+            else R8U_CAPACITY_STATUS_BLOCKED
+        ),
+        "blocking_reason_codes": blocking_reason_codes,
+        "original_attempt_id": R8U_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": R8U_ORIGINAL_PLAN_SHA256,
+        "original_scientific_governing_commit": (
+            R8U_ORIGINAL_SCIENTIFIC_COMMIT
+        ),
+        **demands,
+        "research_quota_bytes": quota,
+        "research_usage_bytes": usage,
+        "research_quota_remaining_bytes": quota - usage,
+        "research_file_quota": file_quota,
+        "research_files_used": files_used,
+        "research_file_slots_remaining": file_slots_remaining,
+        "research_filesystem_total_bytes": filesystem_total,
+        "research_filesystem_used_bytes": filesystem_used,
+        "research_filesystem_available_bytes": physical_available,
+        "projected_research_usage_bytes": projected_usage,
+        "required_quota_reserve_bytes": R8U_QUOTA_RESERVE_BYTES,
+        "required_physical_reserve_bytes": R8U_PHYSICAL_RESERVE_BYTES,
+        "quota_slack_after_r8u_bytes": quota_slack,
+        "physical_slack_after_r8u_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "file_slot_margin_after_demand": file_margin,
+        **gates,
+        "native_capacity_snapshot_captures": 1,
+        "native_quota_file_captures": 1,
+        "capacity_command_captures": 5,
+        "pquota_command_captures": 1,
+        "findmnt_command_captures": 2,
+        "df_command_captures": 2,
+        "native_quota_authority_read_only": True,
+        "pquota_display_crosscheck": value.get(
+            "pquota_display_crosscheck"
+        ),
+        **{key: 0 for key in R8U_CAPACITY_ZERO_EFFECT_KEYS},
+    }
+    if (
+        value.get("pquota_display_crosscheck")
+        not in {DISPLAY_CROSSCHECK_PASS, DISPLAY_CROSSCHECK_UNAVAILABLE}
+        or dict(value) != expected
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_CAPACITY_ARITHMETIC_INVALID"
         )
     return dict(value)
 

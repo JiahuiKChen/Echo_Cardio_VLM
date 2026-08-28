@@ -13,7 +13,7 @@ JOB_STORAGE_BASE=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/scheduler_
 
 [[ $# -eq 0 ]] || exit 64
 [[ "${JOB_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || exit 78
-[[ "${JOB_NAME:-}" =~ ^lvef_c3_r8r_(rec|seq|fin)_[0-9a-f]{8}$ ]] || exit 78
+[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r|r8u)_(rec|seq|fin)_[0-9a-f]{8}$ ]] || exit 78
 [[ -f "$COMMON" && ! -L "$COMMON" ]] || exit 78
 # shellcheck disable=SC1090 -- fixed authority-worktree helper path.
 source "$COMMON"
@@ -23,26 +23,57 @@ case "$JOB_NAME" in
     [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
     [[ "${NSLOTS:-}" == "4" ]] || exit 78
     export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8r
     ROLE=recovery
     MODE=--recover-batch3-preservation
+    PYCACHE_ROLE=lvef_c3_r8r
     ;;
   lvef_c3_r8r_seq_*)
     [[ "${SGE_TASK_ID:-}" =~ ^([4-9]|1[0-9])$ ]] || exit 78
     [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    JOB_FAMILY=r8r
     ROLE="array_task_${SGE_TASK_ID}"
     MODE=--run-continuation-array-task
+    PYCACHE_ROLE=lvef_c3_r8r
     ;;
   lvef_c3_r8r_fin_*)
     [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
     [[ "${NSLOTS:-}" == "4" ]] || exit 78
     export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8r
     ROLE=finalizer
     MODE=--run-continuation-finalizer
+    PYCACHE_ROLE=lvef_c3_r8r
+    ;;
+  lvef_c3_r8u_rec_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    JOB_FAMILY=r8u
+    ROLE=r8u_batch16_recovery
+    MODE=--run-batch16-recovery
+    PYCACHE_ROLE=lvef_c3_r8u
+    ;;
+  lvef_c3_r8u_seq_*)
+    [[ "${SGE_TASK_ID:-}" =~ ^1[7-9]$ ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    JOB_FAMILY=r8u
+    ROLE="r8u_array_task_${SGE_TASK_ID}"
+    MODE=--run-continuation-17-19-array-task
+    PYCACHE_ROLE=lvef_c3_r8u
+    ;;
+  lvef_c3_r8u_fin_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u
+    ROLE=r8u_finalizer
+    MODE=--run-r8u-continuation-finalizer
+    PYCACHE_ROLE=lvef_c3_r8u
     ;;
   *) exit 78 ;;
 esac
 
-JOB_STORAGE_PARENT="$JOB_STORAGE_BASE/r8r_job_$JOB_ID"
+JOB_STORAGE_PARENT="$JOB_STORAGE_BASE/${JOB_FAMILY}_job_$JOB_ID"
 JOB_STORAGE_ROOT="$JOB_STORAGE_PARENT/$ROLE"
 for storage_directory in \
   "$JOB_STORAGE_BASE" \
@@ -79,5 +110,5 @@ do
 done
 
 cd "$WORKTREE"
-exec "$PYTHON" -I -B -X pycache_prefix=/dev/null/lvef_c3_r8r \
+exec "$PYTHON" -I -B -X "pycache_prefix=/dev/null/$PYCACHE_ROLE" \
   "$CONTROLLER" "$MODE"
