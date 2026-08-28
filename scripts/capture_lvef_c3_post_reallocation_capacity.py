@@ -288,6 +288,20 @@ R8R_CONTINUATION_CAPACITY_KEYS = frozenset(
 R8U_ORIGINAL_PLAN_SHA256 = R8R_ORIGINAL_PLAN_SHA256
 R8U_ORIGINAL_ATTEMPT_ID = R8R_ORIGINAL_ATTEMPT_ID
 R8U_ORIGINAL_SCIENTIFIC_COMMIT = R8R_ORIGINAL_SCIENTIFIC_COMMIT
+R8U_R8R_IMPLEMENTATION_COMMIT = (
+    "fe3b6c40162d16d5021558bc686ba93c05ab03f5"
+)
+R8U_BASE_IMPLEMENTATION_COMMIT = (
+    "cbd54ec67a24bc26e538be0423df38cee8a9eb6f"
+)
+R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
+    {
+        "scientific_commit",
+        "r8r_implementation_commit",
+        "r8u_base_implementation_commit",
+        "r8u_projection_repair_commit",
+    }
+)
 R8U_RECOVERY_TASK = 16
 R8U_RECOVERY_BATCH_INDEX = 15
 R8U_RECOVERY_BATCH_ID = "c3_batch_015"
@@ -347,6 +361,7 @@ R8U_CAPACITY_KEYS = frozenset(
         "original_attempt_id",
         "original_plan_sha256",
         "original_scientific_governing_commit",
+        "implementation_authority_epochs",
         "recovery_task",
         "recovery_batch_id",
         "continuation_first_task",
@@ -4045,9 +4060,48 @@ def _derive_fixed_r8u_capacity_demands(
     }
 
 
+def _fixed_r8u_implementation_authority_epochs(
+    r8u_projection_repair_commit: str,
+) -> dict[str, str]:
+    """Return the closed four-epoch authority for one validated repair HEAD.
+
+    The recovery controller is responsible for proving that the supplied
+    repair commit is the one direct child of the immutable R8U base.  This
+    capacity module accepts that already-validated identity only through a
+    required keyword, binds it beside the three fixed historical epochs, and
+    rejects malformed or historically reused identities before live capture.
+    """
+
+    if (
+        type(r8u_projection_repair_commit) is not str
+        or COMMIT_RE.fullmatch(r8u_projection_repair_commit) is None
+        or r8u_projection_repair_commit
+        in {
+            R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+            R8U_R8R_IMPLEMENTATION_COMMIT,
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+        }
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
+    result = {
+        "scientific_commit": R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+        "r8r_implementation_commit": R8U_R8R_IMPLEMENTATION_COMMIT,
+        "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
+        "r8u_projection_repair_commit": r8u_projection_repair_commit,
+    }
+    if set(result) != R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
+    return result
+
+
 def probe_fixed_r8u_batch16_recovery_capacity(
     plan: Mapping[str, Any],
     *,
+    r8u_projection_repair_commit: str,
     process_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Adjudicate fixed Batch 16 recovery plus Tasks 17--19 once.
@@ -4063,6 +4117,11 @@ def probe_fixed_r8u_batch16_recovery_capacity(
     """
 
     demands = _derive_fixed_r8u_capacity_demands(plan)
+    implementation_authority_epochs = (
+        _fixed_r8u_implementation_authority_epochs(
+            r8u_projection_repair_commit
+        )
+    )
     snapshot = _capture_current_capacity_snapshot(
         DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
         process_runner=process_runner,
@@ -4121,6 +4180,7 @@ def probe_fixed_r8u_batch16_recovery_capacity(
         "original_scientific_governing_commit": (
             R8U_ORIGINAL_SCIENTIFIC_COMMIT
         ),
+        "implementation_authority_epochs": implementation_authority_epochs,
         **demands,
         "research_quota_bytes": research_quota,
         "research_usage_bytes": research_usage,
@@ -4164,15 +4224,27 @@ def probe_fixed_r8u_batch16_recovery_capacity(
     }
     if set(result) != R8U_CAPACITY_KEYS:
         raise PostReallocationCapacityError("R8U_CAPACITY_SCHEMA_INVALID")
-    return validate_fixed_r8u_batch16_recovery_capacity(plan, result)
+    return validate_fixed_r8u_batch16_recovery_capacity(
+        plan,
+        result,
+        r8u_projection_repair_commit=r8u_projection_repair_commit,
+    )
 
 
 def validate_fixed_r8u_batch16_recovery_capacity(
-    plan: Mapping[str, Any], value: Mapping[str, Any]
+    plan: Mapping[str, Any],
+    value: Mapping[str, Any],
+    *,
+    r8u_projection_repair_commit: str,
 ) -> dict[str, Any]:
     """Purely replay every fixed R8U demand, margin, gate, and status."""
 
     demands = _derive_fixed_r8u_capacity_demands(plan)
+    implementation_authority_epochs = (
+        _fixed_r8u_implementation_authority_epochs(
+            r8u_projection_repair_commit
+        )
+    )
     if not isinstance(value, Mapping) or set(value) != R8U_CAPACITY_KEYS:
         raise PostReallocationCapacityError("R8U_CAPACITY_SCHEMA_INVALID")
 
@@ -4192,15 +4264,33 @@ def validate_fixed_r8u_batch16_recovery_capacity(
         "file_slot_gate_passed",
         "native_quota_authority_read_only",
     }
-    special_fields = text_fields | boolean_fields | {"blocking_reason_codes"}
+    special_fields = text_fields | boolean_fields | {
+        "blocking_reason_codes",
+        "implementation_authority_epochs",
+    }
     integer_fields = R8U_CAPACITY_KEYS - special_fields
     if (
         any(type(value.get(key)) is not int for key in integer_fields)
         or any(type(value.get(key)) is not bool for key in boolean_fields)
         or any(type(value.get(key)) is not str for key in text_fields)
         or not isinstance(value.get("blocking_reason_codes"), list)
+        or not isinstance(
+            value.get("implementation_authority_epochs"), Mapping
+        )
+        or set(value["implementation_authority_epochs"])
+        != R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+        or any(
+            type(value["implementation_authority_epochs"].get(key)) is not str
+            for key in R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+        )
     ):
         raise PostReallocationCapacityError("R8U_CAPACITY_SCHEMA_INVALID")
+    if dict(value["implementation_authority_epochs"]) != (
+        implementation_authority_epochs
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
 
     quota = int(value["research_quota_bytes"])
     usage = int(value["research_usage_bytes"])
@@ -4276,6 +4366,7 @@ def validate_fixed_r8u_batch16_recovery_capacity(
         "original_scientific_governing_commit": (
             R8U_ORIGINAL_SCIENTIFIC_COMMIT
         ),
+        "implementation_authority_epochs": implementation_authority_epochs,
         **demands,
         "research_quota_bytes": quota,
         "research_usage_bytes": usage,

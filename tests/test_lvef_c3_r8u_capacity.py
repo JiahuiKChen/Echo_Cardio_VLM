@@ -19,6 +19,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import capture_lvef_c3_post_reallocation_capacity as capacity
 
 
+R8U_PROJECTION_REPAIR_COMMIT = "a" * 40
+
+
 def _canonical_sha256(value: object) -> str:
     payload = json.dumps(
         value,
@@ -121,7 +124,10 @@ def _probe(
             capture,
         ),
     ):
-        result = capacity.probe_fixed_r8u_batch16_recovery_capacity(plan)
+        result = capacity.probe_fixed_r8u_batch16_recovery_capacity(
+            plan,
+            r8u_projection_repair_commit=R8U_PROJECTION_REPAIR_COMMIT,
+        )
     return result, capture
 
 
@@ -150,6 +156,16 @@ def test_r8u_exact_arithmetic_reuses_baseline_without_double_counting() -> None:
         "PASS_BATCH16_RECOVERY_AND_17_19_WITH_200GB_RESERVE"
     )
     assert result["blocking_reason_codes"] == []
+    assert result["implementation_authority_epochs"] == {
+        "scientific_commit": capacity.R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+        "r8r_implementation_commit": (
+            capacity.R8U_R8R_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_base_implementation_commit": (
+            capacity.R8U_BASE_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_projection_repair_commit": R8U_PROJECTION_REPAIR_COMMIT,
+    }
     assert result["recovery_task"] == 16
     assert result["recovery_batch_id"] == "c3_batch_015"
     assert result["continuation_first_task"] == 17
@@ -227,7 +243,9 @@ def test_r8u_exact_arithmetic_reuses_baseline_without_double_counting() -> None:
         capacity, "R8U_ORIGINAL_PLAN_SHA256", _canonical_sha256(plan)
     ):
         assert capacity.validate_fixed_r8u_batch16_recovery_capacity(
-            plan, result
+            plan,
+            result,
+            r8u_projection_repair_commit=R8U_PROJECTION_REPAIR_COMMIT,
         ) == result
 
 
@@ -255,7 +273,11 @@ def test_r8u_pure_validator_rejects_double_counting_and_tamper() -> None:
                 "R8U_CAPACITY_ARITHMETIC_INVALID",
                 lambda altered=altered: (
                     capacity.validate_fixed_r8u_batch16_recovery_capacity(
-                        plan, altered
+                        plan,
+                        altered,
+                        r8u_projection_repair_commit=(
+                            R8U_PROJECTION_REPAIR_COMMIT
+                        ),
                     )
                 ),
             )
@@ -265,14 +287,26 @@ def test_r8u_pure_validator_rejects_double_counting_and_tamper() -> None:
         _expect_code(
             "R8U_CAPACITY_SCHEMA_INVALID",
             lambda: capacity.validate_fixed_r8u_batch16_recovery_capacity(
-                plan, wrong_type
+                plan,
+                wrong_type,
+                r8u_projection_repair_commit=R8U_PROJECTION_REPAIR_COMMIT,
             ),
         )
 
     signature = inspect.signature(
         capacity.probe_fixed_r8u_batch16_recovery_capacity
     )
-    assert tuple(signature.parameters) == ("plan", "process_runner")
+    assert tuple(signature.parameters) == (
+        "plan",
+        "r8u_projection_repair_commit",
+        "process_runner",
+    )
+    assert signature.parameters["r8u_projection_repair_commit"].kind == (
+        inspect.Parameter.KEYWORD_ONLY
+    )
+    assert signature.parameters["r8u_projection_repair_commit"].default is (
+        inspect.Parameter.empty
+    )
     assert signature.parameters["process_runner"].kind == (
         inspect.Parameter.KEYWORD_ONLY
     )
@@ -287,10 +321,89 @@ def test_r8u_pure_validator_rejects_double_counting_and_tamper() -> None:
         _expect_code(
             "R8U_FIXED_PLAN_SHA256_MISMATCH",
             lambda: capacity.probe_fixed_r8u_batch16_recovery_capacity(
-                changed
+                changed,
+                r8u_projection_repair_commit=(
+                    R8U_PROJECTION_REPAIR_COMMIT
+                ),
             ),
         )
     poison.assert_not_called()
+
+
+def test_r8u_capacity_binds_and_verifies_all_four_authority_epochs() -> None:
+    plan = _fixed_r8u_plan()
+    result, _ = _probe(plan, _snapshot())
+    different_repair_commit = "b" * 40
+
+    with mock.patch.object(
+        capacity, "R8U_ORIGINAL_PLAN_SHA256", _canonical_sha256(plan)
+    ):
+        tampered = copy.deepcopy(result)
+        tampered["implementation_authority_epochs"][
+            "r8u_base_implementation_commit"
+        ] = different_repair_commit
+        _expect_code(
+            "R8U_IMPLEMENTATION_AUTHORITY_INVALID",
+            lambda: capacity.validate_fixed_r8u_batch16_recovery_capacity(
+                plan,
+                tampered,
+                r8u_projection_repair_commit=R8U_PROJECTION_REPAIR_COMMIT,
+            ),
+        )
+
+        _expect_code(
+            "R8U_IMPLEMENTATION_AUTHORITY_INVALID",
+            lambda: capacity.validate_fixed_r8u_batch16_recovery_capacity(
+                plan,
+                result,
+                r8u_projection_repair_commit=different_repair_commit,
+            ),
+        )
+
+        malformed = copy.deepcopy(result)
+        malformed["implementation_authority_epochs"]["extra"] = (
+            different_repair_commit
+        )
+        _expect_code(
+            "R8U_CAPACITY_SCHEMA_INVALID",
+            lambda: capacity.validate_fixed_r8u_batch16_recovery_capacity(
+                plan,
+                malformed,
+                r8u_projection_repair_commit=R8U_PROJECTION_REPAIR_COMMIT,
+            ),
+        )
+
+        poison = mock.Mock(
+            side_effect=AssertionError("invalid authority reached live capture")
+        )
+        with mock.patch.object(
+            capacity, "_capture_current_capacity_snapshot", poison
+        ):
+            _expect_code(
+                "R8U_IMPLEMENTATION_AUTHORITY_INVALID",
+                lambda: capacity.probe_fixed_r8u_batch16_recovery_capacity(
+                    plan,
+                    r8u_projection_repair_commit=(
+                        capacity.R8U_BASE_IMPLEMENTATION_COMMIT
+                    ),
+                ),
+            )
+        poison.assert_not_called()
+
+    signature = inspect.signature(
+        capacity.validate_fixed_r8u_batch16_recovery_capacity
+    )
+    assert tuple(signature.parameters) == (
+        "plan",
+        "value",
+        "r8u_projection_repair_commit",
+    )
+    assert signature.parameters["r8u_projection_repair_commit"].kind == (
+        inspect.Parameter.KEYWORD_ONLY
+    )
+    assert signature.parameters["r8u_projection_repair_commit"].default is (
+        inspect.Parameter.empty
+    )
 
 
 def test_r8u_blocks_each_exact_quota_physical_and_file_margin() -> None:

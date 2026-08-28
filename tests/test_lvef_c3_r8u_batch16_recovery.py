@@ -9,6 +9,7 @@ closure; exact Tasks 17--19 continuation; all-19 finalization; no analysis;
 and the three-qsub ceiling.  They use only temporary files and mocks.
 """
 
+import ast
 from contextlib import ExitStack, contextmanager, redirect_stdout
 import hashlib
 import io
@@ -35,6 +36,27 @@ import lvef_c3_r8r_recovery_continuation as r8u
 
 IMPLEMENTATION_COMMIT = "a" * 40
 SHA = "b" * 64
+
+
+def _expected_r8u_implementation_authority_epochs() -> dict[str, str]:
+    return dict(
+        sorted(
+            {
+                "scientific_commit": r8u.ORIGINAL_SCIENTIFIC_COMMIT,
+                "r8r_implementation_commit": r8u.R8U_STARTING_IMPLEMENTATION_COMMIT,
+                "r8u_base_implementation_commit": r8u.R8U_BASE_IMPLEMENTATION_COMMIT,
+                "r8u_projection_repair_commit": IMPLEMENTATION_COMMIT,
+            }.items()
+        )
+    )
+
+
+def _assert_exact_r8u_implementation_authority_epochs(
+    artifact: Mapping[str, Any],
+) -> None:
+    epochs = artifact["implementation_authority_epochs"]
+    assert isinstance(epochs, dict)
+    assert epochs == _expected_r8u_implementation_authority_epochs()
 
 
 def _expect_code(function: Any, expected: str) -> None:
@@ -127,14 +149,71 @@ def test_r8u_scope_and_public_cli_are_destination_fixed() -> None:
         mock.patch.object(
             r8u.sequential,
             "_git",
-            side_effect=["", "1", r8u.R8U_STARTING_IMPLEMENTATION_COMMIT, "2"],
+            side_effect=[
+                "",
+                "1",
+                f"{IMPLEMENTATION_COMMIT} {r8u.R8U_BASE_IMPLEMENTATION_COMMIT}",
+                (
+                    f"{r8u.R8U_BASE_IMPLEMENTATION_COMMIT} "
+                    f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT}"
+                ),
+                (
+                    f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT} "
+                    f"{r8u.ORIGINAL_SCIENTIFIC_COMMIT}"
+                ),
+                "3",
+            ],
         ) as git,
     ):
         assert r8u._current_r8u_implementation_commit() == IMPLEMENTATION_COMMIT
     assert git.call_args_list[0] == mock.call(
-        "merge-base", "--is-ancestor", r8u.R8U_STARTING_IMPLEMENTATION_COMMIT, IMPLEMENTATION_COMMIT
+        "merge-base", "--is-ancestor", r8u.R8U_BASE_IMPLEMENTATION_COMMIT, IMPLEMENTATION_COMMIT
     )
-    assert git.call_args_list[2] == mock.call("rev-parse", f"{IMPLEMENTATION_COMMIT}^")
+    assert git.call_args_list[2] == mock.call(
+        "rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT
+    )
+    assert git.call_args_list[3] == mock.call(
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
+        r8u.R8U_BASE_IMPLEMENTATION_COMMIT,
+    )
+    assert git.call_args_list[4] == mock.call(
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
+        r8u.R8U_STARTING_IMPLEMENTATION_COMMIT,
+    )
+
+    with (
+        mock.patch.object(
+            r8u.sequential, "_current_commit", return_value=IMPLEMENTATION_COMMIT
+        ),
+        mock.patch.object(
+            r8u.sequential,
+            "_git",
+            side_effect=[
+                "",
+                "2",
+                f"{IMPLEMENTATION_COMMIT} {r8u.R8U_BASE_IMPLEMENTATION_COMMIT}",
+                (
+                    f"{r8u.R8U_BASE_IMPLEMENTATION_COMMIT} "
+                    f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT}"
+                ),
+                (
+                    f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT} "
+                    f"{r8u.ORIGINAL_SCIENTIFIC_COMMIT}"
+                ),
+                "4",
+            ],
+        ),
+    ):
+        _expect_code(
+            r8u._current_r8u_implementation_commit,
+            "R8U_IMPLEMENTATION_ANCESTRY_INVALID",
+        )
 
 
 def test_exact_gpu_recovery_array_and_cpu_finalizer_commands_cap_qsubs_at_three() -> None:
@@ -154,6 +233,125 @@ def test_exact_gpu_recovery_array_and_cpu_finalizer_commands_cap_qsubs_at_three(
     assert 1 + 1 + 1 == 3
     for command in (recovery, array, finalizer):
         assert command[command.index("-r") + 1] == "n"
+
+
+def test_every_new_r8u_artifact_binds_the_closed_four_commit_authority() -> None:
+    expected = _expected_r8u_implementation_authority_epochs()
+    assert r8u._r8u_implementation_authority_epochs(
+        IMPLEMENTATION_COMMIT
+    ) == expected
+    assert set(expected) == r8u.R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+    _expect_code(
+        lambda: r8u._r8u_implementation_authority_epochs(
+            r8u.R8U_BASE_IMPLEMENTATION_COMMIT
+        ),
+        "R8U_IMPLEMENTATION_GIT_AUTHORITY_INVALID",
+    )
+
+    run = _fixed_run(Path("/synthetic"))
+    recovery_prefix = tuple(
+        item[2] for item in r8u.R8U_PREFIX_RECEIPT_AUTHORITIES
+    )
+    continuation_prefix = recovery_prefix + (SHA,)
+    terminal_paths = {
+        "preservation": Path("/synthetic/preservation"),
+        "final_transition": Path("/synthetic/final-transition.json"),
+        "final_ledger": Path("/synthetic/final-ledger.json"),
+        "final_receipt": Path("/synthetic/final-receipt.json"),
+    }
+    final_receipt = {
+        "n_selected_studies": 1,
+        "n_expected_objects": 1,
+        "expected_source_bytes": 1,
+        "n_successfully_extracted_cines": 1,
+        "n_object_technical_dispositions": 0,
+        "n_blocking_failures": 0,
+        "n_clip_embeddings": 1,
+        "n_pooled_studies": 1,
+        "n_no_cine_studies": 0,
+        "n_new_no_cine_studies": 0,
+        "object_substitution_count": 0,
+        "unaccounted_multiframe_objects": 0,
+        "raw_dicoms_retained": True,
+        "extracted_cache_retired": True,
+    }
+    with (
+        mock.patch.object(r8u, "_r8u_failed_partial_observation", return_value={}),
+        mock.patch.object(
+            r8u, "_r8u_historical_r8r_chain_authority", return_value={}
+        ),
+        mock.patch.object(r8u, "_script_authority", return_value={}),
+        mock.patch.object(r8u, "_qsub_evidence_authority", return_value={}),
+        mock.patch.object(r8u.core, "sha256_file", return_value=SHA),
+        mock.patch.object(
+            r8u.sequential, "_batch_paths", return_value=terminal_paths
+        ),
+        mock.patch.object(
+            r8u,
+            "_current_r8u_implementation_commit",
+            return_value=IMPLEMENTATION_COMMIT,
+        ),
+        mock.patch.object(
+            r8u, "_validate_recovery_accounting_projection", return_value={}
+        ),
+    ):
+        artifacts = (
+            r8u._r8u_failed_partial_seal(
+                implementation_commit=IMPLEMENTATION_COMMIT
+            ),
+            r8u._r8u_recovery_authority(
+                run=run,
+                implementation_commit=IMPLEMENTATION_COMMIT,
+                qsub_environment_sha256=SHA,
+                prefix_receipts=recovery_prefix,
+                partial_seal_sha256=SHA,
+                capacity_sha256=SHA,
+                raw_authority={},
+            ),
+            r8u._r8u_recovery_submission_receipt(
+                implementation_commit=IMPLEMENTATION_COMMIT,
+                recovery_job_id="101",
+                qsub_environment_sha256=SHA,
+                recovery_authority_sha256=SHA,
+                partial_seal_sha256=SHA,
+                capacity_sha256=SHA,
+            ),
+            r8u._r8u_recovery_terminal_receipt(
+                run=run, final_receipt=final_receipt
+            ),
+            r8u._r8u_recovery_accounting_receipt(
+                implementation_commit=IMPLEMENTATION_COMMIT,
+                recovery_job_id="101",
+                accounting={},
+            ),
+            r8u._r8u_continuation_claim(
+                run=run,
+                implementation_commit=IMPLEMENTATION_COMMIT,
+                qsub_environment_sha256=SHA,
+                prefix_receipts=continuation_prefix,
+            ),
+            r8u._r8u_continuation_submission_receipt(
+                implementation_commit=IMPLEMENTATION_COMMIT,
+                recovery_job_id="101",
+                array_job_id="102",
+                finalizer_job_id="103",
+                qsub_environment_sha256=SHA,
+                continuation_claim_sha256=SHA,
+            ),
+        )
+    assert {
+        artifact["artifact_type"] for artifact in artifacts
+    } == {
+        "lvef_c3_r8u_failed_task16_partial_extraction_evidence_v1",
+        "lvef_c3_r8u_batch16_recovery_authority_v1",
+        "lvef_c3_r8u_batch16_recovery_submission_v1",
+        "lvef_c3_r8u_batch16_recovery_terminal_v1",
+        "lvef_c3_r8u_batch16_recovery_accounting_v1",
+        "lvef_c3_r8u_fixed_continuation_claim_v1",
+        "lvef_c3_r8u_fixed_continuation_submission_v1",
+    }
+    for artifact in artifacts:
+        _assert_exact_r8u_implementation_authority_epochs(artifact)
 
 
 def test_failed_partial_is_metadata_only_sealed_and_mutation_is_blocking() -> None:
@@ -205,6 +403,7 @@ def test_failed_partial_is_metadata_only_sealed_and_mutation_is_blocking() -> No
         assert seal["partial_outputs_modified"] is False
         assert seal["partial_outputs_deleted"] is False
         assert seal["partial_outputs_renamed"] is False
+        _assert_exact_r8u_implementation_authority_epochs(seal)
         assert {path: path.stat().st_size for path in (first, second)} == before
 
         first.chmod(0o640)
@@ -337,6 +536,7 @@ def test_fresh_extraction_publication_is_atomic_no_clobber_and_keeps_partial() -
             )
         assert receipt["partial_npz_adopted"] == 0
         assert receipt["failed_partial_modified"] is False
+        _assert_exact_r8u_implementation_authority_epochs(receipt)
         assert canonical.is_dir() and not fresh.exists()
         assert partial_file.read_bytes() == b"failed-evidence"
 
@@ -348,6 +548,11 @@ def test_fresh_extraction_publication_is_atomic_no_clobber_and_keeps_partial() -
             mock.patch.object(r8u, "R8U_FAILED_PARTIAL_SEAL_PATH", seal_path),
             mock.patch.object(r8u, "R8U_FRESH_PUBLICATION_PATH", publication),
             mock.patch.object(r8u.sequential, "_batch_paths", return_value={"extraction": canonical}),
+            mock.patch.object(
+                r8u,
+                "_current_r8u_implementation_commit",
+                return_value=IMPLEMENTATION_COMMIT,
+            ),
         ):
             _expect_code(
                 lambda: r8u._r8u_publish_fresh_extraction(run=run, raw_validation={}),
@@ -373,6 +578,8 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
         order.append("qsub")
         return "101"
 
+    capacity_probe_mock = mock.Mock(side_effect=capacity_probe)
+    capacity_validate_mock = mock.Mock()
     patches = (
         mock.patch.object(r8u.scheduler, "validate_scheduler_tools"),
         mock.patch.object(r8u.scheduler, "build_qsub_environment", return_value=(environment, {})),
@@ -382,14 +589,24 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
         mock.patch.object(r8u, "_validate_r8u_no_active_processes"),
         mock.patch.object(r8u, "_load_fixed_original_run", return_value=run),
         mock.patch.object(r8u, "_validate_original_controls"),
+        mock.patch.object(r8u, "_r8u_validate_pristine_successor_exclusions"),
         mock.patch.object(r8u, "_r8u_validate_pre_mutation_projections"),
+        mock.patch.object(r8u, "_r8u_validate_attempt_content_authority"),
         mock.patch.object(r8u, "_r8u_historical_r8r_chain_authority", return_value={}),
         mock.patch.object(r8u, "_r8u_validate_frozen_prefix", return_value=tuple(item[2] for item in r8u.R8U_PREFIX_RECEIPT_AUTHORITIES)),
         mock.patch.object(r8u, "_r8u_failed_partial_seal", return_value={}),
         mock.patch.object(r8u, "_r8u_batch16_raw_control_authority", return_value={}),
         mock.patch.object(r8u, "_r8u_require_recovery_absent"),
-        mock.patch.object(r8u.capacity, "probe_fixed_r8u_batch16_recovery_capacity", side_effect=capacity_probe),
-        mock.patch.object(r8u.capacity, "validate_fixed_r8u_batch16_recovery_capacity"),
+        mock.patch.object(
+            r8u.capacity,
+            "probe_fixed_r8u_batch16_recovery_capacity",
+            new=capacity_probe_mock,
+        ),
+        mock.patch.object(
+            r8u.capacity,
+            "validate_fixed_r8u_batch16_recovery_capacity",
+            new=capacity_validate_mock,
+        ),
         mock.patch.object(r8u, "_create_private_directory_no_clobber", side_effect=create_root),
         mock.patch.object(r8u, "_write_private_json", return_value=SHA),
         mock.patch.object(r8u, "_r8u_recovery_authority", return_value={}),
@@ -405,6 +622,16 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
     assert order.count("capacity") == 1
     assert order.count("qsub") == 1
     assert order.index("capacity") < order.index("root") < order.index("qsub")
+    capacity_probe_mock.assert_called_once_with(
+        run.plan,
+        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+        process_runner=None,
+    )
+    capacity_validate_mock.assert_called_once_with(
+        run.plan,
+        {"status": r8u.R8U_CAPACITY_STATUS},
+        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+    )
 
     order.clear()
     blocked = {
@@ -413,7 +640,11 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
         "physical_margin_beyond_reserve_bytes": -22,
         "file_slot_margin_after_demand": -33,
     }
-    with (
+    blocked_probe = mock.Mock(return_value=blocked)
+    blocked_validate = mock.Mock()
+    create = mock.Mock()
+    qsub = mock.Mock()
+    blocked_patches = (
         mock.patch.object(r8u.scheduler, "validate_scheduler_tools"),
         mock.patch.object(r8u.scheduler, "build_qsub_environment", return_value=(environment, {})),
         mock.patch.object(r8u.scheduler, "qsub_environment_sha256", return_value=SHA),
@@ -422,17 +653,31 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
         mock.patch.object(r8u, "_validate_r8u_no_active_processes"),
         mock.patch.object(r8u, "_load_fixed_original_run", return_value=run),
         mock.patch.object(r8u, "_validate_original_controls"),
+        mock.patch.object(r8u, "_r8u_validate_pristine_successor_exclusions"),
         mock.patch.object(r8u, "_r8u_validate_pre_mutation_projections"),
         mock.patch.object(r8u, "_r8u_historical_r8r_chain_authority", return_value={}),
         mock.patch.object(r8u, "_r8u_validate_frozen_prefix", return_value=()),
         mock.patch.object(r8u, "_r8u_failed_partial_seal", return_value={}),
         mock.patch.object(r8u, "_r8u_batch16_raw_control_authority", return_value={}),
         mock.patch.object(r8u, "_r8u_require_recovery_absent"),
-        mock.patch.object(r8u.capacity, "probe_fixed_r8u_batch16_recovery_capacity", return_value=blocked) as probe,
-        mock.patch.object(r8u.capacity, "validate_fixed_r8u_batch16_recovery_capacity"),
-        mock.patch.object(r8u, "_create_private_directory_no_clobber") as create,
-        mock.patch.object(r8u.scheduler, "_capture_qsub") as qsub,
-    ):
+        mock.patch.object(
+            r8u.capacity,
+            "probe_fixed_r8u_batch16_recovery_capacity",
+            new=blocked_probe,
+        ),
+        mock.patch.object(
+            r8u.capacity,
+            "validate_fixed_r8u_batch16_recovery_capacity",
+            new=blocked_validate,
+        ),
+        mock.patch.object(
+            r8u, "_create_private_directory_no_clobber", new=create
+        ),
+        mock.patch.object(r8u.scheduler, "_capture_qsub", new=qsub),
+    )
+    with ExitStack() as stack:
+        for patcher in blocked_patches:
+            stack.enter_context(patcher)
         try:
             r8u.submit_r8u_batch16_recovery()
         except r8u.R8RControllerError as exc:
@@ -444,9 +689,51 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
             }
         else:
             raise AssertionError("expected capacity blocker")
-    probe.assert_called_once()
+    blocked_probe.assert_called_once_with(
+        run.plan,
+        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+        process_runner=None,
+    )
+    blocked_validate.assert_called_once_with(
+        run.plan,
+        blocked,
+        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+    )
     create.assert_not_called()
     qsub.assert_not_called()
+
+
+def test_every_r8u_capacity_call_binds_projection_repair_commit() -> None:
+    tree = ast.parse(inspect.getsource(r8u))
+    method_counts = {
+        "probe_fixed_r8u_batch16_recovery_capacity": 0,
+        "validate_fixed_r8u_batch16_recovery_capacity": 0,
+    }
+    calls: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "capacity"
+            and node.func.attr in method_counts
+        ):
+            method_counts[node.func.attr] += 1
+            calls.append(node)
+
+    assert method_counts == {
+        "probe_fixed_r8u_batch16_recovery_capacity": 1,
+        "validate_fixed_r8u_batch16_recovery_capacity": 4,
+    }
+    for call in calls:
+        bindings = [
+            keyword
+            for keyword in call.keywords
+            if keyword.arg == "r8u_projection_repair_commit"
+        ]
+        assert len(bindings) == 1
+        assert isinstance(bindings[0].value, ast.Name)
+        assert bindings[0].value.id == "implementation_commit"
 
 
 def test_pre_mutation_process_gate_catches_original_r8r_and_r8u_workers() -> None:
@@ -525,6 +812,7 @@ def test_recovery_reruns_extraction_and_echoprime_once_then_preserves_retires_fi
             mock.patch.object(r8u, "_load_fixed_original_run", return_value=run),
             mock.patch.object(r8u, "_validate_r8u_recovery_submission"),
             mock.patch.object(r8u, "_validate_original_controls"),
+            mock.patch.object(r8u, "_r8u_validate_attempt_content_authority"),
             mock.patch.object(r8u, "_r8u_validate_frozen_prefix", return_value=()),
             mock.patch.object(r8u, "validate_r8u_failed_partial_seal", return_value={}),
             mock.patch.object(r8u.sequential, "_extraction_cache_inventory", return_value=SimpleNamespace(active=1)),
@@ -566,6 +854,7 @@ def test_continuation_rejects_tasks_1_16_and_accepts_only_17_19() -> None:
     with (
         mock.patch.dict(os.environ, {"JOB_ID": "102", "SGE_TASK_ID": "17"}, clear=True),
         mock.patch.object(r8u, "_load_fixed_original_run", return_value=run),
+        mock.patch.object(r8u, "_r8u_validate_attempt_content_authority"),
         mock.patch.object(r8u.sequential, "run_batch_task", return_value={"status": "PASS_BATCH_FINALIZED"}) as worker,
     ):
         r8u.run_r8u_continuation_array_task()
@@ -704,6 +993,7 @@ def test_r8u_finalizer_consumes_all_19_receipts_and_no_analysis_path() -> None:
             clear=True,
         ),
         mock.patch.object(r8u, "_load_fixed_original_run", return_value=run),
+        mock.patch.object(r8u, "_r8u_validate_attempt_content_authority"),
         mock.patch.object(r8u, "_validate_r8u_continuation_chain"),
         mock.patch.object(
             r8u.sequential,

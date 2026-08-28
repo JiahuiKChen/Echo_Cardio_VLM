@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import ctypes
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import errno
 import hashlib
@@ -135,6 +135,17 @@ CONTINUATION_CAPACITY_STATUS: Final = (
 R8U_STARTING_IMPLEMENTATION_COMMIT: Final = (
     "fe3b6c40162d16d5021558bc686ba93c05ab03f5"
 )
+R8U_BASE_IMPLEMENTATION_COMMIT: Final = (
+    "cbd54ec67a24bc26e538be0423df38cee8a9eb6f"
+)
+R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS: Final = frozenset(
+    {
+        "scientific_commit",
+        "r8r_implementation_commit",
+        "r8u_base_implementation_commit",
+        "r8u_projection_repair_commit",
+    }
+)
 R8U_FIXED_BATCH_ID: Final = "c3_batch_015"
 R8U_FIXED_RECOVERY_TASK_ID: Final = 16
 R8U_FIXED_CONTINUATION_TASK_IDS: Final = tuple(range(17, 20))
@@ -224,6 +235,218 @@ R8U_CONTINUATION_SUBMISSION_PATH: Final = (
 R8U_RECOVERY_STATUS: Final = "PASS_BATCH16_RECOVERY_FINALIZED"
 R8U_CAPACITY_STATUS: Final = (
     "PASS_BATCH16_RECOVERY_AND_17_19_WITH_200GB_RESERVE"
+)
+
+# The R8T terminal-adjudication projection is retained verbatim as historical
+# evidence.  Its directory count includes the attempt root itself.  The
+# rejected R8U scanner started at the root's children and therefore reported
+# 472 directories even though the same root-inclusive tree still has 473; no
+# filesystem directory disappeared.
+R8U_HISTORICAL_ATTEMPT_TREE_PROJECTION: Final = {
+    "regular_file_count": 1_190_913,
+    "directory_count_including_attempt_root": 473,
+    "regular_file_bytes": 1_081_833_737_569,
+    "symlink_count": 0,
+    "nonregular_count": 0,
+    "metadata_projection_sha256": (
+        "32bf9ad2317b544bcfbfbd47f553d3c4f6476dad5e11fae88e8c8b6d6d28a429"
+    ),
+}
+R8U_DIRECTORY_COMPATIBILITY_ROLE: Final = (
+    "ATTEMPT_ROOT_PROJECTION_ROW_OMITTED"
+)
+# The prompt's closed compatibility vocabulary has no projection-convention
+# class.  Retain its proceedable aggregate-safe bucket while the role above
+# records the exact fact: no filesystem directory was missing or empty.
+R8U_DIRECTORY_DIFFERENCE_CLASS: Final = (
+    "BENIGN_OPTIONAL_EMPTY_DIRECTORY_LIFECYCLE"
+)
+R8U_ATTEMPT_CONTENT_AUTHORITY_KEYS: Final = frozenset(
+    {
+        "regular_file_count",
+        "regular_file_bytes",
+        "regular_file_projection_sha256",
+        "required_directory_count",
+        "required_directory_projection_sha256",
+        "optional_empty_directory_count",
+        "symlink_count",
+        "nonregular_count",
+        "path_escape_count",
+    }
+)
+
+# These four portable baseline values are produced by the metadata-only SCC
+# scanner implemented below.  The old digest cannot be reused: it mixed every
+# directory (including optional empty directories) with node-local st_dev and
+# st_ino values.  Empty placeholders fail closed until the one read-only live
+# capture is transcribed into this repair commit.
+R8U_BASELINE_REGULAR_FILE_PATH_SET_SHA256: Final = (
+    "36d41e28ee46ae2c70735965bafc3af429cc6d62e9aa5a9b67db07b8dff4dfe4"
+)
+R8U_BASELINE_REGULAR_FILE_PROJECTION_SHA256: Final = (
+    "11ec20f9b5d81024affddfa521695a779389ee296f1f2899630a6a1dfaaf5536"
+)
+R8U_BASELINE_REQUIRED_DIRECTORY_COUNT: Final = 471
+R8U_BASELINE_REQUIRED_DIRECTORY_PROJECTION_SHA256: Final = (
+    "cb9308386a77950eaba7ab4e17c9f3f82a9fcd4b9ec99590452501c74a2f92a1"
+)
+
+
+def _r8u_relative_role(*parts: str) -> PurePosixPath:
+    return PurePosixPath(*parts)
+
+
+def _r8u_fixed_required_directory_paths() -> frozenset[PurePosixPath]:
+    """Return every fixed empty-capable directory role in the sealed prefix."""
+
+    roles = {
+        _r8u_relative_role("."),
+        _r8u_relative_role("raw"),
+        _r8u_relative_role("batches"),
+        _r8u_relative_role("extracted_cache"),
+        _r8u_relative_role("cache_retirement_authorizations"),
+        _r8u_relative_role("scheduler"),
+        _r8u_relative_role("r8r_batch3_recovery"),
+        _r8u_relative_role("r8r_batch3_recovery", "scheduler"),
+        _r8u_relative_role("r8r_continuation"),
+        _r8u_relative_role("r8r_continuation", "scheduler"),
+        _r8u_relative_role("batches", R8U_FIXED_BATCH_ID),
+        _r8u_relative_role("extracted_cache", R8U_FIXED_BATCH_ID),
+        _r8u_relative_role(
+            "extracted_cache", R8U_FIXED_BATCH_ID, "dicom_extraction.partial"
+        ),
+        _r8u_relative_role(
+            "extracted_cache",
+            R8U_FIXED_BATCH_ID,
+            "dicom_extraction.partial",
+            "clips",
+        ),
+    }
+    for index in range(15):
+        batch_id = f"c3_batch_{index:03d}"
+        roles.update(
+            {
+                _r8u_relative_role("raw", batch_id),
+                _r8u_relative_role("raw", batch_id, "objects"),
+                _r8u_relative_role("raw", batch_id, "receipts"),
+                _r8u_relative_role("batches", batch_id),
+                _r8u_relative_role("batches", batch_id, "echoprime"),
+                _r8u_relative_role("batches", batch_id, "preservation"),
+            }
+        )
+    roles.update(
+        {
+            _r8u_relative_role("raw", R8U_FIXED_BATCH_ID),
+            _r8u_relative_role("raw", R8U_FIXED_BATCH_ID, "objects"),
+            _r8u_relative_role("raw", R8U_FIXED_BATCH_ID, "receipts"),
+        }
+    )
+    return frozenset(roles)
+
+
+R8U_FIXED_REQUIRED_DIRECTORY_PATHS: Final = (
+    _r8u_fixed_required_directory_paths()
+)
+R8U_PROTECTED_DIRECTORY_ROLE_ROOTS: Final = frozenset(
+    {
+        _r8u_relative_role("raw"),
+        _r8u_relative_role("cache_retirement_authorizations"),
+        _r8u_relative_role("scheduler"),
+        _r8u_relative_role("r8r_batch3_recovery"),
+        _r8u_relative_role("r8r_continuation"),
+        _r8u_relative_role(
+            "extracted_cache", R8U_FIXED_BATCH_ID, "dicom_extraction.partial"
+        ),
+        *(
+            _r8u_relative_role("batches", f"c3_batch_{index:03d}")
+            for index in range(16)
+        ),
+    }
+)
+
+
+def _r8u_successor_exclusion_paths() -> frozenset[PurePosixPath]:
+    """Return only fixed paths created by the authorized R8U successor."""
+
+    paths = {
+        _r8u_relative_role("r8u_batch16_recovery"),
+        _r8u_relative_role("r8u_continuation_17_19"),
+        _r8u_relative_role(
+            "extracted_cache", R8U_FIXED_BATCH_ID, "dicom_extraction"
+        ),
+        _r8u_relative_role("batches", R8U_FIXED_BATCH_ID, "echoprime"),
+        _r8u_relative_role("batches", R8U_FIXED_BATCH_ID, "preservation"),
+        _r8u_relative_role(
+            "batches", R8U_FIXED_BATCH_ID,
+            "extraction_resume_ledger.restricted.json",
+        ),
+        _r8u_relative_role(
+            "batches", R8U_FIXED_BATCH_ID,
+            "pooling_resume_ledger.restricted.json",
+        ),
+        _r8u_relative_role(
+            "batches", R8U_FIXED_BATCH_ID,
+            "cache_retirement_eligible_resume_ledger.restricted.json",
+        ),
+        _r8u_relative_role(
+            "batches", R8U_FIXED_BATCH_ID,
+            "final_resume_ledger.restricted.json",
+        ),
+        _r8u_relative_role(
+            "cache_retirement_authorizations",
+            f"{R8U_FIXED_BATCH_ID}.authorization.json",
+        ),
+        _r8u_relative_role("cohort_finalization"),
+    }
+    for index in R8U_FIXED_CONTINUATION_TASK_IDS:
+        batch_id = f"c3_batch_{index - 1:03d}"
+        paths.update(
+            {
+                _r8u_relative_role("raw", batch_id),
+                _r8u_relative_role("batches", batch_id),
+                _r8u_relative_role("extracted_cache", batch_id),
+                _r8u_relative_role(
+                    "cache_retirement_authorizations",
+                    f"{batch_id}.authorization.json",
+                ),
+            }
+        )
+    return frozenset(paths)
+
+
+R8U_SUCCESSOR_EXCLUSION_PATHS: Final = _r8u_successor_exclusion_paths()
+
+
+def _r8u_continuation_pristine_paths() -> frozenset[PurePosixPath]:
+    """Return outputs that must still be pristine before Tasks 17--19."""
+
+    paths = {
+        _r8u_relative_role("r8u_continuation_17_19"),
+        _r8u_relative_role("cohort_finalization"),
+    }
+    for index in R8U_FIXED_CONTINUATION_TASK_IDS:
+        batch_id = f"c3_batch_{index - 1:03d}"
+        paths.update(
+            {
+                _r8u_relative_role("raw", batch_id),
+                _r8u_relative_role("batches", batch_id),
+                _r8u_relative_role("extracted_cache", batch_id),
+                _r8u_relative_role(
+                    "cache_retirement_authorizations",
+                    f"{batch_id}.authorization.json",
+                ),
+            }
+        )
+    return frozenset(paths)
+
+
+R8U_CONTINUATION_PRISTINE_PATHS: Final = (
+    _r8u_continuation_pristine_paths()
+)
+R8U_CONTINUATION_TASK_OUTPUT_PRISTINE_PATHS: Final = frozenset(
+    path
+    for path in R8U_CONTINUATION_PRISTINE_PATHS
+    if path != _r8u_relative_role("r8u_continuation_17_19")
 )
 
 
@@ -469,32 +692,79 @@ def _current_implementation_commit() -> str:
 
 
 def _current_r8u_implementation_commit() -> str:
-    """Require the active implementation to be exactly one child of R8R."""
+    """Require the exact science -> R8R -> R8U-base -> repair chain."""
 
     try:
         current = sequential._current_commit()
     except Exception as exc:
         raise R8RControllerError("R8U_IMPLEMENTATION_GIT_AUTHORITY_INVALID") from exc
-    if COMMIT_RE.fullmatch(current) is None or current == R8U_STARTING_IMPLEMENTATION_COMMIT:
+    if COMMIT_RE.fullmatch(current) is None or current in {
+        ORIGINAL_SCIENTIFIC_COMMIT,
+        R8U_STARTING_IMPLEMENTATION_COMMIT,
+        R8U_BASE_IMPLEMENTATION_COMMIT,
+    }:
         _fail("R8U_IMPLEMENTATION_COMMIT_REQUIRED")
     relation = sequential._git(
-        "merge-base", "--is-ancestor", R8U_STARTING_IMPLEMENTATION_COMMIT, current
+        "merge-base", "--is-ancestor", R8U_BASE_IMPLEMENTATION_COMMIT, current
     )
     distance = sequential._git(
-        "rev-list", "--count", f"{R8U_STARTING_IMPLEMENTATION_COMMIT}..{current}"
+        "rev-list", "--count", f"{R8U_BASE_IMPLEMENTATION_COMMIT}..{current}"
     )
-    parent = sequential._git("rev-parse", f"{current}^")
+    parent_line = sequential._git(
+        "rev-list", "--parents", "-n", "1", current
+    )
+    base_parent_line = sequential._git(
+        "rev-list", "--parents", "-n", "1", R8U_BASE_IMPLEMENTATION_COMMIT
+    )
+    r8r_parent_line = sequential._git(
+        "rev-list", "--parents", "-n", "1", R8U_STARTING_IMPLEMENTATION_COMMIT
+    )
     science_distance = sequential._git(
         "rev-list", "--count", f"{ORIGINAL_SCIENTIFIC_COMMIT}..{current}"
     )
     if (
         relation
         or distance != "1"
-        or parent != R8U_STARTING_IMPLEMENTATION_COMMIT
-        or science_distance != "2"
+        or parent_line != f"{current} {R8U_BASE_IMPLEMENTATION_COMMIT}"
+        or base_parent_line
+        != (
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT} "
+            f"{R8U_STARTING_IMPLEMENTATION_COMMIT}"
+        )
+        or r8r_parent_line
+        != (
+            f"{R8U_STARTING_IMPLEMENTATION_COMMIT} "
+            f"{ORIGINAL_SCIENTIFIC_COMMIT}"
+        )
+        or science_distance != "3"
     ):
         _fail("R8U_IMPLEMENTATION_ANCESTRY_INVALID")
     return current
+
+
+def _r8u_implementation_authority_epochs(
+    implementation_commit: str,
+) -> Mapping[str, str]:
+    """Bind every new R8U artifact to the exact four-commit authority."""
+
+    if (
+        COMMIT_RE.fullmatch(implementation_commit) is None
+        or implementation_commit in {
+            ORIGINAL_SCIENTIFIC_COMMIT,
+            R8U_STARTING_IMPLEMENTATION_COMMIT,
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+        }
+    ):
+        _fail("R8U_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
+    value = {
+        "scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+        "r8r_implementation_commit": R8U_STARTING_IMPLEMENTATION_COMMIT,
+        "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
+        "r8u_projection_repair_commit": implementation_commit,
+    }
+    if set(value) != R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
+        _fail("R8U_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
+    return dict(sorted(value.items()))
 
 
 def _load_fixed_original_run(
@@ -1045,6 +1315,9 @@ def _r8u_failed_partial_seal(*, implementation_commit: str) -> Mapping[str, Any]
         "status": "FAILED_TASK16_PARTIAL_EXTRACTION_EVIDENCE",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "batch_id": R8U_FIXED_BATCH_ID,
@@ -1581,70 +1854,501 @@ def _validate_r8u_no_active_processes(
         _fail("R8U_ACTIVE_MATCHING_PROCESS_EXISTS")
 
 
-def _r8u_validate_pre_mutation_projections() -> None:
-    """Recheck the two supplied immutable metadata authorities before writes."""
+@dataclass(frozen=True)
+class _R8UAttemptContentScan:
+    authority: Mapping[str, Any]
+    regular_file_path_set_sha256: str
+    duplicate_relative_path_count: int
 
-    expected = (
-        1_190_913,
-        473,
-        1_081_833_737_569,
-        0,
-        0,
-        "32bf9ad2317b544bcfbfbd47f553d3c4f6476dad5e11fae88e8c8b6d6d28a429",
+
+def _r8u_is_at_or_beneath(
+    relative: PurePosixPath, roots: frozenset[PurePosixPath]
+) -> bool:
+    return any(relative == root or root in relative.parents for root in roots)
+
+
+def _r8u_projection_row_bytes(row: Sequence[object]) -> bytes:
+    return (
+        json.dumps(
+            list(row), separators=(",", ":"), ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8", "surrogateescape")
+
+
+def _r8u_stable_lstat(path: Path) -> os.stat_result:
+    try:
+        before = os.lstat(path)
+        after = os.lstat(path)
+    except OSError as exc:
+        raise R8RControllerError(
+            "R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID"
+        ) from exc
+    identity = lambda value: (
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+        value.st_dev,
+        value.st_ino,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
     )
-    digest = hashlib.sha256()
-    files = directories = total_bytes = symlinks = nonregular = 0
-    stack = [ATTEMPT_ROOT]
+    if identity(before) != identity(after):
+        _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+    return before
+
+
+def _r8u_private_directory_metadata_valid(
+    *, mode: int, uid: int, device: int, approved_device: int
+) -> bool:
+    return (
+        uid == os.geteuid()
+        and mode & 0o700 == 0o700
+        and not mode & 0o077
+        and mode & 0o7000 in {0, stat.S_ISGID}
+        and device == approved_device
+    )
+
+
+def _r8u_decode_mountinfo_path(value: str) -> Path:
+    # Linux mountinfo escapes space, tab, newline, and backslash as octal.
+    decoded = re.sub(
+        r"\\([0-7]{3})",
+        lambda match: chr(int(match.group(1), 8)),
+        value,
+    )
+    return Path(decoded)
+
+
+def _r8u_nested_mount_paths(attempt_root: Path) -> frozenset[Path]:
+    """Detect ordinary and bind mounts strictly below the attempt root."""
+
+    nested: set[Path] = set()
+    if sys.platform.startswith("linux"):
+        try:
+            with Path("/proc/self/mountinfo").open(
+                "r", encoding="utf-8", errors="strict"
+            ) as handle:
+                for line in handle:
+                    fields = line.rstrip("\n").split(" ")
+                    if len(fields) < 6:
+                        _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+                    mount_path = _r8u_decode_mountinfo_path(fields[4])
+                    if (
+                        mount_path != attempt_root
+                        and mount_path.is_relative_to(attempt_root)
+                    ):
+                        nested.add(mount_path)
+        except R8RControllerError:
+            raise
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise R8RControllerError(
+                "R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID"
+            ) from exc
+    return frozenset(nested)
+
+
+def _r8u_scan_attempt_content() -> _R8UAttemptContentScan:
+    """Project stable baseline metadata without opening DICOM or NPZ bodies.
+
+    Fixed successor paths are deliberately absent from this baseline.  Their
+    pre-creation absence is enforced by the existing no-clobber/collision
+    gates, and their post-creation contents are governed by their closed R8U
+    receipts.  In particular, retained Batch-16 raw data and the failed
+    ``dicom_extraction.partial`` evidence are never excluded here.
+    """
+
+    root = ATTEMPT_ROOT
+    if (
+        not root.is_absolute()
+        or Path(os.path.abspath(root)) != root
+    ):
+        _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+    root_info = _r8u_stable_lstat(root)
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        _fail("R8U_REQUIRED_DIRECTORY_TOPOLOGY_INVALID")
+
+    approved_device = int(root_info.st_dev)
+    if not _r8u_private_directory_metadata_valid(
+        mode=stat.S_IMODE(root_info.st_mode),
+        uid=int(root_info.st_uid),
+        device=approved_device,
+        approved_device=approved_device,
+    ):
+        _fail("R8U_REQUIRED_DIRECTORY_TOPOLOGY_INVALID")
+    nested_mounts = _r8u_nested_mount_paths(root)
+    directory_metadata: dict[
+        PurePosixPath, tuple[int, int, int, int]
+    ] = {
+        PurePosixPath("."): (
+            stat.S_IMODE(root_info.st_mode),
+            int(root_info.st_uid),
+            int(root_info.st_gid),
+            approved_device,
+        )
+    }
+    required_directories: set[PurePosixPath] = {PurePosixPath(".")}
+    regular_digest = hashlib.sha256()
+    path_set_digest = hashlib.sha256()
+    regular_file_count = 0
+    regular_file_bytes = 0
+    symlink_count = 0
+    nonregular_count = 0
+    path_escape_count = 0
+    duplicate_relative_path_count = 0
+    successor_directory_metadata: dict[
+        PurePosixPath, tuple[int, int, int, int]
+    ] = {}
+    stack = [root]
+
     try:
         while stack:
             current = stack.pop()
-            entries = sorted(os.scandir(current), key=lambda item: item.name)
-            children: list[Path] = []
+            with os.scandir(current) as iterator:
+                entries = sorted(iterator, key=lambda item: item.name)
+            child_directories: list[Path] = []
+            names: set[str] = set()
             for entry in entries:
+                if entry.name in names:
+                    duplicate_relative_path_count += 1
+                    continue
+                names.add(entry.name)
                 path = Path(entry.path)
-                info = entry.stat(follow_symlinks=False)
-                relative = path.relative_to(ATTEMPT_ROOT).as_posix()
+                try:
+                    relative_path = path.relative_to(root)
+                except ValueError:
+                    path_escape_count += 1
+                    continue
+                relative = PurePosixPath(relative_path.as_posix())
+                if (
+                    path.parent != current
+                    or relative.is_absolute()
+                    or ".." in relative.parts
+                ):
+                    path_escape_count += 1
+                    continue
+                info = _r8u_stable_lstat(path)
+                excluded = _r8u_is_at_or_beneath(
+                    relative, R8U_SUCCESSOR_EXCLUSION_PATHS
+                )
+                if info.st_dev != approved_device:
+                    _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
                 if stat.S_ISDIR(info.st_mode):
-                    kind = "D"
-                    directories += 1
-                    children.append(path)
+                    directory_safe = (
+                        _r8u_private_directory_metadata_valid(
+                            mode=stat.S_IMODE(info.st_mode),
+                            uid=int(info.st_uid),
+                            device=int(info.st_dev),
+                            approved_device=approved_device,
+                        )
+                        and path not in nested_mounts
+                        and not os.path.ismount(path)
+                    )
+                    if not directory_safe:
+                        if excluded:
+                            _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+                        if (
+                            relative in R8U_FIXED_REQUIRED_DIRECTORY_PATHS
+                            or _r8u_is_at_or_beneath(
+                                relative, R8U_PROTECTED_DIRECTORY_ROLE_ROOTS
+                            )
+                        ):
+                            _fail("R8U_REQUIRED_DIRECTORY_TOPOLOGY_INVALID")
+                        _fail(
+                            "R8U_OPTIONAL_EMPTY_DIRECTORY_COMPATIBILITY_INVALID"
+                        )
+                if excluded:
+                    # Successor files cannot participate in the immutable
+                    # pre-R8U baseline because the authorized live actions
+                    # create them.  They are nevertheless traversed so an
+                    # excluded namespace cannot conceal an unsafe link,
+                    # special entry, nested mount, or filesystem escape.
+                    if stat.S_ISDIR(info.st_mode):
+                        if relative in successor_directory_metadata:
+                            duplicate_relative_path_count += 1
+                            continue
+                        successor_directory_metadata[relative] = (
+                            stat.S_IMODE(info.st_mode),
+                            int(info.st_uid),
+                            int(info.st_gid),
+                            int(info.st_dev),
+                        )
+                        child_directories.append(path)
+                    elif stat.S_ISREG(info.st_mode):
+                        if (
+                            int(info.st_uid) != os.geteuid()
+                            or stat.S_IMODE(info.st_mode) & 0o077
+                            or int(info.st_nlink) != 1
+                        ):
+                            _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+                    elif stat.S_ISLNK(info.st_mode):
+                        symlink_count += 1
+                    else:
+                        nonregular_count += 1
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    if relative in directory_metadata:
+                        duplicate_relative_path_count += 1
+                        continue
+                    directory_metadata[relative] = (
+                        stat.S_IMODE(info.st_mode),
+                        int(info.st_uid),
+                        int(info.st_gid),
+                        int(info.st_dev),
+                    )
+                    child_directories.append(path)
                 elif stat.S_ISREG(info.st_mode):
-                    kind = "F"
-                    files += 1
-                    total_bytes += int(info.st_size)
-                elif stat.S_ISLNK(info.st_mode):
-                    kind = "L"
-                    symlinks += 1
-                else:
-                    kind = "O"
-                    nonregular += 1
-                digest.update(
-                    (
-                        kind
-                        + "|"
-                        + relative
-                        + "|"
-                        + "|".join(
-                            map(
-                                str,
-                                (
-                                    info.st_mode, info.st_uid, info.st_gid,
-                                    info.st_dev, info.st_ino, info.st_nlink,
-                                    info.st_size, info.st_mtime_ns, info.st_ctime_ns,
-                                ),
+                    regular_file_count += 1
+                    regular_file_bytes += int(info.st_size)
+                    regular_digest.update(
+                        _r8u_projection_row_bytes(
+                            (
+                                relative.as_posix(),
+                                "F",
+                                stat.S_IMODE(info.st_mode),
+                                int(info.st_uid),
+                                int(info.st_gid),
+                                int(info.st_nlink),
+                                int(info.st_size),
+                                int(info.st_mtime_ns),
+                                int(info.st_ctime_ns),
                             )
                         )
-                        + "\n"
-                    ).encode("utf-8", "surrogateescape")
-                )
-            stack.extend(reversed(children))
-    except (OSError, ValueError) as exc:
-        raise R8RControllerError("R8U_ATTEMPT_PROJECTION_INVALID") from exc
-    observed = (
-        files, directories, total_bytes, symlinks, nonregular, digest.hexdigest()
+                    )
+                    path_set_digest.update(
+                        _r8u_projection_row_bytes((relative.as_posix(),))
+                    )
+                    required_directories.update(relative.parents)
+                elif stat.S_ISLNK(info.st_mode):
+                    symlink_count += 1
+                else:
+                    nonregular_count += 1
+            stack.extend(reversed(child_directories))
+    except R8RControllerError:
+        raise
+    except (OSError, TypeError, UnicodeError, ValueError) as exc:
+        raise R8RControllerError(
+            "R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID"
+        ) from exc
+
+    required_directories.update(R8U_FIXED_REQUIRED_DIRECTORY_PATHS)
+    required_directories.update(
+        relative
+        for relative in directory_metadata
+        if _r8u_is_at_or_beneath(
+            relative, R8U_PROTECTED_DIRECTORY_ROLE_ROOTS
+        )
     )
-    if observed != expected:
-        _fail("R8U_ATTEMPT_PROJECTION_CHANGED")
+    for relative in tuple(required_directories):
+        required_directories.update(relative.parents)
+
+    missing_fixed = R8U_FIXED_REQUIRED_DIRECTORY_PATHS.difference(
+        directory_metadata
+    )
+    if missing_fixed:
+        for relative in missing_fixed:
+            fixed_path = root / Path(relative.as_posix())
+            if os.path.lexists(fixed_path):
+                _fail("R8U_REQUIRED_DIRECTORY_TOPOLOGY_INVALID")
+        _fail("R8U_REQUIRED_DIRECTORY_MISSING")
+    if symlink_count or nonregular_count:
+        _fail("R8U_UNSAFE_NONREGULAR_ENTRY")
+    if path_escape_count or duplicate_relative_path_count:
+        _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+
+    required_directory_digest = hashlib.sha256()
+    for relative in sorted(
+        required_directories, key=lambda value: value.as_posix()
+    ):
+        metadata = directory_metadata.get(relative)
+        if metadata is None:
+            # A non-fixed protected empty directory was removed or replaced.
+            _fail("R8U_REQUIRED_DIRECTORY_MISSING")
+        mode, uid, gid, device = metadata
+        absolute = root / Path(relative.as_posix())
+        if (
+            not _r8u_private_directory_metadata_valid(
+                mode=mode,
+                uid=uid,
+                device=device,
+                approved_device=approved_device,
+            )
+            or absolute in nested_mounts
+            or (absolute != root and os.path.ismount(absolute))
+        ):
+            _fail("R8U_REQUIRED_DIRECTORY_TOPOLOGY_INVALID")
+        required_directory_digest.update(
+            _r8u_projection_row_bytes(
+                (relative.as_posix(), "D", mode, uid, gid)
+            )
+        )
+
+    optional_directories = set(directory_metadata).difference(
+        required_directories
+    )
+    for relative in optional_directories:
+        mode, uid, _gid, device = directory_metadata[relative]
+        absolute = root / Path(relative.as_posix())
+        if (
+            not _r8u_private_directory_metadata_valid(
+                mode=mode,
+                uid=uid,
+                device=device,
+                approved_device=approved_device,
+            )
+            or absolute in nested_mounts
+            or os.path.ismount(absolute)
+            or any(
+                relative in protected.parents
+                for protected in required_directories
+            )
+        ):
+            _fail("R8U_OPTIONAL_EMPTY_DIRECTORY_COMPATIBILITY_INVALID")
+
+    authority: dict[str, Any] = {
+        "regular_file_count": regular_file_count,
+        "regular_file_bytes": regular_file_bytes,
+        "regular_file_projection_sha256": regular_digest.hexdigest(),
+        "required_directory_count": len(required_directories),
+        "required_directory_projection_sha256": (
+            required_directory_digest.hexdigest()
+        ),
+        "optional_empty_directory_count": len(optional_directories),
+        "symlink_count": symlink_count,
+        "nonregular_count": nonregular_count,
+        "path_escape_count": path_escape_count,
+    }
+    if set(authority) != R8U_ATTEMPT_CONTENT_AUTHORITY_KEYS:
+        _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+    return _R8UAttemptContentScan(
+        authority=dict(sorted(authority.items())),
+        regular_file_path_set_sha256=path_set_digest.hexdigest(),
+        duplicate_relative_path_count=duplicate_relative_path_count,
+    )
+
+
+def _r8u_validate_pristine_exclusion_paths(
+    paths: frozenset[PurePosixPath],
+) -> None:
+    """Prove one fixed set of successor namespaces is still pristine.
+
+    Every excluded path must be absent.  The sole compatibility exception is
+    an already-created ``cohort_finalization`` directory, which is accepted
+    only when it is an owner-private, same-filesystem, non-mount empty
+    directory.  The fixed recovery and sequential collision gates provide a
+    second proof immediately before their respective outputs are created.
+    """
+
+    root_info = _r8u_stable_lstat(ATTEMPT_ROOT)
+    approved_device = int(root_info.st_dev)
+    nested_mounts = _r8u_nested_mount_paths(ATTEMPT_ROOT)
+    cohort_relative = PurePosixPath("cohort_finalization")
+    for relative in sorted(
+        paths, key=lambda value: value.as_posix()
+    ):
+        path = ATTEMPT_ROOT / Path(relative.as_posix())
+        if not os.path.lexists(path):
+            continue
+        if relative != cohort_relative:
+            _fail("R8U_SUCCESSOR_EXCLUSION_NOT_PRISTINE")
+        info = _r8u_stable_lstat(path)
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or not _r8u_private_directory_metadata_valid(
+                mode=stat.S_IMODE(info.st_mode),
+                uid=int(info.st_uid),
+                device=int(info.st_dev),
+                approved_device=approved_device,
+            )
+            or os.path.ismount(path)
+            or path in nested_mounts
+        ):
+            _fail("R8U_SUCCESSOR_EXCLUSION_NOT_PRISTINE")
+        try:
+            with os.scandir(path) as iterator:
+                empty = next(iterator, None) is None
+        except OSError as exc:
+            raise R8RControllerError(
+                "R8U_SUCCESSOR_EXCLUSION_NOT_PRISTINE"
+            ) from exc
+        if not empty:
+            _fail("R8U_SUCCESSOR_EXCLUSION_NOT_PRISTINE")
+
+
+def _r8u_validate_pristine_successor_exclusions() -> None:
+    """Prove all successor namespaces pristine before the first R8U write."""
+
+    _r8u_validate_pristine_exclusion_paths(R8U_SUCCESSOR_EXCLUSION_PATHS)
+
+
+def _r8u_validate_pristine_continuation_exclusions() -> None:
+    """Re-prove future Task-17--19 namespaces after Batch-16 recovery."""
+
+    _r8u_validate_pristine_exclusion_paths(R8U_CONTINUATION_PRISTINE_PATHS)
+
+
+def _r8u_validate_pristine_continuation_task_outputs() -> None:
+    """Late barrier for scientific outputs immediately before array qsub."""
+
+    _r8u_validate_pristine_exclusion_paths(
+        R8U_CONTINUATION_TASK_OUTPUT_PRISTINE_PATHS
+    )
+
+
+def _r8u_validate_attempt_content_authority() -> Mapping[str, Any]:
+    """Validate the portable sealed prefix before or after an R8U action."""
+
+    if (
+        SHA_RE.fullmatch(R8U_BASELINE_REGULAR_FILE_PATH_SET_SHA256) is None
+        or SHA_RE.fullmatch(
+            R8U_BASELINE_REGULAR_FILE_PROJECTION_SHA256
+        ) is None
+        or isinstance(R8U_BASELINE_REQUIRED_DIRECTORY_COUNT, bool)
+        or R8U_BASELINE_REQUIRED_DIRECTORY_COUNT < 1
+        or SHA_RE.fullmatch(
+            R8U_BASELINE_REQUIRED_DIRECTORY_PROJECTION_SHA256
+        ) is None
+    ):
+        _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+    scan = _r8u_scan_attempt_content()
+    authority = scan.authority
+    if (
+        scan.regular_file_path_set_sha256
+        != R8U_BASELINE_REGULAR_FILE_PATH_SET_SHA256
+        or authority["regular_file_count"]
+        != R8U_HISTORICAL_ATTEMPT_TREE_PROJECTION["regular_file_count"]
+    ):
+        _fail("R8U_REGULAR_FILE_PATH_SET_CHANGED")
+    if (
+        authority["regular_file_bytes"]
+        != R8U_HISTORICAL_ATTEMPT_TREE_PROJECTION["regular_file_bytes"]
+    ):
+        _fail("R8U_REGULAR_FILE_BYTES_CHANGED")
+    if (
+        authority["regular_file_projection_sha256"]
+        != R8U_BASELINE_REGULAR_FILE_PROJECTION_SHA256
+    ):
+        _fail("R8U_REGULAR_FILE_PROJECTION_CHANGED")
+    observed_required_count = int(authority["required_directory_count"])
+    if observed_required_count < R8U_BASELINE_REQUIRED_DIRECTORY_COUNT:
+        _fail("R8U_REQUIRED_DIRECTORY_MISSING")
+    if (
+        observed_required_count != R8U_BASELINE_REQUIRED_DIRECTORY_COUNT
+        or authority["required_directory_projection_sha256"]
+        != R8U_BASELINE_REQUIRED_DIRECTORY_PROJECTION_SHA256
+    ):
+        _fail("R8U_REQUIRED_DIRECTORY_TOPOLOGY_INVALID")
+    return authority
+
+
+def _r8u_validate_pre_mutation_projections() -> Mapping[str, Any]:
+    """Validate portable attempt content and preserve the independent R4 gate."""
+
+    authority = _r8u_validate_attempt_content_authority()
     try:
         import retire_lvef_c3_older_raw_duplicates as older
 
@@ -1659,6 +2363,7 @@ def _r8u_validate_pre_mutation_projections() -> None:
         != "c820806c26ba9644061e7d1c92e79de48d69b7b91fa3d0d09763d028284fc4c6"
     ):
         _fail("R8U_R4_PROJECTION_INVALID")
+    return authority
 
 
 def _recovery_job_name(implementation_commit: str) -> str:
@@ -1870,6 +2575,9 @@ def _r8u_recovery_authority(
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "prior_implementation_commit": R8U_STARTING_IMPLEMENTATION_COMMIT,
         "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "batch_id": R8U_FIXED_BATCH_ID,
@@ -1929,6 +2637,9 @@ def _r8u_recovery_submission_receipt(
         "status": "PASS_EXACT_ONE_GPU_BATCH16_RECOVERY_QSUB",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "batch_id": R8U_FIXED_BATCH_ID,
@@ -1976,7 +2687,11 @@ def _validate_r8u_recovery_submission(
     seal = validate_r8u_failed_partial_seal()
     capacity_value, capacity_payload = _load_private_json(R8U_RECOVERY_CAPACITY_PATH)
     try:
-        capacity.validate_fixed_r8u_batch16_recovery_capacity(run.plan, capacity_value)
+        capacity.validate_fixed_r8u_batch16_recovery_capacity(
+            run.plan,
+            capacity_value,
+            r8u_projection_repair_commit=implementation_commit,
+        )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
     qsub_sha = str(authority.get("qsub_environment_sha256", ""))
@@ -2047,6 +2762,7 @@ def submit_r8u_batch16_recovery(
         r8u=True,
     )
     _validate_original_controls()
+    _r8u_validate_pristine_successor_exclusions()
     _r8u_validate_pre_mutation_projections()
     _r8u_historical_r8r_chain_authority()
     prefix = _r8u_validate_frozen_prefix(run, include_batch16=False)
@@ -2058,13 +2774,17 @@ def submit_r8u_batch16_recovery(
     # This is intentionally the sole live capacity observation in R8U.
     try:
         capacity_value = capacity.probe_fixed_r8u_batch16_recovery_capacity(
-            run.plan, process_runner=capacity_process_runner
+            run.plan,
+            r8u_projection_repair_commit=implementation_commit,
+            process_runner=capacity_process_runner,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_PROBE_FAILED") from exc
     try:
         capacity.validate_fixed_r8u_batch16_recovery_capacity(
-            run.plan, capacity_value
+            run.plan,
+            capacity_value,
+            r8u_projection_repair_commit=implementation_commit,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
@@ -2104,6 +2824,7 @@ def submit_r8u_batch16_recovery(
     )
     _write_private_json(R8U_RECOVERY_SUBMISSION_PATH, receipt)
     _validate_r8u_recovery_submission()
+    _r8u_validate_attempt_content_authority()
     return {
         "status": "R8U_BATCH16_RECOVERY_SUBMITTED",
         "recovery_job_id": job_id,
@@ -2117,6 +2838,7 @@ def submit_r8u_batch16_recovery(
 def _r8u_publish_fresh_extraction(
     *, run: sequential.FullRun, raw_validation: Mapping[str, Any]
 ) -> Mapping[str, Any]:
+    implementation_commit = _current_r8u_implementation_commit()
     paths = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)
     fresh = R8U_FRESH_EXTRACTION_BATCH_ROOT / "dicom_extraction"
     canonical = paths["extraction"]
@@ -2158,7 +2880,10 @@ def _r8u_publish_fresh_extraction(
         "artifact_type": "lvef_c3_r8u_fresh_batch16_extraction_publication_v1",
         "status": "PASS_FRESH_BATCH16_EXTRACTION_PUBLISHED_NO_CLOBBER",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
-        "implementation_commit": _current_r8u_implementation_commit(),
+        "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "batch_id": R8U_FIXED_BATCH_ID,
@@ -2182,6 +2907,7 @@ def _r8u_publish_fresh_extraction(
 def _r8u_recovery_terminal_receipt(
     *, run: sequential.FullRun, final_receipt: Mapping[str, Any]
 ) -> Mapping[str, Any]:
+    implementation_commit = _current_r8u_implementation_commit()
     paths = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)
     required = {
         "failed_partial_seal_sha256": R8U_FAILED_PARTIAL_SEAL_PATH,
@@ -2211,7 +2937,10 @@ def _r8u_recovery_terminal_receipt(
         "artifact_type": "lvef_c3_r8u_batch16_recovery_terminal_v1",
         "status": R8U_RECOVERY_STATUS,
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
-        "implementation_commit": _current_r8u_implementation_commit(),
+        "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "batch_id": R8U_FIXED_BATCH_ID,
@@ -2269,6 +2998,7 @@ def run_r8u_batch16_recovery(
     )
     _validate_r8u_recovery_submission(current_job_id=job_id, wait=True)
     _validate_original_controls()
+    _r8u_validate_attempt_content_authority()
     _r8u_validate_frozen_prefix(run, include_batch16=False)
     validate_r8u_failed_partial_seal()
     if os.path.lexists(R8U_RECOVERY_TERMINAL_PATH):
@@ -2447,6 +3177,7 @@ def run_r8u_batch16_recovery(
     validate_r8u_failed_partial_seal()
     terminal = _r8u_recovery_terminal_receipt(run=run, final_receipt=final_receipt)
     _write_private_json(R8U_RECOVERY_TERMINAL_PATH, terminal)
+    _r8u_validate_attempt_content_authority()
     return {
         **dict(terminal),
         "dicom_summary_status": dicom_summary.get("status"),
@@ -2527,6 +3258,9 @@ def _r8u_recovery_accounting_receipt(
         "status": "PASS_RECOVERY_QACCT_FAILED_0_EXIT_0",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "batch_id": R8U_FIXED_BATCH_ID,
@@ -2580,6 +3314,9 @@ def _r8u_continuation_claim(
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "prior_implementation_commit": R8U_STARTING_IMPLEMENTATION_COMMIT,
         "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "prefix_final_receipt_sha256": list(prefix_receipts),
@@ -2637,6 +3374,9 @@ def _r8u_continuation_submission_receipt(
         "status": "PASS_EXACT_ARRAY_17_19_AND_HELD_FINALIZER",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_implementation_authority_epochs(implementation_commit)
+        ),
         "attempt_id": ORIGINAL_ATTEMPT_ID,
         "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
         "recovery_job_id": recovery_job_id,
@@ -2692,15 +3432,19 @@ def _validate_r8u_continuation_chain(
             time.sleep(0.25)
     terminal = validate_r8u_recovery_terminal()
     accounting = _validate_r8u_recovery_accounting()
+    implementation_commit = _current_r8u_implementation_commit()
     capacity_value, _ = _load_private_json(R8U_RECOVERY_CAPACITY_PATH)
     try:
-        capacity.validate_fixed_r8u_batch16_recovery_capacity(run.plan, capacity_value)
+        capacity.validate_fixed_r8u_batch16_recovery_capacity(
+            run.plan,
+            capacity_value,
+            r8u_projection_repair_commit=implementation_commit,
+        )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
     prefix = _r8u_validate_frozen_prefix(run, include_batch16=True)
     claim, claim_payload = _load_private_json(R8U_CONTINUATION_CLAIM_PATH)
     submission, _ = _load_private_json(R8U_CONTINUATION_SUBMISSION_PATH)
-    implementation_commit = _current_r8u_implementation_commit()
     qsub_sha = str(claim.get("qsub_environment_sha256", ""))
     expected_claim = _r8u_continuation_claim(
         run=run,
@@ -2915,6 +3659,8 @@ def submit_r8u_continuation_17_19(
         runtime_validation_context=stages.LIVE_RUNTIME_CAPTURE,
         r8u=True,
     )
+    _r8u_validate_attempt_content_authority()
+    _r8u_validate_pristine_continuation_exclusions()
     validate_r8u_recovery_terminal()
     prefix = _r8u_validate_frozen_prefix(run, include_batch16=True)
     if os.path.lexists(R8U_RECOVERY_ACCOUNTING_PATH):
@@ -2936,7 +3682,11 @@ def submit_r8u_continuation_17_19(
     _write_private_json(R8U_RECOVERY_ACCOUNTING_PATH, accounting_receipt)
     capacity_value, _ = _load_private_json(R8U_RECOVERY_CAPACITY_PATH)
     try:
-        capacity.validate_fixed_r8u_batch16_recovery_capacity(run.plan, capacity_value)
+        capacity.validate_fixed_r8u_batch16_recovery_capacity(
+            run.plan,
+            capacity_value,
+            r8u_projection_repair_commit=implementation_commit,
+        )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
     if capacity_value.get("status") != R8U_CAPACITY_STATUS:
@@ -2950,6 +3700,7 @@ def submit_r8u_continuation_17_19(
         prefix_receipts=prefix,
     )
     claim_sha = _write_private_json(R8U_CONTINUATION_CLAIM_PATH, claim)
+    _r8u_validate_pristine_continuation_task_outputs()
     array_job_id = scheduler._capture_qsub(
         "array",
         _r8u_continuation_array_command(implementation_commit),
@@ -2984,6 +3735,7 @@ def submit_r8u_continuation_17_19(
     _validate_r8u_continuation_chain(
         run, current_job_id=None, role="array", wait=False
     )
+    _r8u_validate_attempt_content_authority()
     return {
         "status": "R8U_CONTINUATION_17_19_SUBMITTED",
         "array_job_id": array_job_id,
@@ -3011,6 +3763,7 @@ def run_r8u_continuation_array_task() -> Mapping[str, Any]:
         runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
         r8u=True,
     )
+    _r8u_validate_attempt_content_authority()
     dependencies = sequential.FullDependencies(
         execution_context=sequential.R8U_FIXED_CONTINUATION
     )
@@ -3019,6 +3772,7 @@ def run_r8u_continuation_array_task() -> Mapping[str, Any]:
     )
     if result.get("status") != "PASS_BATCH_FINALIZED":
         _fail("R8U_CONTINUATION_BATCH_NOT_FINALIZED")
+    _r8u_validate_attempt_content_authority()
     return result
 
 
@@ -3038,6 +3792,8 @@ def run_r8u_continuation_finalizer() -> Mapping[str, Any]:
         runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
         r8u=True,
     )
+    implementation_commit = _current_r8u_implementation_commit()
+    _r8u_validate_attempt_content_authority()
     _validate_r8u_continuation_chain(
         run, current_job_id=job_id, role="finalizer", wait=True
     )
@@ -3049,7 +3805,7 @@ def run_r8u_continuation_finalizer() -> Mapping[str, Any]:
     _ensure_private_directory(output_root)
     historical = _r8u_historical_r8r_chain_authority()
     authority = finalizer.R8UImplementationAuthority(
-        implementation_commit=_current_r8u_implementation_commit(),
+        implementation_commit=implementation_commit,
         historical_r8r_recovery_authority_sha256=(
             historical["recovery_authority_sha256"]
         ),
@@ -3110,7 +3866,6 @@ def run_r8u_continuation_finalizer() -> Mapping[str, Any]:
         ),
         r8u_implementation_authority=authority,
     )
-    implementation_commit = _current_r8u_implementation_commit()
     if (
         summary.get("status") != "PASS_PRODUCTION_C3_FINALIZED"
         or summary.get("production_batches") != 19
@@ -3137,6 +3892,7 @@ def run_r8u_continuation_finalizer() -> Mapping[str, Any]:
     finalizer.write_json_atomic(
         output_root / "full_c3_finalization.aggregate_safe.json", summary
     )
+    _r8u_validate_attempt_content_authority()
     return summary
 
 

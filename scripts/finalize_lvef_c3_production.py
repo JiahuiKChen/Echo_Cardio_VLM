@@ -166,6 +166,17 @@ R8R_SCHEDULER_RUNNER_BASENAME = (
 R8U_PRIOR_IMPLEMENTATION_COMMIT = (
     "fe3b6c40162d16d5021558bc686ba93c05ab03f5"
 )
+R8U_BASE_IMPLEMENTATION_COMMIT = (
+    "cbd54ec67a24bc26e538be0423df38cee8a9eb6f"
+)
+R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
+    {
+        "scientific_commit",
+        "r8r_implementation_commit",
+        "r8u_base_implementation_commit",
+        "r8u_projection_repair_commit",
+    }
+)
 R8U_FAILED_PARTIAL_METADATA_SHA256 = (
     "1dcc53e52a468773128348225943125c926bcab942ac7c69c37344684249f83e"
 )
@@ -349,6 +360,7 @@ R8U_COMMON_CHAIN_KEYS = frozenset(
         "status",
         "original_scientific_commit",
         "implementation_commit",
+        "implementation_authority_epochs",
         "attempt_id",
         "batch_plan_sha256",
     }
@@ -3970,13 +3982,17 @@ def _validate_r8r_repository_authority(
 def _validate_r8u_repository_authority(
     implementation_commit: str,
 ) -> None:
-    """Bind R8U to one clean, single-parent child of the fixed fe3 epoch."""
+    """Bind R8U to the exact science -> R8R -> R8U-base -> repair chain."""
 
     if (
         not isinstance(implementation_commit, str)
         or COMMIT_RE.fullmatch(implementation_commit) is None
         or implementation_commit
-        in {R8R_SCIENTIFIC_GOVERNING_COMMIT, R8U_PRIOR_IMPLEMENTATION_COMMIT}
+        in {
+            R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            R8U_PRIOR_IMPLEMENTATION_COMMIT,
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+        }
     ):
         raise ProductionFinalizationError(
             "R8U_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
@@ -4025,14 +4041,39 @@ def _validate_r8u_repository_authority(
             "1",
             implementation_commit,
         ): (
-            f"{implementation_commit} {R8U_PRIOR_IMPLEMENTATION_COMMIT}\n".encode(
+            f"{implementation_commit} {R8U_BASE_IMPLEMENTATION_COMMIT}\n".encode(
                 "ascii"
             )
         ),
         (
             "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT} "
+            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_PRIOR_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT} "
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
             "--count",
-            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT}..{implementation_commit}",
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT}..{implementation_commit}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT}..{R8U_BASE_IMPLEMENTATION_COMMIT}",
         ): b"1\n",
         (
             "rev-list",
@@ -4042,8 +4083,13 @@ def _validate_r8u_repository_authority(
         (
             "rev-list",
             "--count",
-            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{implementation_commit}",
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{R8U_BASE_IMPLEMENTATION_COMMIT}",
         ): b"2\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{implementation_commit}",
+        ): b"3\n",
     }
     for arguments, expected_stdout in exact_outputs.items():
         result = run_git(*arguments)
@@ -4063,6 +4109,7 @@ def _validate_r8u_repository_authority(
     for commit in (
         R8R_SCIENTIFIC_GOVERNING_COMMIT,
         R8U_PRIOR_IMPLEMENTATION_COMMIT,
+        R8U_BASE_IMPLEMENTATION_COMMIT,
         implementation_commit,
     ):
         exists = run_git("cat-file", "-e", f"{commit}^{{commit}}")
@@ -4072,7 +4119,8 @@ def _validate_r8u_repository_authority(
             )
     for ancestor, descendant in (
         (R8R_SCIENTIFIC_GOVERNING_COMMIT, R8U_PRIOR_IMPLEMENTATION_COMMIT),
-        (R8U_PRIOR_IMPLEMENTATION_COMMIT, implementation_commit),
+        (R8U_PRIOR_IMPLEMENTATION_COMMIT, R8U_BASE_IMPLEMENTATION_COMMIT),
+        (R8U_BASE_IMPLEMENTATION_COMMIT, implementation_commit),
     ):
         ancestry = run_git("merge-base", "--is-ancestor", ancestor, descendant)
         if ancestry.returncode != 0 or ancestry.stdout or ancestry.stderr:
@@ -4090,6 +4138,40 @@ def _validate_r8u_repository_authority(
             raise ProductionFinalizationError(
                 "R8U_FINALIZER_HISTORICAL_GIT_TREE_MISMATCH"
             )
+
+
+def _r8u_expected_implementation_authority_epochs(
+    implementation_commit: str,
+) -> dict[str, str]:
+    """Return the one closed four-commit authority bound into R8U receipts."""
+
+    return {
+        "scientific_commit": R8R_SCIENTIFIC_GOVERNING_COMMIT,
+        "r8r_implementation_commit": R8U_PRIOR_IMPLEMENTATION_COMMIT,
+        "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
+        "r8u_projection_repair_commit": implementation_commit,
+    }
+
+
+def _r8u_validate_implementation_authority_epochs(
+    value: object,
+    *,
+    implementation_commit: str,
+) -> None:
+    """Reject missing, open, mistyped, or cross-artifact epoch bindings."""
+
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+        or any(type(value.get(key)) is not str for key in value)
+        or dict(value)
+        != _r8u_expected_implementation_authority_epochs(
+            implementation_commit
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_FINALIZER_IMPLEMENTATION_AUTHORITY_EPOCHS_INVALID"
+        )
 
 
 def _current_r8r_implementation_epoch() -> tuple[str, ...]:
@@ -5210,10 +5292,16 @@ def _load_r8u_chain_artifact(
         raise ProductionFinalizationError(
             "R8U_FINALIZER_CHAIN_ARTIFACT_INVALID"
         )
+    _r8u_validate_implementation_authority_epochs(
+        value.get("implementation_authority_epochs"),
+        implementation_commit=authority.implementation_commit,
+    )
     if field == "recovery_capacity_receipt_sha256":
         try:
             r8r_capacity.validate_fixed_r8u_batch16_recovery_capacity(
-                plan, value
+                plan,
+                value,
+                r8u_projection_repair_commit=authority.implementation_commit,
             )
         except r8r_capacity.PostReallocationCapacityError as exc:
             raise ProductionFinalizationError(
@@ -5675,6 +5763,10 @@ def _validate_r8u_chain_artifacts(
         != R8R_SCIENTIFIC_GOVERNING_COMMIT
         or fresh.get("implementation_commit")
         != authority.implementation_commit
+        or fresh.get("implementation_authority_epochs")
+        != _r8u_expected_implementation_authority_epochs(
+            authority.implementation_commit
+        )
         or fresh.get("attempt_id") != R8R_ATTEMPT_ID
         or fresh.get("batch_plan_sha256") != R8R_BATCH_PLAN_SHA256
         or fresh.get("batch_id") != "c3_batch_015"
