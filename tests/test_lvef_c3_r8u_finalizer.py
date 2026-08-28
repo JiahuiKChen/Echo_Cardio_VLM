@@ -178,6 +178,55 @@ def _qsub_evidence(payload: bytes) -> dict[str, Any]:
     }
 
 
+def _failed_r1_epoch_authority() -> dict[str, Any]:
+    scheduler_evidence = {
+        "artifact_type": "lvef_c3_r8u_r2_scheduler_log_evidence_v1",
+        "status": (
+            "PASS_ROLE_BOUND_GRID_ENGINE_MERGED_STDOUT_STDERR_LOG"
+        ),
+        "evidence_class": "GRID_ENGINE_MERGED_SCHEDULER_EVIDENCE",
+        "role": "FAILED_R8U_BATCH16_RECOVERY",
+        "basename": (
+            f"{finalizer.R8U_FAILED_R1_RECOVERY_JOB_NAME}.o"
+            f"{finalizer.R8U_FAILED_R1_RECOVERY_JOB_ID}"
+        ),
+        "job_id": finalizer.R8U_FAILED_R1_RECOVERY_JOB_ID,
+        "task_id": "NONE",
+        "mode": "0644",
+        "size_bytes": 116,
+        "sha256": finalizer.R8U_FAILED_R1_RECOVERY_LOG_SHA256,
+        "owner_uid": finalizer.os.geteuid(),
+        "terminal_state": "TERMINAL_FAILED_APPLICATION_EXIT_78",
+    }
+    return {
+        "artifact_type": (
+            "lvef_c3_r8u_r1_failed_recovery_epoch_authority_v1"
+        ),
+        "status": "PASS_IMMUTABLE_FAILED_RECOVERY_APPLICATION_EXIT_78",
+        "implementation_commit": (
+            finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "job_id": finalizer.R8U_FAILED_R1_RECOVERY_JOB_ID,
+        "job_name": finalizer.R8U_FAILED_R1_RECOVERY_JOB_NAME,
+        "qsub_exit": 0,
+        "qacct_failed": 0,
+        "qacct_exit_status": 78,
+        "qacct_task_id": "NONE",
+        "terminal_code": "BLOCKED_R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID",
+        "scheduler_evidence": scheduler_evidence,
+        "namespace_file_count": 8,
+        "namespace_inventory_sha256": (
+            finalizer.R8U_FAILED_R1_NAMESPACE_INVENTORY_SHA256
+        ),
+        "dicom_body_reads": 0,
+        "cloud_requests": 0,
+        "download_reruns": 0,
+        "extraction_reruns": 0,
+        "echoprime_reruns": 0,
+        "embedding_generations": 0,
+    }
+
+
 def _valid_r8u_summary() -> dict[str, Any]:
     value = {key: 0 for key in finalizer.FINAL_KEYS}
     value.update(
@@ -293,13 +342,14 @@ def test_r8u_api_and_closed_schema_exports_are_exact() -> None:
         "r8r_implementation_commit",
         "r8u_base_implementation_commit",
         "r8u_projection_repair_commit",
+        "r8u_scheduler_log_repair_commit",
     }
     assert "implementation_authority_epochs" in (
         finalizer.R8U_COMMON_CHAIN_KEYS
     )
 
 
-def test_r8u_receipts_require_exact_four_commit_authority_chain() -> None:
+def test_r8u_r2_receipts_require_exact_five_commit_authority_chain() -> None:
     implementation_commit = "c" * 40
     expected = {
         "scientific_commit": finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
@@ -309,7 +359,10 @@ def test_r8u_receipts_require_exact_four_commit_authority_chain() -> None:
         "r8u_base_implementation_commit": (
             finalizer.R8U_BASE_IMPLEMENTATION_COMMIT
         ),
-        "r8u_projection_repair_commit": implementation_commit,
+        "r8u_projection_repair_commit": (
+            finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_scheduler_log_repair_commit": implementation_commit,
     }
     assert finalizer._r8u_expected_implementation_authority_epochs(
         implementation_commit
@@ -321,7 +374,8 @@ def test_r8u_receipts_require_exact_four_commit_authority_chain() -> None:
     for drifted in (
         {key: value for key, value in expected.items() if key != "scientific_commit"},
         {**expected, "unexpected": implementation_commit},
-        {**expected, "r8u_projection_repair_commit": "d" * 40},
+        {**expected, "r8u_scheduler_log_repair_commit": "d" * 40},
+        {**expected, "r8u_projection_repair_commit": implementation_commit},
         {**expected, "r8u_base_implementation_commit": implementation_commit},
     ):
         _expect_code(
@@ -331,6 +385,50 @@ def test_r8u_receipts_require_exact_four_commit_authority_chain() -> None:
                     drifted,
                     implementation_commit=implementation_commit,
                 )
+            ),
+        )
+
+
+def test_r8u_r2_specs_use_only_fresh_fixed_namespaces_and_types() -> None:
+    for _field, relative, artifact_type, _status in (
+        finalizer.R8U_CHAIN_ARTIFACT_SPECS
+    ):
+        assert relative.startswith(
+            ("r8u_r2_batch16_recovery/", "r8u_r2_continuation_17_19/")
+        )
+        assert not relative.startswith(
+            ("r8u_batch16_recovery/", "r8u_continuation_17_19/")
+        )
+        assert artifact_type.startswith("lvef_c3_r8u_r2_")
+
+
+def test_failed_r1_epoch_authority_is_exact_and_hash_bound() -> None:
+    value = _failed_r1_epoch_authority()
+    assert finalizer._r8u_failed_r1_epoch_authority_sha256(value) == (
+        finalizer.core.canonical_json_sha256(value)
+    )
+    for drifted in (
+        {**value, "qacct_exit_status": 0},
+        {**value, "unexpected": 0},
+        {
+            **value,
+            "scheduler_evidence": {
+                **value["scheduler_evidence"],
+                "mode": "0600",
+            },
+        },
+        {
+            **value,
+            "scheduler_evidence": {
+                **value["scheduler_evidence"],
+                "job_id": "7352657",
+            },
+        },
+    ):
+        _expect_code(
+            "R8U_FINALIZER_FAILED_RECOVERY_EPOCH_AUTHORITY_INVALID",
+            lambda drifted=drifted: (
+                finalizer._r8u_failed_r1_epoch_authority_sha256(drifted)
             ),
         )
 
@@ -379,7 +477,7 @@ def test_r8u_loader_crosschecks_epochs_in_every_common_receipt() -> None:
 
             drifted = copy.deepcopy(value)
             drifted["implementation_authority_epochs"][
-                "r8u_projection_repair_commit"
+                "r8u_scheduler_log_repair_commit"
             ] = "d" * 40
             payload = finalizer.core.canonical_json_bytes(drifted)
             path.write_bytes(payload)
@@ -400,7 +498,7 @@ def test_r8u_loader_crosschecks_epochs_in_every_common_receipt() -> None:
             )
 
 
-def test_r8u_capacity_receipt_crosschecks_projection_repair_commit() -> None:
+def test_r8u_capacity_receipt_crosschecks_both_repair_commits() -> None:
     authority = _authority()
     value: dict[str, Any] = {
         key: 0 for key in finalizer.r8r_capacity.R8U_CAPACITY_KEYS
@@ -408,7 +506,7 @@ def test_r8u_capacity_receipt_crosschecks_projection_repair_commit() -> None:
     value.update(
         {
             "schema_version": 1,
-            "artifact_type": "lvef_c3_r8u_batch16_recovery_capacity_v1",
+            "artifact_type": "lvef_c3_r8u_r2_batch16_recovery_capacity_v1",
             "status": "PASS_BATCH16_RECOVERY_AND_17_19_WITH_200GB_RESERVE",
             "blocking_reason_codes": [],
             "implementation_authority_epochs": (
@@ -445,12 +543,14 @@ def test_r8u_capacity_receipt_crosschecks_projection_repair_commit() -> None:
         validator.assert_called_once_with(
             {},
             value,
-            r8u_projection_repair_commit=authority.implementation_commit,
+            r8u_scheduler_log_repair_commit=(
+                authority.implementation_commit
+            ),
         )
 
         value["implementation_authority_epochs"] = {
             **value["implementation_authority_epochs"],
-            "r8u_projection_repair_commit": "d" * 40,
+            "r8u_scheduler_log_repair_commit": "d" * 40,
         }
         payload = finalizer.core.canonical_json_bytes(value)
         path.write_bytes(payload)
@@ -566,7 +666,7 @@ def test_r8u_stage_authority_audit_uses_only_current_four_receipts() -> None:
     ) == receipts
 
 
-def test_r8u_repository_authority_requires_direct_child_of_fixed_r8u_base() -> None:
+def test_r8u_repository_authority_requires_direct_child_of_projection_repair() -> None:
     implementation_commit = "c" * 40
     historical_payloads = {
         key: f"historical:{key}".encode("ascii")
@@ -596,8 +696,10 @@ def test_r8u_repository_authority_requires_direct_child_of_fixed_r8u_base() -> N
                 parent = (
                     "d" * 40
                     if wrong_parent
-                    else finalizer.R8U_BASE_IMPLEMENTATION_COMMIT
+                    else finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
                 )
+            elif commit == finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT:
+                parent = finalizer.R8U_BASE_IMPLEMENTATION_COMMIT
             elif commit == finalizer.R8U_BASE_IMPLEMENTATION_COMMIT:
                 parent = finalizer.R8U_PRIOR_IMPLEMENTATION_COMMIT
             else:
@@ -614,7 +716,7 @@ def test_r8u_repository_authority_requires_direct_child_of_fixed_r8u_base() -> N
                 (
                     f"{finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT}.."
                     f"{implementation_commit}"
-                ): b"3\n",
+                ): b"4\n",
             }
             stdout = distances.get(revision_range, b"1\n")
         elif tail and tail[0] == "show":
@@ -740,7 +842,7 @@ def _chain_values(
     fresh = {
         **common,
         "artifact_type": (
-            "lvef_c3_r8u_fresh_batch16_extraction_publication_v1"
+            "lvef_c3_r8u_r2_fresh_batch16_extraction_publication_v1"
         ),
         "status": "PASS_FRESH_BATCH16_EXTRACTION_PUBLISHED_NO_CLOBBER",
         "batch_id": "c3_batch_015",
@@ -786,6 +888,10 @@ def _chain_values(
         "prediction_generation_count": 0,
         "confirmatory_performance_access_count": 0,
     }
+    failed_r1_epoch = _failed_r1_epoch_authority()
+    failed_r1_epoch_sha256 = finalizer.core.canonical_json_sha256(
+        failed_r1_epoch
+    )
     values = {
         "failed_partial_seal_sha256": {
             "batch_id": "c3_batch_015",
@@ -812,13 +918,17 @@ def _chain_values(
         "recovery_capacity_receipt_sha256": {},
         "recovery_authority_sha256": {
             "prior_implementation_commit": (
-                finalizer.R8U_PRIOR_IMPLEMENTATION_COMMIT
+                finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
             ),
             "batch_id": "c3_batch_015",
             "original_task_id": 16,
             "continuation_task_range": "17-19",
             "prefix_final_receipt_sha256": prefix15,
             "historical_r8r_chain_authority": historical,
+            "failed_r8u_recovery_epoch_authority": failed_r1_epoch,
+            "failed_r8u_recovery_epoch_authority_sha256": (
+                failed_r1_epoch_sha256
+            ),
             "failed_partial_seal_sha256": observed[
                 "failed_partial_seal_sha256"
             ],
@@ -833,7 +943,8 @@ def _chain_values(
             "script_authority": dict(script_authority),
             "runtime_validation_context": "SEALED_SCHEDULER_RUNTIME_REPLAY",
             "fresh_extraction_relative_root": (
-                "r8u_batch16_recovery/fresh_extracted_cache/c3_batch_015"
+                "r8u_r2_batch16_recovery/"
+                "fresh_extracted_cache/c3_batch_015"
             ),
             "cloud_requests_authorized": 0,
             "download_reruns_authorized": 0,
@@ -950,7 +1061,7 @@ def _chain_values(
         },
         "continuation_claim_sha256": {
             "prior_implementation_commit": (
-                finalizer.R8U_PRIOR_IMPLEMENTATION_COMMIT
+                finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
             ),
             "prefix_final_receipt_sha256": [
                 *prefix15,

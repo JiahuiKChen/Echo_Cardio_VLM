@@ -138,12 +138,16 @@ R8U_STARTING_IMPLEMENTATION_COMMIT: Final = (
 R8U_BASE_IMPLEMENTATION_COMMIT: Final = (
     "cbd54ec67a24bc26e538be0423df38cee8a9eb6f"
 )
+R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT: Final = (
+    "f3df5cd969ff70c87378657767c5bf2b92d4e074"
+)
 R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS: Final = frozenset(
     {
         "scientific_commit",
         "r8r_implementation_commit",
         "r8u_base_implementation_commit",
         "r8u_projection_repair_commit",
+        "r8u_scheduler_log_repair_commit",
     }
 )
 R8U_FIXED_BATCH_ID: Final = "c3_batch_015"
@@ -154,6 +158,18 @@ R8U_FIXED_CONTINUATION_MAX_CONCURRENCY: Final = 1
 R8U_FAILED_ARRAY_JOB_ID: Final = "7292691"
 R8U_FAILED_FINALIZER_JOB_ID: Final = "7292692"
 R8U_PRIOR_RECOVERY_JOB_ID: Final = "7269865"
+R8U_FAILED_RECOVERY_JOB_ID: Final = "7352656"
+R8U_FAILED_RECOVERY_JOB_NAME: Final = "lvef_c3_r8u_rec_f3df5cd9"
+R8U_FAILED_RECOVERY_TERMINAL_CODE: Final = (
+    "BLOCKED_R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID"
+)
+R8U_FAILED_RECOVERY_QSUB_EXIT: Final = 0
+R8U_FAILED_RECOVERY_QACCT_FAILED: Final = 0
+R8U_FAILED_RECOVERY_QACCT_EXIT_STATUS: Final = 78
+R8U_SCHEDULER_LOG_MAX_BYTES: Final = 16 * 1024 * 1024
+R8U_SCHEDULER_LOG_ROLE: Final = (
+    "GRID_ENGINE_MERGED_SCHEDULER_EVIDENCE"
+)
 R8U_FAILED_PARTIAL_FILES: Final = 4_757
 R8U_FAILED_PARTIAL_DIRECTORIES: Final = 259
 R8U_FAILED_PARTIAL_BYTES: Final = 8_583_119_701
@@ -198,7 +214,45 @@ R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES: Final = {
     "continuation_claim_sha256": "418ad72fb488b12d6a5a7bbc6c92bc77cb15cd1484bebd6f59677663d7937305",
     "continuation_submission_receipt_sha256": "3d093415e50fd98b553dc4fd935f8f3be81080d659afd39cabcebe3e400177ab",
 }
-R8U_RECOVERY_ROOT: Final = ATTEMPT_ROOT / "r8u_batch16_recovery"
+R8U_FAILED_RECOVERY_ROOT: Final = ATTEMPT_ROOT / "r8u_batch16_recovery"
+R8U_FAILED_RECOVERY_SCHEDULER_ROOT: Final = (
+    R8U_FAILED_RECOVERY_ROOT / "scheduler"
+)
+R8U_FAILED_RECOVERY_FILE_AUTHORITIES: Final = {
+    "failed_partial_seal.restricted.json": (
+        1_267,
+        "7188e749dc7ca74ceeb1cc616a5f2a637f4da4649c1a2996530eac90b3aa0d7c",
+    ),
+    "recovery_authority.restricted.json": (
+        4_720,
+        "5cb0dd8b79ba31bd1502b20a64dedb48ecef1c313e5004bbd24d3c13aaf381f6",
+    ),
+    "recovery_capacity.restricted.json": (
+        3_723,
+        "9adcdd378bfc4e456b8d66f65c8ee572a835d2de2605c7e349b1783c83f23895",
+    ),
+    "scheduler/lvef_c3_r8u_rec_f3df5cd9.o7352656": (
+        116,
+        "ce34ae86faad07306c8ffd0850ffdf174c748be982e1406460a10f782e37e805",
+    ),
+    "scheduler/recovery.qsub.exit_status.restricted": (
+        2,
+        "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    ),
+    "scheduler/recovery.qsub.stderr.restricted": (
+        0,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ),
+    "scheduler/recovery.qsub.stdout.restricted": (
+        8,
+        "c7b4c678cedc27333a6f1ed32bfe54c9e2188ad34116da7e23c6c350bc2690fa",
+    ),
+    "scheduler/submission_receipt.restricted.json": (
+        1_822,
+        "e68e0f503680c6ec9cbff37328738fe812eb83cb9c9cc094c720f8f8a293097e",
+    ),
+}
+R8U_RECOVERY_ROOT: Final = ATTEMPT_ROOT / "r8u_r2_batch16_recovery"
 R8U_RECOVERY_SCHEDULER_ROOT: Final = R8U_RECOVERY_ROOT / "scheduler"
 R8U_FAILED_PARTIAL_SEAL_PATH: Final = (
     R8U_RECOVERY_ROOT / "failed_partial_seal.restricted.json"
@@ -224,7 +278,7 @@ R8U_FRESH_PUBLICATION_PATH: Final = (
 R8U_FRESH_EXTRACTION_BATCH_ROOT: Final = (
     R8U_RECOVERY_ROOT / "fresh_extracted_cache" / R8U_FIXED_BATCH_ID
 )
-R8U_CONTINUATION_ROOT: Final = ATTEMPT_ROOT / "r8u_continuation_17_19"
+R8U_CONTINUATION_ROOT: Final = ATTEMPT_ROOT / "r8u_r2_continuation_17_19"
 R8U_CONTINUATION_SCHEDULER_ROOT: Final = R8U_CONTINUATION_ROOT / "scheduler"
 R8U_CONTINUATION_CLAIM_PATH: Final = (
     R8U_CONTINUATION_ROOT / "continuation_claim.restricted.json"
@@ -369,8 +423,10 @@ def _r8u_successor_exclusion_paths() -> frozenset[PurePosixPath]:
     """Return only fixed paths created by the authorized R8U successor."""
 
     paths = {
+        # The consumed R8U-R1 epoch remains traversed as immutable evidence.
         _r8u_relative_role("r8u_batch16_recovery"),
-        _r8u_relative_role("r8u_continuation_17_19"),
+        _r8u_relative_role("r8u_r2_batch16_recovery"),
+        _r8u_relative_role("r8u_r2_continuation_17_19"),
         _r8u_relative_role(
             "extracted_cache", R8U_FIXED_BATCH_ID, "dicom_extraction"
         ),
@@ -415,13 +471,16 @@ def _r8u_successor_exclusion_paths() -> frozenset[PurePosixPath]:
 
 
 R8U_SUCCESSOR_EXCLUSION_PATHS: Final = _r8u_successor_exclusion_paths()
+R8U_FAILED_RECOVERY_RELATIVE_ROOT: Final = PurePosixPath(
+    "r8u_batch16_recovery"
+)
 
 
 def _r8u_continuation_pristine_paths() -> frozenset[PurePosixPath]:
     """Return outputs that must still be pristine before Tasks 17--19."""
 
     paths = {
-        _r8u_relative_role("r8u_continuation_17_19"),
+        _r8u_relative_role("r8u_r2_continuation_17_19"),
         _r8u_relative_role("cohort_finalization"),
     }
     for index in R8U_FIXED_CONTINUATION_TASK_IDS:
@@ -446,7 +505,7 @@ R8U_CONTINUATION_PRISTINE_PATHS: Final = (
 R8U_CONTINUATION_TASK_OUTPUT_PRISTINE_PATHS: Final = frozenset(
     path
     for path in R8U_CONTINUATION_PRISTINE_PATHS
-    if path != _r8u_relative_role("r8u_continuation_17_19")
+    if path != _r8u_relative_role("r8u_r2_continuation_17_19")
 )
 
 
@@ -529,6 +588,55 @@ def _read_private(path: Path, *, maximum: int = MAX_CONTROL_BYTES) -> bytes:
 
 
 def _read_private_exact(path: Path, *, size: int, digest: str) -> bytes:
+    if size == 0:
+        descriptor = -1
+        try:
+            sequential._require_nonsymlink_components(path)
+            before = os.lstat(path)
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            payload = os.read(descriptor, 1)
+            after = os.fstat(descriptor)
+            visible_after = os.lstat(path)
+        except Exception as exc:
+            raise R8RControllerError(
+                "R8R_EXACT_CONTROL_FILE_INVALID"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        identity = lambda value: (
+            value.st_mode,
+            value.st_uid,
+            value.st_gid,
+            value.st_dev,
+            value.st_ino,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+        if (
+            digest
+            != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            or payload != b""
+            or not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or int(opened.st_uid) != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or int(opened.st_nlink) != 1
+            or int(opened.st_size) != 0
+            or identity(before) != identity(opened)
+            or identity(opened) != identity(after)
+            or identity(after) != identity(visible_after)
+        ):
+            _fail("R8R_EXACT_CONTROL_FILE_INVALID")
+        return b""
     try:
         payload = sequential._read_owner_private_regular(
             path,
@@ -692,7 +800,7 @@ def _current_implementation_commit() -> str:
 
 
 def _current_r8u_implementation_commit() -> str:
-    """Require the exact science -> R8R -> R8U-base -> repair chain."""
+    """Require the exact five-epoch R8U-R2 implementation chain."""
 
     try:
         current = sequential._current_commit()
@@ -702,19 +810,26 @@ def _current_r8u_implementation_commit() -> str:
         ORIGINAL_SCIENTIFIC_COMMIT,
         R8U_STARTING_IMPLEMENTATION_COMMIT,
         R8U_BASE_IMPLEMENTATION_COMMIT,
+        R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
     }:
         _fail("R8U_IMPLEMENTATION_COMMIT_REQUIRED")
     relation = sequential._git(
-        "merge-base", "--is-ancestor", R8U_BASE_IMPLEMENTATION_COMMIT, current
+        "merge-base", "--is-ancestor",
+        R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT, current,
     )
     distance = sequential._git(
-        "rev-list", "--count", f"{R8U_BASE_IMPLEMENTATION_COMMIT}..{current}"
+        "rev-list", "--count",
+        f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}..{current}",
     )
     parent_line = sequential._git(
         "rev-list", "--parents", "-n", "1", current
     )
     base_parent_line = sequential._git(
         "rev-list", "--parents", "-n", "1", R8U_BASE_IMPLEMENTATION_COMMIT
+    )
+    projection_parent_line = sequential._git(
+        "rev-list", "--parents", "-n", "1",
+        R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
     )
     r8r_parent_line = sequential._git(
         "rev-list", "--parents", "-n", "1", R8U_STARTING_IMPLEMENTATION_COMMIT
@@ -725,7 +840,13 @@ def _current_r8u_implementation_commit() -> str:
     if (
         relation
         or distance != "1"
-        or parent_line != f"{current} {R8U_BASE_IMPLEMENTATION_COMMIT}"
+        or parent_line
+        != f"{current} {R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}"
+        or projection_parent_line
+        != (
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT} "
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT}"
+        )
         or base_parent_line
         != (
             f"{R8U_BASE_IMPLEMENTATION_COMMIT} "
@@ -736,7 +857,7 @@ def _current_r8u_implementation_commit() -> str:
             f"{R8U_STARTING_IMPLEMENTATION_COMMIT} "
             f"{ORIGINAL_SCIENTIFIC_COMMIT}"
         )
-        or science_distance != "3"
+        or science_distance != "4"
     ):
         _fail("R8U_IMPLEMENTATION_ANCESTRY_INVALID")
     return current
@@ -745,7 +866,7 @@ def _current_r8u_implementation_commit() -> str:
 def _r8u_implementation_authority_epochs(
     implementation_commit: str,
 ) -> Mapping[str, str]:
-    """Bind every new R8U artifact to the exact four-commit authority."""
+    """Bind every new R8U-R2 artifact to the exact five-commit authority."""
 
     if (
         COMMIT_RE.fullmatch(implementation_commit) is None
@@ -753,6 +874,7 @@ def _r8u_implementation_authority_epochs(
             ORIGINAL_SCIENTIFIC_COMMIT,
             R8U_STARTING_IMPLEMENTATION_COMMIT,
             R8U_BASE_IMPLEMENTATION_COMMIT,
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         }
     ):
         _fail("R8U_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
@@ -760,7 +882,10 @@ def _r8u_implementation_authority_epochs(
         "scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "r8r_implementation_commit": R8U_STARTING_IMPLEMENTATION_COMMIT,
         "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
-        "r8u_projection_repair_commit": implementation_commit,
+        "r8u_projection_repair_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_scheduler_log_repair_commit": implementation_commit,
     }
     if set(value) != R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
         _fail("R8U_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
@@ -1311,7 +1436,7 @@ def _r8u_failed_partial_observation() -> Mapping[str, Any]:
 def _r8u_failed_partial_seal(*, implementation_commit: str) -> Mapping[str, Any]:
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_failed_task16_partial_extraction_evidence_v1",
+        "artifact_type": "lvef_c3_r8u_r2_failed_task16_partial_extraction_evidence_v1",
         "status": "FAILED_TASK16_PARTIAL_EXTRACTION_EVIDENCE",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
@@ -1799,6 +1924,7 @@ def _validate_no_active_jobs(
             R8U_PRIOR_RECOVERY_JOB_ID,
             R8U_FAILED_ARRAY_JOB_ID,
             R8U_FAILED_FINALIZER_JOB_ID,
+            R8U_FAILED_RECOVERY_JOB_ID,
         }
     ).isdisjoint(job_ids):
         _fail("R8R_ACTIVE_MATCHING_JOB_EXISTS")
@@ -1855,10 +1981,22 @@ def _validate_r8u_no_active_processes(
 
 
 @dataclass(frozen=True)
+class _R8USchedulerLogBinding:
+    role: str
+    scheduler_root: Path
+    job_name: str
+    job_id: str
+    task_id: str
+    terminal_state: str
+
+
+@dataclass(frozen=True)
 class _R8UAttemptContentScan:
     authority: Mapping[str, Any]
     regular_file_path_set_sha256: str
     duplicate_relative_path_count: int
+    scheduler_evidence: tuple[Mapping[str, Any], ...]
+    scheduler_evidence_projection_sha256: str
 
 
 def _r8u_is_at_or_beneath(
@@ -1911,6 +2049,617 @@ def _r8u_private_directory_metadata_valid(
         and mode & 0o7000 in {0, stat.S_ISGID}
         and device == approved_device
     )
+
+
+def _r8u_scheduler_log_basename(binding: _R8USchedulerLogBinding) -> str:
+    fixed_roots = {
+        "FAILED_R8U_BATCH16_RECOVERY": (
+            ATTEMPT_ROOT / "r8u_batch16_recovery" / "scheduler",
+            "rec",
+            frozenset({"NONE"}),
+        ),
+        "FRESH_R8U_R2_BATCH16_RECOVERY": (
+            ATTEMPT_ROOT / "r8u_r2_batch16_recovery" / "scheduler",
+            "rec",
+            frozenset({"NONE"}),
+        ),
+        "R8U_R2_CONTINUATION_ARRAY_TASK": (
+            ATTEMPT_ROOT / "r8u_r2_continuation_17_19" / "scheduler",
+            "seq",
+            frozenset({"17", "18", "19"}),
+        ),
+        "R8U_R2_COHORT_FINALIZER": (
+            ATTEMPT_ROOT / "r8u_r2_continuation_17_19" / "scheduler",
+            "fin",
+            frozenset({"NONE"}),
+        ),
+    }
+    role_authority = fixed_roots.get(binding.role)
+    if role_authority is None:
+        _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+    expected_root, job_kind, task_ids = role_authority
+    if (
+        binding.scheduler_root != expected_root
+        or JOB_RE.fullmatch(binding.job_id) is None
+        or re.fullmatch(
+            rf"lvef_c3_r8u_{job_kind}_[0-9a-f]{{8}}",
+            binding.job_name,
+        )
+        is None
+        or binding.task_id not in task_ids
+        or SAFE_CODE_RE.fullmatch(binding.terminal_state) is None
+    ):
+        _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+    if binding.role == "FAILED_R8U_BATCH16_RECOVERY" and (
+        binding.job_name != R8U_FAILED_RECOVERY_JOB_NAME
+        or binding.job_id != R8U_FAILED_RECOVERY_JOB_ID
+        or binding.terminal_state
+        != "TERMINAL_FAILED_APPLICATION_EXIT_78"
+    ):
+        _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+    suffix = "" if binding.task_id == "NONE" else f".{binding.task_id}"
+    return f"{binding.job_name}.o{binding.job_id}{suffix}"
+
+
+def _r8u_scheduler_log_relative_path(
+    binding: _R8USchedulerLogBinding,
+) -> PurePosixPath:
+    try:
+        scheduler_relative = binding.scheduler_root.relative_to(ATTEMPT_ROOT)
+    except ValueError as exc:
+        raise R8RControllerError(
+            "R8U_SCHEDULER_LOG_JOB_BINDING_INVALID"
+        ) from exc
+    allowed_roots = {
+        ATTEMPT_ROOT / "r8u_batch16_recovery" / "scheduler",
+        ATTEMPT_ROOT / "r8u_r2_batch16_recovery" / "scheduler",
+        ATTEMPT_ROOT / "r8u_r2_continuation_17_19" / "scheduler",
+    }
+    if binding.scheduler_root not in allowed_roots:
+        _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+    return PurePosixPath(
+        (scheduler_relative / _r8u_scheduler_log_basename(binding)).as_posix()
+    )
+
+
+def _r8u_log_shaped_basename(value: str) -> bool:
+    return (
+        re.fullmatch(
+            r"[^/]+\.o[1-9][0-9]{0,19}(?:\.[1-9][0-9]{0,5})?",
+            value,
+        )
+        is not None
+    )
+
+
+def _r8u_scheduler_log_evidence(
+    *,
+    path: Path,
+    binding: _R8USchedulerLogBinding,
+    approved_device: int,
+) -> Mapping[str, Any]:
+    """Read one receipt-bound Grid Engine merged log without following links."""
+
+    expected_relative = _r8u_scheduler_log_relative_path(binding)
+    expected_path = ATTEMPT_ROOT / Path(expected_relative.as_posix())
+    if (
+        not path.is_absolute()
+        or Path(os.path.abspath(path)) != path
+        or path != expected_path
+        or path.parent != binding.scheduler_root
+        or path.name != _r8u_scheduler_log_basename(binding)
+    ):
+        _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+
+    current = ATTEMPT_ROOT
+    try:
+        sequential._require_nonsymlink_components(path)
+        nested_mounts = _r8u_nested_mount_paths(ATTEMPT_ROOT)
+        root_info = _r8u_stable_lstat(current)
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or stat.S_ISLNK(root_info.st_mode)
+            or int(root_info.st_dev) != approved_device
+        ):
+            _fail("R8U_SCHEDULER_LOG_TOPOLOGY_INVALID")
+        for part in path.parent.relative_to(ATTEMPT_ROOT).parts:
+            current = current / part
+            info = _r8u_stable_lstat(current)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or not _r8u_private_directory_metadata_valid(
+                    mode=stat.S_IMODE(info.st_mode),
+                    uid=int(info.st_uid),
+                    device=int(info.st_dev),
+                    approved_device=approved_device,
+                )
+                or os.path.ismount(current)
+                or current in nested_mounts
+            ):
+                _fail("R8U_SCHEDULER_LOG_TOPOLOGY_INVALID")
+    except R8RControllerError as exc:
+        if exc.code == "R8U_SCHEDULER_LOG_TOPOLOGY_INVALID":
+            raise
+        raise R8RControllerError(
+            "R8U_SCHEDULER_LOG_TOPOLOGY_INVALID"
+        ) from exc
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_SCHEDULER_LOG_TOPOLOGY_INVALID"
+        ) from exc
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = -1
+    try:
+        visible_before = _r8u_stable_lstat(path)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        mode = stat.S_IMODE(opened.st_mode)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(visible_before.st_mode)
+            or int(opened.st_nlink) != 1
+            or int(opened.st_dev) != approved_device
+            or mode & 0o033
+            or mode & 0o7000
+        ):
+            _fail("R8U_SCHEDULER_LOG_TOPOLOGY_INVALID")
+        if int(opened.st_uid) != os.geteuid() or mode not in {0o600, 0o644}:
+            _fail("R8U_SCHEDULER_LOG_AUTHORITY_INVALID")
+        if (
+            int(opened.st_size) < 0
+            or int(opened.st_size) > R8U_SCHEDULER_LOG_MAX_BYTES
+        ):
+            _fail("R8U_SCHEDULER_LOG_SIZE_INVALID")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > R8U_SCHEDULER_LOG_MAX_BYTES:
+                _fail("R8U_SCHEDULER_LOG_SIZE_INVALID")
+            digest.update(chunk)
+        opened_after = os.fstat(descriptor)
+        visible_after = _r8u_stable_lstat(path)
+    except R8RControllerError as exc:
+        if exc.code in {
+            "R8U_SCHEDULER_LOG_TOPOLOGY_INVALID",
+            "R8U_SCHEDULER_LOG_AUTHORITY_INVALID",
+            "R8U_SCHEDULER_LOG_SIZE_INVALID",
+        }:
+            raise
+        raise R8RControllerError(
+            "R8U_SCHEDULER_LOG_TOPOLOGY_INVALID"
+        ) from exc
+    except OSError as exc:
+        raise R8RControllerError(
+            "R8U_SCHEDULER_LOG_TOPOLOGY_INVALID"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    identity = lambda value: (
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+        value.st_dev,
+        value.st_ino,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    if (
+        total != int(opened.st_size)
+        or not (
+            identity(visible_before)
+            == identity(opened)
+            == identity(opened_after)
+            == identity(visible_after)
+        )
+    ):
+        _fail("R8U_SCHEDULER_LOG_TOPOLOGY_INVALID")
+    digest_value = digest.hexdigest()
+    if binding.role == "FAILED_R8U_BATCH16_RECOVERY":
+        expected_size, expected_sha256 = (
+            R8U_FAILED_RECOVERY_FILE_AUTHORITIES[
+                "scheduler/"
+                f"{R8U_FAILED_RECOVERY_JOB_NAME}.o"
+                f"{R8U_FAILED_RECOVERY_JOB_ID}"
+            ]
+        )
+        if total != expected_size or digest_value != expected_sha256:
+            _fail("R8U_SCHEDULER_LOG_AUTHORITY_INVALID")
+    return {
+        "artifact_type": "lvef_c3_r8u_r2_scheduler_log_evidence_v1",
+        "status": "PASS_ROLE_BOUND_GRID_ENGINE_MERGED_STDOUT_STDERR_LOG",
+        "evidence_class": R8U_SCHEDULER_LOG_ROLE,
+        "role": binding.role,
+        "basename": path.name,
+        "job_id": binding.job_id,
+        "task_id": binding.task_id,
+        "mode": f"{stat.S_IMODE(opened.st_mode):04o}",
+        "size_bytes": total,
+        "sha256": digest_value,
+        "owner_uid": int(opened.st_uid),
+        "terminal_state": binding.terminal_state,
+    }
+
+
+def _r8u_failed_recovery_scheduler_binding() -> _R8USchedulerLogBinding:
+    return _R8USchedulerLogBinding(
+        role="FAILED_R8U_BATCH16_RECOVERY",
+        scheduler_root=(
+            ATTEMPT_ROOT / "r8u_batch16_recovery" / "scheduler"
+        ),
+        job_name=R8U_FAILED_RECOVERY_JOB_NAME,
+        job_id=R8U_FAILED_RECOVERY_JOB_ID,
+        task_id="NONE",
+        terminal_state="TERMINAL_FAILED_APPLICATION_EXIT_78",
+    )
+
+
+def _r8u_fresh_recovery_terminal_state() -> str:
+    if os.path.lexists(R8U_RECOVERY_ACCOUNTING_PATH):
+        return "TERMINAL_PASS_APPLICATION_EXIT_0"
+    if os.path.lexists(R8U_RECOVERY_TERMINAL_PATH):
+        return "APPLICATION_PASS_AWAITING_ACCOUNTING"
+    return "SUBMITTED_OR_RUNNING"
+
+
+def _r8u_scheduler_log_bindings() -> Mapping[
+    PurePosixPath, _R8USchedulerLogBinding
+]:
+    """Build the closed scheduler-log allowlist only from fixed receipts."""
+
+    bindings: dict[PurePosixPath, _R8USchedulerLogBinding] = {}
+
+    def add(binding: _R8USchedulerLogBinding) -> None:
+        relative = _r8u_scheduler_log_relative_path(binding)
+        if relative in bindings:
+            _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+        bindings[relative] = binding
+
+    add(_r8u_failed_recovery_scheduler_binding())
+    if not os.path.lexists(R8U_RECOVERY_SUBMISSION_PATH):
+        return dict(bindings)
+
+    try:
+        implementation_commit = _current_r8u_implementation_commit()
+        recovery, _ = _load_private_json(R8U_RECOVERY_SUBMISSION_PATH)
+        recovery_job_id = str(recovery.get("recovery_job_id", ""))
+        expected_recovery = _r8u_recovery_submission_receipt(
+            implementation_commit=implementation_commit,
+            recovery_job_id=recovery_job_id,
+            qsub_environment_sha256=str(
+                recovery.get("qsub_environment_sha256", "")
+            ),
+            recovery_authority_sha256=str(
+                recovery.get("recovery_authority_sha256", "")
+            ),
+            partial_seal_sha256=str(
+                recovery.get("failed_partial_seal_sha256", "")
+            ),
+            capacity_sha256=str(
+                recovery.get("recovery_capacity_sha256", "")
+            ),
+        )
+        if not _exact_typed_value_equal(recovery, expected_recovery):
+            _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+        add(
+            _R8USchedulerLogBinding(
+                role="FRESH_R8U_R2_BATCH16_RECOVERY",
+                scheduler_root=(
+                    ATTEMPT_ROOT
+                    / "r8u_r2_batch16_recovery"
+                    / "scheduler"
+                ),
+                job_name=_r8u_recovery_job_name(implementation_commit),
+                job_id=recovery_job_id,
+                task_id="NONE",
+                terminal_state=_r8u_fresh_recovery_terminal_state(),
+            )
+        )
+
+        if not os.path.lexists(R8U_CONTINUATION_SUBMISSION_PATH):
+            return dict(bindings)
+        continuation, _ = _load_private_json(
+            R8U_CONTINUATION_SUBMISSION_PATH
+        )
+        claim_payload = _read_private(R8U_CONTINUATION_CLAIM_PATH)
+        array_job_id = str(continuation.get("array_job_id", ""))
+        finalizer_job_id = str(continuation.get("finalizer_job_id", ""))
+        expected_continuation = _r8u_continuation_submission_receipt(
+            implementation_commit=implementation_commit,
+            recovery_job_id=recovery_job_id,
+            array_job_id=array_job_id,
+            finalizer_job_id=finalizer_job_id,
+            qsub_environment_sha256=str(
+                continuation.get("qsub_environment_sha256", "")
+            ),
+            continuation_claim_sha256=_sha256_bytes(claim_payload),
+        )
+        if not _exact_typed_value_equal(
+            continuation, expected_continuation
+        ):
+            _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+        for task_id in R8U_FIXED_CONTINUATION_TASK_IDS:
+            add(
+                _R8USchedulerLogBinding(
+                    role="R8U_R2_CONTINUATION_ARRAY_TASK",
+                    scheduler_root=(
+                        ATTEMPT_ROOT
+                        / "r8u_r2_continuation_17_19"
+                        / "scheduler"
+                    ),
+                    job_name=_r8u_continuation_array_job_name(
+                        implementation_commit
+                    ),
+                    job_id=array_job_id,
+                    task_id=str(task_id),
+                    terminal_state="SUBMITTED_OR_RUNNING",
+                )
+            )
+        add(
+            _R8USchedulerLogBinding(
+                role="R8U_R2_COHORT_FINALIZER",
+                scheduler_root=(
+                    ATTEMPT_ROOT
+                    / "r8u_r2_continuation_17_19"
+                    / "scheduler"
+                ),
+                job_name=_r8u_continuation_finalizer_job_name(
+                    implementation_commit
+                ),
+                job_id=finalizer_job_id,
+                task_id="NONE",
+                terminal_state="HELD_OR_RUNNING",
+            )
+        )
+    except R8RControllerError as exc:
+        if exc.code == "R8U_SCHEDULER_LOG_JOB_BINDING_INVALID":
+            raise
+        raise R8RControllerError(
+            "R8U_SCHEDULER_LOG_JOB_BINDING_INVALID"
+        ) from exc
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_SCHEDULER_LOG_JOB_BINDING_INVALID"
+        ) from exc
+    return dict(bindings)
+
+
+def _r8u_failed_recovery_epoch_authority() -> Mapping[str, Any]:
+    """Validate the consumed R8U-R1 namespace without writing to it."""
+
+    root = ATTEMPT_ROOT / "r8u_batch16_recovery"
+    scheduler_root = root / "scheduler"
+    expected_files = set(R8U_FAILED_RECOVERY_FILE_AUTHORITIES)
+    observed_files: set[str] = set()
+    observed_directories: set[str] = set()
+    try:
+        root_info = _r8u_stable_lstat(ATTEMPT_ROOT)
+        approved_device = int(root_info.st_dev)
+        for directory, names, files in os.walk(
+            root, topdown=True, followlinks=False
+        ):
+            names.sort()
+            files.sort()
+            directory_path = Path(directory)
+            relative_directory = directory_path.relative_to(root).as_posix()
+            observed_directories.add(relative_directory)
+            info = _r8u_stable_lstat(directory_path)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or not _r8u_private_directory_metadata_valid(
+                    mode=stat.S_IMODE(info.st_mode),
+                    uid=int(info.st_uid),
+                    device=int(info.st_dev),
+                    approved_device=approved_device,
+                )
+                or os.path.ismount(directory_path)
+            ):
+                _fail("R8U_FAILED_RECOVERY_EVIDENCE_INVALID")
+            for name in names:
+                child = directory_path / name
+                child_info = _r8u_stable_lstat(child)
+                if (
+                    not stat.S_ISDIR(child_info.st_mode)
+                    or stat.S_ISLNK(child_info.st_mode)
+                ):
+                    _fail("R8U_FAILED_RECOVERY_EVIDENCE_INVALID")
+            for name in files:
+                path = directory_path / name
+                relative = path.relative_to(root).as_posix()
+                file_info = _r8u_stable_lstat(path)
+                expected_log_relative = (
+                    "scheduler/"
+                    f"{R8U_FAILED_RECOVERY_JOB_NAME}.o"
+                    f"{R8U_FAILED_RECOVERY_JOB_ID}"
+                )
+                if (
+                    not stat.S_ISREG(file_info.st_mode)
+                    or stat.S_ISLNK(file_info.st_mode)
+                    or int(file_info.st_uid) != os.geteuid()
+                    or int(file_info.st_nlink) != 1
+                    or int(file_info.st_dev) != approved_device
+                    or (
+                        relative != expected_log_relative
+                        and stat.S_IMODE(file_info.st_mode) != 0o600
+                    )
+                ):
+                    _fail("R8U_FAILED_RECOVERY_EVIDENCE_INVALID")
+                observed_files.add(relative)
+        if (
+            observed_directories != {".", "scheduler"}
+            or observed_files != expected_files
+        ):
+            _fail("R8U_FAILED_RECOVERY_EVIDENCE_INVALID")
+
+        binding = _r8u_failed_recovery_scheduler_binding()
+        log_relative = _r8u_scheduler_log_relative_path(binding)
+        log_path = ATTEMPT_ROOT / Path(log_relative.as_posix())
+        scheduler_evidence = _r8u_scheduler_log_evidence(
+            path=log_path,
+            binding=binding,
+            approved_device=approved_device,
+        )
+        expected_log = R8U_FAILED_RECOVERY_FILE_AUTHORITIES[
+            f"scheduler/{log_path.name}"
+        ]
+        if (
+            scheduler_evidence.get("mode") != "0644"
+            or scheduler_evidence.get("size_bytes") != expected_log[0]
+            or scheduler_evidence.get("sha256") != expected_log[1]
+        ):
+            _fail("R8U_SCHEDULER_LOG_AUTHORITY_INVALID")
+
+        inventory_rows: list[list[Any]] = []
+        for relative in sorted(expected_files):
+            expected_size, expected_sha = (
+                R8U_FAILED_RECOVERY_FILE_AUTHORITIES[relative]
+            )
+            path = root / Path(relative)
+            if relative == f"scheduler/{log_path.name}":
+                payload_sha = str(scheduler_evidence["sha256"])
+                payload_size = int(scheduler_evidence["size_bytes"])
+            else:
+                payload = _read_private_exact(
+                    path, size=expected_size, digest=expected_sha
+                )
+                payload_sha = _sha256_bytes(payload)
+                payload_size = len(payload)
+            if payload_size != expected_size or payload_sha != expected_sha:
+                _fail("R8U_FAILED_RECOVERY_EVIDENCE_INVALID")
+            inventory_rows.append(
+                [relative, expected_size, expected_sha]
+            )
+
+        submission_payload = _read_private_exact(
+            scheduler_root / "submission_receipt.restricted.json",
+            size=R8U_FAILED_RECOVERY_FILE_AUTHORITIES[
+                "scheduler/submission_receipt.restricted.json"
+            ][0],
+            digest=R8U_FAILED_RECOVERY_FILE_AUTHORITIES[
+                "scheduler/submission_receipt.restricted.json"
+            ][1],
+        )
+        submission = _strict_json(submission_payload)
+        stdout = _read_private_exact(
+            scheduler_root / "recovery.qsub.stdout.restricted",
+            size=8,
+            digest=R8U_FAILED_RECOVERY_FILE_AUTHORITIES[
+                "scheduler/recovery.qsub.stdout.restricted"
+            ][1],
+        )
+        stderr = _read_private_exact(
+            scheduler_root / "recovery.qsub.stderr.restricted",
+            size=0,
+            digest=R8U_FAILED_RECOVERY_FILE_AUTHORITIES[
+                "scheduler/recovery.qsub.stderr.restricted"
+            ][1],
+        )
+        qsub_exit = _read_private_exact(
+            scheduler_root / "recovery.qsub.exit_status.restricted",
+            size=2,
+            digest=R8U_FAILED_RECOVERY_FILE_AUTHORITIES[
+                "scheduler/recovery.qsub.exit_status.restricted"
+            ][1],
+        )
+        if (
+            stdout != f"{R8U_FAILED_RECOVERY_JOB_ID}\n".encode("ascii")
+            or stderr != b""
+            or qsub_exit != b"0\n"
+            or submission.get("implementation_commit")
+            != R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+            or submission.get("recovery_job_name")
+            != R8U_FAILED_RECOVERY_JOB_NAME
+            or str(submission.get("recovery_job_id", ""))
+            != R8U_FAILED_RECOVERY_JOB_ID
+            or submission.get("scheduler_submission_count") != 1
+            or submission.get("cloud_requests") != 0
+            or submission.get("download_reruns") != 0
+        ):
+            _fail("R8U_FAILED_RECOVERY_EVIDENCE_INVALID")
+    except R8RControllerError as exc:
+        if exc.code.startswith("R8U_SCHEDULER_LOG_"):
+            raise
+        raise R8RControllerError(
+            "R8U_FAILED_RECOVERY_EVIDENCE_INVALID"
+        ) from exc
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_FAILED_RECOVERY_EVIDENCE_INVALID"
+        ) from exc
+
+    authority = {
+        "artifact_type": "lvef_c3_r8u_r1_failed_recovery_epoch_authority_v1",
+        "status": "PASS_IMMUTABLE_FAILED_RECOVERY_APPLICATION_EXIT_78",
+        "implementation_commit": R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        "job_id": R8U_FAILED_RECOVERY_JOB_ID,
+        "job_name": R8U_FAILED_RECOVERY_JOB_NAME,
+        "qsub_exit": R8U_FAILED_RECOVERY_QSUB_EXIT,
+        "qacct_failed": R8U_FAILED_RECOVERY_QACCT_FAILED,
+        "qacct_exit_status": R8U_FAILED_RECOVERY_QACCT_EXIT_STATUS,
+        "qacct_task_id": "NONE",
+        "terminal_code": R8U_FAILED_RECOVERY_TERMINAL_CODE,
+        "scheduler_evidence": dict(scheduler_evidence),
+        "namespace_file_count": len(inventory_rows),
+        "namespace_inventory_sha256": core.canonical_json_sha256(
+            inventory_rows
+        ),
+        "dicom_body_reads": 0,
+        "cloud_requests": 0,
+        "download_reruns": 0,
+        "extraction_reruns": 0,
+        "echoprime_reruns": 0,
+        "embedding_generations": 0,
+    }
+    return dict(sorted(authority.items()))
+
+
+def _r8u_scheduler_evidence_projection() -> Mapping[str, Any]:
+    """Observe only existing, receipt-bound scheduler logs."""
+
+    root_info = _r8u_stable_lstat(ATTEMPT_ROOT)
+    approved_device = int(root_info.st_dev)
+    evidence: list[Mapping[str, Any]] = []
+    for relative, binding in sorted(
+        _r8u_scheduler_log_bindings().items(),
+        key=lambda item: item[0].as_posix(),
+    ):
+        path = ATTEMPT_ROOT / Path(relative.as_posix())
+        if os.path.lexists(path):
+            evidence.append(
+                _r8u_scheduler_log_evidence(
+                    path=path,
+                    binding=binding,
+                    approved_device=approved_device,
+                )
+            )
+    ordered = sorted(
+        (dict(value) for value in evidence),
+        key=lambda value: (
+            str(value["role"]),
+            str(value["job_id"]),
+            str(value["task_id"]),
+        ),
+    )
+    return {
+        "status": "PASS_CLOSED_ROLE_BOUND_SCHEDULER_EVIDENCE",
+        "scheduler_log_count": len(ordered),
+        "scheduler_log_evidence": ordered,
+        "scheduler_log_evidence_sha256": core.canonical_json_sha256(
+            ordered
+        ),
+    }
 
 
 def _r8u_decode_mountinfo_path(value: str) -> Path:
@@ -1980,6 +2729,15 @@ def _r8u_scan_attempt_content() -> _R8UAttemptContentScan:
     ):
         _fail("R8U_REQUIRED_DIRECTORY_TOPOLOGY_INVALID")
     nested_mounts = _r8u_nested_mount_paths(root)
+    scheduler_bindings = _r8u_scheduler_log_bindings()
+    scheduler_roots = frozenset(
+        {
+            PurePosixPath("r8u_batch16_recovery/scheduler"),
+            PurePosixPath("r8u_r2_batch16_recovery/scheduler"),
+            PurePosixPath("r8u_r2_continuation_17_19/scheduler"),
+        }
+    )
+    scheduler_evidence: list[Mapping[str, Any]] = []
     directory_metadata: dict[
         PurePosixPath, tuple[int, int, int, int]
     ] = {
@@ -2034,6 +2792,23 @@ def _r8u_scan_attempt_content() -> _R8UAttemptContentScan:
                 excluded = _r8u_is_at_or_beneath(
                     relative, R8U_SUCCESSOR_EXCLUSION_PATHS
                 )
+                scheduler_binding = scheduler_bindings.get(relative)
+                if scheduler_binding is not None:
+                    if not excluded:
+                        _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
+                    scheduler_evidence.append(
+                        _r8u_scheduler_log_evidence(
+                            path=path,
+                            binding=scheduler_binding,
+                            approved_device=approved_device,
+                        )
+                    )
+                    continue
+                if (
+                    relative.parent in scheduler_roots
+                    and _r8u_log_shaped_basename(path.name)
+                ):
+                    _fail("R8U_SCHEDULER_LOG_JOB_BINDING_INVALID")
                 if info.st_dev != approved_device:
                     _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
                 if stat.S_ISDIR(info.st_mode):
@@ -2080,10 +2855,14 @@ def _r8u_scan_attempt_content() -> _R8UAttemptContentScan:
                     elif stat.S_ISREG(info.st_mode):
                         if (
                             int(info.st_uid) != os.geteuid()
-                            or stat.S_IMODE(info.st_mode) & 0o077
                             or int(info.st_nlink) != 1
                         ):
                             _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+                        if stat.S_IMODE(info.st_mode) & 0o077:
+                            _fail(
+                                "R8U_UNCLASSIFIED_PUBLIC_FILE_IN_"
+                                "SUCCESSOR_NAMESPACE"
+                            )
                     elif stat.S_ISLNK(info.st_mode):
                         symlink_count += 1
                     else:
@@ -2223,10 +3002,24 @@ def _r8u_scan_attempt_content() -> _R8UAttemptContentScan:
     }
     if set(authority) != R8U_ATTEMPT_CONTENT_AUTHORITY_KEYS:
         _fail("R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID")
+    ordered_scheduler_evidence = tuple(
+        sorted(
+            (dict(value) for value in scheduler_evidence),
+            key=lambda value: (
+                str(value["role"]),
+                str(value["job_id"]),
+                str(value["task_id"]),
+            ),
+        )
+    )
     return _R8UAttemptContentScan(
         authority=dict(sorted(authority.items())),
         regular_file_path_set_sha256=path_set_digest.hexdigest(),
         duplicate_relative_path_count=duplicate_relative_path_count,
+        scheduler_evidence=ordered_scheduler_evidence,
+        scheduler_evidence_projection_sha256=core.canonical_json_sha256(
+            list(ordered_scheduler_evidence)
+        ),
     )
 
 
@@ -2280,9 +3073,15 @@ def _r8u_validate_pristine_exclusion_paths(
 
 
 def _r8u_validate_pristine_successor_exclusions() -> None:
-    """Prove all successor namespaces pristine before the first R8U write."""
+    """Prove the fresh R2 namespaces pristine without rejecting failed R1."""
 
-    _r8u_validate_pristine_exclusion_paths(R8U_SUCCESSOR_EXCLUSION_PATHS)
+    _r8u_validate_pristine_exclusion_paths(
+        frozenset(
+            path
+            for path in R8U_SUCCESSOR_EXCLUSION_PATHS
+            if path != R8U_FAILED_RECOVERY_RELATIVE_ROOT
+        )
+    )
 
 
 def _r8u_validate_pristine_continuation_exclusions() -> None:
@@ -2559,21 +3358,32 @@ def _r8u_recovery_authority(
     partial_seal_sha256: str,
     capacity_sha256: str,
     raw_authority: Mapping[str, Any],
+    failed_recovery_epoch_authority: Mapping[str, Any],
 ) -> Mapping[str, Any]:
+    failed_epoch_sha256 = core.canonical_json_sha256(
+        failed_recovery_epoch_authority
+    )
     if (
         tuple(prefix_receipts)
         != tuple(item[2] for item in R8U_PREFIX_RECEIPT_AUTHORITIES)
         or SHA_RE.fullmatch(qsub_environment_sha256) is None
         or SHA_RE.fullmatch(partial_seal_sha256) is None
         or SHA_RE.fullmatch(capacity_sha256) is None
+        or SHA_RE.fullmatch(failed_epoch_sha256) is None
+        or failed_recovery_epoch_authority.get("job_id")
+        != R8U_FAILED_RECOVERY_JOB_ID
+        or failed_recovery_epoch_authority.get("status")
+        != "PASS_IMMUTABLE_FAILED_RECOVERY_APPLICATION_EXIT_78"
     ):
         _fail("R8U_RECOVERY_AUTHORITY_INVALID")
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_batch16_recovery_authority_v1",
+        "artifact_type": "lvef_c3_r8u_r2_batch16_recovery_authority_v1",
         "status": "AUTHORIZED_FIXED_BATCH16_RECOVERY",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
-        "prior_implementation_commit": R8U_STARTING_IMPLEMENTATION_COMMIT,
+        "prior_implementation_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
         "implementation_commit": implementation_commit,
         "implementation_authority_epochs": dict(
             _r8u_implementation_authority_epochs(implementation_commit)
@@ -2585,6 +3395,10 @@ def _r8u_recovery_authority(
         "continuation_task_range": R8U_FIXED_CONTINUATION_TASK_RANGE,
         "prefix_final_receipt_sha256": list(prefix_receipts),
         "historical_r8r_chain_authority": dict(_r8u_historical_r8r_chain_authority()),
+        "failed_r8u_recovery_epoch_authority": dict(
+            failed_recovery_epoch_authority
+        ),
+        "failed_r8u_recovery_epoch_authority_sha256": failed_epoch_sha256,
         "failed_partial_seal_sha256": partial_seal_sha256,
         "recovery_capacity_sha256": capacity_sha256,
         "retained_raw_authority": dict(raw_authority),
@@ -2633,7 +3447,7 @@ def _r8u_recovery_submission_receipt(
     command = _r8u_recovery_qsub_command(implementation_commit)
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_batch16_recovery_submission_v1",
+        "artifact_type": "lvef_c3_r8u_r2_batch16_recovery_submission_v1",
         "status": "PASS_EXACT_ONE_GPU_BATCH16_RECOVERY_QSUB",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
@@ -2690,7 +3504,7 @@ def _validate_r8u_recovery_submission(
         capacity.validate_fixed_r8u_batch16_recovery_capacity(
             run.plan,
             capacity_value,
-            r8u_projection_repair_commit=implementation_commit,
+            r8u_scheduler_log_repair_commit=implementation_commit,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
@@ -2703,6 +3517,9 @@ def _validate_r8u_recovery_submission(
         partial_seal_sha256=core.sha256_file(R8U_FAILED_PARTIAL_SEAL_PATH),
         capacity_sha256=_sha256_bytes(capacity_payload),
         raw_authority=_r8u_batch16_raw_control_authority(run),
+        failed_recovery_epoch_authority=(
+            _r8u_failed_recovery_epoch_authority()
+        ),
     )
     if not _exact_typed_value_equal(authority, expected_authority):
         _fail("R8U_RECOVERY_AUTHORITY_INVALID")
@@ -2741,6 +3558,76 @@ def _r8u_capacity_deficits(value: Mapping[str, Any]) -> Mapping[str, int]:
     return result
 
 
+def _validate_r8u_initial_recovery_qstat(
+    *,
+    environment: Mapping[str, str],
+    recovery_job_id: str,
+    implementation_commit: str,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> str:
+    """Take one non-polling qstat snapshot for the fresh recovery job."""
+
+    completed = runner(
+        [str(scheduler.QSTAT_PATH), "-xml", "-u", environment["USER"]],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=dict(environment),
+    )
+    payload = bytes(completed.stdout)
+    if (
+        completed.returncode != 0
+        or completed.stderr
+        or len(payload) > 4 * 1024 * 1024
+        or b"<!DOCTYPE" in payload.upper()
+        or b"<!ENTITY" in payload.upper()
+    ):
+        _fail("R8U_INITIAL_QSTAT_INVALID")
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise R8RControllerError("R8U_INITIAL_QSTAT_INVALID") from exc
+    local = lambda element: element.tag.rsplit("}", 1)[-1]
+    direct_children = [local(element) for element in list(root)]
+    if (
+        local(root) != "job_info"
+        or direct_children.count("queue_info") != 1
+        or direct_children.count("job_info") != 1
+        or any(
+            name not in {"queue_info", "job_info"}
+            for name in direct_children
+        )
+    ):
+        _fail("R8U_INITIAL_QSTAT_INVALID")
+    matches: list[tuple[str, str, str]] = []
+    for job in root.iter():
+        if local(job) != "job_list":
+            continue
+        fields: dict[str, list[str]] = {}
+        for child in list(job):
+            fields.setdefault(local(child), []).append(child.text or "")
+        if recovery_job_id not in fields.get("JB_job_number", []):
+            continue
+        names = fields.get("JB_name", [])
+        states = fields.get("state", [])
+        attribute_state = str(job.get("state", ""))
+        if len(names) != 1 or len(states) != 1:
+            _fail("R8U_INITIAL_QSTAT_STATE_INVALID")
+        matches.append((names[0], states[0], attribute_state))
+    if len(matches) != 1:
+        _fail("R8U_INITIAL_QSTAT_TOPOLOGY_INVALID")
+    job_name, state, attribute_state = matches[0]
+    if job_name != _r8u_recovery_job_name(implementation_commit):
+        _fail("R8U_INITIAL_QSTAT_TOPOLOGY_INVALID")
+    if state not in {"r", "qw", "t", "Rr"}:
+        _fail("R8U_INITIAL_QSTAT_STATE_INVALID")
+    expected_category = "running" if state in {"r", "t", "Rr"} else "pending"
+    if attribute_state != expected_category:
+        _fail("R8U_INITIAL_QSTAT_STATE_INVALID")
+    return state
+
+
 def submit_r8u_batch16_recovery(
     *,
     qsub_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
@@ -2763,19 +3650,21 @@ def submit_r8u_batch16_recovery(
     )
     _validate_original_controls()
     _r8u_validate_pristine_successor_exclusions()
-    _r8u_validate_pre_mutation_projections()
     _r8u_historical_r8r_chain_authority()
     prefix = _r8u_validate_frozen_prefix(run, include_batch16=False)
     partial_seal = _r8u_failed_partial_seal(
         implementation_commit=implementation_commit
     )
     raw_authority = _r8u_batch16_raw_control_authority(run)
+    failed_recovery_epoch_authority = (
+        _r8u_failed_recovery_epoch_authority()
+    )
     _r8u_require_recovery_absent(run)
     # This is intentionally the sole live capacity observation in R8U.
     try:
         capacity_value = capacity.probe_fixed_r8u_batch16_recovery_capacity(
             run.plan,
-            r8u_projection_repair_commit=implementation_commit,
+            r8u_scheduler_log_repair_commit=implementation_commit,
             process_runner=capacity_process_runner,
         )
     except Exception as exc:
@@ -2784,7 +3673,7 @@ def submit_r8u_batch16_recovery(
         capacity.validate_fixed_r8u_batch16_recovery_capacity(
             run.plan,
             capacity_value,
-            r8u_projection_repair_commit=implementation_commit,
+            r8u_scheduler_log_repair_commit=implementation_commit,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
@@ -2805,6 +3694,7 @@ def submit_r8u_batch16_recovery(
         partial_seal_sha256=partial_sha,
         capacity_sha256=capacity_sha,
         raw_authority=raw_authority,
+        failed_recovery_epoch_authority=failed_recovery_epoch_authority,
     )
     authority_sha = _write_private_json(R8U_RECOVERY_AUTHORITY_PATH, authority)
     job_id = scheduler._capture_qsub(
@@ -2823,13 +3713,24 @@ def submit_r8u_batch16_recovery(
         capacity_sha256=capacity_sha,
     )
     _write_private_json(R8U_RECOVERY_SUBMISSION_PATH, receipt)
-    _validate_r8u_recovery_submission()
-    _r8u_validate_attempt_content_authority()
+    receipt_readback, _ = _load_private_json(R8U_RECOVERY_SUBMISSION_PATH)
+    if not _exact_typed_value_equal(receipt_readback, receipt):
+        _fail("R8U_RECOVERY_SUBMISSION_RECEIPT_INVALID")
+    initial_state = _validate_r8u_initial_recovery_qstat(
+        environment=environment,
+        recovery_job_id=job_id,
+        implementation_commit=implementation_commit,
+        runner=qstat_runner,
+    )
     return {
-        "status": "R8U_BATCH16_RECOVERY_SUBMITTED",
+        "status": "BATCH16_RECOVERY_SUBMITTED_AWAITING_TERMINAL",
         "recovery_job_id": job_id,
         "capacity_status": R8U_CAPACITY_STATUS,
+        "initial_state": initial_state,
         "new_qsub_submissions": 1,
+        "login_node_polling_started": False,
+        "continuation_submitted": False,
+        "finalizer_submitted": False,
         "cloud_requests": 0,
         "download_reruns": 0,
     }
@@ -2877,7 +3778,7 @@ def _r8u_publish_fresh_extraction(
         _fail("R8U_FRESH_EXTRACTION_PUBLICATION_INVALID")
     receipt = {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_fresh_batch16_extraction_publication_v1",
+        "artifact_type": "lvef_c3_r8u_r2_fresh_batch16_extraction_publication_v1",
         "status": "PASS_FRESH_BATCH16_EXTRACTION_PUBLISHED_NO_CLOBBER",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
@@ -2934,7 +3835,7 @@ def _r8u_recovery_terminal_receipt(
             raise R8RControllerError("R8U_RECOVERY_TERMINAL_AUTHORITY_INVALID") from exc
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_batch16_recovery_terminal_v1",
+        "artifact_type": "lvef_c3_r8u_r2_batch16_recovery_terminal_v1",
         "status": R8U_RECOVERY_STATUS,
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
@@ -3254,7 +4155,7 @@ def _r8u_recovery_accounting_receipt(
     )
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_batch16_recovery_accounting_v1",
+        "artifact_type": "lvef_c3_r8u_r2_batch16_recovery_accounting_v1",
         "status": "PASS_RECOVERY_QACCT_FAILED_0_EXIT_0",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
@@ -3309,10 +4210,12 @@ def _r8u_continuation_claim(
         _fail("R8U_CONTINUATION_CLAIM_INVALID")
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_fixed_continuation_claim_v1",
+        "artifact_type": "lvef_c3_r8u_r2_fixed_continuation_claim_v1",
         "status": "AUTHORIZED_FIXED_CONTINUATION_17_19",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
-        "prior_implementation_commit": R8U_STARTING_IMPLEMENTATION_COMMIT,
+        "prior_implementation_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
         "implementation_commit": implementation_commit,
         "implementation_authority_epochs": dict(
             _r8u_implementation_authority_epochs(implementation_commit)
@@ -3370,7 +4273,7 @@ def _r8u_continuation_submission_receipt(
     )
     return {
         "schema_version": 1,
-        "artifact_type": "lvef_c3_r8u_fixed_continuation_submission_v1",
+        "artifact_type": "lvef_c3_r8u_r2_fixed_continuation_submission_v1",
         "status": "PASS_EXACT_ARRAY_17_19_AND_HELD_FINALIZER",
         "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
         "implementation_commit": implementation_commit,
@@ -3438,7 +4341,7 @@ def _validate_r8u_continuation_chain(
         capacity.validate_fixed_r8u_batch16_recovery_capacity(
             run.plan,
             capacity_value,
-            r8u_projection_repair_commit=implementation_commit,
+            r8u_scheduler_log_repair_commit=implementation_commit,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
@@ -3659,7 +4562,8 @@ def submit_r8u_continuation_17_19(
         runtime_validation_context=stages.LIVE_RUNTIME_CAPTURE,
         r8u=True,
     )
-    _r8u_validate_attempt_content_authority()
+    _r8u_failed_recovery_epoch_authority()
+    _r8u_scheduler_evidence_projection()
     _r8u_validate_pristine_continuation_exclusions()
     validate_r8u_recovery_terminal()
     prefix = _r8u_validate_frozen_prefix(run, include_batch16=True)
@@ -3685,7 +4589,7 @@ def submit_r8u_continuation_17_19(
         capacity.validate_fixed_r8u_batch16_recovery_capacity(
             run.plan,
             capacity_value,
-            r8u_projection_repair_commit=implementation_commit,
+            r8u_scheduler_log_repair_commit=implementation_commit,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_RECOVERY_CAPACITY_INVALID") from exc
@@ -3735,7 +4639,6 @@ def submit_r8u_continuation_17_19(
     _validate_r8u_continuation_chain(
         run, current_job_id=None, role="array", wait=False
     )
-    _r8u_validate_attempt_content_authority()
     return {
         "status": "R8U_CONTINUATION_17_19_SUBMITTED",
         "array_job_id": array_job_id,
@@ -3762,6 +4665,9 @@ def run_r8u_continuation_array_task() -> Mapping[str, Any]:
         scheduler_job_identity=job_id,
         runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
         r8u=True,
+    )
+    _validate_r8u_continuation_chain(
+        run, current_job_id=job_id, role="array", wait=True
     )
     _r8u_validate_attempt_content_authority()
     dependencies = sequential.FullDependencies(
@@ -3793,10 +4699,10 @@ def run_r8u_continuation_finalizer() -> Mapping[str, Any]:
         r8u=True,
     )
     implementation_commit = _current_r8u_implementation_commit()
-    _r8u_validate_attempt_content_authority()
     _validate_r8u_continuation_chain(
         run, current_job_id=job_id, role="finalizer", wait=True
     )
+    _r8u_validate_attempt_content_authority()
     receipts = [
         sequential._batch_paths(run, f"c3_batch_{index:03d}")["final_receipt"]
         for index in range(run.requirements.batch_count)
@@ -5227,9 +6133,15 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             print("FULL_C3_COHORT_FINALIZER=PASS")
         elif args.submit_batch16_recovery:
             value = submit_r8u_batch16_recovery()
+            print("R8U_STATUS=BATCH16_RECOVERY_SUBMITTED_AWAITING_TERMINAL")
             print(f"R8U_BATCH16_RECOVERY_JOB_ID={value['recovery_job_id']}")
             print(f"R8U_BATCH16_RECOVERY_CAPACITY_STATUS={value['capacity_status']}")
+            print(
+                "R8U_BATCH16_RECOVERY_INITIAL_STATE="
+                f"{value['initial_state']}"
+            )
             print("R8U_NEW_QSUB_SUBMISSIONS=1")
+            print("R8U_LOGIN_NODE_POLLING_STARTED=NO")
         elif args.run_batch16_recovery:
             run_r8u_batch16_recovery()
             print("PASS_BATCH16_RECOVERY_FINALIZED")

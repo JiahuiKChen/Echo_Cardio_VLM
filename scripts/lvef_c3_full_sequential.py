@@ -435,12 +435,15 @@ class FullExecutionContext(Enum):
 
     ORIGINAL_FULL_SUBMISSION = "ORIGINAL_FULL_SUBMISSION"
     R8R_FIXED_CONTINUATION = "R8R_FIXED_CONTINUATION"
-    R8U_FIXED_CONTINUATION = "R8U_FIXED_CONTINUATION"
+    R8U_R2_FIXED_CONTINUATION = "R8U_R2_FIXED_CONTINUATION"
 
 
 ORIGINAL_FULL_SUBMISSION = FullExecutionContext.ORIGINAL_FULL_SUBMISSION
 R8R_FIXED_CONTINUATION = FullExecutionContext.R8R_FIXED_CONTINUATION
-R8U_FIXED_CONTINUATION = FullExecutionContext.R8U_FIXED_CONTINUATION
+R8U_R2_FIXED_CONTINUATION = FullExecutionContext.R8U_R2_FIXED_CONTINUATION
+# Compatibility name used by the fixed controller; it resolves only to the
+# fresh R2 continuation context and does not make the consumed R1 epoch live.
+R8U_FIXED_CONTINUATION = R8U_R2_FIXED_CONTINUATION
 
 
 @dataclass(frozen=True)
@@ -1497,7 +1500,7 @@ def run_batch_task(
     ):
         _fail("FULL_SEQUENTIAL_R8R_CONTINUATION_TASK_OUT_OF_SCOPE")
     if (
-        dependency.execution_context is R8U_FIXED_CONTINUATION
+        dependency.execution_context is R8U_R2_FIXED_CONTINUATION
         and effective_task not in range(17, 20)
     ):
         _fail("FULL_SEQUENTIAL_R8U_CONTINUATION_TASK_OUT_OF_SCOPE")
@@ -1526,7 +1529,7 @@ def run_batch_task(
             effective_run.production_root,
             current_attempt_id=effective_run.attempt_id,
         )
-        if dependency.execution_context is R8U_FIXED_CONTINUATION:
+        if dependency.execution_context is R8U_R2_FIXED_CONTINUATION:
             # The one Task-16 scheduler-failure partial is immutable evidence,
             # not a resumable cache.  The fixed R8U controller revalidates its
             # exact seal here; every other active cache remains prohibited.
@@ -1548,7 +1551,7 @@ def run_batch_task(
                     current_job_id=str(os.environ.get("JOB_ID", "")),
                     role="array",
                 )
-            elif dependency.execution_context is R8U_FIXED_CONTINUATION:
+            elif dependency.execution_context is R8U_R2_FIXED_CONTINUATION:
                 import lvef_c3_r8r_recovery_continuation as r8r
 
                 r8r.validate_r8u_continuation_worker_submission(
@@ -1573,7 +1576,7 @@ def run_batch_task(
             environment_arguments: dict[str, Any] = {}
             if dependency.execution_context in {
                 R8R_FIXED_CONTINUATION,
-                R8U_FIXED_CONTINUATION,
+                R8U_R2_FIXED_CONTINUATION,
             }:
                 environment_arguments["runtime_validation_context"] = (
                     stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1713,7 +1716,7 @@ def run_batch_task(
         echoprime_arguments: dict[str, Any] = {}
         if dependency.execution_context in {
             R8R_FIXED_CONTINUATION,
-            R8U_FIXED_CONTINUATION,
+            R8U_R2_FIXED_CONTINUATION,
         }:
             echoprime_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1776,7 +1779,7 @@ def run_batch_task(
         scheduler_runner_path = ARRAY_RUNNER_PATH
         if dependency.execution_context in {
             R8R_FIXED_CONTINUATION,
-            R8U_FIXED_CONTINUATION,
+            R8U_R2_FIXED_CONTINUATION,
         }:
             preservation_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1810,7 +1813,7 @@ def run_batch_task(
         retirement_arguments: dict[str, Any] = {}
         if dependency.execution_context in {
             R8R_FIXED_CONTINUATION,
-            R8U_FIXED_CONTINUATION,
+            R8U_R2_FIXED_CONTINUATION,
         }:
             retirement_arguments["scheduler_runner_path"] = (
                 SCRIPT_ROOT

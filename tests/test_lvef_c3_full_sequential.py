@@ -55,6 +55,18 @@ import preserve_lvef_c3_production_batch as preservation
 capacity = sequential.capacity
 
 
+def test_r8u_compatibility_name_resolves_only_to_fresh_r2_context() -> None:
+    assert sequential.R8U_FIXED_CONTINUATION is (
+        sequential.R8U_R2_FIXED_CONTINUATION
+    )
+    assert sequential.R8U_R2_FIXED_CONTINUATION.value == (
+        "R8U_R2_FIXED_CONTINUATION"
+    )
+    assert not hasattr(
+        sequential.FullExecutionContext, "R8U_FIXED_CONTINUATION"
+    )
+
+
 def two_batch_plan() -> tuple[dict[str, Any], core.PlanRequirements]:
     """Return the scientific-path fixture, not a production-scale file test."""
 

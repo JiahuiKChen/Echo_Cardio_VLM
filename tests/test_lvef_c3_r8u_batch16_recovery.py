@@ -45,7 +45,10 @@ def _expected_r8u_implementation_authority_epochs() -> dict[str, str]:
                 "scientific_commit": r8u.ORIGINAL_SCIENTIFIC_COMMIT,
                 "r8r_implementation_commit": r8u.R8U_STARTING_IMPLEMENTATION_COMMIT,
                 "r8u_base_implementation_commit": r8u.R8U_BASE_IMPLEMENTATION_COMMIT,
-                "r8u_projection_repair_commit": IMPLEMENTATION_COMMIT,
+                "r8u_projection_repair_commit": (
+                    r8u.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+                ),
+                "r8u_scheduler_log_repair_commit": IMPLEMENTATION_COMMIT,
             }.items()
         )
     )
@@ -107,7 +110,9 @@ def test_r8u_scope_and_public_cli_are_destination_fixed() -> None:
     assert r8u.R8U_FIXED_CONTINUATION_TASK_IDS == (17, 18, 19)
     assert r8u.R8U_FIXED_CONTINUATION_TASK_RANGE == "17-19"
     assert r8u.R8U_FIXED_CONTINUATION_MAX_CONCURRENCY == 1
-    assert sequential.R8U_FIXED_CONTINUATION.value == "R8U_FIXED_CONTINUATION"
+    assert sequential.R8U_FIXED_CONTINUATION.value == (
+        "R8U_R2_FIXED_CONTINUATION"
+    )
 
     assert set(inspect.signature(r8u.submit_r8u_batch16_recovery).parameters) == {
         "qsub_runner",
@@ -152,22 +157,32 @@ def test_r8u_scope_and_public_cli_are_destination_fixed() -> None:
             side_effect=[
                 "",
                 "1",
-                f"{IMPLEMENTATION_COMMIT} {r8u.R8U_BASE_IMPLEMENTATION_COMMIT}",
+                (
+                    f"{IMPLEMENTATION_COMMIT} "
+                    f"{r8u.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}"
+                ),
                 (
                     f"{r8u.R8U_BASE_IMPLEMENTATION_COMMIT} "
                     f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT}"
                 ),
                 (
+                    f"{r8u.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT} "
+                    f"{r8u.R8U_BASE_IMPLEMENTATION_COMMIT}"
+                ),
+                (
                     f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT} "
                     f"{r8u.ORIGINAL_SCIENTIFIC_COMMIT}"
                 ),
-                "3",
+                "4",
             ],
         ) as git,
     ):
         assert r8u._current_r8u_implementation_commit() == IMPLEMENTATION_COMMIT
     assert git.call_args_list[0] == mock.call(
-        "merge-base", "--is-ancestor", r8u.R8U_BASE_IMPLEMENTATION_COMMIT, IMPLEMENTATION_COMMIT
+        "merge-base",
+        "--is-ancestor",
+        r8u.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        IMPLEMENTATION_COMMIT,
     )
     assert git.call_args_list[2] == mock.call(
         "rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT
@@ -180,6 +195,13 @@ def test_r8u_scope_and_public_cli_are_destination_fixed() -> None:
         r8u.R8U_BASE_IMPLEMENTATION_COMMIT,
     )
     assert git.call_args_list[4] == mock.call(
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
+        r8u.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+    )
+    assert git.call_args_list[5] == mock.call(
         "rev-list",
         "--parents",
         "-n",
@@ -197,16 +219,23 @@ def test_r8u_scope_and_public_cli_are_destination_fixed() -> None:
             side_effect=[
                 "",
                 "2",
-                f"{IMPLEMENTATION_COMMIT} {r8u.R8U_BASE_IMPLEMENTATION_COMMIT}",
+                (
+                    f"{IMPLEMENTATION_COMMIT} "
+                    f"{r8u.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}"
+                ),
                 (
                     f"{r8u.R8U_BASE_IMPLEMENTATION_COMMIT} "
                     f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT}"
                 ),
                 (
+                    f"{r8u.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT} "
+                    f"{r8u.R8U_BASE_IMPLEMENTATION_COMMIT}"
+                ),
+                (
                     f"{r8u.R8U_STARTING_IMPLEMENTATION_COMMIT} "
                     f"{r8u.ORIGINAL_SCIENTIFIC_COMMIT}"
                 ),
-                "4",
+                "5",
             ],
         ),
     ):
@@ -235,7 +264,7 @@ def test_exact_gpu_recovery_array_and_cpu_finalizer_commands_cap_qsubs_at_three(
         assert command[command.index("-r") + 1] == "n"
 
 
-def test_every_new_r8u_artifact_binds_the_closed_four_commit_authority() -> None:
+def test_every_new_r8u_artifact_binds_the_closed_five_commit_authority() -> None:
     expected = _expected_r8u_implementation_authority_epochs()
     assert r8u._r8u_implementation_authority_epochs(
         IMPLEMENTATION_COMMIT
@@ -307,6 +336,12 @@ def test_every_new_r8u_artifact_binds_the_closed_four_commit_authority() -> None
                 partial_seal_sha256=SHA,
                 capacity_sha256=SHA,
                 raw_authority={},
+                failed_recovery_epoch_authority={
+                    "status": (
+                        "PASS_IMMUTABLE_FAILED_RECOVERY_APPLICATION_EXIT_78"
+                    ),
+                    "job_id": r8u.R8U_FAILED_RECOVERY_JOB_ID,
+                },
             ),
             r8u._r8u_recovery_submission_receipt(
                 implementation_commit=IMPLEMENTATION_COMMIT,
@@ -342,13 +377,13 @@ def test_every_new_r8u_artifact_binds_the_closed_four_commit_authority() -> None
     assert {
         artifact["artifact_type"] for artifact in artifacts
     } == {
-        "lvef_c3_r8u_failed_task16_partial_extraction_evidence_v1",
-        "lvef_c3_r8u_batch16_recovery_authority_v1",
-        "lvef_c3_r8u_batch16_recovery_submission_v1",
-        "lvef_c3_r8u_batch16_recovery_terminal_v1",
-        "lvef_c3_r8u_batch16_recovery_accounting_v1",
-        "lvef_c3_r8u_fixed_continuation_claim_v1",
-        "lvef_c3_r8u_fixed_continuation_submission_v1",
+        "lvef_c3_r8u_r2_failed_task16_partial_extraction_evidence_v1",
+        "lvef_c3_r8u_r2_batch16_recovery_authority_v1",
+        "lvef_c3_r8u_r2_batch16_recovery_submission_v1",
+        "lvef_c3_r8u_r2_batch16_recovery_terminal_v1",
+        "lvef_c3_r8u_r2_batch16_recovery_accounting_v1",
+        "lvef_c3_r8u_r2_fixed_continuation_claim_v1",
+        "lvef_c3_r8u_r2_fixed_continuation_submission_v1",
     }
     for artifact in artifacts:
         _assert_exact_r8u_implementation_authority_epochs(artifact)
@@ -506,7 +541,7 @@ def test_retained_raw_pass_ignores_historical_device_but_blocks_live_hash_drift(
 def test_fresh_extraction_publication_is_atomic_no_clobber_and_keeps_partial() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         attempt = Path(temporary) / "attempt"
-        recovery_root = attempt / "r8u_batch16_recovery"
+        recovery_root = attempt / "r8u_r2_batch16_recovery"
         fresh_batch = recovery_root / "fresh_extracted_cache" / r8u.R8U_FIXED_BATCH_ID
         fresh = fresh_batch / "dicom_extraction"
         fresh.mkdir(parents=True)
@@ -596,6 +631,14 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
         mock.patch.object(r8u, "_r8u_validate_frozen_prefix", return_value=tuple(item[2] for item in r8u.R8U_PREFIX_RECEIPT_AUTHORITIES)),
         mock.patch.object(r8u, "_r8u_failed_partial_seal", return_value={}),
         mock.patch.object(r8u, "_r8u_batch16_raw_control_authority", return_value={}),
+        mock.patch.object(
+            r8u,
+            "_r8u_failed_recovery_epoch_authority",
+            return_value={
+                "status": "PASS_IMMUTABLE_FAILED_RECOVERY_APPLICATION_EXIT_78",
+                "job_id": r8u.R8U_FAILED_RECOVERY_JOB_ID,
+            },
+        ),
         mock.patch.object(r8u, "_r8u_require_recovery_absent"),
         mock.patch.object(
             r8u.capacity,
@@ -612,25 +655,31 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
         mock.patch.object(r8u, "_r8u_recovery_authority", return_value={}),
         mock.patch.object(r8u.scheduler, "_capture_qsub", side_effect=capture),
         mock.patch.object(r8u, "_r8u_recovery_submission_receipt", return_value={}),
-        mock.patch.object(r8u, "_validate_r8u_recovery_submission"),
+        mock.patch.object(r8u, "_load_private_json", return_value=({}, b"")),
+        mock.patch.object(
+            r8u, "_validate_r8u_initial_recovery_qstat", return_value="qw"
+        ),
     )
     with ExitStack() as stack:
         for patcher in patches:
             stack.enter_context(patcher)
         result = r8u.submit_r8u_batch16_recovery()
     assert result["new_qsub_submissions"] == 1
+    assert result["status"] == "BATCH16_RECOVERY_SUBMITTED_AWAITING_TERMINAL"
+    assert result["initial_state"] == "qw"
+    assert result["login_node_polling_started"] is False
     assert order.count("capacity") == 1
     assert order.count("qsub") == 1
     assert order.index("capacity") < order.index("root") < order.index("qsub")
     capacity_probe_mock.assert_called_once_with(
         run.plan,
-        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+        r8u_scheduler_log_repair_commit=IMPLEMENTATION_COMMIT,
         process_runner=None,
     )
     capacity_validate_mock.assert_called_once_with(
         run.plan,
         {"status": r8u.R8U_CAPACITY_STATUS},
-        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+        r8u_scheduler_log_repair_commit=IMPLEMENTATION_COMMIT,
     )
 
     order.clear()
@@ -659,6 +708,14 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
         mock.patch.object(r8u, "_r8u_validate_frozen_prefix", return_value=()),
         mock.patch.object(r8u, "_r8u_failed_partial_seal", return_value={}),
         mock.patch.object(r8u, "_r8u_batch16_raw_control_authority", return_value={}),
+        mock.patch.object(
+            r8u,
+            "_r8u_failed_recovery_epoch_authority",
+            return_value={
+                "status": "PASS_IMMUTABLE_FAILED_RECOVERY_APPLICATION_EXIT_78",
+                "job_id": r8u.R8U_FAILED_RECOVERY_JOB_ID,
+            },
+        ),
         mock.patch.object(r8u, "_r8u_require_recovery_absent"),
         mock.patch.object(
             r8u.capacity,
@@ -691,19 +748,19 @@ def test_capacity_is_observed_once_before_any_root_or_recovery_qsub() -> None:
             raise AssertionError("expected capacity blocker")
     blocked_probe.assert_called_once_with(
         run.plan,
-        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+        r8u_scheduler_log_repair_commit=IMPLEMENTATION_COMMIT,
         process_runner=None,
     )
     blocked_validate.assert_called_once_with(
         run.plan,
         blocked,
-        r8u_projection_repair_commit=IMPLEMENTATION_COMMIT,
+        r8u_scheduler_log_repair_commit=IMPLEMENTATION_COMMIT,
     )
     create.assert_not_called()
     qsub.assert_not_called()
 
 
-def test_every_r8u_capacity_call_binds_projection_repair_commit() -> None:
+def test_every_r8u_capacity_call_binds_scheduler_log_repair_commit() -> None:
     tree = ast.parse(inspect.getsource(r8u))
     method_counts = {
         "probe_fixed_r8u_batch16_recovery_capacity": 0,
@@ -729,7 +786,7 @@ def test_every_r8u_capacity_call_binds_projection_repair_commit() -> None:
         bindings = [
             keyword
             for keyword in call.keywords
-            if keyword.arg == "r8u_projection_repair_commit"
+            if keyword.arg == "r8u_scheduler_log_repair_commit"
         ]
         assert len(bindings) == 1
         assert isinstance(bindings[0].value, ast.Name)
@@ -854,12 +911,57 @@ def test_continuation_rejects_tasks_1_16_and_accepts_only_17_19() -> None:
     with (
         mock.patch.dict(os.environ, {"JOB_ID": "102", "SGE_TASK_ID": "17"}, clear=True),
         mock.patch.object(r8u, "_load_fixed_original_run", return_value=run),
+        mock.patch.object(r8u, "_validate_r8u_continuation_chain"),
         mock.patch.object(r8u, "_r8u_validate_attempt_content_authority"),
         mock.patch.object(r8u.sequential, "run_batch_task", return_value={"status": "PASS_BATCH_FINALIZED"}) as worker,
     ):
         r8u.run_r8u_continuation_array_task()
     assert worker.call_args.kwargs["task_id"] == 17
     assert worker.call_args.kwargs["dependencies"].execution_context is sequential.R8U_FIXED_CONTINUATION
+
+
+def test_initial_recovery_qstat_is_one_nonpolling_exact_snapshot() -> None:
+    name = r8u._r8u_recovery_job_name(IMPLEMENTATION_COMMIT)
+
+    def xml(*, job_name: str = name, state: str = "qw") -> bytes:
+        category = "running" if state in {"r", "t", "Rr"} else "pending"
+        return (
+            "<job_info><queue_info></queue_info><job_info>"
+            f'<job_list state="{category}">'
+            "<JB_job_number>101</JB_job_number>"
+            f"<JB_name>{job_name}</JB_name><state>{state}</state>"
+            "</job_list></job_info></job_info>"
+        ).encode()
+
+    runner = mock.Mock(
+        return_value=subprocess.CompletedProcess([], 0, xml(), b"")
+    )
+    assert r8u._validate_r8u_initial_recovery_qstat(
+        environment={"USER": "pkarim"},
+        recovery_job_id="101",
+        implementation_commit=IMPLEMENTATION_COMMIT,
+        runner=runner,
+    ) == "qw"
+    runner.assert_called_once()
+    for payload, code in (
+        (xml(job_name="wrong"), "R8U_INITIAL_QSTAT_TOPOLOGY_INVALID"),
+        (xml(state="Eqw"), "R8U_INITIAL_QSTAT_STATE_INVALID"),
+        (
+            b"<job_info><queue_info></queue_info><job_info></job_info></job_info>",
+            "R8U_INITIAL_QSTAT_TOPOLOGY_INVALID",
+        ),
+    ):
+        _expect_code(
+            lambda payload=payload: r8u._validate_r8u_initial_recovery_qstat(
+                environment={"USER": "pkarim"},
+                recovery_job_id="101",
+                implementation_commit=IMPLEMENTATION_COMMIT,
+                runner=lambda *_a, **_k: subprocess.CompletedProcess(
+                    [], 0, payload, b""
+                ),
+            ),
+            code,
+        )
 
 
 def test_initial_qstat_requires_exact_17_19_states_and_held_finalizer() -> None:

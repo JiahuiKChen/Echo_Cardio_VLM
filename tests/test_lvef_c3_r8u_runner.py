@@ -135,12 +135,12 @@ def test_r8u_batch16_recovery_is_fixed_gpu_nonarray_nslots4() -> None:
     _assert_success(completed, observed)
     assert observed["cuda"] == "gpu7"
     assert observed["tmpdir"].endswith(
-        "/r8u_job_8123456/r8u_batch16_recovery/tmp"
+        "/r8u_r2_job_8123456/r8u_r2_batch16_recovery/tmp"
     )
     assert observed["xdg"].endswith(
-        "/r8u_job_8123456/r8u_batch16_recovery/cache/xdg"
+        "/r8u_r2_job_8123456/r8u_r2_batch16_recovery/cache/xdg"
     )
-    assert "<pycache_prefix=/dev/null/lvef_c3_r8u>" in observed["argv"]
+    assert "<pycache_prefix=/dev/null/lvef_c3_r8u_r2>" in observed["argv"]
     assert observed["argv"].endswith("<--run-batch16-recovery>")
 
     for task_id, slots in (("16", "4"), (None, "3")):
@@ -162,7 +162,7 @@ def test_r8u_continuation_accepts_only_tasks17_19_and_preserves_gpu() -> None:
         _assert_success(completed, observed)
         assert observed["cuda"] == "gpu2"
         assert observed["tmpdir"].endswith(
-            f"/r8u_job_8123456/r8u_array_task_{task_id}/tmp"
+            f"/r8u_r2_job_8123456/r8u_r2_array_task_{task_id}/tmp"
         )
         assert observed["argv"].endswith(
             "<--run-continuation-17-19-array-task>"
@@ -191,7 +191,7 @@ def test_r8u_finalizer_is_fixed_cpu_nonarray_nslots4() -> None:
     _assert_success(completed, observed)
     assert observed["cuda"] == ""
     assert observed["tmpdir"].endswith(
-        "/r8u_job_8123456/r8u_finalizer/tmp"
+        "/r8u_r2_job_8123456/r8u_r2_finalizer/tmp"
     )
     assert observed["argv"].endswith(
         "<--run-r8u-continuation-finalizer>"
@@ -257,7 +257,10 @@ def test_r8u_and_r8r_storage_roles_cannot_collide() -> None:
     _assert_success(r8r_completed, r8r)
     _assert_success(r8u_completed, r8u)
     assert "/r8r_job_8123456/recovery/" in r8r["tmpdir"]
-    assert "/r8u_job_8123456/r8u_batch16_recovery/" in r8u["tmpdir"]
+    assert (
+        "/r8u_r2_job_8123456/r8u_r2_batch16_recovery/"
+        in r8u["tmpdir"]
+    )
     assert r8r["tmpdir"] != r8u["tmpdir"]
 
 

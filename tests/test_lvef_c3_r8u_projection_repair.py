@@ -347,7 +347,8 @@ def test_successor_exclusions_are_exact_and_pristine_before_first_write() -> Non
     ) not in r8u.R8U_SUCCESSOR_EXCLUSION_PATHS
     for expected in (
         "r8u_batch16_recovery",
-        "r8u_continuation_17_19",
+        "r8u_r2_batch16_recovery",
+        "r8u_r2_continuation_17_19",
         "extracted_cache/c3_batch_015/dicom_extraction",
         "batches/c3_batch_015/echoprime",
         "batches/c3_batch_015/preservation",
@@ -514,7 +515,7 @@ def test_continuation_outputs_are_reproven_pristine_before_live_writes() -> None
     import inspect
 
     for expected in (
-        "r8u_continuation_17_19",
+        "r8u_r2_continuation_17_19",
         "cohort_finalization",
         "raw/c3_batch_016",
         "raw/c3_batch_017",
@@ -527,7 +528,7 @@ def test_continuation_outputs_are_reproven_pristine_before_live_writes() -> None
         "extracted_cache/c3_batch_018",
     ):
         assert PurePosixPath(expected) in r8u.R8U_CONTINUATION_PRISTINE_PATHS
-    assert PurePosixPath("r8u_continuation_17_19") not in (
+    assert PurePosixPath("r8u_r2_continuation_17_19") not in (
         r8u.R8U_CONTINUATION_TASK_OUTPUT_PRISTINE_PATHS
     )
 
@@ -546,17 +547,24 @@ def test_continuation_outputs_are_reproven_pristine_before_live_writes() -> None
     assert early_pristine < accounting < claim_write < late_pristine < first_qsub
 
 
-def test_every_r8u_live_action_calls_portable_authority_before_and_after() -> None:
+def test_only_scheduled_r8u_actions_run_whole_attempt_projection() -> None:
     import inspect
 
     submit_source = inspect.getsource(r8u.submit_r8u_batch16_recovery)
-    assert "_r8u_validate_pre_mutation_projections()" in submit_source
-    assert "_r8u_validate_attempt_content_authority()" in submit_source
+    assert "_r8u_validate_pre_mutation_projections()" not in submit_source
+    assert "_r8u_validate_attempt_content_authority()" not in submit_source
+    assert submit_source.count("_validate_r8u_initial_recovery_qstat(") == 1
     for action in (
         r8u.run_r8u_batch16_recovery,
-        r8u.submit_r8u_continuation_17_19,
         r8u.run_r8u_continuation_array_task,
         r8u.run_r8u_continuation_finalizer,
     ):
         source = inspect.getsource(action)
         assert source.count("_r8u_validate_attempt_content_authority()") >= 2
+    continuation_submit = inspect.getsource(
+        r8u.submit_r8u_continuation_17_19
+    )
+    assert "_r8u_validate_attempt_content_authority()" not in (
+        continuation_submit
+    )
+    assert "_r8u_scheduler_evidence_projection()" in continuation_submit

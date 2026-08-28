@@ -158,16 +158,20 @@ R8R_SCHEDULER_RUNNER_BASENAME = (
     "scc_run_lvef_c3_r8r_recovery_continuation.sh"
 )
 
-# Phase 1I-R8U is a second, destination-specific implementation epoch over the
+# Phase 1I-R8U-R2 is a destination-specific implementation repair over the
 # same immutable scientific attempt.  Batches 1--2 belong to the original
 # implementation, Batches 3--15 to the fixed R8R commit below, and Batches
-# 16--19 to the clean current R8U commit.  These constants intentionally make
-# no arbitrary-batch or cross-attempt recovery interface reachable.
+# 16--19 to the clean current R8U-R2 commit.  The fixed R8U base and projection
+# commits remain distinct authority epochs; no arbitrary-batch or cross-attempt
+# recovery interface is reachable.
 R8U_PRIOR_IMPLEMENTATION_COMMIT = (
     "fe3b6c40162d16d5021558bc686ba93c05ab03f5"
 )
 R8U_BASE_IMPLEMENTATION_COMMIT = (
     "cbd54ec67a24bc26e538be0423df38cee8a9eb6f"
+)
+R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT = (
+    "f3df5cd969ff70c87378657767c5bf2b92d4e074"
 )
 R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
     {
@@ -175,6 +179,7 @@ R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
         "r8r_implementation_commit",
         "r8u_base_implementation_commit",
         "r8u_projection_repair_commit",
+        "r8u_scheduler_log_repair_commit",
     }
 )
 R8U_FAILED_PARTIAL_METADATA_SHA256 = (
@@ -190,6 +195,14 @@ R8U_BATCH16_VERIFIED_MANIFEST_SHA256 = (
 )
 R8U_BATCH16_SELECTED_MANIFEST_SHA256 = (
     "fe968a6cb2fc8ee0425705267b5f735b4eb8c7d8a1a34c2f99600c9afc2bc90a"
+)
+R8U_FAILED_R1_RECOVERY_JOB_ID = "7352656"
+R8U_FAILED_R1_RECOVERY_JOB_NAME = "lvef_c3_r8u_rec_f3df5cd9"
+R8U_FAILED_R1_RECOVERY_LOG_SHA256 = (
+    "ce34ae86faad07306c8ffd0850ffdf174c748be982e1406460a10f782e37e805"
+)
+R8U_FAILED_R1_NAMESPACE_INVENTORY_SHA256 = (
+    "c2b87c9d4d0d347a60afd84ce3916c06fb057b350eca61fbf420cfaf45307381"
 )
 R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES = {
     "recovery_authority_sha256": (
@@ -306,50 +319,50 @@ R8U_FE3_IMPLEMENTATION_EPOCH = (
 R8U_CHAIN_ARTIFACT_SPECS = (
     (
         "failed_partial_seal_sha256",
-        "r8u_batch16_recovery/failed_partial_seal.restricted.json",
-        "lvef_c3_r8u_failed_task16_partial_extraction_evidence_v1",
+        "r8u_r2_batch16_recovery/failed_partial_seal.restricted.json",
+        "lvef_c3_r8u_r2_failed_task16_partial_extraction_evidence_v1",
         "FAILED_TASK16_PARTIAL_EXTRACTION_EVIDENCE",
     ),
     (
         "recovery_capacity_receipt_sha256",
-        "r8u_batch16_recovery/recovery_capacity.restricted.json",
-        "lvef_c3_r8u_batch16_recovery_capacity_v1",
+        "r8u_r2_batch16_recovery/recovery_capacity.restricted.json",
+        "lvef_c3_r8u_r2_batch16_recovery_capacity_v1",
         "PASS_BATCH16_RECOVERY_AND_17_19_WITH_200GB_RESERVE",
     ),
     (
         "recovery_authority_sha256",
-        "r8u_batch16_recovery/recovery_authority.restricted.json",
-        "lvef_c3_r8u_batch16_recovery_authority_v1",
+        "r8u_r2_batch16_recovery/recovery_authority.restricted.json",
+        "lvef_c3_r8u_r2_batch16_recovery_authority_v1",
         "AUTHORIZED_FIXED_BATCH16_RECOVERY",
     ),
     (
         "recovery_submission_receipt_sha256",
-        "r8u_batch16_recovery/scheduler/submission_receipt.restricted.json",
-        "lvef_c3_r8u_batch16_recovery_submission_v1",
+        "r8u_r2_batch16_recovery/scheduler/submission_receipt.restricted.json",
+        "lvef_c3_r8u_r2_batch16_recovery_submission_v1",
         "PASS_EXACT_ONE_GPU_BATCH16_RECOVERY_QSUB",
     ),
     (
         "recovery_accounting_sha256",
-        "r8u_batch16_recovery/recovery_accounting.restricted.json",
-        "lvef_c3_r8u_batch16_recovery_accounting_v1",
+        "r8u_r2_batch16_recovery/recovery_accounting.restricted.json",
+        "lvef_c3_r8u_r2_batch16_recovery_accounting_v1",
         "PASS_RECOVERY_QACCT_FAILED_0_EXIT_0",
     ),
     (
         "recovery_terminal_receipt_sha256",
-        "r8u_batch16_recovery/recovery_terminal.aggregate_safe.json",
-        "lvef_c3_r8u_batch16_recovery_terminal_v1",
+        "r8u_r2_batch16_recovery/recovery_terminal.aggregate_safe.json",
+        "lvef_c3_r8u_r2_batch16_recovery_terminal_v1",
         "PASS_BATCH16_RECOVERY_FINALIZED",
     ),
     (
         "continuation_claim_sha256",
-        "r8u_continuation_17_19/continuation_claim.restricted.json",
-        "lvef_c3_r8u_fixed_continuation_claim_v1",
+        "r8u_r2_continuation_17_19/continuation_claim.restricted.json",
+        "lvef_c3_r8u_r2_fixed_continuation_claim_v1",
         "AUTHORIZED_FIXED_CONTINUATION_17_19",
     ),
     (
         "continuation_submission_receipt_sha256",
-        "r8u_continuation_17_19/scheduler/submission_receipt.restricted.json",
-        "lvef_c3_r8u_fixed_continuation_submission_v1",
+        "r8u_r2_continuation_17_19/scheduler/submission_receipt.restricted.json",
+        "lvef_c3_r8u_r2_fixed_continuation_submission_v1",
         "PASS_EXACT_ARRAY_17_19_AND_HELD_FINALIZER",
     ),
 )
@@ -412,6 +425,8 @@ R8U_RECOVERY_AUTHORITY_KEYS = R8U_COMMON_CHAIN_KEYS | frozenset(
         "continuation_task_range",
         "prefix_final_receipt_sha256",
         "historical_r8r_chain_authority",
+        "failed_r8u_recovery_epoch_authority",
+        "failed_r8u_recovery_epoch_authority_sha256",
         "failed_partial_seal_sha256",
         "recovery_capacity_sha256",
         "retained_raw_authority",
@@ -432,6 +447,45 @@ R8U_RECOVERY_AUTHORITY_KEYS = R8U_COMMON_CHAIN_KEYS | frozenset(
         "prediction_authorized",
         "confirmatory_performance_access_authorized",
         "maximum_new_qsub_submissions",
+    }
+)
+R8U_FAILED_R1_SCHEDULER_EVIDENCE_KEYS = frozenset(
+    {
+        "artifact_type",
+        "status",
+        "evidence_class",
+        "role",
+        "basename",
+        "job_id",
+        "task_id",
+        "mode",
+        "size_bytes",
+        "sha256",
+        "owner_uid",
+        "terminal_state",
+    }
+)
+R8U_FAILED_R1_EPOCH_AUTHORITY_KEYS = frozenset(
+    {
+        "artifact_type",
+        "status",
+        "implementation_commit",
+        "job_id",
+        "job_name",
+        "qsub_exit",
+        "qacct_failed",
+        "qacct_exit_status",
+        "qacct_task_id",
+        "terminal_code",
+        "scheduler_evidence",
+        "namespace_file_count",
+        "namespace_inventory_sha256",
+        "dicom_body_reads",
+        "cloud_requests",
+        "download_reruns",
+        "extraction_reruns",
+        "echoprime_reruns",
+        "embedding_generations",
     }
 )
 R8U_RECOVERY_SUBMISSION_KEYS = R8U_COMMON_CHAIN_KEYS | frozenset(
@@ -847,13 +901,14 @@ class R8RImplementationAuthority:
 
 @dataclass(frozen=True)
 class R8UImplementationAuthority:
-    """Closed binding for the one fixed Batch-16 recovery continuation.
+    """Closed binding for the one fixed R8U-R2 recovery continuation.
 
     The five historical hashes bind the already completed R8R repair at the
     exact prior implementation commit.  The eight current hashes bind the
-    failed-partial seal, one capacity observation, the one-job Batch-16
-    recovery, its terminal accounting, and the exact Tasks-17--19 successor.
-    No path, attempt, batch, plan, or range is caller selectable.
+    R2 failed-partial seal, one capacity observation, the immutable failed-R1
+    authority, the one-job Batch-16 recovery, its terminal accounting, and the
+    exact Tasks-17--19 successor.  No path, attempt, batch, plan, or range is
+    caller selectable.
     """
 
     implementation_commit: str
@@ -3982,7 +4037,7 @@ def _validate_r8r_repository_authority(
 def _validate_r8u_repository_authority(
     implementation_commit: str,
 ) -> None:
-    """Bind R8U to the exact science -> R8R -> R8U-base -> repair chain."""
+    """Bind R8U-R2 to the exact five-epoch implementation chain."""
 
     if (
         not isinstance(implementation_commit, str)
@@ -3992,6 +4047,7 @@ def _validate_r8u_repository_authority(
             R8R_SCIENTIFIC_GOVERNING_COMMIT,
             R8U_PRIOR_IMPLEMENTATION_COMMIT,
             R8U_BASE_IMPLEMENTATION_COMMIT,
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         }
     ):
         raise ProductionFinalizationError(
@@ -4041,10 +4097,19 @@ def _validate_r8u_repository_authority(
             "1",
             implementation_commit,
         ): (
-            f"{implementation_commit} {R8U_BASE_IMPLEMENTATION_COMMIT}\n".encode(
-                "ascii"
-            )
-        ),
+            f"{implementation_commit} "
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT} "
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
         (
             "rev-list",
             "--parents",
@@ -4068,7 +4133,12 @@ def _validate_r8u_repository_authority(
         (
             "rev-list",
             "--count",
-            f"{R8U_BASE_IMPLEMENTATION_COMMIT}..{implementation_commit}",
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}..{implementation_commit}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT}..{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}",
         ): b"1\n",
         (
             "rev-list",
@@ -4089,7 +4159,7 @@ def _validate_r8u_repository_authority(
             "rev-list",
             "--count",
             f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{implementation_commit}",
-        ): b"3\n",
+        ): b"4\n",
     }
     for arguments, expected_stdout in exact_outputs.items():
         result = run_git(*arguments)
@@ -4110,6 +4180,7 @@ def _validate_r8u_repository_authority(
         R8R_SCIENTIFIC_GOVERNING_COMMIT,
         R8U_PRIOR_IMPLEMENTATION_COMMIT,
         R8U_BASE_IMPLEMENTATION_COMMIT,
+        R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         implementation_commit,
     ):
         exists = run_git("cat-file", "-e", f"{commit}^{{commit}}")
@@ -4120,7 +4191,11 @@ def _validate_r8u_repository_authority(
     for ancestor, descendant in (
         (R8R_SCIENTIFIC_GOVERNING_COMMIT, R8U_PRIOR_IMPLEMENTATION_COMMIT),
         (R8U_PRIOR_IMPLEMENTATION_COMMIT, R8U_BASE_IMPLEMENTATION_COMMIT),
-        (R8U_BASE_IMPLEMENTATION_COMMIT, implementation_commit),
+        (
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        ),
+        (R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT, implementation_commit),
     ):
         ancestry = run_git("merge-base", "--is-ancestor", ancestor, descendant)
         if ancestry.returncode != 0 or ancestry.stdout or ancestry.stderr:
@@ -4143,13 +4218,16 @@ def _validate_r8u_repository_authority(
 def _r8u_expected_implementation_authority_epochs(
     implementation_commit: str,
 ) -> dict[str, str]:
-    """Return the one closed four-commit authority bound into R8U receipts."""
+    """Return the one closed five-commit authority bound into R8U-R2 receipts."""
 
     return {
         "scientific_commit": R8R_SCIENTIFIC_GOVERNING_COMMIT,
         "r8r_implementation_commit": R8U_PRIOR_IMPLEMENTATION_COMMIT,
         "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
-        "r8u_projection_repair_commit": implementation_commit,
+        "r8u_projection_repair_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_scheduler_log_repair_commit": implementation_commit,
     }
 
 
@@ -5301,7 +5379,9 @@ def _load_r8u_chain_artifact(
             r8r_capacity.validate_fixed_r8u_batch16_recovery_capacity(
                 plan,
                 value,
-                r8u_projection_repair_commit=authority.implementation_commit,
+                r8u_scheduler_log_repair_commit=(
+                    authority.implementation_commit
+                ),
             )
         except r8r_capacity.PostReallocationCapacityError as exc:
             raise ProductionFinalizationError(
@@ -5338,6 +5418,74 @@ def _r8u_valid_hashes(value: Mapping[str, Any], *keys: str) -> bool:
     )
 
 
+def _r8u_failed_r1_epoch_authority_sha256(value: object) -> str:
+    """Validate and hash the exact immutable failed job-7352656 authority."""
+
+    if not isinstance(value, Mapping):
+        raise ProductionFinalizationError(
+            "R8U_FINALIZER_FAILED_RECOVERY_EPOCH_AUTHORITY_INVALID"
+        )
+    scheduler_evidence = value.get("scheduler_evidence")
+    expected_scheduler_evidence = {
+        "artifact_type": "lvef_c3_r8u_r2_scheduler_log_evidence_v1",
+        "status": (
+            "PASS_ROLE_BOUND_GRID_ENGINE_MERGED_STDOUT_STDERR_LOG"
+        ),
+        "evidence_class": "GRID_ENGINE_MERGED_SCHEDULER_EVIDENCE",
+        "role": "FAILED_R8U_BATCH16_RECOVERY",
+        "basename": (
+            f"{R8U_FAILED_R1_RECOVERY_JOB_NAME}.o"
+            f"{R8U_FAILED_R1_RECOVERY_JOB_ID}"
+        ),
+        "job_id": R8U_FAILED_R1_RECOVERY_JOB_ID,
+        "task_id": "NONE",
+        "mode": "0644",
+        "size_bytes": 116,
+        "sha256": R8U_FAILED_R1_RECOVERY_LOG_SHA256,
+        "owner_uid": os.geteuid(),
+        "terminal_state": "TERMINAL_FAILED_APPLICATION_EXIT_78",
+    }
+    expected = {
+        "artifact_type": (
+            "lvef_c3_r8u_r1_failed_recovery_epoch_authority_v1"
+        ),
+        "status": "PASS_IMMUTABLE_FAILED_RECOVERY_APPLICATION_EXIT_78",
+        "implementation_commit": R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        "job_id": R8U_FAILED_R1_RECOVERY_JOB_ID,
+        "job_name": R8U_FAILED_R1_RECOVERY_JOB_NAME,
+        "qsub_exit": 0,
+        "qacct_failed": 0,
+        "qacct_exit_status": 78,
+        "qacct_task_id": "NONE",
+        "terminal_code": "BLOCKED_R8U_ATTEMPT_CONTENT_AUTHORITY_INVALID",
+        "scheduler_evidence": expected_scheduler_evidence,
+        "namespace_file_count": 8,
+        "namespace_inventory_sha256": (
+            R8U_FAILED_R1_NAMESPACE_INVENTORY_SHA256
+        ),
+        "dicom_body_reads": 0,
+        "cloud_requests": 0,
+        "download_reruns": 0,
+        "extraction_reruns": 0,
+        "echoprime_reruns": 0,
+        "embedding_generations": 0,
+    }
+    if (
+        set(value) != R8U_FAILED_R1_EPOCH_AUTHORITY_KEYS
+        or not isinstance(scheduler_evidence, Mapping)
+        or set(scheduler_evidence) != R8U_FAILED_R1_SCHEDULER_EVIDENCE_KEYS
+        or not all(
+            type(value.get(key)) is type(expected_value)
+            and value.get(key) == expected_value
+            for key, expected_value in expected.items()
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_FINALIZER_FAILED_RECOVERY_EPOCH_AUTHORITY_INVALID"
+        )
+    return core.canonical_json_sha256(value)
+
+
 def _validate_r8u_chain_artifacts(
     *,
     receipt_paths_by_batch: Mapping[str, Path],
@@ -5366,7 +5514,7 @@ def _validate_r8u_chain_artifacts(
     }
     failed_partial_path = (
         attempt_root
-        / "r8u_batch16_recovery"
+        / "r8u_r2_batch16_recovery"
         / "failed_partial_seal.restricted.json"
     )
     if (
@@ -5510,9 +5658,12 @@ def _validate_r8u_chain_artifacts(
         raise ProductionFinalizationError(
             "R8U_FINALIZER_STAGE_SCRIPT_AUTHORITY_MISMATCH"
         ) from exc
+    failed_r1_epoch_sha256 = _r8u_failed_r1_epoch_authority_sha256(
+        recovery.get("failed_r8u_recovery_epoch_authority")
+    )
     if (
         recovery.get("prior_implementation_commit")
-        != R8U_PRIOR_IMPLEMENTATION_COMMIT
+        != R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
         or recovery.get("batch_id") != "c3_batch_015"
         or type(recovery.get("original_task_id")) is not int
         or recovery.get("original_task_id") != 16
@@ -5520,6 +5671,8 @@ def _validate_r8u_chain_artifacts(
         or recovery.get("prefix_final_receipt_sha256") != prefix15
         or recovery.get("historical_r8r_chain_authority")
         != historical_hashes
+        or recovery.get("failed_r8u_recovery_epoch_authority_sha256")
+        != failed_r1_epoch_sha256
         or recovery.get("failed_partial_seal_sha256")
         != observed["failed_partial_seal_sha256"]
         or recovery.get("recovery_capacity_sha256")
@@ -5560,7 +5713,7 @@ def _validate_r8u_chain_artifacts(
         or recovery.get("runtime_validation_context")
         != "SEALED_SCHEDULER_RUNTIME_REPLAY"
         or recovery.get("fresh_extraction_relative_root")
-        != "r8u_batch16_recovery/fresh_extracted_cache/c3_batch_015"
+        != "r8u_r2_batch16_recovery/fresh_extracted_cache/c3_batch_015"
         or not _r8u_exact_zero(
             recovery,
             "cloud_requests_authorized",
@@ -5599,10 +5752,10 @@ def _validate_r8u_chain_artifacts(
         Path(__file__).resolve().parent / R8R_SCHEDULER_RUNNER_BASENAME
     )
     recovery_scheduler_root = (
-        attempt_root / "r8u_batch16_recovery" / "scheduler"
+        attempt_root / "r8u_r2_batch16_recovery" / "scheduler"
     )
     continuation_scheduler_root = (
-        attempt_root / "r8u_continuation_17_19" / "scheduler"
+        attempt_root / "r8u_r2_continuation_17_19" / "scheduler"
     )
     common_qsub = [
         qsub, "-clear", "-terse", "-r", "n", "-P", "mimicecho",
@@ -5709,7 +5862,7 @@ def _validate_r8u_chain_artifacts(
 
     fresh_path = (
         attempt_root
-        / "r8u_batch16_recovery"
+        / "r8u_r2_batch16_recovery"
         / "fresh_extraction_publication.restricted.json"
     )
     try:
@@ -5756,7 +5909,7 @@ def _validate_r8u_chain_artifacts(
         or type(fresh.get("schema_version")) is not int
         or fresh.get("schema_version") != 1
         or fresh.get("artifact_type")
-        != "lvef_c3_r8u_fresh_batch16_extraction_publication_v1"
+        != "lvef_c3_r8u_r2_fresh_batch16_extraction_publication_v1"
         or fresh.get("status")
         != "PASS_FRESH_BATCH16_EXTRACTION_PUBLISHED_NO_CLOBBER"
         or fresh.get("original_scientific_commit")
@@ -5968,7 +6121,7 @@ def _validate_r8u_chain_artifacts(
 
     if (
         claim.get("prior_implementation_commit")
-        != R8U_PRIOR_IMPLEMENTATION_COMMIT
+        != R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
         or claim.get("prefix_final_receipt_sha256") != prefix16
         or claim.get("failed_partial_seal_sha256")
         != observed["failed_partial_seal_sha256"]

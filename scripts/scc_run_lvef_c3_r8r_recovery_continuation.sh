@@ -48,27 +48,27 @@ case "$JOB_NAME" in
   lvef_c3_r8u_rec_*)
     [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
     [[ "${NSLOTS:-}" == "4" ]] || exit 78
-    JOB_FAMILY=r8u
-    ROLE=r8u_batch16_recovery
+    JOB_FAMILY=r8u_r2
+    ROLE=r8u_r2_batch16_recovery
     MODE=--run-batch16-recovery
-    PYCACHE_ROLE=lvef_c3_r8u
+    PYCACHE_ROLE=lvef_c3_r8u_r2
     ;;
   lvef_c3_r8u_seq_*)
     [[ "${SGE_TASK_ID:-}" =~ ^1[7-9]$ ]] || exit 78
     [[ "${NSLOTS:-}" == "4" ]] || exit 78
-    JOB_FAMILY=r8u
-    ROLE="r8u_array_task_${SGE_TASK_ID}"
+    JOB_FAMILY=r8u_r2
+    ROLE="r8u_r2_array_task_${SGE_TASK_ID}"
     MODE=--run-continuation-17-19-array-task
-    PYCACHE_ROLE=lvef_c3_r8u
+    PYCACHE_ROLE=lvef_c3_r8u_r2
     ;;
   lvef_c3_r8u_fin_*)
     [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
     [[ "${NSLOTS:-}" == "4" ]] || exit 78
     export CUDA_VISIBLE_DEVICES=''
-    JOB_FAMILY=r8u
-    ROLE=r8u_finalizer
+    JOB_FAMILY=r8u_r2
+    ROLE=r8u_r2_finalizer
     MODE=--run-r8u-continuation-finalizer
-    PYCACHE_ROLE=lvef_c3_r8u
+    PYCACHE_ROLE=lvef_c3_r8u_r2
     ;;
   *) exit 78 ;;
 esac

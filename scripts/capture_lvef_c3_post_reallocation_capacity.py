@@ -294,12 +294,16 @@ R8U_R8R_IMPLEMENTATION_COMMIT = (
 R8U_BASE_IMPLEMENTATION_COMMIT = (
     "cbd54ec67a24bc26e538be0423df38cee8a9eb6f"
 )
+R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT = (
+    "f3df5cd969ff70c87378657767c5bf2b92d4e074"
+)
 R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
     {
         "scientific_commit",
         "r8r_implementation_commit",
         "r8u_base_implementation_commit",
         "r8u_projection_repair_commit",
+        "r8u_scheduler_log_repair_commit",
     }
 )
 R8U_RECOVERY_TASK = 16
@@ -332,7 +336,7 @@ R8U_CAPACITY_STATUS_PASS = (
 )
 R8U_CAPACITY_STATUS_BLOCKED = "BLOCKED"
 R8U_CAPACITY_ARTIFACT_TYPE = (
-    "lvef_c3_r8u_batch16_recovery_capacity_v1"
+    "lvef_c3_r8u_r2_batch16_recovery_capacity_v1"
 )
 R8U_CAPACITY_ZERO_EFFECT_KEYS = frozenset(
     {
@@ -4061,25 +4065,27 @@ def _derive_fixed_r8u_capacity_demands(
 
 
 def _fixed_r8u_implementation_authority_epochs(
-    r8u_projection_repair_commit: str,
+    r8u_scheduler_log_repair_commit: str,
 ) -> dict[str, str]:
-    """Return the closed four-epoch authority for one validated repair HEAD.
+    """Return the closed five-epoch authority for one validated R8U-R2 HEAD.
 
     The recovery controller is responsible for proving that the supplied
-    repair commit is the one direct child of the immutable R8U base.  This
-    capacity module accepts that already-validated identity only through a
-    required keyword, binds it beside the three fixed historical epochs, and
-    rejects malformed or historically reused identities before live capture.
+    scheduler-log repair commit is the one direct child of the immutable R8U
+    projection repair.  This capacity module accepts that already-validated
+    identity only through a required keyword, binds it beside the four fixed
+    historical epochs, and rejects malformed or historically reused
+    identities before live capture.
     """
 
     if (
-        type(r8u_projection_repair_commit) is not str
-        or COMMIT_RE.fullmatch(r8u_projection_repair_commit) is None
-        or r8u_projection_repair_commit
+        type(r8u_scheduler_log_repair_commit) is not str
+        or COMMIT_RE.fullmatch(r8u_scheduler_log_repair_commit) is None
+        or r8u_scheduler_log_repair_commit
         in {
             R8U_ORIGINAL_SCIENTIFIC_COMMIT,
             R8U_R8R_IMPLEMENTATION_COMMIT,
             R8U_BASE_IMPLEMENTATION_COMMIT,
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         }
     ):
         raise PostReallocationCapacityError(
@@ -4089,7 +4095,12 @@ def _fixed_r8u_implementation_authority_epochs(
         "scientific_commit": R8U_ORIGINAL_SCIENTIFIC_COMMIT,
         "r8r_implementation_commit": R8U_R8R_IMPLEMENTATION_COMMIT,
         "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
-        "r8u_projection_repair_commit": r8u_projection_repair_commit,
+        "r8u_projection_repair_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_scheduler_log_repair_commit": (
+            r8u_scheduler_log_repair_commit
+        ),
     }
     if set(result) != R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
         raise PostReallocationCapacityError(
@@ -4101,7 +4112,7 @@ def _fixed_r8u_implementation_authority_epochs(
 def probe_fixed_r8u_batch16_recovery_capacity(
     plan: Mapping[str, Any],
     *,
-    r8u_projection_repair_commit: str,
+    r8u_scheduler_log_repair_commit: str,
     process_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Adjudicate fixed Batch 16 recovery plus Tasks 17--19 once.
@@ -4119,7 +4130,7 @@ def probe_fixed_r8u_batch16_recovery_capacity(
     demands = _derive_fixed_r8u_capacity_demands(plan)
     implementation_authority_epochs = (
         _fixed_r8u_implementation_authority_epochs(
-            r8u_projection_repair_commit
+            r8u_scheduler_log_repair_commit
         )
     )
     snapshot = _capture_current_capacity_snapshot(
@@ -4227,7 +4238,9 @@ def probe_fixed_r8u_batch16_recovery_capacity(
     return validate_fixed_r8u_batch16_recovery_capacity(
         plan,
         result,
-        r8u_projection_repair_commit=r8u_projection_repair_commit,
+        r8u_scheduler_log_repair_commit=(
+            r8u_scheduler_log_repair_commit
+        ),
     )
 
 
@@ -4235,14 +4248,14 @@ def validate_fixed_r8u_batch16_recovery_capacity(
     plan: Mapping[str, Any],
     value: Mapping[str, Any],
     *,
-    r8u_projection_repair_commit: str,
+    r8u_scheduler_log_repair_commit: str,
 ) -> dict[str, Any]:
     """Purely replay every fixed R8U demand, margin, gate, and status."""
 
     demands = _derive_fixed_r8u_capacity_demands(plan)
     implementation_authority_epochs = (
         _fixed_r8u_implementation_authority_epochs(
-            r8u_projection_repair_commit
+            r8u_scheduler_log_repair_commit
         )
     )
     if not isinstance(value, Mapping) or set(value) != R8U_CAPACITY_KEYS:
