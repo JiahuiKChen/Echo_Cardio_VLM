@@ -39,6 +39,13 @@ def build_handler(
 ) -> type[BaseHTTPRequestHandler]:
     manifest_name = "primary_reader_manifest.json" if reader_role == "primary" else "second_reader_manifest.json"
     checkpoint_namespace = f"{reader_role}.{reader_id}"
+    assignment = json.loads((interface_root / manifest_name).read_text(encoding="utf-8"))
+    required_study_ids = {str(study["audit_id"]) for study in assignment["studies"]}
+    required_clip_ids = {
+        str(clip["clip_audit_id"])
+        for study in assignment["studies"]
+        for clip in study["clips"]
+    }
 
     class AuditHandler(BaseHTTPRequestHandler):
         server_version = "JDIMRestrictedAudit/1"
@@ -110,7 +117,11 @@ def build_handler(
                     self._send_json({"status": "saved", "size_bytes": destination.stat().st_size})
                     return
                 if route == "/api/lock":
-                    checkpoints.lock(checkpoint_namespace)
+                    checkpoints.lock(
+                        checkpoint_namespace,
+                        required_study_ids=required_study_ids,
+                        required_clip_ids=required_clip_ids,
+                    )
                     self._send_json({"status": "locked"})
                     return
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)

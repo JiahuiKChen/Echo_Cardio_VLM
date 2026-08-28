@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-import netrc
 import os
 import shutil
 import subprocess
@@ -47,11 +46,14 @@ BLOCKED_REPLAY_PROVENANCE = "BLOCKED_REPLAY_PROVENANCE"
 BLOCKED_OFFICIAL_SOURCE_AUTHENTICATION = "BLOCKED_OFFICIAL_SOURCE_AUTHENTICATION"
 AUDIT_INPUTS_TECHNICALLY_LOCKED = "AUDIT_INPUTS_TECHNICALLY_LOCKED"
 BLOCKED_PHASE2I_SOURCE_MISMATCH = "BLOCKED_PHASE2I_SOURCE_MISMATCH"
+BLOCKED_PHASE2J_SOURCE_MISMATCH = "BLOCKED_PHASE2J_SOURCE_MISMATCH"
 RESTORATION_COMPLETE = "RESTORATION_COMPLETE"
+LOCKED_ROSTER_SOURCE_RESTORED = "LOCKED_ROSTER_SOURCE_RESTORED"
 RESTORATION_INCOMPLETE = "RESTORATION_INCOMPLETE"
 
 OFFICIAL_SOURCE_BASE = "https://physionet.org/files/mimic-iv-echo/1.0/"
 MODEL_SOURCE_FRAME_POSITIONS = tuple(range(0, 32, 2))
+TECHNICAL_PREPROCESSING_POLICY = "PHASE2J_PINNED_ECHOPRIME_INPUT_REPLAY_V1"
 
 PILOT_REQUIRED_COLUMNS = {
     "audit_id",
@@ -599,16 +601,10 @@ def diagnose_existing_pilot(
 
 
 def _netrc_auth_available(path: Path, host: str = "physionet.org") -> bool:
-    if not path.is_file():
-        return False
-    mode = path.stat().st_mode & 0o777
-    if mode & 0o077:
-        return False
-    try:
-        parsed = netrc.netrc(str(path))
-    except (netrc.NetrcParseError, OSError):
-        return False
-    return parsed.authenticators(host) is not None or parsed.authenticators(f"www.{host}") is not None
+    """Check only file presence and mode; credential parsing is delegated to wget."""
+
+    del host
+    return path.is_file() and (path.stat().st_mode & 0o777) == 0o600
 
 
 def _validate_dicom_file(path: Path) -> tuple[bool, str]:
@@ -644,6 +640,10 @@ def _download_one(url: str, destination: Path, netrc_path: Path) -> tuple[bool, 
         "--quiet",
         "--continue",
         "--netrc",
+        "--https-only",
+        "--max-redirect=0",
+        "--timeout=60",
+        "--tries=3",
         f"--output-document={partial}",
         url,
     ]
@@ -819,12 +819,34 @@ def restore_locked_sources(
     restored_relative = set(
         restricted_rows.loc[restricted_rows["success"].astype(bool), "official_relative_path"].astype(str)
     )
-    restored_studies = int(
-        rows.loc[rows["official_relative_path"].isin(restored_relative), "audit_id"].astype(str).nunique()
+    studies_with_any_file = set(
+        rows.loc[rows["official_relative_path"].isin(restored_relative), "audit_id"].astype(str)
     )
+    required_by_study = {
+        str(audit_id): set(group["official_relative_path"].astype(str))
+        for audit_id, group in rows.groupby("audit_id", sort=False)
+    }
+    completely_restored_study_ids = {
+        audit_id
+        for audit_id, required_paths in required_by_study.items()
+        if required_paths and required_paths.issubset(restored_relative)
+    }
+    partially_restored_study_ids = studies_with_any_file - completely_restored_study_ids
+    restored_studies = len(studies_with_any_file)
     requested_studies = int(rows["audit_id"].astype(str).nunique())
+    expected_relative_paths = set(file_rows["official_relative_path"].astype(str))
+    unexpected_files = 0
+    if source_destination_root.exists():
+        for candidate in source_destination_root.rglob("*"):
+            if not candidate.is_file() or candidate.name.endswith(".part"):
+                continue
+            relative = candidate.relative_to(source_destination_root).as_posix()
+            if relative not in expected_relative_paths:
+                unexpected_files += 1
     status = (
-        RESTORATION_COMPLETE
+        BLOCKED_PHASE2J_SOURCE_MISMATCH
+        if unexpected_files
+        else LOCKED_ROSTER_SOURCE_RESTORED
         if requested_files and restored_files == requested_files
         else BLOCKED_OFFICIAL_SOURCE_AUTHENTICATION
         if not auth_available
@@ -847,14 +869,25 @@ def restore_locked_sources(
         "requested_studies": requested_studies,
         "requested_files": requested_files,
         "restored_studies": restored_studies,
+        "completely_restored_studies": len(completely_restored_study_ids),
+        "partially_restored_studies": len(partially_restored_study_ids),
         "restored_files": restored_files,
+        "verified_files": restored_files,
         "newly_restored_files": int(restricted_rows["state"].eq("restored").sum()),
         "already_available_files": int(
             restricted_rows["state"].eq("already_available_verified").sum()
         ),
         "unavailable_studies": requested_studies - restored_studies,
         "failed_or_pending_files": requested_files - restored_files,
+        "incomplete_files": int(restricted_rows["state"].str.contains("missing|partial", regex=True).sum()),
+        "failed_files": int(
+            restricted_rows["state"].str.startswith(("wget_exit_", "downloaded_", "existing_")).sum()
+        ),
+        "unexpected_files": unexpected_files,
         "total_restored_size_bytes": int(restricted_rows["size_bytes"].sum()),
+        "newly_restored_size_bytes": int(
+            restricted_rows.loc[restricted_rows["state"].eq("restored"), "size_bytes"].sum()
+        ),
         "authentication_configured": bool(auth_available),
         "authentication_action_sheet_written": bool(not auth_available),
         "source_checksum_status": "not_provided_in_locked_manifest",
@@ -865,7 +898,12 @@ def restore_locked_sources(
             .all()
         ),
         "restoration_manifest_sha256": sha256_file(restoration_manifest_csv),
+        "locked_url_list_sha256": sha256_file(url_list),
+        "restoration_results_sha256": sha256_file(
+            output_root / "source_restoration_results_restricted.csv"
+        ),
         "locked_file_set_sha256": canonical_id_set_sha256(file_rows["official_relative_path"]),
+        "official_host_verified": True,
         "credentials_logged": False,
         "source_files_outside_restricted_storage": False,
     }
@@ -919,9 +957,16 @@ def build_technical_inventory(
         source_path: Path | None = None
         source_viewable = False
         source_frame_count = 0
+        sampled_32_indices: list[int] = []
         source_indices: list[int] = []
+        source_frame_shape: list[int] = []
+        source_rows = 0
+        source_columns = 0
+        source_channels = 0
+        photometric_interpretation = ""
         frame_order_verified = False
         retained_model_input_valid = False
+        retained_model_input_shape: list[int] = []
         reconstruction_status = "not_assessable"
         reconstruction_error = ""
         try:
@@ -941,8 +986,16 @@ def build_technical_inventory(
                 dataset = pydicom.dcmread(str(source_path), stop_before_pixels=False)
                 raw = normalize_pixels(dataset)
                 _, sampled_indices = temporal_sample(raw, 32)
+                sampled_32_indices = [int(value) for value in sampled_indices]
                 source_indices = [int(value) for value in sampled_indices[list(MODEL_SOURCE_FRAME_POSITIONS)]]
                 source_frame_count = int(len(raw))
+                source_frame_shape = [int(value) for value in raw.shape[1:]]
+                source_rows = int(raw.shape[1])
+                source_columns = int(raw.shape[2])
+                source_channels = int(raw.shape[3]) if raw.ndim == 4 else 1
+                photometric_interpretation = str(
+                    getattr(dataset, "PhotometricInterpretation", "")
+                )
                 frame_order_verified = bool(
                     len(source_indices) == 16
                     and all(
@@ -966,6 +1019,7 @@ def build_technical_inventory(
                         raise ValueError(f"unsupported retained model-input shape {retained.shape}")
                     retained_model_input = retained[list(MODEL_SOURCE_FRAME_POSITIONS)]
                     retained_model_input_valid = retained_model_input.shape[0] == 16
+                    retained_model_input_shape = [int(value) for value in retained_model_input.shape]
                 if retained_model_input_valid:
                     reconstruction_status = "retained_historical_model_input_validated"
             except Exception as exc:
@@ -992,11 +1046,34 @@ def build_technical_inventory(
                 "unique_source_linkage": True,
                 "source_viewable": bool(source_viewable),
                 "source_frame_count": source_frame_count,
+                "sampled_32_source_frame_indices_json": json.dumps(sampled_32_indices),
+                "encoder_sample_positions_json": json.dumps(list(MODEL_SOURCE_FRAME_POSITIONS)),
                 "source_model_frame_indices_json": json.dumps(source_indices),
+                "encoder_source_frame_indices_json": json.dumps(source_indices),
                 "frame_order_verified": bool(frame_order_verified),
+                "source_frame_shape_json": json.dumps(source_frame_shape),
+                "source_rows": source_rows,
+                "source_columns": source_columns,
+                "source_channels": source_channels,
+                "photometric_interpretation": photometric_interpretation,
+                "photometric_handling": "extract_mimic_echo_cines.normalize_pixels",
+                "spatial_transform_status": (
+                    "retained_historical_model_input"
+                    if retained_model_input_valid
+                    else "not_verified_for_model_input"
+                ),
+                "preprocessing_policy": TECHNICAL_PREPROCESSING_POLICY,
                 "retained_model_input_valid": bool(retained_model_input_valid),
+                "retained_model_input_shape_json": json.dumps(retained_model_input_shape),
+                "exact_replay": False,
+                "verified_equivalent_replay": False,
                 "reconstruction_status": reconstruction_status,
                 "reconstruction_error": reconstruction_error,
+                "content_affecting_mismatch_status": (
+                    "not_applicable_retained_model_input"
+                    if retained_model_input_valid
+                    else "not_assessed_source_acquisition_only"
+                ),
                 "source_path": str(source_path) if source_path is not None else "",
                 "processed_path": str(npz_path) if historical else "",
                 "model_input_verified": tier in {EXACT_MODEL_INPUT, VERIFIED_EQUIVALENT_REPLAY},
@@ -1087,6 +1164,19 @@ def build_technical_inventory(
                 restricted_rows["source_viewable"].astype(bool)
                 & ~restricted_rows["frame_order_verified"].astype(bool)
             ).sum()
+        ),
+        "retained_exact_model_input_clips": int(
+            restricted_rows["retained_model_input_valid"].astype(bool).sum()
+        ),
+        "exact_replay_clips": int(restricted_rows["exact_replay"].astype(bool).sum()),
+        "verified_equivalent_replay_clips": int(
+            restricted_rows["verified_equivalent_replay"].astype(bool).sum()
+        ),
+        "source_acquisition_only_clips": int(
+            restricted_rows["evidence_tier"].eq(SOURCE_ACQUISITION_ONLY).sum()
+        ),
+        "not_assessable_clips": int(
+            restricted_rows["evidence_tier"].eq(NOT_ASSESSABLE).sum()
         ),
         "content_affecting_mismatches": 0,
         "non_content_affecting_mismatches": 0,
@@ -1244,6 +1334,9 @@ def build_audit_media(
             manifest["model_input_media_id"].astype(bool).sum()
         ),
         "source_only_displays": int(manifest["source_only"].astype(bool).sum()),
+        "media_size_bytes": int(
+            sum(path.stat().st_size for path in media_root.glob("*.png") if path.is_file())
+        ),
         "ocr_used": False,
         "automated_content_annotation": False,
         "technical_inventory_sha256": sha256_file(technical_inventory_csv),

@@ -77,12 +77,91 @@ CLIP_ANNOTATION_FIELDS = {
     "reader_confidence",
 }
 STUDY_ANNOTATION_FIELDS = {*STUDY_OUTCOMES, "reader_confidence", "restricted_notes"}
+REQUIRED_CLIP_ANNOTATION_FIELDS = {
+    "acquisition_content_type",
+    *CLIP_PRESENCE_FIELDS,
+    "reader_confidence",
+}
+REQUIRED_STUDY_ANNOTATION_FIELDS = {*STUDY_OUTCOMES, "reader_confidence"}
 
 
 @dataclass(frozen=True)
 class InterfacePackageResult:
     output_root: Path
     summary: dict[str, Any]
+
+
+def validate_generated_interface_package(
+    *,
+    interface_root: Path,
+    checkpoint_parent: Path,
+) -> dict[str, Any]:
+    """Exercise save, resume, completion locking, and role separation with disposable data."""
+
+    interface_root = require_restricted_destination(interface_root)
+    checkpoint_parent = require_restricted_destination(checkpoint_parent)
+    checkpoint_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    validated: dict[str, int] = {}
+    with tempfile.TemporaryDirectory(prefix="phase2j-interface-validation-", dir=checkpoint_parent) as root:
+        store = CheckpointStore(Path(root) / "checkpoints")
+        for role, manifest_name in (
+            ("primary", "primary_reader_manifest.json"),
+            ("second", "second_reader_manifest.json"),
+        ):
+            manifest = json.loads((interface_root / manifest_name).read_text(encoding="utf-8"))
+            studies = manifest["studies"]
+            study_ids = {str(study["audit_id"]) for study in studies}
+            clip_ids = {
+                str(clip["clip_audit_id"])
+                for study in studies
+                for clip in study["clips"]
+            }
+            payload = {
+                "annotations": {
+                    "studies": {
+                        identifier: {
+                            **{field: "not_assessable" for field in STUDY_OUTCOMES},
+                            "reader_confidence": "not_assessable",
+                        }
+                        for identifier in study_ids
+                    },
+                    "clips": {
+                        identifier: {
+                            "acquisition_content_type": "not_assessable",
+                            **{field: "not_assessable" for field in CLIP_PRESENCE_FIELDS},
+                            "reader_confidence": "not_assessable",
+                        }
+                        for identifier in clip_ids
+                    },
+                }
+            }
+            namespace = f"{role}.synthetic-validation"
+            store.save(namespace, payload)
+            if store.load(namespace)["annotations"] != payload["annotations"]:
+                raise ValueError(f"{role} checkpoint did not resume exactly")
+            store.lock(
+                namespace,
+                required_study_ids=study_ids,
+                required_clip_ids=clip_ids,
+            )
+            if not store.load(namespace)["locked"]:
+                raise ValueError(f"{role} checkpoint did not lock")
+            validated[f"{role}_studies"] = len(study_ids)
+            validated[f"{role}_clip_reads"] = len(clip_ids)
+        if store._reader_root("primary.synthetic-validation") == store._reader_root(
+            "second.synthetic-validation"
+        ):
+            raise ValueError("reader role separation was not established")
+    return {
+        "status": "AUDIT_INTERFACE_VALIDATED",
+        **validated,
+        "autosave_resume_validated": True,
+        "completion_lock_validated": True,
+        "reader_role_separation_validated": True,
+        "synthetic_annotations_removed": True,
+        "ocr_used": False,
+        "automated_content_annotation": False,
+    }
 
 
 class CheckpointStore:
@@ -195,11 +274,32 @@ class CheckpointStore:
             clean[identifier] = record
         return clean
 
-    def lock(self, reader_id: str) -> Path:
+    def lock(
+        self,
+        reader_id: str,
+        *,
+        required_study_ids: set[str] | None = None,
+        required_clip_ids: set[str] | None = None,
+    ) -> Path:
         root = self._reader_root(reader_id)
         checkpoint = root / "checkpoint.json"
         if not checkpoint.is_file():
             raise FileNotFoundError("cannot lock before a checkpoint exists")
+        if required_study_ids is not None or required_clip_ids is not None:
+            payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+            annotations = payload.get("annotations", {})
+            self._require_complete_group(
+                annotations.get("studies", {}),
+                required_study_ids or set(),
+                REQUIRED_STUDY_ANNOTATION_FIELDS,
+                "study",
+            )
+            self._require_complete_group(
+                annotations.get("clips", {}),
+                required_clip_ids or set(),
+                REQUIRED_CLIP_ANNOTATION_FIELDS,
+                "clip",
+            )
         destination = root / "LOCKED.json"
         if destination.exists():
             raise FileExistsError("reader annotations are already locked")
@@ -217,6 +317,26 @@ class CheckpointStore:
             )
             stream.write("\n")
         return destination
+
+    @staticmethod
+    def _require_complete_group(
+        group: Any,
+        required_ids: set[str],
+        required_fields: set[str],
+        label: str,
+    ) -> None:
+        if not isinstance(group, Mapping):
+            raise ValueError(f"{label} annotations must be an object")
+        observed_ids = set(map(str, group))
+        if observed_ids != required_ids:
+            raise ValueError(f"{label} annotations are incomplete or outside the locked assignment")
+        for identifier in sorted(required_ids):
+            record = group.get(identifier)
+            if not isinstance(record, Mapping):
+                raise ValueError(f"{label} annotation must be an object")
+            missing = sorted(field for field in required_fields if not str(record.get(field, "")).strip())
+            if missing:
+                raise ValueError(f"{label} annotation {identifier} is incomplete: {missing}")
 
 
 def reader_visible_record(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -253,6 +373,7 @@ def _interface_html() -> str:
     <aside>
       <div id="study-id"></div>
       <div class="counter" id="study-counter"></div>
+      <div class="counter" id="study-overview"></div>
       <button id="previous-study" aria-label="Previous study">&#8592;</button>
       <button id="next-study" aria-label="Next study">&#8594;</button>
       <button id="lock-review">Lock review</button>
@@ -264,9 +385,14 @@ def _interface_html() -> str:
         <button id="next-clip" aria-label="Next clip">&#8250;</button>
       </div>
       <div id="tier" class="tier"></div>
+      <div class="frame-controls">
+        <button id="toggle-play" type="button" aria-label="Play or pause frames">Play</button>
+        <input id="frame-slider" type="range" min="0" max="15" value="0" aria-label="Frame">
+        <span id="frame-counter">Frame 1 of 16</span>
+      </div>
       <div class="views">
-        <figure id="source-panel"><figcaption>Source acquisition</figcaption><img id="source-image" draggable="false"></figure>
-        <figure id="model-panel"><figcaption id="model-caption">Model-input view</figcaption><img id="model-image" draggable="false"></figure>
+        <figure id="source-panel"><figcaption>Source acquisition</figcaption><canvas id="source-canvas" width="224" height="224"></canvas></figure>
+        <figure id="model-panel"><figcaption id="model-caption">Model-input view</figcaption><canvas id="model-canvas" width="224" height="224"></canvas></figure>
       </div>
       <form id="clip-form" autocomplete="off">
         <fieldset><legend>Modality/content</legend><select name="acquisition_content_type">
@@ -285,7 +411,10 @@ def _interface_html() -> str:
         </fieldset>
         <label>Reader confidence<select name="reader_confidence"><option value="">Unreviewed</option><option>high</option><option>moderate</option><option>low</option><option>not_assessable</option></select></label>
       </form>
-      <form id="study-form" autocomplete="off"><fieldset><legend>Study summary</legend><div id="study-fields"></div></fieldset></form>
+      <form id="study-form" autocomplete="off"><fieldset><legend>Study summary</legend><div id="study-fields"></div>
+        <label>Reader confidence<select name="reader_confidence"><option value="">Unreviewed</option><option>high</option><option>moderate</option><option>low</option><option>not_assessable</option></select></label>
+        <label>Restricted notes<input name="restricted_notes" maxlength="500"></label>
+      </fieldset></form>
     </section>
   </main>
   <script src="app.js"></script>
@@ -295,7 +424,7 @@ def _interface_html() -> str:
 
 
 def _interface_css() -> str:
-    return """*{box-sizing:border-box}body{margin:0;font:14px Arial,sans-serif;color:#171717;background:#f5f6f7}header{height:48px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #bbb}main{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 48px)}aside{padding:16px;border-right:1px solid #bbb;background:#fff}button,select,input{min-height:34px;margin:4px;padding:5px 8px}section{padding:14px;min-width:0}.clip-nav{display:flex;align-items:center;justify-content:center}.tier{font-weight:700;margin:6px 0}.views{display:grid;grid-template-columns:1fr 1fr;gap:10px}.views figure{margin:0;background:#fff;border:1px solid #aaa;padding:8px}.views img{display:block;width:100%;max-height:58vh;object-fit:contain;background:#000}.source-only #model-panel{display:none}.source-only .views{grid-template-columns:1fr}fieldset{border:1px solid #aaa;margin:10px 0;padding:10px;background:#fff}label{display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}.counter{margin:8px 0;color:#555}@media(max-width:850px){main{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #bbb}.views{grid-template-columns:1fr}}
+    return """*{box-sizing:border-box}body{margin:0;font:14px Arial,sans-serif;color:#171717;background:#f5f6f7}header{height:48px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #bbb}main{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 48px)}aside{padding:16px;border-right:1px solid #bbb;background:#fff}button,select,input{min-height:34px;margin:4px;padding:5px 8px}section{padding:14px;min-width:0}.clip-nav,.frame-controls{display:flex;align-items:center;justify-content:center}.frame-controls input{width:min(420px,55vw)}.tier{font-weight:700;margin:6px 0}.views{display:grid;grid-template-columns:1fr 1fr;gap:10px}.views figure{margin:0;background:#fff;border:1px solid #aaa;padding:8px}.views canvas{display:block;width:100%;max-height:58vh;aspect-ratio:1;object-fit:contain;background:#000}.source-only #model-panel{display:none}.source-only .views{grid-template-columns:1fr}fieldset{border:1px solid #aaa;margin:10px 0;padding:10px;background:#fff}label{display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}.counter{margin:8px 0;color:#555}@media(max-width:850px){main{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #bbb}.views{grid-template-columns:1fr}}
 """
 
 
@@ -303,18 +432,29 @@ def _interface_js() -> str:
     return """'use strict';
 const presence=['waveform_or_tracing','calipers','contour_or_measurement_trace','visible_text','visible_numeric_value','visible_unit','visible_measurement_name','lvot_vti_specific_label','tapse_specific_label','candidate_target_value_present'];
 const studyFields=['spectral_doppler_present','m_mode_present','caliper_or_trace_present','visible_numeric_value_present','target_specific_label_present','candidate_target_value_present'];
-let data={studies:[]}, state={annotations:{studies:{},clips:{}}}, si=0, ci=0, locked=false;
+const clipRequired=['acquisition_content_type',...presence,'reader_confidence'];
+const studyRequired=[...studyFields,'reader_confidence'];
+let data={studies:[]}, state={annotations:{studies:{},clips:{}}}, si=0, ci=0, locked=false, frameIndex=0, playTimer=null;
+const sprites={source:null,model:null};
 const choices='<option value="">Unreviewed</option><option value="yes">Yes</option><option value="no">No</option><option value="uncertain">Uncertain</option><option value="not_assessable">Not assessable</option>';
 function fields(root,names){root.innerHTML='';names.forEach(n=>{const l=document.createElement('label');l.textContent=n.replaceAll('_',' ');const s=document.createElement('select');s.name=n;s.innerHTML=choices;l.appendChild(s);root.appendChild(l);});}
 function current(){const study=data.studies[si];return [study,study.clips[ci]];}
 function readForm(form){return Object.fromEntries(new FormData(form).entries());}
 function fill(form,values){[...form.elements].forEach(e=>{if(e.name)e.value=(values||{})[e.name]||'';e.disabled=locked;});}
 async function save(){if(locked)return;const [s,c]=current();state.annotations.clips[c.clip_audit_id]=readForm(document.querySelector('#clip-form'));state.annotations.studies[s.audit_id]=readForm(document.querySelector('#study-form'));document.querySelector('#save-state').textContent='Saving';const r=await fetch('/api/checkpoint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(state)});if(!r.ok)throw new Error('autosave failed');document.querySelector('#save-state').textContent='Saved';}
-function render(){const [s,c]=current();document.querySelector('#study-id').textContent=s.audit_id;document.querySelector('#study-counter').textContent=`Study ${si+1} of ${data.studies.length}`;document.querySelector('#clip-counter').textContent=`Clip ${ci+1} of ${s.clips.length}`;document.querySelector('#tier').textContent=c.evidence_tier.replaceAll('_',' ');document.body.classList.toggle('source-only',c.source_only);document.querySelector('#model-caption').textContent=c.evidence_tier==='EXACT_MODEL_INPUT'?'Exact model input':'Verified equivalent replay';const src=document.querySelector('#source-image');src.src=c.source_media_id?`/media/${encodeURIComponent(c.source_media_id)}`:'';const model=document.querySelector('#model-image');model.src=c.model_input_media_id?`/media/${encodeURIComponent(c.model_input_media_id)}`:'';fill(document.querySelector('#clip-form'),state.annotations.clips[c.clip_audit_id]);fill(document.querySelector('#study-form'),state.annotations.studies[s.audit_id]);document.querySelector('#lock-review').disabled=locked;}
-async function move(ds,dc){await save();si=Math.max(0,Math.min(data.studies.length-1,si+ds));if(ds)ci=0;const s=data.studies[si];ci=Math.max(0,Math.min(s.clips.length-1,ci+dc));render();}
-async function lockReview(){await save();if(!confirm('Lock this reader record? It cannot be edited afterward.'))return;const r=await fetch('/api/lock',{method:'POST'});if(!r.ok)throw new Error('lock failed');locked=true;render();document.querySelector('#save-state').textContent='Locked';}
-async function init(){fields(document.querySelector('#presence-fields'),presence);fields(document.querySelector('#study-fields'),studyFields);data=await (await fetch('/api/manifest')).json();state=await (await fetch('/api/checkpoint')).json();state.annotations=state.annotations||{studies:{},clips:{}};state.annotations.studies=state.annotations.studies||{};state.annotations.clips=state.annotations.clips||{};locked=!!state.locked;render();document.querySelectorAll('select').forEach(e=>e.addEventListener('change',()=>save().catch(console.error)));document.querySelectorAll('input').forEach(e=>e.addEventListener('change',()=>save().catch(console.error)));}
-document.querySelector('#previous-study').onclick=()=>move(-1,0);document.querySelector('#next-study').onclick=()=>move(1,0);document.querySelector('#previous-clip').onclick=()=>move(0,-1);document.querySelector('#next-clip').onclick=()=>move(0,1);document.querySelector('#lock-review').onclick=()=>lockReview().catch(console.error);document.addEventListener('contextmenu',e=>{if(e.target.tagName==='IMG')e.preventDefault();});document.addEventListener('keydown',e=>{if(['SELECT','INPUT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='ArrowLeft')move(0,-1);if(e.key==='ArrowRight')move(0,1);if(e.key==='ArrowUp')move(-1,0);if(e.key==='ArrowDown')move(1,0);});init().catch(e=>{document.querySelector('#save-state').textContent='Interface error';console.error(e);});
+function complete(record,required){return !!record&&required.every(k=>String(record[k]||'').trim());}
+function updateOverview(){const [s]=current();const done=s.clips.filter(c=>complete(state.annotations.clips[c.clip_audit_id],clipRequired)).length;const flagged=s.clips.filter(c=>{const a=state.annotations.clips[c.clip_audit_id]||{};return presence.some(k=>a[k]==='yes'||a[k]==='uncertain');}).length;document.querySelector('#study-overview').textContent=`${done}/${s.clips.length} clips complete; ${flagged} flagged`;}
+function drawSprite(name){const canvas=document.querySelector(`#${name}-canvas`),ctx=canvas.getContext('2d'),img=sprites[name];ctx.fillStyle='#000';ctx.fillRect(0,0,canvas.width,canvas.height);if(!img||!img.complete||!img.naturalWidth)return;const tw=img.naturalWidth/4,th=img.naturalHeight/4,x=(frameIndex%4)*tw,y=Math.floor(frameIndex/4)*th;ctx.drawImage(img,x,y,tw,th,0,0,canvas.width,canvas.height);}
+function renderFrame(){drawSprite('source');drawSprite('model');document.querySelector('#frame-slider').value=String(frameIndex);document.querySelector('#frame-counter').textContent=`Frame ${frameIndex+1} of 16`;}
+function loadSprite(name,token){sprites[name]=null;drawSprite(name);if(!token)return;const img=new Image();img.onload=()=>{sprites[name]=img;renderFrame();};img.src=`/media/${encodeURIComponent(token)}`;}
+function stopPlayback(){if(playTimer){clearInterval(playTimer);playTimer=null;}document.querySelector('#toggle-play').textContent='Play';}
+function togglePlayback(){if(playTimer){stopPlayback();return;}playTimer=setInterval(()=>{frameIndex=(frameIndex+1)%16;renderFrame();},250);document.querySelector('#toggle-play').textContent='Pause';}
+function render(){const [s,c]=current();document.querySelector('#study-id').textContent=s.audit_id;document.querySelector('#study-counter').textContent=`Study ${si+1} of ${data.studies.length}`;document.querySelector('#clip-counter').textContent=`Clip ${ci+1} of ${s.clips.length}`;document.querySelector('#tier').textContent=c.source_only?'SOURCE ACQUISITION ONLY \u2014 NOT VERIFIED MODEL INPUT':c.evidence_tier.replaceAll('_',' ');document.body.classList.toggle('source-only',c.source_only);document.querySelector('#model-caption').textContent=c.evidence_tier==='EXACT_MODEL_INPUT'?'Exact model input':'Verified equivalent replay';fill(document.querySelector('#clip-form'),state.annotations.clips[c.clip_audit_id]);fill(document.querySelector('#study-form'),state.annotations.studies[s.audit_id]);frameIndex=0;loadSprite('source',c.source_media_id);loadSprite('model',c.model_input_media_id);document.querySelector('#lock-review').disabled=locked;document.querySelector('#toggle-play').disabled=locked;updateOverview();}
+async function move(ds,dc){await save();stopPlayback();si=Math.max(0,Math.min(data.studies.length-1,si+ds));if(ds)ci=0;const s=data.studies[si];ci=Math.max(0,Math.min(s.clips.length-1,ci+dc));render();}
+function firstIncomplete(){for(let s=0;s<data.studies.length;s++){const study=data.studies[s];for(let c=0;c<study.clips.length;c++){if(!complete(state.annotations.clips[study.clips[c].clip_audit_id],clipRequired))return [s,c];}if(!complete(state.annotations.studies[study.audit_id],studyRequired))return [s,0];}return null;}
+async function lockReview(){await save();const missing=firstIncomplete();if(missing){si=missing[0];ci=missing[1];render();throw new Error('Complete every assigned clip and study summary before locking.');}if(!confirm('Lock this reader record? It cannot be edited afterward.'))return;const r=await fetch('/api/lock',{method:'POST'});if(!r.ok){const detail=await r.json();throw new Error(detail.error||'lock failed');}locked=true;stopPlayback();render();document.querySelector('#save-state').textContent='Locked';}
+async function init(){fields(document.querySelector('#presence-fields'),presence);fields(document.querySelector('#study-fields'),studyFields);data=await (await fetch('/api/manifest')).json();state=await (await fetch('/api/checkpoint')).json();state.annotations=state.annotations||{studies:{},clips:{}};state.annotations.studies=state.annotations.studies||{};state.annotations.clips=state.annotations.clips||{};locked=!!state.locked;render();document.querySelectorAll('select').forEach(e=>e.addEventListener('change',()=>save().then(updateOverview).catch(console.error)));document.querySelectorAll('input:not(#frame-slider)').forEach(e=>e.addEventListener('change',()=>save().then(updateOverview).catch(console.error)));}
+document.querySelector('#previous-study').onclick=()=>move(-1,0);document.querySelector('#next-study').onclick=()=>move(1,0);document.querySelector('#previous-clip').onclick=()=>move(0,-1);document.querySelector('#next-clip').onclick=()=>move(0,1);document.querySelector('#toggle-play').onclick=togglePlayback;document.querySelector('#frame-slider').oninput=e=>{frameIndex=Number(e.target.value);renderFrame();};document.querySelector('#lock-review').onclick=()=>lockReview().catch(e=>{document.querySelector('#save-state').textContent=e.message;});document.addEventListener('contextmenu',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});document.addEventListener('keydown',e=>{if(['SELECT','INPUT','TEXTAREA'].includes(e.target.tagName))return;if(e.key==='ArrowLeft')move(0,-1);if(e.key==='ArrowRight')move(0,1);if(e.key==='ArrowUp')move(-1,0);if(e.key==='ArrowDown')move(1,0);if(e.key===' ')togglePlayback();});init().catch(e=>{document.querySelector('#save-state').textContent='Interface error';console.error(e);});
 """
 
 
@@ -431,7 +571,13 @@ def build_blinded_interface_package(
             "autosave": True,
             "checkpoint_resume": True,
             "annotation_lock": True,
+            "completion_validation_before_lock": True,
             "second_reader_independent": True,
+            "canonical_media_reused_for_second_reader": True,
+            "frame_scrubbing": True,
+            "frame_looping": True,
+            "source_only_label": "SOURCE ACQUISITION ONLY - NOT VERIFIED MODEL INPUT",
+            "public_network_binding_required": False,
         },
     )
     summary = {
@@ -439,10 +585,19 @@ def build_blinded_interface_package(
         "primary_studies": len(primary_payload["studies"]),
         "second_reader_studies": len(second_payload["studies"]),
         "clips": int(len(visible)),
+        "primary_clip_reads": sum(len(study["clips"]) for study in primary_payload["studies"]),
+        "second_reader_clip_reads": sum(
+            len(study["clips"]) for study in second_payload["studies"]
+        ),
         "media_items": len(media_ids),
         "reader_blinding_validated": True,
         "autosave_resume_validated": True,
         "annotation_lock_available": True,
+        "completion_validation_before_lock": True,
+        "canonical_media_reused_for_second_reader": True,
+        "frame_scrubbing": True,
+        "frame_looping": True,
+        "public_network_binding_required": False,
         "ocr_available": False,
         "automated_content_annotation": False,
         "image_export_button": False,

@@ -6,7 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
-from jdim_tier1.audit_interface import build_blinded_interface_package
+from jdim_tier1.audit_interface import (
+    build_blinded_interface_package,
+    validate_generated_interface_package,
+)
 from jdim_tier1.phase2i import (
     BLOCKED_PHASE2I_SOURCE_MISMATCH,
     OFFICIAL_SOURCE_BASE,
@@ -62,6 +65,13 @@ def parse_args() -> argparse.Namespace:
     interface.add_argument("--second-reader-manifest-csv", type=Path, required=True)
     interface.add_argument("--media-root", type=Path, required=True)
     interface.add_argument("--restricted-output-root", type=Path, required=True)
+
+    validate = subparsers.add_parser(
+        "validate-interface", help="Validate the generated interface with disposable annotations"
+    )
+    validate.add_argument("--interface-root", type=Path, required=True)
+    validate.add_argument("--checkpoint-parent", type=Path, required=True)
+    validate.add_argument("--safe-output-json", type=Path, required=True)
     return parser.parse_args()
 
 
@@ -114,6 +124,16 @@ def main() -> int:
                 media_root=args.media_root,
                 output_root=args.restricted_output_root,
             ).summary
+        elif args.command == "validate-interface":
+            result = validate_generated_interface_package(
+                interface_root=args.interface_root,
+                checkpoint_parent=args.checkpoint_parent,
+            )
+            args.safe_output_json.parent.mkdir(parents=True, exist_ok=True)
+            args.safe_output_json.write_text(
+                json.dumps(result, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
         else:  # pragma: no cover
             raise AssertionError(args.command)
     except Tier1BlockedError as exc:

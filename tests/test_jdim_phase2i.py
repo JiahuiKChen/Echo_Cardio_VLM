@@ -18,6 +18,7 @@ from jdim_tier1.audit_interface import (  # noqa: E402
     PROHIBITED_READER_FIELDS,
     build_blinded_interface_package,
     reader_visible_record,
+    validate_generated_interface_package,
 )
 from jdim_tier1.phase2i import (  # noqa: E402
     BLOCKED_OFFICIAL_SOURCE_AUTHENTICATION,
@@ -30,6 +31,7 @@ from jdim_tier1.phase2i import (  # noqa: E402
     SOURCE_ACQUISITION_ONLY,
     VERIFIED_EQUIVALENT_REPLAY,
     _difference_metrics,
+    _netrc_auth_available,
     _validate_relative_dicom_path,
     classify_evidence_tier,
     replay_readiness_status,
@@ -58,6 +60,17 @@ class Phase2ITierTests(unittest.TestCase):
         wrapper = (ROOT / "scripts" / "scc_run_jdim_phase2i_job_a.sh").read_text()
         self.assertIn("printf '%s\\n'", wrapper)
         self.assertNotIn("qsub -cwd -V", wrapper)
+        self.assertIn("jdim_phase2j_restoration_v2", wrapper)
+        self.assertIn("--max-redirect=0", wrapper)
+
+    def test_netrc_preflight_checks_mode_without_parsing_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = Path(tempdir) / ".netrc"
+            path.write_text("intentionally not parsed\n", encoding="utf-8")
+            path.chmod(0o600)
+            self.assertTrue(_netrc_auth_available(path))
+            path.chmod(0o640)
+            self.assertFalse(_netrc_auth_available(path))
 
     def test_retained_or_bitwise_replay_is_tier_a(self) -> None:
         common = {
@@ -225,6 +238,17 @@ class Phase2IInterfaceTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 store.save("primary.reader1", self._checkpoint_payload())
 
+    def test_completion_validation_blocks_incomplete_reader_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            store = CheckpointStore(Path(tempdir) / "checkpoints")
+            store.save("primary.reader1", self._checkpoint_payload())
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                store.lock(
+                    "primary.reader1",
+                    required_study_ids={"A1"},
+                    required_clip_ids={"C1"},
+                )
+
     def test_checkpoint_rejects_unexpected_or_unblinded_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             store = CheckpointStore(Path(tempdir) / "checkpoints")
@@ -317,6 +341,18 @@ class Phase2IInterfaceTests(unittest.TestCase):
             html = (output / "index.html").read_text()
             self.assertNotIn("download", html.lower())
             self.assertNotIn("screenshot", html.lower())
+            javascript = (output / "app.js").read_text()
+            self.assertIn("frame-slider", html)
+            self.assertIn("SOURCE ACQUISITION ONLY", javascript)
+            self.assertIn("firstIncomplete", javascript)
+            validation_parent = root / "validation"
+            validation = validate_generated_interface_package(
+                interface_root=output,
+                checkpoint_parent=validation_parent,
+            )
+            self.assertEqual(validation["status"], "AUDIT_INTERFACE_VALIDATED")
+            self.assertTrue(validation["synthetic_annotations_removed"])
+            self.assertEqual(list(validation_parent.iterdir()), [])
 
 
 if __name__ == "__main__":  # pragma: no cover

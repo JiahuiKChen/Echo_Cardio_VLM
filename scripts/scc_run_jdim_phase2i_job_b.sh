@@ -10,8 +10,11 @@ fi
 REPO="${JDIM_REPO_ROOT:-/restricted/project/mimicecho/code/Echo_Cardio_VLM_jdim_phase2er_driver_fix}"
 PY="${JDIM_PYTHON_BIN:-/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python}"
 SOURCE_COMMIT="${JDIM_PHASE2I_SOURCE_COMMIT:-}"
-JOB_A_ROOT="${JDIM_PHASE2I_JOB_A_ROOT:-/restricted/project/mimicecho/outputs/jdim_phase2i_restoration_v1}"
-OUT="/restricted/project/mimicecho/outputs/jdim_phase2i_audit_interface_v1"
+AUTHORIZED_BASE_COMMIT="58e9de15fba97a7f2126703a1eb6b52d95ff9c63"
+JOB_A_ROOT="${JDIM_PHASE2I_JOB_A_ROOT:-/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v2}"
+OUT="${JDIM_PHASE2I_JOB_B_ROOT:-/restricted/project/mimicecho/outputs/jdim_phase2j_audit_interface_v1}"
+EXPECTED_JOB_A_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v2"
+EXPECTED_OUT="/restricted/project/mimicecho/outputs/jdim_phase2j_audit_interface_v1"
 AUDIT_ROOT="/restricted/project/mimicecho/outputs/jdim_audit_roster_pilot_v1"
 TECHNICAL_SUMMARY="${JOB_A_ROOT}/aggregate_safe/technical_inventory/technical_input_inventory_summary.json"
 TECHNICAL_INVENTORY="${JOB_A_ROOT}/restricted/technical_inventory/technical_input_inventory_restricted.csv"
@@ -22,8 +25,8 @@ if [[ -z "${SOURCE_COMMIT}" ]]; then
   echo "[error] JDIM_PHASE2I_SOURCE_COMMIT is required" >&2
   exit 2
 fi
-if [[ ! "${JOB_A_ROOT}" =~ ^/restricted/project/mimicecho/outputs/jdim_phase2i_restoration_v[0-9]+$ ]]; then
-  echo "[error] JDIM_PHASE2I_JOB_A_ROOT is outside the authorized versioned root family" >&2
+if [[ "${JOB_A_ROOT}" != "${EXPECTED_JOB_A_ROOT}" || "${OUT}" != "${EXPECTED_OUT}" ]]; then
+  echo "[error] Phase 2J Job A or Job B root differs from the authorized immutable root" >&2
   exit 2
 fi
 for path in "${PY}" "${TECHNICAL_SUMMARY}" "${TECHNICAL_INVENTORY}" "${PRIMARY}" "${SECOND}"; do
@@ -34,6 +37,11 @@ for path in "${PY}" "${TECHNICAL_SUMMARY}" "${TECHNICAL_INVENTORY}" "${PRIMARY}"
 done
 if [[ "$(git -C "${REPO}" rev-parse HEAD)" != "${SOURCE_COMMIT}" ]]; then
   echo "[error] SCC checkout is not at JDIM_PHASE2I_SOURCE_COMMIT" >&2
+  exit 2
+fi
+if ! git -C "${REPO}" merge-base --is-ancestor "${AUTHORIZED_BASE_COMMIT}" "${SOURCE_COMMIT}" \
+  || [[ "$(git -C "${REPO}" rev-list --count "${AUTHORIZED_BASE_COMMIT}..${SOURCE_COMMIT}")" != "1" ]]; then
+  echo "[error] source is not the single authorized operational repair on the Phase 2J base" >&2
   exit 2
 fi
 if [[ -n "$(git -C "${REPO}" status --porcelain)" ]]; then
@@ -76,8 +84,13 @@ cd "${REPO}"
   --second-reader-manifest-csv "${SECOND}" \
   --media-root "${OUT}/restricted/audit_media/media" \
   --restricted-output-root "${OUT}/restricted/interface"
+"${PY}" scripts/run_jdim_phase2i.py validate-interface \
+  --interface-root "${OUT}/restricted/interface" \
+  --checkpoint-parent "${OUT}/restricted/interface_validation" \
+  --safe-output-json "${OUT}/aggregate_safe/interface_validation.json"
 
-"${PY}" -c "import json; d=json.load(open('${OUT}/restricted/interface/interface_summary.json')); assert d['primary_studies']==116 and d['second_reader_studies']==24 and d['clips']==5071 and d['reader_blinding_validated'] is True and d['ocr_available'] is False and d['automated_content_annotation'] is False"
+"${PY}" -c "import json; d=json.load(open('${OUT}/restricted/interface/interface_summary.json')); assert d['primary_studies']==116 and d['second_reader_studies']==24 and d['clips']==5071 and d['primary_clip_reads']==5071 and d['second_reader_clip_reads']==1043 and d['reader_blinding_validated'] is True and d['ocr_available'] is False and d['automated_content_annotation'] is False and d['completion_validation_before_lock'] is True and d['canonical_media_reused_for_second_reader'] is True and d['public_network_binding_required'] is False"
+"${PY}" -c "import json; d=json.load(open('${OUT}/aggregate_safe/interface_validation.json')); assert d['status']=='AUDIT_INTERFACE_VALIDATED' and d['primary_studies']==116 and d['primary_clip_reads']==5071 and d['second_studies']==24 and d['second_clip_reads']==1043 and d['synthetic_annotations_removed'] is True"
 
-"${PY}" -c "import json,pathlib; root=pathlib.Path('${OUT}'); interface=json.load(open(root/'restricted/interface/interface_summary.json')); media=json.load(open(root/'restricted/audit_media/audit_media_summary.json')); payload={'status':'READY_FOR_BLINDED_HUMAN_AUDIT','interface':interface,'media':media}; out=root/'aggregate_safe/phase2i_job_b_summary.json'; out.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')"
+"${PY}" -c "import hashlib,json,pathlib; root=pathlib.Path('${OUT}'); interface=json.load(open(root/'restricted/interface/interface_summary.json')); media=json.load(open(root/'restricted/audit_media/audit_media_summary.json')); validation=json.load(open(root/'aggregate_safe/interface_validation.json')); digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest(); payload={'status':'READY_FOR_BLINDED_HUMAN_AUDIT','source_commit':'${SOURCE_COMMIT}','interface':interface,'media':media,'validation':validation,'primary_package_sha256':digest(root/'restricted/interface/primary_reader_manifest.json'),'second_reader_package_sha256':digest(root/'restricted/interface/second_reader_manifest.json'),'interface_policy_sha256':digest(root/'restricted/interface/interface_policy.json'),'validation_sha256':digest(root/'aggregate_safe/interface_validation.json')}; out=root/'aggregate_safe/phase2j_job_b_summary.json'; out.write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')"
 echo "READY_FOR_BLINDED_HUMAN_AUDIT"
