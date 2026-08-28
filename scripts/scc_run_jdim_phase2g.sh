@@ -164,8 +164,10 @@ fi
 AUDIT_RESTRICTED="${OUT}/restricted/input_content_audit/locked_roster"
 AUDIT_SAFE="${OUT}/aggregate_safe/input_content_audit/locked_roster"
 AUDIT_KEY="${OUT}/restricted/input_content_audit/opaque_id_key.bin"
-umask 077
-"${PY}" -c "import os,sys; open(sys.argv[1],'wb').write(os.urandom(32))" "${AUDIT_KEY}"
+"${PY}" scripts/create_jdim_audit_key.py \
+  --output-root "${OUT}" \
+  --key-file "${AUDIT_KEY}" \
+  --run-id "phase2g:${JDIM_PHASE2G_SOURCE_COMMIT}"
 "${PY}" scripts/prepare_jdim_input_audit.py sample \
   --config "${JDIM_AUDIT_CONFIG}" \
   --cohort "lvot_vti=${OUT}/restricted/cohort_flow/jdim_target_cohort_lvot_vti.csv" \

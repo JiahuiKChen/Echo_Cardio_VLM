@@ -39,3 +39,12 @@ A source or pilot blocker does not invalidate a locked cohort or roster. The
 locked roster is never replaced with convenience studies. The pilot records no
 clinical-content findings, uses no OCR, and is excluded from prevalence
 estimation.
+
+## Phase 2H audit-only resume
+
+After `JDIM_COHORT_FLOW_LOCKED`, use `scc_run_jdim_phase2h.sh`; it verifies the
+locked certificate and cohort hashes and starts directly at roster generation.
+It never calls cohort flow. `create_jdim_audit_key.py` creates the restricted
+parent directories with mode `0700` and the key and same-run marker with mode
+`0600`, using exclusive creation. Existing keys are never overwritten; reuse
+requires an explicit same-run resume.
