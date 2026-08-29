@@ -186,10 +186,13 @@ R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
 
 # Phase 1I-R8U-R3 is additive to the immutable R8U-R2 failure evidence.  Its
 # Batch-16 receipt and the future Tasks 17--19 receipts are produced by one
-# direct child of the scheduler-log repair, while every R3 control artifact
-# binds the complete six-commit chain below.
+# direct child of the publication-resume repair, while every R3 control
+# artifact binds the complete seven-commit chain below.
 R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT = (
     "4fd8f4bf58ba56a5cc82893e80833cbc5c9332ff"
+)
+R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT = (
+    "ce3326a23f149dd864c5aa534225b959d7b5abbe"
 )
 R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
     {
@@ -199,6 +202,7 @@ R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
         "r8u_projection_repair_commit",
         "r8u_scheduler_log_repair_commit",
         "r8u_publication_resume_repair_commit",
+        "r8u_candidate_authority_repair_commit",
     }
 )
 R8U_FAILED_PARTIAL_METADATA_SHA256 = (
@@ -4809,7 +4813,7 @@ def _validate_r8u_repository_authority(
 def _validate_r8u_r3_repository_authority(
     implementation_commit: str,
 ) -> None:
-    """Bind R8U-R3 to one exact direct child of the log-repair commit."""
+    """Bind R8U-R3 to one exact child of the publication-resume repair."""
 
     fixed_commits = (
         R8R_SCIENTIFIC_GOVERNING_COMMIT,
@@ -4817,6 +4821,7 @@ def _validate_r8u_r3_repository_authority(
         R8U_BASE_IMPLEMENTATION_COMMIT,
         R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
     )
     if (
         not isinstance(implementation_commit, str)
@@ -4873,6 +4878,16 @@ def _validate_r8u_r3_repository_authority(
             implementation_commit,
         ): (
             f"{implementation_commit} "
+            f"{R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT} "
             f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}\n"
         ).encode("ascii"),
         (
@@ -4918,8 +4933,14 @@ def _validate_r8u_r3_repository_authority(
         (
             "rev-list",
             "--count",
-            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}.."
+            f"{R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT}.."
             f"{implementation_commit}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}.."
+            f"{R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT}",
         ): b"1\n",
         (
             "rev-list",
@@ -4949,13 +4970,13 @@ def _validate_r8u_r3_repository_authority(
             "rev-list",
             "--count",
             f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}.."
-            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}",
-        ): b"4\n",
+            f"{R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT}",
+        ): b"5\n",
         (
             "rev-list",
             "--count",
             f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{implementation_commit}",
-        ): b"5\n",
+        ): b"6\n",
     }
     for arguments, expected_stdout in exact_outputs.items():
         result = run_git(*arguments)
@@ -4991,6 +5012,10 @@ def _validate_r8u_r3_repository_authority(
         ),
         (
             R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+        ),
+        (
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
             implementation_commit,
         ),
     ):
@@ -5054,7 +5079,7 @@ def _r8u_validate_implementation_authority_epochs(
 def _r8u_r3_expected_implementation_authority_epochs(
     implementation_commit: str,
 ) -> dict[str, str]:
-    """Return the exact six-commit authority for R8U-R3 artifacts."""
+    """Return the exact seven-commit authority for R8U-R3 artifacts."""
 
     return {
         "scientific_commit": R8R_SCIENTIFIC_GOVERNING_COMMIT,
@@ -5066,7 +5091,10 @@ def _r8u_r3_expected_implementation_authority_epochs(
         "r8u_scheduler_log_repair_commit": (
             R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
         ),
-        "r8u_publication_resume_repair_commit": implementation_commit,
+        "r8u_publication_resume_repair_commit": (
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_candidate_authority_repair_commit": implementation_commit,
     }
 
 
@@ -6379,7 +6407,7 @@ def _load_r8u_r3_chain_artifact(
                     completed_extraction_candidate_bytes=(
                         candidate_total_bytes
                     ),
-                    r8u_publication_resume_repair_commit=(
+                    r8u_candidate_authority_repair_commit=(
                         authority.implementation_commit
                     ),
                 )
@@ -8146,7 +8174,7 @@ def _validate_r8u_r3_chain_artifacts(
         ) from exc
     if (
         resume_authority.get("prior_implementation_commit")
-        != R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+        != R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
         or type(resume_authority.get("original_task_id")) is not int
         or resume_authority.get("original_task_id") != 16
         or resume_authority.get("continuation_task_range") != "17-19"
@@ -8438,7 +8466,7 @@ def _validate_r8u_r3_chain_artifacts(
     }
     if (
         continuation_claim.get("prior_implementation_commit")
-        != R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+        != R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
         or continuation_claim.get("prefix_final_receipt_sha256") != prefix16
         or continuation_claim.get("failed_partial_seal_sha256")
         != observed["failed_partial_seal_sha256"]

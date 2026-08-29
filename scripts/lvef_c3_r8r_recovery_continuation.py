@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import errno
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -298,6 +299,9 @@ R8U_CAPACITY_STATUS: Final = (
 R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT: Final = (
     "4fd8f4bf58ba56a5cc82893e80833cbc5c9332ff"
 )
+R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT: Final = (
+    "ce3326a23f149dd864c5aa534225b959d7b5abbe"
+)
 R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS: Final = frozenset(
     {
         "scientific_commit",
@@ -306,6 +310,7 @@ R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS: Final = frozenset(
         "r8u_projection_repair_commit",
         "r8u_scheduler_log_repair_commit",
         "r8u_publication_resume_repair_commit",
+        "r8u_candidate_authority_repair_commit",
     }
 )
 R8U_R2_COMPLETED_EXTRACTION_JOB_ID: Final = "7354951"
@@ -396,6 +401,30 @@ R8U_R3_CANDIDATE_CONTROL_FILES: Final = frozenset(
         "technical_disposition_manifest.restricted.csv",
         "dicom_extraction.summary.json",
         "stage_completion_receipt.restricted.json",
+    }
+)
+R8U_R3_CANDIDATE_FAILURE_CODES: Final = frozenset(
+    {
+        "CANDIDATE_ROOT_AUTHORITY_INVALID",
+        "CANDIDATE_TARGET_STATE_INVALID",
+        "CANDIDATE_STAGE_COMPLETION_RECEIPT_INVALID",
+        "CANDIDATE_STAGE_EVENT_COMMIT_BINDING_INVALID",
+        "CANDIDATE_CONTROL_SET_INVALID",
+        "CANDIDATE_CONTROL_FILE_MODE_INVALID",
+        "CANDIDATE_UNEXPECTED_TRANSIENT_FILE",
+        "CANDIDATE_DICOM_AUDIT_SCHEMA_INVALID",
+        "CANDIDATE_DICOM_AUDIT_BOOLEAN_DIALECT_MISMATCH",
+        "CANDIDATE_DICOM_AUDIT_SEMANTIC_MISMATCH",
+        "CANDIDATE_EXTRACTION_MANIFEST_SCHEMA_INVALID",
+        "CANDIDATE_EXTRACTION_MANIFEST_SERIALIZATION_DIALECT_MISMATCH",
+        "CANDIDATE_EXTRACTION_MANIFEST_PLAN_MISMATCH",
+        "CANDIDATE_TECHNICAL_DISPOSITION_MANIFEST_INVALID",
+        "CANDIDATE_NPZ_PATH_SET_MISMATCH",
+        "CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID",
+        "CANDIDATE_EXTRACTION_SUMMARY_MISMATCH",
+        "CANDIDATE_MOUNT_AUTHORITY_INVALID",
+        "GENUINE_COMPLETED_EXTRACTION_INCONSISTENCY",
+        "CANDIDATE_FAILURE_UNRESOLVED",
     }
 )
 R8U_R3_PROCEEDABLE_PROBE_RESULTS: Final = frozenset(
@@ -862,6 +891,14 @@ class _R8UR3CandidateProjection:
     expected_npz_paths: frozenset[PurePosixPath]
 
 
+@dataclass(frozen=True)
+class _R8UR3CanonicalExtractionManifest:
+    rows: tuple[Mapping[str, Any], ...]
+    summary: Mapping[str, Any]
+    expected_npz_paths: frozenset[PurePosixPath]
+    manifest_projection: tuple[tuple[str, str], ...]
+
+
 class R8RControllerError(RuntimeError):
     def __init__(
         self,
@@ -1246,7 +1283,7 @@ def _r8u_implementation_authority_epochs(
 
 
 def _current_r8u_r3_implementation_commit() -> str:
-    """Require the one direct publication-resume child of frozen R8U-R2."""
+    """Require the one direct candidate-authority child of frozen R8U-R3."""
 
     try:
         current = sequential._current_commit()
@@ -1260,6 +1297,7 @@ def _current_r8u_r3_implementation_commit() -> str:
         R8U_BASE_IMPLEMENTATION_COMMIT,
         R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
     )
     if COMMIT_RE.fullmatch(current) is None or current in set(fixed):
         _fail("R8U_R3_IMPLEMENTATION_COMMIT_REQUIRED")
@@ -1272,13 +1310,14 @@ def _current_r8u_r3_implementation_commit() -> str:
         f"{fixed[2]} {fixed[1]}",
         f"{fixed[3]} {fixed[2]}",
         f"{fixed[4]} {fixed[3]}",
-        f"{current} {fixed[4]}",
+        f"{fixed[5]} {fixed[4]}",
+        f"{current} {fixed[5]}",
     )
     relation = sequential._git(
-        "merge-base", "--is-ancestor", fixed[4], current
+        "merge-base", "--is-ancestor", fixed[5], current
     )
     distance = sequential._git(
-        "rev-list", "--count", f"{fixed[4]}..{current}"
+        "rev-list", "--count", f"{fixed[5]}..{current}"
     )
     science_distance = sequential._git(
         "rev-list", "--count", f"{fixed[0]}..{current}"
@@ -1287,7 +1326,7 @@ def _current_r8u_r3_implementation_commit() -> str:
         relation
         or parent_lines != expected_parent_lines
         or distance != "1"
-        or science_distance != "5"
+        or science_distance != "6"
     ):
         _fail("R8U_R3_IMPLEMENTATION_ANCESTRY_INVALID")
     return current
@@ -1305,6 +1344,7 @@ def _r8u_r3_implementation_authority_epochs(
             R8U_BASE_IMPLEMENTATION_COMMIT,
             R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
             R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
         }
     ):
         _fail("R8U_R3_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
@@ -1318,7 +1358,10 @@ def _r8u_r3_implementation_authority_epochs(
         "r8u_scheduler_log_repair_commit": (
             R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
         ),
-        "r8u_publication_resume_repair_commit": implementation_commit,
+        "r8u_publication_resume_repair_commit": (
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_candidate_authority_repair_commit": implementation_commit,
     }
     if set(value) != R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
         _fail("R8U_R3_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
@@ -6563,20 +6606,28 @@ def _r8u_r3_stable_identity(path: Path, *, directory: bool) -> Mapping[str, int]
         after = os.lstat(path)
     except Exception as exc:
         raise R8RControllerError("R8U_R3_PATH_AUTHORITY_INVALID") from exc
-    projection = lambda value: {
+    local_projection = lambda value: {
         "device": int(value.st_dev), "inode": int(value.st_ino),
         "mode": int(stat.S_IMODE(value.st_mode)), "uid": int(value.st_uid),
         "gid": int(value.st_gid),
     }
     expected_type = stat.S_ISDIR if directory else stat.S_ISREG
     if (
-        projection(before) != projection(after)
+        local_projection(before) != local_projection(after)
         or not expected_type(before.st_mode)
         or stat.S_ISLNK(before.st_mode)
         or int(before.st_uid) != os.geteuid()
     ):
         _fail("R8U_R3_PATH_AUTHORITY_INVALID")
-    return dict(sorted(projection(before).items()))
+    # Device and inode are same-call replacement guards only.  SCC nodes may
+    # expose the same owner-private filesystem through different namespaces,
+    # so neither value is persisted into a login-to-worker seal.
+    portable_projection = {
+        "mode": int(stat.S_IMODE(before.st_mode)),
+        "uid": int(before.st_uid),
+        "gid": int(before.st_gid),
+    }
+    return dict(sorted(portable_projection.items()))
 
 
 def _r8u_r3_identity_sha256(path: Path, *, directory: bool) -> str:
@@ -6588,13 +6639,20 @@ def _r8u_r3_identity_sha256(path: Path, *, directory: bool) -> str:
 def _r8u_r3_mount_authority(path: Path) -> tuple[tuple[Any, ...], str]:
     """Return a path-free current mount identity and canonical digest."""
 
-    identity = _r8u_r3_stable_identity(path, directory=True)
+    _r8u_r3_stable_identity(path, directory=True)
     if not sys.platform.startswith("linux"):
         value = {
-            "authority_kind": "ST_DEVICE_NON_LINUX_TEST_AUTHORITY",
-            "device": identity["device"],
+            "authority_kind": "SAME_CALL_MOUNT_ONLY_NON_LINUX_V2",
+            "filesystem_type": "NON_LINUX_TEST_AUTHORITY",
         }
-        return ("device", identity["device"]), core.canonical_json_sha256(value)
+        try:
+            before = os.lstat(path)
+            after = os.lstat(path)
+        except OSError as exc:
+            raise R8RControllerError("R8U_R3_MOUNT_AUTHORITY_INVALID") from exc
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            _fail("R8U_R3_MOUNT_AUTHORITY_INVALID")
+        return ("device", int(before.st_dev)), core.canonical_json_sha256(value)
     try:
         payload = Path("/proc/self/mountinfo").read_bytes()
     except OSError as exc:
@@ -6624,12 +6682,14 @@ def _r8u_r3_mount_authority(path: Path) -> tuple[tuple[Any, ...], str]:
         _fail("R8U_R3_MOUNT_AUTHORITY_INVALID")
     _depth, mount_id, major_minor, filesystem_type, source = max(matches)
     value = {
-        "authority_kind": "PROC_SELF_MOUNTINFO_V1", "mount_id": mount_id,
-        "major_minor": major_minor, "filesystem_type": filesystem_type,
+        "authority_kind": "PORTABLE_MOUNT_SOURCE_V2",
+        "filesystem_type": filesystem_type,
         "mount_source_sha256": _sha256_bytes(source.encode("utf-8")),
-        "device": identity["device"],
     }
-    key = (mount_id, major_minor, filesystem_type, identity["device"])
+    # The key is consumed only inside this invocation to prove that source and
+    # target resolve to the same mounted filesystem.  Node-local mount IDs and
+    # device numbers are deliberately absent from the persisted digest.
+    key = (mount_id, major_minor, filesystem_type, source)
     return key, core.canonical_json_sha256(value)
 
 
@@ -6666,15 +6726,20 @@ def _r8u_r3_validate_r2_history(run: sequential.FullRun) -> Mapping[str, Any]:
         recovery_authority_sha256=authority_sha,
         partial_seal_sha256=seal_sha, capacity_sha256=capacity_sha,
     )
+    historical_epochs = _r8u_r2_historical_implementation_authority_epochs()
+    if (
+        authority.get("implementation_commit") != implementation_commit
+        or authority.get("implementation_authority_epochs") != historical_epochs
+        or submission.get("implementation_commit") != implementation_commit
+        or submission.get("implementation_authority_epochs") != historical_epochs
+    ):
+        _fail("CANDIDATE_STAGE_EVENT_COMMIT_BINDING_INVALID")
     if (
         not _exact_typed_value_equal(seal, expected_seal)
         or not _exact_typed_value_equal(submission, expected_submission)
         or authority.get("artifact_type")
         != "lvef_c3_r8u_r2_batch16_recovery_authority_v1"
         or authority.get("status") != "AUTHORIZED_FIXED_BATCH16_RECOVERY"
-        or authority.get("implementation_commit") != implementation_commit
-        or authority.get("implementation_authority_epochs")
-        != _r8u_r2_historical_implementation_authority_epochs()
         or authority.get("script_authority") != R8U_R2_SCRIPT_AUTHORITY
         or authority.get("recovery_capacity_sha256") != capacity_sha
         or authority.get("failed_partial_seal_sha256") != seal_sha
@@ -6717,23 +6782,25 @@ def _r8u_r3_validate_r2_history(run: sequential.FullRun) -> Mapping[str, Any]:
     }
 
 
-def _r8u_r3_csv_rows(path: Path) -> tuple[tuple[str, ...], list[dict[str, str]]]:
+def _r8u_r3_csv_rows(
+    path: Path, *, failure_code: str = "CANDIDATE_FAILURE_UNRESOLVED"
+) -> tuple[tuple[str, ...], list[dict[str, str]]]:
     """Read one extraction control CSV without following links."""
 
-    payload = _read_control_nofollow(path)
     try:
+        payload = _read_control_nofollow(path)
         decoded = payload.decode("utf-8", "strict")
         reader = csv.DictReader(decoded.splitlines())
         header = tuple(reader.fieldnames or ())
         rows = list(reader)
-    except (UnicodeError, csv.Error) as exc:
-        raise R8RControllerError("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID") from exc
+    except Exception as exc:
+        raise R8RControllerError(failure_code) from exc
     if (
         not header
         or len(header) != len(set(header))
         or any(None in row or set(row) != set(header) for row in rows)
     ):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+        _fail(failure_code)
     return header, rows
 
 
@@ -6747,11 +6814,18 @@ def _r8u_r3_metadata_projection(
     try:
         sequential._require_nonsymlink_components(root)
         root_info = os.lstat(root)
+        root_after = os.lstat(root)
     except Exception as exc:
-        raise R8RControllerError("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID") from exc
+        raise R8RControllerError("CANDIDATE_ROOT_AUTHORITY_INVALID") from exc
+    identity = lambda value: (
+        value.st_mode, value.st_uid, value.st_gid, value.st_dev,
+        value.st_ino, value.st_nlink, value.st_size,
+        value.st_mtime_ns, value.st_ctime_ns,
+    )
     approved_device = int(root_info.st_dev)
     if (
-        not stat.S_ISDIR(root_info.st_mode)
+        identity(root_info) != identity(root_after)
+        or not stat.S_ISDIR(root_info.st_mode)
         or stat.S_ISLNK(root_info.st_mode)
         or not _r8u_private_directory_metadata_valid(
             mode=stat.S_IMODE(root_info.st_mode),
@@ -6760,7 +6834,7 @@ def _r8u_r3_metadata_projection(
             approved_device=approved_device,
         )
     ):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+        _fail("CANDIDATE_ROOT_AUTHORITY_INVALID")
 
     file_rows: list[list[Any]] = []
     directory_rows: list[list[Any]] = []
@@ -6769,6 +6843,9 @@ def _r8u_r3_metadata_projection(
     npz_bytes = 0
     symlink_count = 0
     nonregular_count = 0
+    unsafe_metadata = False
+    control_mode_invalid = False
+    transient_files: set[str] = set()
     stack = [root]
     while stack:
         directory = stack.pop()
@@ -6779,13 +6856,8 @@ def _r8u_r3_metadata_projection(
             after = os.lstat(directory)
         except (OSError, ValueError) as exc:
             raise R8RControllerError(
-                "R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID"
+                "CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID"
             ) from exc
-        identity = lambda value: (
-            value.st_mode, value.st_uid, value.st_gid, value.st_dev,
-            value.st_ino, value.st_nlink, value.st_size,
-            value.st_mtime_ns, value.st_ctime_ns,
-        )
         mode = stat.S_IMODE(before.st_mode)
         if (
             identity(before) != identity(after)
@@ -6797,7 +6869,7 @@ def _r8u_r3_metadata_projection(
             )
             or (directory != root and os.path.ismount(directory))
         ):
-            _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+            _fail("CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID")
         # Directory timestamps are deliberately omitted: rename changes the
         # moved root's ctime, and claim mkdir changes the target parent's
         # timestamps.  File timestamps remain sealed below.
@@ -6813,10 +6885,10 @@ def _r8u_r3_metadata_projection(
                 relative = PurePosixPath(path.relative_to(root).as_posix())
             except (OSError, ValueError) as exc:
                 raise R8RControllerError(
-                    "R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID"
+                    "CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID"
                 ) from exc
             if identity(info_before) != identity(info_after):
-                _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+                _fail("CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID")
             if stat.S_ISLNK(info_before.st_mode):
                 symlink_count += 1
                 continue
@@ -6829,17 +6901,27 @@ def _r8u_r3_metadata_projection(
             file_mode = stat.S_IMODE(info_before.st_mode)
             if (
                 int(info_before.st_uid) != os.geteuid()
-                or file_mode != 0o600
                 or int(info_before.st_nlink) != 1
                 or int(info_before.st_dev) != approved_device
                 or int(info_before.st_size) < 0
             ):
-                _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+                unsafe_metadata = True
             size = int(info_before.st_size)
             total_bytes += size
             if relative.suffix == ".npz":
                 observed_npz.add(relative)
                 npz_bytes += size
+                if file_mode != 0o600 or size == 0:
+                    unsafe_metadata = True
+            elif relative.as_posix() in R8U_R3_CANDIDATE_CONTROL_FILES:
+                if file_mode != 0o600 or size == 0:
+                    control_mode_invalid = True
+            elif (
+                relative.name.startswith(".nfs")
+                or relative.name.startswith(".")
+                or ".tmp." in relative.name
+            ):
+                transient_files.add(relative.as_posix())
             file_rows.append(
                 [relative.as_posix(), "F", file_mode,
                  int(info_before.st_uid), int(info_before.st_gid),
@@ -6853,19 +6935,39 @@ def _r8u_r3_metadata_projection(
             PurePosixPath(str(row[0])) for row in file_rows
         ) if path.suffix != ".npz"
     }
+    if symlink_count != 0 or nonregular_count != 0 or unsafe_metadata:
+        _fail("CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID")
+    if transient_files:
+        _fail("CANDIDATE_UNEXPECTED_TRANSIENT_FILE")
+    if observed_controls != R8U_R3_CANDIDATE_CONTROL_FILES:
+        _fail("CANDIDATE_CONTROL_SET_INVALID")
+    if control_mode_invalid:
+        _fail("CANDIDATE_CONTROL_FILE_MODE_INVALID")
+    canonical_npz_re = re.compile(
+        r"^clips/clips/[0-9a-f]{2}/[0-9a-f]{64}\.npz$"
+    )
     if (
-        symlink_count != 0
-        or nonregular_count != 0
-        or observed_controls != R8U_R3_CANDIDATE_CONTROL_FILES
-        or len(observed_npz) != R8U_R3_CANDIDATE_NPZ_FILES
+        len(observed_npz) != R8U_R3_CANDIDATE_NPZ_FILES
+        or any(canonical_npz_re.fullmatch(path.as_posix()) is None
+               for path in observed_npz)
         or (
             expected_npz_paths is not None
             and observed_npz != set(expected_npz_paths)
         )
+    ):
+        _fail("CANDIDATE_NPZ_PATH_SET_MISMATCH")
+    expected_directories = {"."}
+    for relative in observed_npz:
+        expected_directories.update(
+            parent.as_posix() for parent in relative.parents
+        )
+    observed_directories = {str(row[0]) for row in directory_rows}
+    if (
+        observed_directories != expected_directories
         or len(file_rows)
         != R8U_R3_CANDIDATE_NPZ_FILES + len(R8U_R3_CANDIDATE_CONTROL_FILES)
     ):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+        _fail("CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID")
     root_projection = {
         "mode": stat.S_IMODE(root_info.st_mode),
         "uid": int(root_info.st_uid),
@@ -6896,6 +6998,123 @@ def _r8u_r3_metadata_projection(
     )
 
 
+def _r8u_r3_normalize_dicom_audit(path: Path) -> Mapping[str, Any]:
+    """Parse DICOM Booleans through the production parser, then validate."""
+
+    header, raw_rows = _r8u_r3_csv_rows(
+        path, failure_code="CANDIDATE_DICOM_AUDIT_SCHEMA_INVALID"
+    )
+    required = {
+        "subject_id", "study_id", "source_relative_path", "read_ok",
+        "is_multiframe", "pixel_decode_ok",
+    }
+    if not required.issubset(header):
+        _fail("CANDIDATE_DICOM_AUDIT_SCHEMA_INVALID")
+    try:
+        import pandas as pd
+        import lvef_reconstruction_smoke as smoke
+
+        payload = _read_control_nofollow(path)
+        frame = pd.read_csv(io.BytesIO(payload), low_memory=False)
+        if not required.issubset(str(value) for value in frame.columns):
+            _fail("CANDIDATE_DICOM_AUDIT_SCHEMA_INVALID")
+        for field in ("read_ok", "is_multiframe", "pixel_decode_ok"):
+            frame[field] = frame[field].map(smoke.parse_bool)
+        records = frame.to_dict(orient="records")
+    except R8RControllerError:
+        raise
+    except Exception as exc:
+        raise R8RControllerError(
+            "CANDIDATE_DICOM_AUDIT_BOOLEAN_DIALECT_MISMATCH"
+        ) from exc
+    if len(records) != len(raw_rows):
+        _fail("CANDIDATE_DICOM_AUDIT_SCHEMA_INVALID")
+    try:
+        return stages.validate_production_dicom_rows(
+            records,
+            expected_objects=R8U_BATCH16_RAW_FILES,
+            expected_studies=250,
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "CANDIDATE_DICOM_AUDIT_SEMANTIC_MISMATCH"
+        ) from exc
+
+
+def _r8u_r3_normalize_extraction_manifest(
+    path: Path,
+) -> _R8UR3CanonicalExtractionManifest:
+    """Apply the producer's pandas dialect and canonical row validator once."""
+
+    header, raw_rows = _r8u_r3_csv_rows(
+        path, failure_code="CANDIDATE_EXTRACTION_MANIFEST_SCHEMA_INVALID"
+    )
+    if set(header) != stages.EXTRACTION_PRODUCER_FIELDS or not raw_rows:
+        _fail("CANDIDATE_EXTRACTION_MANIFEST_SCHEMA_INVALID")
+    allowed_write_tokens = {"True", "False"}
+    allowed_failure_tokens = {"NONE", *stages.ALLOWED_FAILURE_SUBSTAGES}
+    if (
+        any(row.get("write_ok") not in allowed_write_tokens for row in raw_rows)
+        or any(
+            row.get("failure_substage") not in allowed_failure_tokens
+            for row in raw_rows
+        )
+    ):
+        _fail("CANDIDATE_EXTRACTION_MANIFEST_SERIALIZATION_DIALECT_MISMATCH")
+    try:
+        import pandas as pd
+
+        payload = _read_control_nofollow(path)
+        frame = pd.read_csv(io.BytesIO(payload), low_memory=False)
+        if set(str(value) for value in frame.columns) != stages.EXTRACTION_PRODUCER_FIELDS:
+            _fail("CANDIDATE_EXTRACTION_MANIFEST_SCHEMA_INVALID")
+        records = tuple(frame.to_dict(orient="records"))
+    except R8RControllerError:
+        raise
+    except Exception as exc:
+        raise R8RControllerError(
+            "CANDIDATE_EXTRACTION_MANIFEST_SERIALIZATION_DIALECT_MISMATCH"
+        ) from exc
+    if (
+        len(records) != len(raw_rows)
+        or any(type(row.get("write_ok")) is not bool for row in records)
+    ):
+        _fail("CANDIDATE_EXTRACTION_MANIFEST_SERIALIZATION_DIALECT_MISMATCH")
+    try:
+        summary = stages.validate_production_extraction_rows(
+            records, expected_cines=len(records), clips_root=None
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "GENUINE_COMPLETED_EXTRACTION_INCONSISTENCY"
+        ) from exc
+
+    expected_npz: set[PurePosixPath] = set()
+    projection: list[tuple[str, str]] = []
+    for row in records:
+        if row.get("write_ok") is not True:
+            continue
+        output_relative = row.get("output_relative_path")
+        digest = row.get("npz_sha256")
+        if not isinstance(output_relative, str) or not isinstance(digest, str):
+            _fail("GENUINE_COMPLETED_EXTRACTION_INCONSISTENCY")
+        # The producer received <stage>/clips as output_root while each row's
+        # canonical locator already begins with clips/.  EchoPrime consumes
+        # the same <stage>/clips root, so stage-relative closure is clips/<row>.
+        stage_relative = PurePosixPath("clips") / PurePosixPath(output_relative)
+        if stage_relative in expected_npz:
+            _fail("GENUINE_COMPLETED_EXTRACTION_INCONSISTENCY")
+        expected_npz.add(stage_relative)
+        projection.append((stage_relative.as_posix(), digest))
+    projection.sort()
+    return _R8UR3CanonicalExtractionManifest(
+        rows=records,
+        summary=dict(summary),
+        expected_npz_paths=frozenset(expected_npz),
+        manifest_projection=tuple(projection),
+    )
+
+
 def _r8u_r3_candidate_projection(
     run: sequential.FullRun,
 ) -> _R8UR3CandidateProjection:
@@ -6904,12 +7123,16 @@ def _r8u_r3_candidate_projection(
     source = R8U_FRESH_EXTRACTION_BATCH_ROOT / "dicom_extraction"
     target = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)["extraction"]
     if (
-        os.path.lexists(target)
-        or os.path.lexists(R8U_FRESH_PUBLICATION_PATH)
-        or not source.is_absolute()
+        not source.is_absolute()
         or not target.is_absolute()
+        or os.path.lexists(R8U_FRESH_PUBLICATION_PATH)
+        or os.path.lexists(target)
     ):
-        _fail("R8U_PUBLICATION_TARGET_ALREADY_EXISTS")
+        _fail("CANDIDATE_TARGET_STATE_INVALID")
+    # Establish the complete no-follow metadata/control closure before any
+    # control is opened.  The returned path set is reused below; no rescan and
+    # no scientific body read is permitted during candidate adjudication.
+    tree = _r8u_r3_metadata_projection(source)
     planned = run.plan["batches"][R8U_FIXED_RECOVERY_TASK_ID - 1]
     controls = {
         name: source / name for name in R8U_R3_CANDIDATE_CONTROL_FILES
@@ -6933,81 +7156,41 @@ def _r8u_r3_candidate_projection(
             ),
             summary_name="dicom_extraction.summary.json",
         )
+    except Exception as exc:
+        raise R8RControllerError(
+            "CANDIDATE_STAGE_COMPLETION_RECEIPT_INVALID"
+        ) from exc
+
+    audit_summary = _r8u_r3_normalize_dicom_audit(
+        controls["dicom_audit.restricted.csv"]
+    )
+    manifest = _r8u_r3_normalize_extraction_manifest(
+        controls["extraction_manifest.restricted.csv"]
+    )
+    try:
         stages.validate_extraction_manifest_plan_membership(
             controls["extraction_manifest.restricted.csv"],
             planned,
             controls["technical_disposition_manifest.restricted.csv"],
         )
+    except Exception as exc:
+        raise R8RControllerError(
+            "CANDIDATE_EXTRACTION_MANIFEST_PLAN_MISMATCH"
+        ) from exc
+    try:
         dispositions = stages.read_technical_disposition_manifest(
             controls["technical_disposition_manifest.restricted.csv"]
         )
-    except Exception as exc:
-        raise R8RControllerError("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID") from exc
-    if dispositions:
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
-
-    audit_header, audit_rows_text = _r8u_r3_csv_rows(
-        controls["dicom_audit.restricted.csv"]
-    )
-    required_audit = {
-        "subject_id", "study_id", "source_relative_path", "read_ok",
-        "is_multiframe", "pixel_decode_ok",
-    }
-    if not required_audit.issubset(audit_header):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
-    audit_rows: list[dict[str, Any]] = []
-    for row in audit_rows_text:
-        converted: dict[str, Any] = dict(row)
-        for field in ("read_ok", "is_multiframe", "pixel_decode_ok"):
-            boolean = stages._exact_boolean(row[field])
-            if boolean is None:
-                _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
-            converted[field] = boolean
-        audit_rows.append(converted)
-    try:
-        audit_summary = stages.validate_production_dicom_rows(
-            audit_rows,
-            expected_objects=R8U_BATCH16_RAW_FILES,
-            expected_studies=250,
+        technical_summary = stages.validate_technical_disposition_manifest_rows(
+            manifest.rows, dispositions
         )
     except Exception as exc:
-        raise R8RControllerError("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID") from exc
+        raise R8RControllerError(
+            "CANDIDATE_TECHNICAL_DISPOSITION_MANIFEST_INVALID"
+        ) from exc
+    if tree.expected_npz_paths != manifest.expected_npz_paths:
+        _fail("CANDIDATE_NPZ_PATH_SET_MISMATCH")
 
-    manifest_header, manifest_rows = _r8u_r3_csv_rows(
-        controls["extraction_manifest.restricted.csv"]
-    )
-    required_manifest = {
-        "clip_key", "output_relative_path", "npz_sha256", "write_ok",
-        "failure_substage", "physical_source_key", "study_id", "subject_id",
-    }
-    expected_npz: set[PurePosixPath] = set()
-    manifest_projection: list[list[str]] = []
-    if not required_manifest.issubset(manifest_header):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
-    for row in manifest_rows:
-        relative = PurePosixPath(row["output_relative_path"])
-        clip_key = row["clip_key"]
-        if (
-            row["write_ok"] != "True"
-            or row["failure_substage"] not in {"", "None"}
-            or SHA_RE.fullmatch(clip_key) is None
-            or SHA_RE.fullmatch(row["npz_sha256"]) is None
-            or relative.is_absolute()
-            or ".." in relative.parts
-            or relative.as_posix() != f"clips/{clip_key[:2]}/{clip_key}.npz"
-            or relative in expected_npz
-        ):
-            _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
-        expected_npz.add(relative)
-        manifest_projection.append(
-            [relative.as_posix(), row["npz_sha256"]]
-        )
-    manifest_projection.sort()
-    if len(expected_npz) != R8U_R3_CANDIDATE_NPZ_FILES:
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
-    tree = _r8u_r3_metadata_projection(
-        source, expected_npz_paths=frozenset(expected_npz)
-    )
     expected_summary = {
         "status": "PASS_EXTRACTION_ALL_OBJECTS_EMBEDDABLE",
         "n_objects": R8U_BATCH16_RAW_FILES,
@@ -7026,6 +7209,23 @@ def _r8u_r3_candidate_projection(
         "n_spatial_temporal_fallback_preprocessing_path": 0,
         "object_substitution_count": 0,
     }
+    manifest_bindings = {
+        "status": "status",
+        "n_successfully_extracted_cines": "n_successfully_extracted_cines",
+        "n_object_technical_dispositions": "n_object_technical_dispositions",
+        "n_blocking_failures": "n_blocking_failures",
+        "n_ordinary_preprocessing_path": "n_ordinary_preprocessing_path",
+        "n_spatial_fallback_preprocessing_path": (
+            "n_spatial_fallback_preprocessing_path"
+        ),
+        "n_temporal_fallback_preprocessing_path": (
+            "n_temporal_fallback_preprocessing_path"
+        ),
+        "n_spatial_temporal_fallback_preprocessing_path": (
+            "n_spatial_temporal_fallback_preprocessing_path"
+        ),
+        "object_substitution_count": "object_substitution_count",
+    }
     if (
         any(summary.get(key) != expected for key, expected in expected_summary.items())
         or any(
@@ -7036,44 +7236,72 @@ def _r8u_r3_candidate_projection(
                 "n_pixel_decode_failures",
             )
         )
+        or any(
+            manifest.summary.get(source_key) != expected_summary[summary_key]
+            for summary_key, source_key in manifest_bindings.items()
+        )
+        or technical_summary.get("n_object_technical_dispositions") != 0
+        or technical_summary.get("object_substitution_count") != 0
+        or len(dispositions) != 0
+        or len(manifest.expected_npz_paths) != R8U_R3_CANDIDATE_NPZ_FILES
     ):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
-    source_mount_key, source_mount_sha = _r8u_r3_mount_authority(source.parent)
-    target_mount_key, target_mount_sha = _r8u_r3_mount_authority(target.parent)
+        _fail("CANDIDATE_EXTRACTION_SUMMARY_MISMATCH")
+    try:
+        source_mount_key, source_mount_sha = _r8u_r3_mount_authority(source.parent)
+        target_mount_key, target_mount_sha = _r8u_r3_mount_authority(target.parent)
+    except Exception as exc:
+        raise R8RControllerError("CANDIDATE_MOUNT_AUTHORITY_INVALID") from exc
     if source_mount_key != target_mount_key:
-        _fail("R8U_PUBLICATION_CROSS_MOUNT")
-    control_hashes = {
-        "stage_completion_receipt_sha256": _sha256_bytes(
-            _read_control_nofollow(controls["stage_completion_receipt.restricted.json"])
-        ),
-        "extraction_manifest_sha256": _sha256_bytes(
-            _read_control_nofollow(controls["extraction_manifest.restricted.csv"])
-        ),
-        "dicom_audit_sha256": _sha256_bytes(
-            _read_control_nofollow(controls["dicom_audit.restricted.csv"])
-        ),
-        "extraction_summary_sha256": _sha256_bytes(
-            _read_control_nofollow(controls["dicom_extraction.summary.json"])
-        ),
-        "technical_disposition_manifest_sha256": (
-            stages.technical_disposition_manifest_sha256(
-                controls["technical_disposition_manifest.restricted.csv"]
-            )
-        ),
-    }
+        _fail("CANDIDATE_MOUNT_AUTHORITY_INVALID")
+    try:
+        control_hashes = {
+            "stage_completion_receipt_sha256": _sha256_bytes(
+                _read_control_nofollow(
+                    controls["stage_completion_receipt.restricted.json"]
+                )
+            ),
+            "extraction_manifest_sha256": _sha256_bytes(
+                _read_control_nofollow(
+                    controls["extraction_manifest.restricted.csv"]
+                )
+            ),
+            "dicom_audit_sha256": _sha256_bytes(
+                _read_control_nofollow(controls["dicom_audit.restricted.csv"])
+            ),
+            "extraction_summary_sha256": _sha256_bytes(
+                _read_control_nofollow(
+                    controls["dicom_extraction.summary.json"]
+                )
+            ),
+            "technical_disposition_manifest_sha256": (
+                stages.technical_disposition_manifest_sha256(
+                    controls["technical_disposition_manifest.restricted.csv"]
+                )
+            ),
+        }
+    except Exception as exc:
+        raise R8RControllerError("CANDIDATE_CONTROL_SET_INVALID") from exc
+    try:
+        source_parent_sha = _r8u_r3_identity_sha256(
+            source.parent, directory=True
+        )
+    except Exception as exc:
+        raise R8RControllerError("CANDIDATE_ROOT_AUTHORITY_INVALID") from exc
+    try:
+        target_parent_sha = _r8u_r3_identity_sha256(
+            target.parent, directory=True
+        )
+    except Exception as exc:
+        raise R8RControllerError("CANDIDATE_TARGET_STATE_INVALID") from exc
     value = {
         **dict(tree.value),
         **control_hashes,
         "candidate_npz_manifest_projection_sha256": (
-            core.canonical_json_sha256(manifest_projection)
+            core.canonical_json_sha256(manifest.manifest_projection)
         ),
-        "source_parent_identity_sha256": _r8u_r3_identity_sha256(
-            source.parent, directory=True
-        ),
+        "source_parent_identity_sha256": source_parent_sha,
         "source_mount_identity_sha256": source_mount_sha,
-        "target_parent_identity_sha256": _r8u_r3_identity_sha256(
-            target.parent, directory=True
-        ),
+        "target_parent_identity_sha256": target_parent_sha,
         "target_mount_identity_sha256": target_mount_sha,
         "source_target_same_mounted_filesystem": True,
         "target_absent": True,
@@ -7102,7 +7330,7 @@ def _r8u_r3_candidate_projection(
     }
     return _R8UR3CandidateProjection(
         value=dict(sorted(value.items())),
-        expected_npz_paths=frozenset(expected_npz),
+        expected_npz_paths=manifest.expected_npz_paths,
     )
 
 
@@ -7217,7 +7445,7 @@ def _r8u_r3_validate_candidate_seal_static(
         )
         or candidate["candidate_npz_bytes"] > candidate["candidate_total_bytes"]
     ):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+        _fail("CANDIDATE_FAILURE_UNRESOLVED")
 
 
 def validate_r8u_r3_extraction_candidate_seal(
@@ -7237,7 +7465,7 @@ def validate_r8u_r3_extraction_candidate_seal(
         projection=_r8u_r3_candidate_projection(run),
     )
     if not _exact_typed_value_equal(observed, expected):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+        _fail("CANDIDATE_FAILURE_UNRESOLVED")
     _r8u_r3_validate_candidate_seal_static(
         observed, implementation_commit=implementation_commit,
         history=resolved_history,
@@ -7259,7 +7487,7 @@ def _r8u_r3_raw_rename_noreplace(
         or Path(os.path.abspath(source)) != source
         or Path(os.path.abspath(target)) != target
     ):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+        _fail("CANDIDATE_FAILURE_UNRESOLVED")
     if invoker is not None:
         try:
             value = invoker(source, target)
@@ -7621,7 +7849,13 @@ def _r8u_r3_target_projection(
 ) -> Mapping[str, Any]:
     target = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)["extraction"]
     if not target.is_dir() or target.is_symlink():
-        _fail("R8U_PUBLICATION_POSTVALIDATION_FAILED")
+        _fail("CANDIDATE_TARGET_STATE_INVALID")
+    tree = _r8u_r3_metadata_projection(target)
+    manifest = _r8u_r3_normalize_extraction_manifest(
+        target / "extraction_manifest.restricted.csv"
+    )
+    if tree.expected_npz_paths != manifest.expected_npz_paths:
+        _fail("CANDIDATE_NPZ_PATH_SET_MISMATCH")
     try:
         stages.validate_extraction_manifest_plan_membership(
             target / "extraction_manifest.restricted.csv",
@@ -7629,28 +7863,13 @@ def _r8u_r3_target_projection(
             target / "technical_disposition_manifest.restricted.csv",
         )
     except Exception as exc:
-        raise R8RControllerError("R8U_PUBLICATION_POSTVALIDATION_FAILED") from exc
-    _header, rows = _r8u_r3_csv_rows(target / "extraction_manifest.restricted.csv")
-    expected: set[PurePosixPath] = set()
-    manifest_rows: list[list[str]] = []
-    for row in rows:
-        try:
-            relative = PurePosixPath(row["output_relative_path"])
-            digest = row["npz_sha256"]
-        except KeyError as exc:
-            raise R8RControllerError("R8U_PUBLICATION_POSTVALIDATION_FAILED") from exc
-        if SHA_RE.fullmatch(digest) is None or relative in expected:
-            _fail("R8U_PUBLICATION_POSTVALIDATION_FAILED")
-        expected.add(relative)
-        manifest_rows.append([relative.as_posix(), digest])
-    manifest_rows.sort()
-    tree = _r8u_r3_metadata_projection(
-        target, expected_npz_paths=frozenset(expected)
-    )
+        raise R8RControllerError(
+            "CANDIDATE_EXTRACTION_MANIFEST_PLAN_MISMATCH"
+        ) from exc
     observed = {
         **dict(tree.value),
         "candidate_npz_manifest_projection_sha256": (
-            core.canonical_json_sha256(manifest_rows)
+            core.canonical_json_sha256(manifest.manifest_projection)
         ),
         "stage_completion_receipt_sha256": _sha256_bytes(
             _read_control_nofollow(target / "stage_completion_receipt.restricted.json")
@@ -7672,7 +7891,7 @@ def _r8u_r3_target_projection(
     }
     compared = frozenset(observed)
     if any(observed[key] != candidate_seal.get(key) for key in compared):
-        _fail("R8U_PUBLICATION_POSTVALIDATION_FAILED")
+        _fail("CANDIDATE_NPZ_METADATA_AUTHORITY_INVALID")
     return dict(sorted(observed.items()))
 
 
@@ -7695,7 +7914,7 @@ def _r8u_r3_publish_candidate(
         run, history=history
     )
     if not _exact_typed_value_equal(revalidated_candidate, candidate_seal):
-        _fail("R8U_PUBLICATION_SOURCE_AUTHORITY_INVALID")
+        _fail("CANDIDATE_FAILURE_UNRESOLVED")
     _r8u_r3_validate_publication_claim(
         run=run, candidate_seal=candidate_seal, probe=probe,
         expected_sha256=publication_claim_sha256,
@@ -8059,7 +8278,9 @@ def _r8u_r3_resume_authority(
             status="AUTHORIZED_FIXED_BATCH16_PUBLICATION_RESUME",
             implementation_commit=implementation_commit,
         ),
-        "prior_implementation_commit": R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        "prior_implementation_commit": (
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
         "original_task_id": R8U_FIXED_RECOVERY_TASK_ID,
         "continuation_task_range": R8U_FIXED_CONTINUATION_TASK_RANGE,
         "prefix_final_receipt_sha256": list(prefix_receipts),
@@ -8427,7 +8648,7 @@ def _validate_r8u_r3_resume_submission(
             run.plan, capacity_value,
             completed_extraction_candidate_seal_sha256=candidate_sha,
             completed_extraction_candidate_bytes=int(candidate["candidate_total_bytes"]),
-            r8u_publication_resume_repair_commit=implementation_commit,
+            r8u_candidate_authority_repair_commit=implementation_commit,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_R3_RESUME_CAPACITY_INVALID") from exc
@@ -8526,19 +8747,25 @@ def submit_r8u_r3_batch16_publication_resume(
     )
     candidate_payload = _canonical_bytes(candidate)
     candidate_sha = _sha256_bytes(candidate_payload)
+    _create_private_directory_no_clobber(R8U_R3_ROOT)
+    written_candidate_sha = _write_private_json(
+        R8U_R3_CANDIDATE_SEAL_PATH, candidate
+    )
+    if written_candidate_sha != candidate_sha:
+        _fail("R8U_R3_CANDIDATE_SEAL_SCHEMA_INVALID")
     try:
         capacity_value = capacity.probe_fixed_r8u_r3_batch16_publication_resume_capacity(
             run.plan,
             completed_extraction_candidate_seal_sha256=candidate_sha,
             completed_extraction_candidate_bytes=int(candidate["candidate_total_bytes"]),
-            r8u_publication_resume_repair_commit=implementation_commit,
+            r8u_candidate_authority_repair_commit=implementation_commit,
             process_runner=capacity_process_runner,
         )
         capacity.validate_fixed_r8u_r3_batch16_publication_resume_capacity(
             run.plan, capacity_value,
             completed_extraction_candidate_seal_sha256=candidate_sha,
             completed_extraction_candidate_bytes=int(candidate["candidate_total_bytes"]),
-            r8u_publication_resume_repair_commit=implementation_commit,
+            r8u_candidate_authority_repair_commit=implementation_commit,
         )
     except Exception as exc:
         raise R8RControllerError("R8U_R3_RESUME_CAPACITY_INVALID") from exc
@@ -8547,11 +8774,7 @@ def submit_r8u_r3_batch16_publication_resume(
             "R8U_R3_RESUME_CAPACITY_BLOCKED",
             capacity_deficits=_r8u_capacity_deficits(capacity_value),
         )
-    _create_private_directory_no_clobber(R8U_R3_ROOT)
     _create_private_directory_no_clobber(R8U_R3_SCHEDULER_ROOT)
-    written_candidate_sha = _write_private_json(R8U_R3_CANDIDATE_SEAL_PATH, candidate)
-    if written_candidate_sha != candidate_sha:
-        _fail("R8U_R3_CANDIDATE_SEAL_SCHEMA_INVALID")
     capacity_sha = _write_private_json(R8U_R3_CAPACITY_PATH, capacity_value)
     authority = _r8u_r3_resume_authority(
         run=run, implementation_commit=implementation_commit,
@@ -9082,7 +9305,9 @@ def _r8u_r3_continuation_claim(
             implementation_commit=implementation_commit,
         ),
         **dict(_r8u_r3_continuation_links()),
-        "prior_implementation_commit": R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        "prior_implementation_commit": (
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
         "prefix_final_receipt_sha256": list(prefix_receipts),
         "failed_partial_seal_sha256": core.sha256_file(
             R8U_FAILED_PARTIAL_SEAL_PATH

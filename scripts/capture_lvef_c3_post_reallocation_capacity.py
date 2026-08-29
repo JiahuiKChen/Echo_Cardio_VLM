@@ -448,6 +448,9 @@ R8U_CAPACITY_KEYS = frozenset(
 R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT = (
     "4fd8f4bf58ba56a5cc82893e80833cbc5c9332ff"
 )
+R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT = (
+    "ce3326a23f149dd864c5aa534225b959d7b5abbe"
+)
 R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
     {
         "scientific_commit",
@@ -456,6 +459,7 @@ R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
         "r8u_projection_repair_commit",
         "r8u_scheduler_log_repair_commit",
         "r8u_publication_resume_repair_commit",
+        "r8u_candidate_authority_repair_commit",
     }
 )
 R8U_R3_COMPLETED_EXTRACTION_CANDIDATE_FILES = 10_187
@@ -4566,9 +4570,9 @@ def validate_fixed_r8u_batch16_recovery_capacity(
 
 
 def _fixed_r8u_r3_implementation_authority_epochs(
-    r8u_publication_resume_repair_commit: str,
+    r8u_candidate_authority_repair_commit: str,
 ) -> dict[str, str]:
-    """Return the closed six-epoch authority for one validated R8U-R3 HEAD."""
+    """Return the closed seven-epoch authority for one validated R8U-R3 HEAD."""
 
     fixed_epochs = {
         R8U_ORIGINAL_SCIENTIFIC_COMMIT,
@@ -4576,11 +4580,12 @@ def _fixed_r8u_r3_implementation_authority_epochs(
         R8U_BASE_IMPLEMENTATION_COMMIT,
         R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
     }
     if (
-        type(r8u_publication_resume_repair_commit) is not str
-        or COMMIT_RE.fullmatch(r8u_publication_resume_repair_commit) is None
-        or r8u_publication_resume_repair_commit in fixed_epochs
+        type(r8u_candidate_authority_repair_commit) is not str
+        or COMMIT_RE.fullmatch(r8u_candidate_authority_repair_commit) is None
+        or r8u_candidate_authority_repair_commit in fixed_epochs
     ):
         raise PostReallocationCapacityError(
             "R8U_R3_IMPLEMENTATION_AUTHORITY_INVALID"
@@ -4596,7 +4601,10 @@ def _fixed_r8u_r3_implementation_authority_epochs(
             R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
         ),
         "r8u_publication_resume_repair_commit": (
-            r8u_publication_resume_repair_commit
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_candidate_authority_repair_commit": (
+            r8u_candidate_authority_repair_commit
         ),
     }
     if set(result) != R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
@@ -4790,7 +4798,7 @@ def probe_fixed_r8u_r3_batch16_publication_resume_capacity(
     *,
     completed_extraction_candidate_seal_sha256: str,
     completed_extraction_candidate_bytes: int,
-    r8u_publication_resume_repair_commit: str,
+    r8u_candidate_authority_repair_commit: str,
     process_runner: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Capture one admission observation for R3 resume plus Tasks 17--19."""
@@ -4806,7 +4814,7 @@ def probe_fixed_r8u_r3_batch16_publication_resume_capacity(
     )
     implementation_authority_epochs = (
         _fixed_r8u_r3_implementation_authority_epochs(
-            r8u_publication_resume_repair_commit
+            r8u_candidate_authority_repair_commit
         )
     )
     snapshot = _capture_current_capacity_snapshot(
@@ -4922,8 +4930,8 @@ def probe_fixed_r8u_r3_batch16_publication_resume_capacity(
         completed_extraction_candidate_bytes=(
             completed_extraction_candidate_bytes
         ),
-        r8u_publication_resume_repair_commit=(
-            r8u_publication_resume_repair_commit
+        r8u_candidate_authority_repair_commit=(
+            r8u_candidate_authority_repair_commit
         ),
     )
 
@@ -4934,7 +4942,7 @@ def validate_fixed_r8u_r3_batch16_publication_resume_capacity(
     *,
     completed_extraction_candidate_seal_sha256: str,
     completed_extraction_candidate_bytes: int,
-    r8u_publication_resume_repair_commit: str,
+    r8u_candidate_authority_repair_commit: str,
 ) -> dict[str, Any]:
     """Purely replay every fixed R8U-R3 demand, margin, gate, and status."""
 
@@ -4949,7 +4957,7 @@ def validate_fixed_r8u_r3_batch16_publication_resume_capacity(
     )
     implementation_authority_epochs = (
         _fixed_r8u_r3_implementation_authority_epochs(
-            r8u_publication_resume_repair_commit
+            r8u_candidate_authority_repair_commit
         )
     )
     if not isinstance(value, Mapping) or set(value) != R8U_R3_CAPACITY_KEYS:

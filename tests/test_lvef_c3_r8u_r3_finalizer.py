@@ -289,7 +289,7 @@ def test_r3_controller_and_finalizer_schemas_are_identical() -> None:
     ) == controller._r8u_r3_resume_qsub_command(implementation_commit)
 
 
-def test_r3_requires_the_exact_six_commit_chain_and_rejects_r2_mix() -> None:
+def test_r3_requires_the_exact_seven_commit_chain_and_rejects_r2_mix() -> None:
     authority = _authority()
     expected = {
         "scientific_commit": finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
@@ -297,8 +297,16 @@ def test_r3_requires_the_exact_six_commit_chain_and_rejects_r2_mix() -> None:
         "r8u_base_implementation_commit": finalizer.R8U_BASE_IMPLEMENTATION_COMMIT,
         "r8u_projection_repair_commit": finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
         "r8u_scheduler_log_repair_commit": finalizer.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
-        "r8u_publication_resume_repair_commit": authority.implementation_commit,
+        "r8u_publication_resume_repair_commit": (
+            finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_candidate_authority_repair_commit": (
+            authority.implementation_commit
+        ),
     }
+    assert finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT == (
+        "ce3326a23f149dd864c5aa534225b959d7b5abbe"
+    )
     assert finalizer._r8u_r3_expected_implementation_authority_epochs(
         authority.implementation_commit
     ) == expected
@@ -311,6 +319,7 @@ def test_r3_requires_the_exact_six_commit_chain_and_rejects_r2_mix() -> None:
     for drifted in (
         r2_only,
         {**expected, "r8u_publication_resume_repair_commit": "d" * 40},
+        {**expected, "r8u_candidate_authority_repair_commit": "d" * 40},
         {**expected, "unexpected": "d" * 40},
     ):
         _expect_code(
@@ -321,7 +330,7 @@ def test_r3_requires_the_exact_six_commit_chain_and_rejects_r2_mix() -> None:
         )
 
 
-def test_r3_loader_binds_candidate_and_capacity_to_the_same_six_epochs() -> None:
+def test_r3_loader_binds_candidate_and_capacity_to_the_same_seven_epochs() -> None:
     authority = _authority()
     candidate_type = "lvef_c3_r8u_r3_batch16_extraction_candidate_seal_v1"
     candidate_status = "PASS_COMPLETED_BATCH16_EXTRACTION_CANDIDATE_SEALED"
@@ -421,7 +430,7 @@ def test_r3_loader_binds_candidate_and_capacity_to_the_same_six_epochs() -> None
                 capacity_bound.extraction_candidate_seal_sha256
             ),
             completed_extraction_candidate_bytes=123_456,
-            r8u_publication_resume_repair_commit=(
+            r8u_candidate_authority_repair_commit=(
                 authority.implementation_commit
             ),
         )
@@ -730,7 +739,7 @@ def test_r3_accepts_only_the_exact_2_plus_13_plus_4_partition() -> None:
         )
 
 
-def test_r3_repository_authority_requires_one_direct_child_of_4fd() -> None:
+def test_r3_repository_authority_requires_one_direct_child_of_ce3326a() -> None:
     implementation_commit = "c" * 40
     exact_outputs = {
         ("rev-parse", "HEAD"): f"{implementation_commit}\n".encode("ascii"),
@@ -743,6 +752,13 @@ def test_r3_repository_authority_requires_one_direct_child_of_4fd() -> None:
             "rev-list", "--parents", "-n", "1", implementation_commit,
         ): (
             f"{implementation_commit} "
+            f"{finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list", "--parents", "-n", "1",
+            finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT} "
             f"{finalizer.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}\n"
         ).encode("ascii"),
         (
@@ -775,13 +791,46 @@ def test_r3_repository_authority_requires_one_direct_child_of_4fd() -> None:
         ).encode("ascii"),
     }
     count_pairs = (
-        (finalizer.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT, implementation_commit, b"1\n"),
-        (finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT, finalizer.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT, b"1\n"),
-        (finalizer.R8U_BASE_IMPLEMENTATION_COMMIT, finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT, b"1\n"),
-        (finalizer.R8U_PRIOR_IMPLEMENTATION_COMMIT, finalizer.R8U_BASE_IMPLEMENTATION_COMMIT, b"1\n"),
-        (finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT, finalizer.R8U_PRIOR_IMPLEMENTATION_COMMIT, b"1\n"),
-        (finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT, finalizer.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT, b"4\n"),
-        (finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT, implementation_commit, b"5\n"),
+        (
+            finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+            implementation_commit,
+            b"1\n",
+        ),
+        (
+            finalizer.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+            finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+            b"1\n",
+        ),
+        (
+            finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+            finalizer.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+            b"1\n",
+        ),
+        (
+            finalizer.R8U_BASE_IMPLEMENTATION_COMMIT,
+            finalizer.R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+            b"1\n",
+        ),
+        (
+            finalizer.R8U_PRIOR_IMPLEMENTATION_COMMIT,
+            finalizer.R8U_BASE_IMPLEMENTATION_COMMIT,
+            b"1\n",
+        ),
+        (
+            finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            finalizer.R8U_PRIOR_IMPLEMENTATION_COMMIT,
+            b"1\n",
+        ),
+        (
+            finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            finalizer.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+            b"5\n",
+        ),
+        (
+            finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            implementation_commit,
+            b"6\n",
+        ),
     )
     for ancestor, descendant, output in count_pairs:
         exact_outputs[("rev-list", "--count", f"{ancestor}..{descendant}")] = output

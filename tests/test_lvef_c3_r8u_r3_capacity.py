@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import capture_lvef_c3_post_reallocation_capacity as capacity
 
 
-R8U_R3_IMPLEMENTATION_COMMIT = "a" * 40
+R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT = "a" * 40
 CANDIDATE_SEAL_SHA256 = "b" * 64
 CANDIDATE_BYTES = 48_765_432_100
 
@@ -131,8 +131,8 @@ def _probe(
                     CANDIDATE_SEAL_SHA256
                 ),
                 completed_extraction_candidate_bytes=CANDIDATE_BYTES,
-                r8u_publication_resume_repair_commit=(
-                    R8U_R3_IMPLEMENTATION_COMMIT
+                r8u_candidate_authority_repair_commit=(
+                    R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT
                 ),
             )
         )
@@ -150,8 +150,8 @@ def _validate(plan: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
                 CANDIDATE_SEAL_SHA256
             ),
             completed_extraction_candidate_bytes=CANDIDATE_BYTES,
-            r8u_publication_resume_repair_commit=(
-                R8U_R3_IMPLEMENTATION_COMMIT
+            r8u_candidate_authority_repair_commit=(
+                R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT
             ),
         )
 
@@ -194,7 +194,10 @@ def test_r8u_r3_exact_remaining_demand_excludes_completed_inputs() -> None:
             capacity.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
         ),
         "r8u_publication_resume_repair_commit": (
-            R8U_R3_IMPLEMENTATION_COMMIT
+            capacity.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_candidate_authority_repair_commit": (
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT
         ),
     }
     assert result["resume_task"] == 16
@@ -327,7 +330,7 @@ def test_r8u_r3_validator_rejects_double_charging_and_authority_drift() -> None:
         )
 
 
-def test_r8u_r3_fixed_api_binds_six_epochs_before_live_capture() -> None:
+def test_r8u_r3_fixed_api_binds_seven_epochs_before_live_capture() -> None:
     expected = {
         "scientific_commit": capacity.R8U_ORIGINAL_SCIENTIFIC_COMMIT,
         "r8r_implementation_commit": capacity.R8U_R8R_IMPLEMENTATION_COMMIT,
@@ -341,15 +344,21 @@ def test_r8u_r3_fixed_api_binds_six_epochs_before_live_capture() -> None:
             "4fd8f4bf58ba56a5cc82893e80833cbc5c9332ff"
         ),
         "r8u_publication_resume_repair_commit": (
-            R8U_R3_IMPLEMENTATION_COMMIT
+            "ce3326a23f149dd864c5aa534225b959d7b5abbe"
+        ),
+        "r8u_candidate_authority_repair_commit": (
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT
         ),
     }
     assert capacity._fixed_r8u_r3_implementation_authority_epochs(
-        R8U_R3_IMPLEMENTATION_COMMIT
+        R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT
     ) == expected
+    assert capacity.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT == (
+        "ce3326a23f149dd864c5aa534225b959d7b5abbe"
+    )
     assert set(expected) == capacity.R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
     for reused in expected.values():
-        if reused == R8U_R3_IMPLEMENTATION_COMMIT:
+        if reused == R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT:
             continue
         _expect_code(
             "R8U_R3_IMPLEMENTATION_AUTHORITY_INVALID",
@@ -374,7 +383,7 @@ def test_r8u_r3_fixed_api_binds_six_epochs_before_live_capture() -> None:
         "plan",
         "completed_extraction_candidate_seal_sha256",
         "completed_extraction_candidate_bytes",
-        "r8u_publication_resume_repair_commit",
+        "r8u_candidate_authority_repair_commit",
         "process_runner",
     )
     validate_signature = inspect.signature(
@@ -385,7 +394,7 @@ def test_r8u_r3_fixed_api_binds_six_epochs_before_live_capture() -> None:
         "value",
         "completed_extraction_candidate_seal_sha256",
         "completed_extraction_candidate_bytes",
-        "r8u_publication_resume_repair_commit",
+        "r8u_candidate_authority_repair_commit",
     )
     for signature, names in (
         (
@@ -402,7 +411,7 @@ def test_r8u_r3_fixed_api_binds_six_epochs_before_live_capture() -> None:
                 inspect.Parameter.KEYWORD_ONLY
             )
         assert signature.parameters[
-            "r8u_publication_resume_repair_commit"
+            "r8u_candidate_authority_repair_commit"
         ].default is inspect.Parameter.empty
 
     plan = _fixed_r8u_plan()
@@ -418,18 +427,36 @@ def test_r8u_r3_fixed_api_binds_six_epochs_before_live_capture() -> None:
         ),
     ):
         for seal, candidate_bytes, commit in (
-            ("not-a-sha", CANDIDATE_BYTES, R8U_R3_IMPLEMENTATION_COMMIT),
-            (CANDIDATE_SEAL_SHA256, 0, R8U_R3_IMPLEMENTATION_COMMIT),
+            (
+                "not-a-sha",
+                CANDIDATE_BYTES,
+                R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT,
+            ),
+            (
+                CANDIDATE_SEAL_SHA256,
+                0,
+                R8U_R3_CANDIDATE_AUTHORITY_REPAIR_COMMIT,
+            ),
             (
                 CANDIDATE_SEAL_SHA256,
                 CANDIDATE_BYTES,
                 capacity.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
             ),
+            (
+                CANDIDATE_SEAL_SHA256,
+                CANDIDATE_BYTES,
+                capacity.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+            ),
         ):
             expected_code = (
                 "R8U_R3_IMPLEMENTATION_AUTHORITY_INVALID"
                 if commit
-                == capacity.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+                in {
+                    capacity.R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+                    (
+                        capacity.R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+                    ),
+                }
                 else "R8U_R3_COMPLETED_EXTRACTION_CANDIDATE_AUTHORITY_INVALID"
             )
             _expect_code(
@@ -439,7 +466,7 @@ def test_r8u_r3_fixed_api_binds_six_epochs_before_live_capture() -> None:
                         plan,
                         completed_extraction_candidate_seal_sha256=seal,
                         completed_extraction_candidate_bytes=candidate_bytes,
-                        r8u_publication_resume_repair_commit=commit,
+                        r8u_candidate_authority_repair_commit=commit,
                     )
                 ),
             )
