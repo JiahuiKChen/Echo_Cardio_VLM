@@ -12,6 +12,7 @@ import argparse
 import csv
 from dataclasses import dataclass
 from datetime import datetime
+import errno
 import hashlib
 import io
 import json
@@ -180,6 +181,24 @@ R8U_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
         "r8u_base_implementation_commit",
         "r8u_projection_repair_commit",
         "r8u_scheduler_log_repair_commit",
+    }
+)
+
+# Phase 1I-R8U-R3 is additive to the immutable R8U-R2 failure evidence.  Its
+# Batch-16 receipt and the future Tasks 17--19 receipts are produced by one
+# direct child of the scheduler-log repair, while every R3 control artifact
+# binds the complete six-commit chain below.
+R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT = (
+    "4fd8f4bf58ba56a5cc82893e80833cbc5c9332ff"
+)
+R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
+    {
+        "scientific_commit",
+        "r8r_implementation_commit",
+        "r8u_base_implementation_commit",
+        "r8u_projection_repair_commit",
+        "r8u_scheduler_log_repair_commit",
+        "r8u_publication_resume_repair_commit",
     }
 )
 R8U_FAILED_PARTIAL_METADATA_SHA256 = (
@@ -661,6 +680,546 @@ R8U_CHAIN_ARTIFACT_KEYS = {
         R8U_CONTINUATION_SUBMISSION_KEYS
     ),
 }
+
+# R8U-R3 deliberately carries the consumed R2 submission as immutable
+# historical evidence, then binds the completed extraction candidate through
+# one publication-resume job and the fixed Tasks-17--19 successor.  Keeping
+# these schemas local to the finalizer prevents a permissive import-time
+# dependency on controller implementation details.
+R8U_R2_COMPLETED_EXTRACTION_JOB_ID = "7354951"
+R8U_R2_COMPLETED_EXTRACTION_LOG_SHA256 = (
+    "f4f634690a16c92681b248fffabdee8393624c591791aee0ce6f173071271b65"
+)
+R8U_R2_SCHEDULER_LOG_REPAIR_SCRIPT_AUTHORITY = {
+    "controller_sha256": (
+        "3999512325b6605ad99b388446db735955610d604479dcfdbbea2009caeee4e3"
+    ),
+    "finalizer_sha256": (
+        "6656f128605f16319bc98b54ea402a75552c9b14ff6f5f5d273f3a50ab7ebe54"
+    ),
+    "full_sequential_sha256": (
+        "18f37041718d4cedb3a27c9cef30b988e00c56653a372d31f0a2a3b45b395621"
+    ),
+    "preservation_sha256": (
+        "c9360f7dbfb792e33e1c783d8a80ebd45083ad361262d1197deb12a665df16fe"
+    ),
+    "production_stages_sha256": (
+        "caf71e1ebdd5def78105a23363368ef64ee2775027b1c2a2bf05d78292ebe0ac"
+    ),
+    "retirement_sha256": (
+        "15251dd3ba2726875e2df55f76c19d4d07dee03cc5111dc4e48a9f95823871df"
+    ),
+    "runner_sha256": (
+        "a71d97e19ba9d5bb82fd1d793dbc3f5db186fdaf796f0066b29af16e13d6b747"
+    ),
+}
+R8U_R3_COMMON_CHAIN_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "original_scientific_commit",
+        "implementation_commit",
+        "implementation_authority_epochs",
+        "attempt_id",
+        "batch_plan_sha256",
+        "batch_id",
+    }
+)
+R8U_R3_CANDIDATE_SEAL_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "r2_recovery_job_id",
+        "r2_recovery_capacity_receipt_sha256",
+        "r2_recovery_authority_sha256",
+        "r2_recovery_submission_receipt_sha256",
+        "failed_partial_seal_sha256",
+        "stage_completion_receipt_sha256",
+        "extraction_manifest_sha256",
+        "dicom_audit_sha256",
+        "extraction_summary_sha256",
+        "technical_disposition_manifest_sha256",
+        "candidate_regular_files",
+        "candidate_directories",
+        "candidate_total_bytes",
+        "candidate_npz_files",
+        "candidate_npz_bytes",
+        "candidate_relative_file_projection_sha256",
+        "candidate_relative_directory_projection_sha256",
+        "candidate_npz_manifest_projection_sha256",
+        "candidate_root_identity_sha256",
+        "source_parent_identity_sha256",
+        "source_mount_identity_sha256",
+        "target_parent_identity_sha256",
+        "target_mount_identity_sha256",
+        "source_target_same_mounted_filesystem",
+        "target_absent",
+        "symlink_count",
+        "nonregular_count",
+        "n_selected_studies",
+        "n_source_objects",
+        "source_bytes",
+        "n_readable",
+        "n_unreadable",
+        "n_multiframe_candidates",
+        "n_single_frame",
+        "n_pixel_decode_failures",
+        "n_successfully_extracted_cines",
+        "n_object_technical_dispositions",
+        "n_blocking_failures",
+        "n_ordinary_preprocessing_path",
+        "n_spatial_fallback_preprocessing_path",
+        "n_temporal_fallback_preprocessing_path",
+        "n_spatial_temporal_fallback_preprocessing_path",
+        "object_substitution_count",
+        "extraction_status",
+        "npz_body_reads",
+        "dicom_body_reads",
+        "dicom_extraction_executions",
+        "cloud_requests",
+        "downloads",
+    }
+)
+R8U_R3_PROBE_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "primary_primitive",
+        "primary_result",
+        "primary_errno_number",
+        "primary_errno",
+        "primary_returned_success",
+        "real_source_parent_identity_sha256",
+        "real_target_parent_identity_sha256",
+        "real_source_mount_identity_sha256",
+        "real_target_mount_identity_sha256",
+        "real_parents_same_mounted_filesystem",
+        "probe_mount_identity_sha256",
+        "probe_mount_matches_real_parents",
+        "probe_source_present_after",
+        "probe_target_present_after",
+        "probe_target_exact_after",
+        "probe_cleanup_passed",
+        "probe_directories_created",
+        "probe_directories_removed",
+        "scientific_file_body_reads",
+        "npz_body_reads",
+        "dicom_body_reads",
+        "dicom_extraction_executions",
+    }
+)
+R8U_R3_PROCEEDABLE_PROBE_RESULTS = frozenset(
+    {
+        "RENAME_NOREPLACE_SUPPORTED",
+        "RENAME_NOREPLACE_UNSUPPORTED_EINVAL",
+        "RENAME_NOREPLACE_UNSUPPORTED_ENOSYS",
+        "RENAME_NOREPLACE_UNSUPPORTED_EOPNOTSUPP",
+    }
+)
+R8U_R3_PUBLICATION_CLAIM_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "resume_job_id",
+        "r2_recovery_job_id",
+        "extraction_candidate_seal_sha256",
+        "publication_primitive_probe_sha256",
+        "resume_authority_sha256",
+        "resume_submission_receipt_sha256",
+        "failed_partial_seal_sha256",
+        "candidate_relative_file_projection_sha256",
+        "target_role",
+        "publication_primitive_selected",
+        "primary_result",
+        "target_absent",
+        "source_target_same_mounted_filesystem",
+        "source_parent_identity_sha256",
+        "target_parent_identity_sha256",
+        "source_mount_identity_sha256",
+        "target_mount_identity_sha256",
+        "pre_qsub_process_projection_sha256",
+        "initial_qstat_projection_sha256",
+        "worker_process_projection",
+        "competing_active_jobs",
+        "competing_active_processes",
+        "cloud_requests",
+        "downloads",
+        "dicom_body_reads",
+        "dicom_extraction_executions",
+        "npz_body_reads",
+    }
+)
+R8U_R3_PUBLICATION_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "extraction_candidate_seal_sha256",
+        "publication_primitive_probe_sha256",
+        "publication_claim_sha256",
+        "primitive_attempted",
+        "primary_result",
+        "primary_errno",
+        "fallback_used",
+        "fallback_primitive",
+        "rename_returned_success",
+        "real_rename_returned_success",
+        "real_rename_errno_number",
+        "real_rename_errno",
+        "real_rename_errno_classification",
+        "publication_ruling",
+        "prepublication_candidate_sha256",
+        "postpublication_target_sha256",
+        "source_absent",
+        "target_exact",
+        "candidate_npz_files",
+        "candidate_total_bytes",
+        "files_moved",
+        "files_copied",
+        "files_deleted_independently",
+        "dicom_body_reads",
+        "dicom_extraction_executions",
+        "npz_body_reads",
+        "cloud_requests",
+        "downloads",
+    }
+)
+R8U_R3_AUTHORITY_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "prior_implementation_commit",
+        "original_task_id",
+        "continuation_task_range",
+        "prefix_final_receipt_sha256",
+        "historical_r8r_chain_authority",
+        "failed_r8u_recovery_epoch_authority_sha256",
+        "r2_recovery_job_id",
+        "r2_recovery_log_sha256",
+        "r2_recovery_capacity_receipt_sha256",
+        "r2_recovery_authority_sha256",
+        "r2_recovery_submission_receipt_sha256",
+        "failed_partial_seal_sha256",
+        "extraction_candidate_seal_sha256",
+        "resume_capacity_sha256",
+        "runtime_authority_sha256",
+        "qsub_environment_sha256",
+        "script_authority",
+        "runtime_validation_context",
+        "target_role",
+        "pre_qsub_process_projection",
+        "cloud_requests_authorized",
+        "downloads_authorized",
+        "dicom_body_reads_authorized",
+        "dicom_extraction_executions_authorized",
+        "echoprime_executions_authorized",
+        "gpu_executions_authorized",
+        "failed_partial_adoption_authorized",
+        "failed_partial_mutation_authorized",
+        "raw_dicom_deletion_authorized",
+        "model_fitting_authorized",
+        "prediction_authorized",
+        "confirmatory_performance_access_authorized",
+        "maximum_new_qsub_submissions",
+    }
+)
+R8U_R3_SUBMISSION_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "original_task_id",
+        "resume_job_name",
+        "resume_job_id",
+        "resume_qsub_argv_sha256",
+        "qsub_environment_sha256",
+        "resume_authority_sha256",
+        "extraction_candidate_seal_sha256",
+        "resume_capacity_sha256",
+        "resume_qsub_evidence",
+        "pre_qsub_process_projection",
+        "initial_qstat_projection",
+        "scheduler_submission_count",
+        "resume_is_array",
+        "gpu_requested",
+        "automatic_retry_authorized",
+        "cloud_requests",
+        "downloads",
+        "dicom_body_reads_by_submitter",
+        "dicom_extraction_executions_by_submitter",
+        "npz_body_reads_by_submitter",
+        "model_fitting_count",
+        "prediction_generation_count",
+        "confirmatory_performance_access_count",
+    }
+)
+R8U_R3_PROCESS_PROJECTION_KEYS = frozenset(
+    {
+        "status",
+        "matching_processes",
+        "process_snapshot_count",
+        "ps_argv_sha256",
+        "ps_stdout_sha256",
+    }
+)
+R8U_R3_INITIAL_QSTAT_PROJECTION_KEYS = frozenset(
+    {
+        "status",
+        "resume_job_id",
+        "resume_job_name",
+        "state",
+        "category",
+        "target_matches",
+        "competing_matching_jobs",
+        "qstat_snapshot_count",
+        "qstat_projection_sha256",
+    }
+)
+R8U_R3_ACCOUNTING_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "original_task_id",
+        "resume_job_id",
+        "failed",
+        "exit_status",
+        "accounting_projection",
+    }
+)
+R8U_R3_TERMINAL_KEYS = R8U_R3_COMMON_CHAIN_KEYS | frozenset(
+    {
+        "original_task_id",
+        "failed_partial_seal_sha256",
+        "extraction_candidate_seal_sha256",
+        "publication_primitive_probe_sha256",
+        "publication_claim_sha256",
+        "publication_receipt_sha256",
+        "resume_capacity_sha256",
+        "resume_authority_sha256",
+        "resume_submission_receipt_sha256",
+        "preservation_receipt_sha256",
+        "cache_retirement_authorization_sha256",
+        "cache_retirement_transition_sha256",
+        "final_ledger_sha256",
+        "batch_finalization_receipt_sha256",
+        "n_selected_studies",
+        "n_expected_objects",
+        "expected_source_bytes",
+        "n_successfully_extracted_cines",
+        "n_object_technical_dispositions",
+        "n_blocking_failures",
+        "n_clip_embeddings",
+        "n_pooled_studies",
+        "n_no_cine_studies",
+        "n_new_no_cine_studies",
+        "object_substitution_count",
+        "unaccounted_multiframe_objects",
+        "raw_dicoms_retained",
+        "canonical_extraction_cache_retired",
+        "failed_partial_cache_retained",
+        "source_candidate_npz_files",
+        "cloud_requests",
+        "downloads",
+        "dicom_body_reads",
+        "dicom_extraction_executions",
+        "echoprime_executions",
+        "embedding_generations",
+        "gpu_executions",
+        "model_fitting_count",
+        "prediction_generation_count",
+        "confirmatory_performance_access_count",
+    }
+)
+R8U_R3_CONTINUATION_LINK_KEYS = frozenset(
+    {
+        "extraction_candidate_seal_sha256",
+        "publication_primitive_probe_sha256",
+        "publication_claim_sha256",
+        "publication_receipt_sha256",
+        "resume_capacity_sha256",
+        "resume_authority_sha256",
+        "resume_submission_receipt_sha256",
+        "resume_accounting_sha256",
+        "resume_terminal_receipt_sha256",
+    }
+)
+R8U_R3_CONTINUATION_CLAIM_KEYS = (
+    R8U_R3_COMMON_CHAIN_KEYS
+    | R8U_R3_CONTINUATION_LINK_KEYS
+    | frozenset(
+        {
+            "prior_implementation_commit",
+            "prefix_final_receipt_sha256",
+            "failed_partial_seal_sha256",
+            "runtime_authority_sha256",
+            "qsub_environment_sha256",
+            "script_authority",
+            "continuation_task_range",
+            "continuation_task_count",
+            "continuation_max_concurrency",
+            "held_finalizer_count",
+            "total_new_qsub_maximum",
+            "automatic_retry_authorized",
+            "whole_stage_retry_authorized",
+            "fourth_submission_reachable",
+            "cloud_requests_by_submitter",
+            "dicom_body_reads_by_submitter",
+            "npz_body_reads_by_submitter",
+            "gpu_executions_by_submitter",
+            "embedding_generations_by_submitter",
+            "model_fitting_authorized",
+            "prediction_authorized",
+            "confirmatory_performance_access_authorized",
+        }
+    )
+)
+R8U_R3_CONTINUATION_SUBMISSION_KEYS = (
+    R8U_R3_COMMON_CHAIN_KEYS
+    | R8U_R3_CONTINUATION_LINK_KEYS
+    | frozenset(
+        {
+            "resume_job_id",
+            "array_job_name",
+            "finalizer_job_name",
+            "array_job_id",
+            "finalizer_job_id",
+            "array_qsub_argv_sha256",
+            "finalizer_qsub_argv_sha256",
+            "qsub_environment_sha256",
+            "failed_partial_seal_sha256",
+            "continuation_claim_sha256",
+            "array_qsub_evidence",
+            "finalizer_qsub_evidence",
+            "scheduler_submission_count",
+            "total_new_qsub_submissions",
+            "scheduler_submission_maximum",
+            "array_task_range",
+            "array_task_count",
+            "array_max_concurrency",
+            "finalizer_held_on_array",
+            "whole_stage_retry_authorized",
+            "fourth_submission_reachable",
+            "cloud_requests",
+            "dicom_body_reads_by_submitter",
+            "npz_body_reads_by_submitter",
+            "gpu_executions_by_submitter",
+            "model_fitting_count",
+            "prediction_generation_count",
+            "confirmatory_performance_access_count",
+        }
+    )
+)
+R8U_R3_CHAIN_ARTIFACT_SPECS = (
+    (
+        "failed_partial_seal_sha256",
+        "r8u_r2_batch16_recovery/failed_partial_seal.restricted.json",
+        "lvef_c3_r8u_r2_failed_task16_partial_extraction_evidence_v1",
+        "FAILED_TASK16_PARTIAL_EXTRACTION_EVIDENCE",
+        "r2",
+    ),
+    (
+        "r2_recovery_capacity_receipt_sha256",
+        "r8u_r2_batch16_recovery/recovery_capacity.restricted.json",
+        "lvef_c3_r8u_r2_batch16_recovery_capacity_v1",
+        "PASS_BATCH16_RECOVERY_AND_17_19_WITH_200GB_RESERVE",
+        "r2",
+    ),
+    (
+        "r2_recovery_authority_sha256",
+        "r8u_r2_batch16_recovery/recovery_authority.restricted.json",
+        "lvef_c3_r8u_r2_batch16_recovery_authority_v1",
+        "AUTHORIZED_FIXED_BATCH16_RECOVERY",
+        "r2",
+    ),
+    (
+        "r2_recovery_submission_receipt_sha256",
+        "r8u_r2_batch16_recovery/scheduler/submission_receipt.restricted.json",
+        "lvef_c3_r8u_r2_batch16_recovery_submission_v1",
+        "PASS_EXACT_ONE_GPU_BATCH16_RECOVERY_QSUB",
+        "r2",
+    ),
+    (
+        "extraction_candidate_seal_sha256",
+        "r8u_r3_batch16_publication_resume/extraction_candidate_seal.restricted.json",
+        "lvef_c3_r8u_r3_batch16_extraction_candidate_seal_v1",
+        "PASS_COMPLETED_BATCH16_EXTRACTION_CANDIDATE_SEALED",
+        "r3",
+    ),
+    (
+        "publication_primitive_probe_sha256",
+        "r8u_r3_batch16_publication_resume/publication_primitive_probe.restricted.json",
+        "lvef_c3_r8u_r3_publication_primitive_probe_v1",
+        "PASS_PUBLICATION_PRIMITIVE_PROBE",
+        "r3",
+    ),
+    (
+        "publication_claim_sha256",
+        "extracted_cache/c3_batch_015/.r8u_r3_publication_claim/claim.restricted.json",
+        "lvef_c3_r8u_r3_publication_claim_v1",
+        "AUTHORIZED_EXCLUSIVE_BATCH16_PUBLICATION",
+        "r3",
+    ),
+    (
+        "publication_receipt_sha256",
+        "r8u_r3_batch16_publication_resume/publication_receipt.restricted.json",
+        "lvef_c3_r8u_r3_batch16_publication_v1",
+        "PASS_BATCH16_EXTRACTION_PUBLISHED_NO_CLOBBER",
+        "r3",
+    ),
+    (
+        "resume_capacity_receipt_sha256",
+        "r8u_r3_batch16_publication_resume/resume_capacity.restricted.json",
+        "lvef_c3_r8u_r3_batch16_publication_resume_capacity_v1",
+        "PASS_BATCH16_PUBLICATION_RESUME_AND_17_19_WITH_200GB_RESERVE",
+        "r3_capacity",
+    ),
+    (
+        "resume_authority_sha256",
+        "r8u_r3_batch16_publication_resume/resume_authority.restricted.json",
+        "lvef_c3_r8u_r3_batch16_publication_resume_authority_v1",
+        "AUTHORIZED_FIXED_BATCH16_PUBLICATION_RESUME",
+        "r3",
+    ),
+    (
+        "resume_submission_receipt_sha256",
+        "r8u_r3_batch16_publication_resume/scheduler/submission_receipt.restricted.json",
+        "lvef_c3_r8u_r3_batch16_publication_resume_submission_v1",
+        "PASS_EXACT_ONE_GPU_BATCH16_PUBLICATION_RESUME_QSUB",
+        "r3",
+    ),
+    (
+        "resume_accounting_sha256",
+        "r8u_r3_batch16_publication_resume/resume_accounting.restricted.json",
+        "lvef_c3_r8u_r3_batch16_publication_resume_accounting_v1",
+        "PASS_RESUME_QACCT_FAILED_0_EXIT_0",
+        "r3",
+    ),
+    (
+        "resume_terminal_receipt_sha256",
+        "r8u_r3_batch16_publication_resume/resume_terminal.aggregate_safe.json",
+        "lvef_c3_r8u_r3_batch16_publication_resume_terminal_v1",
+        "PASS_BATCH16_PUBLICATION_RESUME_FINALIZED",
+        "r3",
+    ),
+    (
+        "continuation_claim_sha256",
+        "r8u_r3_continuation_17_19/continuation_claim.restricted.json",
+        "lvef_c3_r8u_r3_fixed_continuation_claim_v1",
+        "AUTHORIZED_FIXED_CONTINUATION_17_19",
+        "r3",
+    ),
+    (
+        "continuation_submission_receipt_sha256",
+        "r8u_r3_continuation_17_19/scheduler/submission_receipt.restricted.json",
+        "lvef_c3_r8u_r3_fixed_continuation_submission_v1",
+        "PASS_EXACT_ARRAY_17_19_AND_HELD_FINALIZER",
+        "r3",
+    ),
+)
+R8U_R3_CHAIN_ARTIFACT_KEYS = {
+    "failed_partial_seal_sha256": R8U_FAILED_PARTIAL_SEAL_KEYS,
+    "r2_recovery_capacity_receipt_sha256": r8r_capacity.R8U_CAPACITY_KEYS,
+    "r2_recovery_authority_sha256": R8U_RECOVERY_AUTHORITY_KEYS,
+    "r2_recovery_submission_receipt_sha256": R8U_RECOVERY_SUBMISSION_KEYS,
+    "extraction_candidate_seal_sha256": R8U_R3_CANDIDATE_SEAL_KEYS,
+    "publication_primitive_probe_sha256": R8U_R3_PROBE_KEYS,
+    "publication_claim_sha256": R8U_R3_PUBLICATION_CLAIM_KEYS,
+    "publication_receipt_sha256": R8U_R3_PUBLICATION_KEYS,
+    "resume_capacity_receipt_sha256": r8r_capacity.R8U_R3_CAPACITY_KEYS,
+    "resume_authority_sha256": R8U_R3_AUTHORITY_KEYS,
+    "resume_submission_receipt_sha256": R8U_R3_SUBMISSION_KEYS,
+    "resume_accounting_sha256": R8U_R3_ACCOUNTING_KEYS,
+    "resume_terminal_receipt_sha256": R8U_R3_TERMINAL_KEYS,
+    "continuation_claim_sha256": R8U_R3_CONTINUATION_CLAIM_KEYS,
+    "continuation_submission_receipt_sha256": (
+        R8U_R3_CONTINUATION_SUBMISSION_KEYS
+    ),
+}
 R8R_QSUB_EVIDENCE_KEYS = frozenset(
     {
         "stdout_bytes",
@@ -923,6 +1482,38 @@ class R8UImplementationAuthority:
     recovery_submission_receipt_sha256: str
     recovery_accounting_sha256: str
     recovery_terminal_receipt_sha256: str
+    continuation_claim_sha256: str
+    continuation_submission_receipt_sha256: str
+
+
+@dataclass(frozen=True)
+class R8UR3ImplementationAuthority:
+    """Closed binding for publication-resumed Batch 16 and Tasks 17--19.
+
+    R8U-R2 remains immutable failed evidence.  These hashes bind the complete
+    R3 resume chain, its later successful accounting, and the exact fixed
+    continuation without accepting caller-selected paths, batches, or ranges.
+    """
+
+    implementation_commit: str
+    historical_r8r_recovery_authority_sha256: str
+    historical_r8r_recovery_terminal_receipt_sha256: str
+    historical_r8r_continuation_capacity_receipt_sha256: str
+    historical_r8r_continuation_claim_sha256: str
+    historical_r8r_continuation_submission_receipt_sha256: str
+    failed_partial_seal_sha256: str
+    r2_recovery_capacity_receipt_sha256: str
+    r2_recovery_authority_sha256: str
+    r2_recovery_submission_receipt_sha256: str
+    extraction_candidate_seal_sha256: str
+    publication_primitive_probe_sha256: str
+    publication_claim_sha256: str
+    publication_receipt_sha256: str
+    resume_capacity_receipt_sha256: str
+    resume_authority_sha256: str
+    resume_submission_receipt_sha256: str
+    resume_accounting_sha256: str
+    resume_terminal_receipt_sha256: str
     continuation_claim_sha256: str
     continuation_submission_receipt_sha256: str
 
@@ -4215,6 +4806,214 @@ def _validate_r8u_repository_authority(
             )
 
 
+def _validate_r8u_r3_repository_authority(
+    implementation_commit: str,
+) -> None:
+    """Bind R8U-R3 to one exact direct child of the log-repair commit."""
+
+    fixed_commits = (
+        R8R_SCIENTIFIC_GOVERNING_COMMIT,
+        R8U_PRIOR_IMPLEMENTATION_COMMIT,
+        R8U_BASE_IMPLEMENTATION_COMMIT,
+        R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+    )
+    if (
+        not isinstance(implementation_commit, str)
+        or COMMIT_RE.fullmatch(implementation_commit) is None
+        or implementation_commit in set(fixed_commits)
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+        )
+    repository = Path(__file__).resolve().parent.parent
+    if repository.is_symlink() or not repository.is_dir():
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+        )
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    }
+
+    def run_git(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+        try:
+            return subprocess.run(
+                ["/usr/bin/git", "-C", str(repository), *arguments],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                env=environment,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+            ) from exc
+
+    exact_outputs = {
+        ("rev-parse", "HEAD"): f"{implementation_commit}\n".encode(
+            "ascii"
+        ),
+        (
+            "rev-parse",
+            "refs/remotes/origin/codex/lvef-multitask-revalidation",
+        ): f"{implementation_commit}\n".encode("ascii"),
+        ("branch", "--show-current"): (
+            b"codex/lvef-multitask-revalidation\n"
+        ),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            implementation_commit,
+        ): (
+            f"{implementation_commit} "
+            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT} "
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT} "
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT} "
+            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--parents",
+            "-n",
+            "1",
+            R8U_PRIOR_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT} "
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list",
+            "--count",
+            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}.."
+            f"{implementation_commit}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}.."
+            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT}.."
+            f"{R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT}.."
+            f"{R8U_BASE_IMPLEMENTATION_COMMIT}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}.."
+            f"{R8U_PRIOR_IMPLEMENTATION_COMMIT}",
+        ): b"1\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}.."
+            f"{R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT}",
+        ): b"4\n",
+        (
+            "rev-list",
+            "--count",
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{implementation_commit}",
+        ): b"5\n",
+    }
+    for arguments, expected_stdout in exact_outputs.items():
+        result = run_git(*arguments)
+        if (
+            result.returncode != 0
+            or result.stderr
+            or result.stdout != expected_stdout
+        ):
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+            )
+    status = run_git("status", "--porcelain", "--untracked-files=no")
+    if status.returncode != 0 or status.stderr or status.stdout:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+        )
+    for commit in (*fixed_commits, implementation_commit):
+        exists = run_git("cat-file", "-e", f"{commit}^{{commit}}")
+        if exists.returncode != 0 or exists.stdout or exists.stderr:
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+            )
+    for ancestor, descendant in (
+        (R8R_SCIENTIFIC_GOVERNING_COMMIT, R8U_PRIOR_IMPLEMENTATION_COMMIT),
+        (R8U_PRIOR_IMPLEMENTATION_COMMIT, R8U_BASE_IMPLEMENTATION_COMMIT),
+        (
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        ),
+        (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+            R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        ),
+        (
+            R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+            implementation_commit,
+        ),
+    ):
+        ancestry = run_git("merge-base", "--is-ancestor", ancestor, descendant)
+        if ancestry.returncode != 0 or ancestry.stdout or ancestry.stderr:
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+            )
+    for field, relative_path in sorted(R8U_FE3_GIT_TREE_PATHS.items()):
+        blob = run_git(
+            "show", f"{R8U_PRIOR_IMPLEMENTATION_COMMIT}:{relative_path}"
+        )
+        if (
+            blob.returncode != 0
+            or blob.stderr
+            or hashlib.sha256(blob.stdout).hexdigest()
+            != R8U_FE3_GIT_TREE_SHA256[field]
+        ):
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_HISTORICAL_GIT_TREE_MISMATCH"
+            )
+
+
 def _r8u_expected_implementation_authority_epochs(
     implementation_commit: str,
 ) -> dict[str, str]:
@@ -4249,6 +5048,46 @@ def _r8u_validate_implementation_authority_epochs(
     ):
         raise ProductionFinalizationError(
             "R8U_FINALIZER_IMPLEMENTATION_AUTHORITY_EPOCHS_INVALID"
+        )
+
+
+def _r8u_r3_expected_implementation_authority_epochs(
+    implementation_commit: str,
+) -> dict[str, str]:
+    """Return the exact six-commit authority for R8U-R3 artifacts."""
+
+    return {
+        "scientific_commit": R8R_SCIENTIFIC_GOVERNING_COMMIT,
+        "r8r_implementation_commit": R8U_PRIOR_IMPLEMENTATION_COMMIT,
+        "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
+        "r8u_projection_repair_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_scheduler_log_repair_commit": (
+            R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_publication_resume_repair_commit": implementation_commit,
+    }
+
+
+def _r8u_r3_validate_implementation_authority_epochs(
+    value: object,
+    *,
+    implementation_commit: str,
+) -> None:
+    """Reject missing, open, mistyped, or mixed R2/R3 epoch bindings."""
+
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+        or any(type(value.get(key)) is not str for key in value)
+        or dict(value)
+        != _r8u_r3_expected_implementation_authority_epochs(
+            implementation_commit
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_IMPLEMENTATION_AUTHORITY_EPOCHS_INVALID"
         )
 
 
@@ -4543,6 +5382,42 @@ def _validate_r8r_capacity_observation(value: object) -> None:
 
 def _r8r_controller_json_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(core.canonical_json_bytes(value) + b"\n").hexdigest()
+
+
+def _r8u_r3_expected_resume_qsub_command(
+    *, attempt_root: Path, implementation_commit: str
+) -> list[str]:
+    """Return the sole fixed Batch-16 publication-resume qsub command."""
+
+    return [
+        "/usr/local/ogs-ge2011.11.p1/sge_root/bin/linux-x64/qsub",
+        "-clear",
+        "-terse",
+        "-r",
+        "n",
+        "-P",
+        "mimicecho",
+        "-N",
+        f"lvef_c3_r8u_r3_res_{implementation_commit[:8]}",
+        "-j",
+        "y",
+        "-o",
+        str(attempt_root / "r8u_r3_batch16_publication_resume/scheduler"),
+        "-l",
+        "h_rt=48:00:00",
+        "-l",
+        "gpus=1",
+        "-l",
+        "gpu_c=8.0",
+        "-l",
+        "gpu_memory=48G",
+        "-pe",
+        "omp",
+        "4",
+        "-l",
+        "mem_per_core=16G",
+        str(Path(__file__).resolve().parent / R8R_SCHEDULER_RUNNER_BASENAME),
+    ]
 
 
 def _r8r_expected_qsub_commands(
@@ -5406,6 +6281,137 @@ def _load_r8u_chain_artifact(
     return value, digest
 
 
+def _load_r8u_r3_chain_artifact(
+    *,
+    path: Path,
+    field: str,
+    artifact_type: str,
+    status: str,
+    epoch_kind: str,
+    authority: R8UR3ImplementationAuthority,
+    plan: Mapping[str, Any],
+    candidate_total_bytes: int | None = None,
+) -> tuple[Mapping[str, Any], str]:
+    """Load one exact R2-history or R3 successor artifact fail-closed."""
+
+    try:
+        payload = _stable_nofollow_bytes(
+            path,
+            code="R8U_R3_FINALIZER_CHAIN_ARTIFACT",
+            max_bytes=128 * 1024 * 1024,
+        )
+        value = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(
+                ProductionFinalizationError(
+                    "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+                )
+            ),
+        )
+    except ProductionFinalizationError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, OSError) as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+        ) from exc
+    if (
+        not isinstance(value, Mapping)
+        or payload != core.canonical_json_bytes(value)
+        or set(value) != R8U_R3_CHAIN_ARTIFACT_KEYS.get(field)
+        or type(value.get("schema_version")) is not int
+        or value.get("schema_version") != 1
+        or value.get("artifact_type") != artifact_type
+        or value.get("status") != status
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+        )
+
+    if epoch_kind == "r2":
+        _r8u_validate_implementation_authority_epochs(
+            value.get("implementation_authority_epochs"),
+            implementation_commit=(
+                R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+            ),
+        )
+        if field == "r2_recovery_capacity_receipt_sha256":
+            try:
+                r8r_capacity.validate_fixed_r8u_batch16_recovery_capacity(
+                    plan,
+                    value,
+                    r8u_scheduler_log_repair_commit=(
+                        R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+                    ),
+                )
+            except r8r_capacity.PostReallocationCapacityError as exc:
+                raise ProductionFinalizationError(
+                    "R8U_R3_FINALIZER_R2_CAPACITY_INVALID"
+                ) from exc
+        elif (
+            value.get("original_scientific_commit")
+            != R8R_SCIENTIFIC_GOVERNING_COMMIT
+            or value.get("implementation_commit")
+            != R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+            or value.get("attempt_id") != R8R_ATTEMPT_ID
+            or value.get("batch_plan_sha256") != R8R_BATCH_PLAN_SHA256
+        ):
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+            )
+    elif epoch_kind in {"r3", "r3_capacity"}:
+        _r8u_r3_validate_implementation_authority_epochs(
+            value.get("implementation_authority_epochs"),
+            implementation_commit=authority.implementation_commit,
+        )
+        if epoch_kind == "r3_capacity":
+            if type(candidate_total_bytes) is not int or candidate_total_bytes < 1:
+                raise ProductionFinalizationError(
+                    "R8U_R3_FINALIZER_CAPACITY_AUTHORITY_INVALID"
+                )
+            try:
+                r8r_capacity.validate_fixed_r8u_r3_batch16_publication_resume_capacity(
+                    plan,
+                    value,
+                    completed_extraction_candidate_seal_sha256=(
+                        authority.extraction_candidate_seal_sha256
+                    ),
+                    completed_extraction_candidate_bytes=(
+                        candidate_total_bytes
+                    ),
+                    r8u_publication_resume_repair_commit=(
+                        authority.implementation_commit
+                    ),
+                )
+            except r8r_capacity.PostReallocationCapacityError as exc:
+                raise ProductionFinalizationError(
+                    "R8U_R3_FINALIZER_CAPACITY_AUTHORITY_INVALID"
+                ) from exc
+        elif (
+            value.get("original_scientific_commit")
+            != R8R_SCIENTIFIC_GOVERNING_COMMIT
+            or value.get("implementation_commit")
+            != authority.implementation_commit
+            or value.get("attempt_id") != R8R_ATTEMPT_ID
+            or value.get("batch_plan_sha256") != R8R_BATCH_PLAN_SHA256
+            or value.get("batch_id") != "c3_batch_015"
+        ):
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+            )
+    else:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+        )
+
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != getattr(authority, field):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CHAIN_ARTIFACT_HASH_MISMATCH"
+        )
+    return value, digest
+
+
 def _r8u_exact_zero(value: Mapping[str, Any], *keys: str) -> bool:
     return all(type(value.get(key)) is int and value.get(key) == 0 for key in keys)
 
@@ -5416,6 +6422,262 @@ def _r8u_valid_hashes(value: Mapping[str, Any], *keys: str) -> bool:
         and SHA256_RE.fullmatch(str(value[key])) is not None
         for key in keys
     )
+
+
+def _validate_r8u_r3_candidate_static(value: object) -> None:
+    """Replay every fixed candidate fact without reading scientific bodies."""
+
+    hash_fields = (
+        "stage_completion_receipt_sha256",
+        "extraction_manifest_sha256",
+        "dicom_audit_sha256",
+        "extraction_summary_sha256",
+        "technical_disposition_manifest_sha256",
+        "candidate_relative_file_projection_sha256",
+        "candidate_relative_directory_projection_sha256",
+        "candidate_npz_manifest_projection_sha256",
+        "candidate_root_identity_sha256",
+        "source_parent_identity_sha256",
+        "source_mount_identity_sha256",
+        "target_parent_identity_sha256",
+        "target_mount_identity_sha256",
+    )
+    expected = {
+        "candidate_regular_files": 10_192,
+        "candidate_npz_files": 10_187,
+        "source_target_same_mounted_filesystem": True,
+        "target_absent": True,
+        "symlink_count": 0,
+        "nonregular_count": 0,
+        "n_selected_studies": 250,
+        "n_source_objects": R8U_BATCH16_RAW_FILES,
+        "source_bytes": R8U_BATCH16_RAW_BYTES,
+        "n_readable": R8U_BATCH16_RAW_FILES,
+        "n_unreadable": 0,
+        "n_multiframe_candidates": 10_187,
+        "n_single_frame": 8_490,
+        "n_pixel_decode_failures": 0,
+        "n_successfully_extracted_cines": 10_187,
+        "n_object_technical_dispositions": 0,
+        "n_blocking_failures": 0,
+        "n_ordinary_preprocessing_path": 10_187,
+        "n_spatial_fallback_preprocessing_path": 0,
+        "n_temporal_fallback_preprocessing_path": 0,
+        "n_spatial_temporal_fallback_preprocessing_path": 0,
+        "object_substitution_count": 0,
+        "extraction_status": "PASS_EXTRACTION_ALL_OBJECTS_EMBEDDABLE",
+        "npz_body_reads": 0,
+        "dicom_body_reads": 0,
+        "dicom_extraction_executions": 0,
+        "cloud_requests": 0,
+        "downloads": 0,
+    }
+    if (
+        not isinstance(value, Mapping)
+        or not _r8u_valid_hashes(value, *hash_fields)
+        or any(
+            type(value.get(key)) is not type(expected_value)
+            or value.get(key) != expected_value
+            for key, expected_value in expected.items()
+        )
+        or type(value.get("candidate_directories")) is not int
+        or value.get("candidate_directories") < 1
+        or type(value.get("candidate_total_bytes")) is not int
+        or value.get("candidate_total_bytes") < 1
+        or type(value.get("candidate_npz_bytes")) is not int
+        or not 0 < value.get("candidate_npz_bytes") <= value.get(
+            "candidate_total_bytes"
+        )
+        or value.get("source_mount_identity_sha256")
+        != value.get("target_mount_identity_sha256")
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_EXTRACTION_CANDIDATE_INVALID"
+        )
+
+
+def _r8u_r3_expected_proceedable_probe_outcome(
+    primary_result: object,
+) -> tuple[int, str, bool] | None:
+    errno_number_by_result = {
+        "RENAME_NOREPLACE_SUPPORTED": 0,
+        "RENAME_NOREPLACE_UNSUPPORTED_EINVAL": errno.EINVAL,
+        "RENAME_NOREPLACE_UNSUPPORTED_ENOSYS": errno.ENOSYS,
+        "RENAME_NOREPLACE_UNSUPPORTED_EOPNOTSUPP": getattr(
+            errno, "EOPNOTSUPP", errno.ENOTSUP
+        ),
+    }
+    if primary_result not in R8U_R3_PROCEEDABLE_PROBE_RESULTS:
+        return None
+    errno_number = errno_number_by_result.get(primary_result)
+    if type(errno_number) is not int:
+        return None
+    return (
+        errno_number,
+        (
+            "NONE"
+            if errno_number == 0
+            else errno.errorcode.get(errno_number, "UNKNOWN")
+        ),
+        primary_result == "RENAME_NOREPLACE_SUPPORTED",
+    )
+
+
+def _validate_r8u_r3_process_projection(
+    value: object, *, expected_status: str
+) -> str:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8U_R3_PROCESS_PROJECTION_KEYS
+        or value.get("status") != expected_status
+        or type(value.get("matching_processes")) is not int
+        or value.get("matching_processes") != 0
+        or type(value.get("process_snapshot_count")) is not int
+        or value.get("process_snapshot_count") != 1
+        or not _r8u_valid_hashes(
+            value, "ps_argv_sha256", "ps_stdout_sha256"
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_PROCESS_PROJECTION_INVALID"
+        )
+    return core.canonical_json_sha256(value)
+
+
+def _validate_r8u_r3_initial_qstat_projection(
+    value: object, *, resume_job_id: str, resume_job_name: str
+) -> str:
+    state_to_category = {
+        "r": "running",
+        "t": "running",
+        "Rr": "running",
+        "qw": "pending",
+    }
+    projection_body = (
+        {
+            key: observed
+            for key, observed in value.items()
+            if key != "qstat_projection_sha256"
+        }
+        if isinstance(value, Mapping)
+        else {}
+    )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8U_R3_INITIAL_QSTAT_PROJECTION_KEYS
+        or value.get("status")
+        != "PASS_EXACT_ONE_R8U_R3_RESUME_JOB_ZERO_COMPETITORS"
+        or value.get("resume_job_id") != resume_job_id
+        or value.get("resume_job_name") != resume_job_name
+        or value.get("state") not in state_to_category
+        or value.get("category") != state_to_category.get(value.get("state"))
+        or type(value.get("target_matches")) is not int
+        or value.get("target_matches") != 1
+        or type(value.get("competing_matching_jobs")) is not int
+        or value.get("competing_matching_jobs") != 0
+        or type(value.get("qstat_snapshot_count")) is not int
+        or value.get("qstat_snapshot_count") != 1
+        or value.get("qstat_projection_sha256")
+        != core.canonical_json_sha256(projection_body)
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_QSTAT_PROJECTION_INVALID"
+        )
+    return core.canonical_json_sha256(value)
+
+
+def _r8u_r3_real_rename_classification(errno_number: int) -> str:
+    if errno_number == 0:
+        return "RENAME_RETURNED_SUCCESS"
+    if errno_number in {
+        errno.EINVAL,
+        errno.ENOSYS,
+        getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+    }:
+        return "RENAME_ERROR_UNSUPPORTED"
+    if errno_number == errno.EXDEV:
+        return "RENAME_ERROR_CROSS_MOUNT"
+    if errno_number in {errno.EACCES, errno.EPERM}:
+        return "RENAME_ERROR_PERMISSION"
+    if errno_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        return "RENAME_ERROR_COLLISION"
+    if errno_number == errno.ENOENT:
+        return "RENAME_ERROR_SOURCE_MISSING"
+    if errno_number == errno.EIO:
+        return "RENAME_ERROR_IO"
+    return "RENAME_ERROR_OTHER"
+
+
+def _validate_r8u_r3_real_rename_outcome(
+    *,
+    returned_success: object,
+    errno_number: object,
+    errno_name: object,
+    errno_classification: object,
+    publication_ruling: object,
+) -> None:
+    expected_name = (
+        "NONE"
+        if errno_number == 0
+        else (
+            errno.errorcode.get(errno_number, "UNKNOWN")
+            if type(errno_number) is int
+            else ""
+        )
+    )
+    if (
+        type(returned_success) is not bool
+        or type(errno_number) is not int
+        or errno_number < 0
+        or not isinstance(errno_name, str)
+        or re.fullmatch(r"[A-Z][A-Z0-9_]*", errno_name) is None
+        or errno_name != expected_name
+        or errno_classification
+        != _r8u_r3_real_rename_classification(errno_number)
+        or (returned_success and errno_number != 0)
+        or (not returned_success and errno_number <= 0)
+        or publication_ruling
+        != (
+            "PUBLICATION_PASS"
+            if returned_success
+            else "PUBLICATION_PASS_AFTER_AMBIGUOUS_NFS_RETURN"
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_PUBLICATION_RECEIPT_INVALID"
+        )
+
+
+def _validate_r8u_r3_resume_accounting(
+    value: Mapping[str, Any], *, resume_job_id: str
+) -> None:
+    """Require the later R3 scheduler accounting to close at failed=0/exit=0."""
+
+    accounting_projection = value.get("accounting_projection")
+    try:
+        _validate_r8r_recovery_accounting(
+            accounting_projection, expected_job_id=resume_job_id
+        )
+    except ProductionFinalizationError as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_RESUME_ACCOUNTING_INVALID"
+        ) from exc
+    if (
+        type(value.get("original_task_id")) is not int
+        or value.get("original_task_id") != 16
+        or value.get("resume_job_id") != resume_job_id
+        or type(value.get("failed")) is not int
+        or value.get("failed") != 0
+        or type(value.get("exit_status")) is not int
+        or value.get("exit_status") != 0
+        or not isinstance(accounting_projection, Mapping)
+        or value.get("failed") != accounting_projection.get("failed")
+        or value.get("exit_status")
+        != accounting_projection.get("exit_status")
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_RESUME_ACCOUNTING_INVALID"
+        )
 
 
 def _r8u_failed_r1_epoch_authority_sha256(value: object) -> str:
@@ -6318,6 +7580,1049 @@ def _validate_r8u_chain_artifacts(
     )
 
 
+def _validate_r8u_r3_chain_artifacts(
+    *,
+    receipt_paths_by_batch: Mapping[str, Path],
+    receipt_hashes_by_batch: Mapping[str, str],
+    authority: R8UR3ImplementationAuthority,
+    expected_runtime_authority: Mapping[str, Any],
+    plan: Mapping[str, Any],
+) -> str:
+    """Validate the closed R2 failure and R3 publication-resume successor."""
+
+    first_path = receipt_paths_by_batch.get("c3_batch_000")
+    if not isinstance(first_path, Path) or len(first_path.parents) < 4:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+        )
+    attempt_root = first_path.parents[3]
+    canonical_receipt_paths = {
+        batch_id: (
+            attempt_root
+            / "batches"
+            / batch_id
+            / "preservation"
+            / "batch_finalization_receipt.restricted.json"
+        )
+        for batch_id in EXPECTED_BATCH_IDS
+    }
+    chain_paths = {
+        field: attempt_root / relative_path
+        for field, relative_path, _artifact_type, _status, _epoch_kind
+        in R8U_R3_CHAIN_ARTIFACT_SPECS
+    }
+    current_hashes = {
+        getattr(authority, field) for field in chain_paths
+    }
+    if (
+        attempt_root.name != R8R_ATTEMPT_ID
+        or attempt_root.parent.name != "attempts"
+        or dict(receipt_paths_by_batch) != canonical_receipt_paths
+        or len(chain_paths) != len(R8U_R3_CHAIN_ARTIFACT_SPECS)
+        or len(set(chain_paths.values())) != len(chain_paths)
+        or any(path in receipt_paths_by_batch.values() for path in chain_paths.values())
+        or not current_hashes.isdisjoint(receipt_hashes_by_batch.values())
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CHAIN_ARTIFACT_INVALID"
+        )
+
+    historical_authority = R8RImplementationAuthority(
+        implementation_commit=R8U_PRIOR_IMPLEMENTATION_COMMIT,
+        recovery_authority_sha256=(
+            authority.historical_r8r_recovery_authority_sha256
+        ),
+        recovery_terminal_receipt_sha256=(
+            authority.historical_r8r_recovery_terminal_receipt_sha256
+        ),
+        continuation_capacity_receipt_sha256=(
+            authority.historical_r8r_continuation_capacity_receipt_sha256
+        ),
+        continuation_claim_sha256=(
+            authority.historical_r8r_continuation_claim_sha256
+        ),
+        continuation_submission_receipt_sha256=(
+            authority.historical_r8r_continuation_submission_receipt_sha256
+        ),
+    )
+    historical_chain_sha256 = _validate_r8r_chain_artifacts(
+        receipt_paths_by_batch=receipt_paths_by_batch,
+        authority=historical_authority,
+        expected_runtime_authority=expected_runtime_authority,
+        historical_script_authority=R8U_FE3_GIT_TREE_SHA256,
+    )
+    historical_hashes = {
+        "recovery_authority_sha256": (
+            authority.historical_r8r_recovery_authority_sha256
+        ),
+        "recovery_terminal_receipt_sha256": (
+            authority.historical_r8r_recovery_terminal_receipt_sha256
+        ),
+        "continuation_capacity_receipt_sha256": (
+            authority.historical_r8r_continuation_capacity_receipt_sha256
+        ),
+        "continuation_claim_sha256": (
+            authority.historical_r8r_continuation_claim_sha256
+        ),
+        "continuation_submission_receipt_sha256": (
+            authority.historical_r8r_continuation_submission_receipt_sha256
+        ),
+    }
+    if historical_hashes != R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_HISTORICAL_CHAIN_AUTHORITY_MISMATCH"
+        )
+
+    values: dict[str, Mapping[str, Any]] = {}
+    observed: dict[str, str] = {}
+    candidate_total_bytes: int | None = None
+    for field, relative_path, artifact_type, status, epoch_kind in (
+        R8U_R3_CHAIN_ARTIFACT_SPECS
+    ):
+        value, digest = _load_r8u_r3_chain_artifact(
+            path=attempt_root / relative_path,
+            field=field,
+            artifact_type=artifact_type,
+            status=status,
+            epoch_kind=epoch_kind,
+            authority=authority,
+            plan=plan,
+            candidate_total_bytes=candidate_total_bytes,
+        )
+        values[field] = value
+        observed[field] = digest
+        if field == "extraction_candidate_seal_sha256":
+            raw_candidate_bytes = value.get("candidate_total_bytes")
+            if type(raw_candidate_bytes) is int:
+                candidate_total_bytes = raw_candidate_bytes
+
+    seal = values["failed_partial_seal_sha256"]
+    r2_capacity = values["r2_recovery_capacity_receipt_sha256"]
+    r2_authority = values["r2_recovery_authority_sha256"]
+    r2_submission = values["r2_recovery_submission_receipt_sha256"]
+    candidate = values["extraction_candidate_seal_sha256"]
+    probe = values["publication_primitive_probe_sha256"]
+    publication_claim = values["publication_claim_sha256"]
+    publication = values["publication_receipt_sha256"]
+    resume_capacity = values["resume_capacity_receipt_sha256"]
+    resume_authority = values["resume_authority_sha256"]
+    resume_submission = values["resume_submission_receipt_sha256"]
+    resume_accounting = values["resume_accounting_sha256"]
+    terminal = values["resume_terminal_receipt_sha256"]
+    continuation_claim = values["continuation_claim_sha256"]
+    continuation_submission = values[
+        "continuation_submission_receipt_sha256"
+    ]
+
+    def exact_values(
+        value: object, expected: Mapping[str, Any]
+    ) -> bool:
+        return isinstance(value, Mapping) and all(
+            type(value.get(key)) is type(expected_value)
+            and value.get(key) == expected_value
+            for key, expected_value in expected.items()
+        )
+
+    observation = seal.get("observation")
+    if (
+        seal.get("batch_id") != "c3_batch_015"
+        or type(seal.get("original_task_id")) is not int
+        or seal.get("original_task_id") != 16
+        or seal.get("failed_array_job_id") != "7292691"
+        or seal.get("failure_class")
+        != "SGE_FAILED_19 / ESSTATE_NO_EXITSTATUS"
+        or not isinstance(observation, Mapping)
+        or set(observation) != R8U_FAILED_PARTIAL_OBSERVATION_KEYS
+        or not exact_values(
+            observation,
+            {
+                "file_count": 4_757,
+                "directory_count": 259,
+                "total_bytes": 8_583_119_701,
+                "symlink_count": 0,
+                "nonregular_count": 0,
+                "metadata_projection_sha256": (
+                    R8U_FAILED_PARTIAL_METADATA_SHA256
+                ),
+                "npz_body_reads": 0,
+            },
+        )
+        or seal.get("partial_outputs_adopted") is not False
+        or seal.get("partial_outputs_modified") is not False
+        or seal.get("partial_outputs_deleted") is not False
+        or seal.get("partial_outputs_renamed") is not False
+        or not _r8u_exact_zero(seal, "npz_body_reads")
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_FAILED_PARTIAL_SEAL_INVALID"
+        )
+
+    prefix15 = [
+        R8U_PREFIX_RECEIPT_AUTHORITIES[f"c3_batch_{index:03d}"][1]
+        for index in range(15)
+    ]
+    prefix16 = [*prefix15, receipt_hashes_by_batch["c3_batch_015"]]
+    retained_raw = r2_authority.get("retained_raw_authority")
+    failed_r1_epoch_sha256 = _r8u_failed_r1_epoch_authority_sha256(
+        r2_authority.get("failed_r8u_recovery_epoch_authority")
+    )
+    if (
+        r2_authority.get("prior_implementation_commit")
+        != R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        or r2_authority.get("batch_id") != "c3_batch_015"
+        or type(r2_authority.get("original_task_id")) is not int
+        or r2_authority.get("original_task_id") != 16
+        or r2_authority.get("continuation_task_range") != "17-19"
+        or r2_authority.get("prefix_final_receipt_sha256") != prefix15
+        or r2_authority.get("historical_r8r_chain_authority")
+        != historical_hashes
+        or r2_authority.get("failed_r8u_recovery_epoch_authority_sha256")
+        != failed_r1_epoch_sha256
+        or r2_authority.get("failed_partial_seal_sha256")
+        != observed["failed_partial_seal_sha256"]
+        or r2_authority.get("recovery_capacity_sha256")
+        != observed["r2_recovery_capacity_receipt_sha256"]
+        or not isinstance(retained_raw, Mapping)
+        or set(retained_raw) != R8U_RETAINED_RAW_AUTHORITY_KEYS
+        or not exact_values(
+            retained_raw,
+            {
+                "raw_dicom_files": R8U_BATCH16_RAW_FILES,
+                "raw_dicom_bytes": R8U_BATCH16_RAW_BYTES,
+                "download_ledger_sha256": (
+                    R8U_BATCH16_DOWNLOAD_LEDGER_SHA256
+                ),
+                "verified_download_manifest_sha256": (
+                    R8U_BATCH16_VERIFIED_MANIFEST_SHA256
+                ),
+                "selected_batch_manifest_sha256": (
+                    R8U_BATCH16_SELECTED_MANIFEST_SHA256
+                ),
+                "historical_st_dev_required": False,
+                "raw_dicom_body_reads": 0,
+                "cloud_requests": 0,
+            },
+        )
+        or not _r8u_valid_hashes(
+            retained_raw,
+            "raw_metadata_projection_sha256",
+            "download_control_projection_sha256",
+        )
+        or r2_authority.get("runtime_authority_sha256")
+        != core.canonical_json_sha256(expected_runtime_authority)
+        or r2_authority.get("script_authority")
+        != R8U_R2_SCHEDULER_LOG_REPAIR_SCRIPT_AUTHORITY
+        or r2_authority.get("runtime_validation_context")
+        != "SEALED_SCHEDULER_RUNTIME_REPLAY"
+        or r2_authority.get("fresh_extraction_relative_root")
+        != "r8u_r2_batch16_recovery/fresh_extracted_cache/c3_batch_015"
+        or not _r8u_exact_zero(
+            r2_authority,
+            "cloud_requests_authorized",
+            "download_reruns_authorized",
+        )
+        or any(
+            type(r2_authority.get(key)) is not int
+            or r2_authority.get(key) != 1
+            for key in (
+                "dicom_extraction_reruns_authorized",
+                "echoprime_reruns_authorized",
+                "gpu_executions_authorized",
+            )
+        )
+        or any(
+            r2_authority.get(key) is not False
+            for key in (
+                "failed_partial_adoption_authorized",
+                "failed_partial_mutation_authorized",
+                "raw_dicom_deletion_authorized",
+                "model_fitting_authorized",
+                "prediction_authorized",
+                "confirmatory_performance_access_authorized",
+            )
+        )
+        or type(r2_authority.get("maximum_new_qsub_submissions")) is not int
+        or r2_authority.get("maximum_new_qsub_submissions") != 3
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_R2_RECOVERY_AUTHORITY_INVALID"
+        )
+
+    r2_job_id = str(r2_submission.get("recovery_job_id", ""))
+    if (
+        r2_job_id != R8U_R2_COMPLETED_EXTRACTION_JOB_ID
+        or r2_submission.get("batch_id") != "c3_batch_015"
+        or type(r2_submission.get("original_task_id")) is not int
+        or r2_submission.get("original_task_id") != 16
+        or r2_submission.get("recovery_job_name")
+        != "lvef_c3_r8u_rec_4fd8f4bf"
+        or not _r8u_valid_hashes(
+            r2_submission,
+            "recovery_qsub_argv_sha256",
+            "qsub_environment_sha256",
+        )
+        or r2_submission.get("qsub_environment_sha256")
+        != r2_authority.get("qsub_environment_sha256")
+        or r2_submission.get("recovery_authority_sha256")
+        != observed["r2_recovery_authority_sha256"]
+        or r2_submission.get("failed_partial_seal_sha256")
+        != observed["failed_partial_seal_sha256"]
+        or r2_submission.get("recovery_capacity_sha256")
+        != observed["r2_recovery_capacity_receipt_sha256"]
+        or type(r2_submission.get("scheduler_submission_count")) is not int
+        or r2_submission.get("scheduler_submission_count") != 1
+        or r2_submission.get("recovery_is_array") is not False
+        or r2_submission.get("gpu_requested") is not True
+        or r2_submission.get("automatic_retry_authorized") is not False
+        or not _r8u_exact_zero(
+            r2_submission,
+            "cloud_requests",
+            "download_reruns",
+            "model_fitting_count",
+            "prediction_generation_count",
+            "confirmatory_performance_access_count",
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_R2_RECOVERY_SUBMISSION_INVALID"
+        )
+    try:
+        _validate_r8r_qsub_evidence(
+            r2_submission.get("recovery_qsub_evidence"),
+            accepted_stdout=[b"7354951\n", b"7354951"],
+        )
+    except ProductionFinalizationError as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_R2_RECOVERY_SUBMISSION_INVALID"
+        ) from exc
+    if r2_capacity.get("batch_id") != "c3_batch_015":
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_R2_CAPACITY_INVALID"
+        )
+
+    _validate_r8u_r3_candidate_static(candidate)
+    if (
+        candidate.get("r2_recovery_job_id") != r2_job_id
+        or candidate.get("r2_recovery_capacity_receipt_sha256")
+        != observed["r2_recovery_capacity_receipt_sha256"]
+        or candidate.get("r2_recovery_authority_sha256")
+        != observed["r2_recovery_authority_sha256"]
+        or candidate.get("r2_recovery_submission_receipt_sha256")
+        != observed["r2_recovery_submission_receipt_sha256"]
+        or candidate.get("failed_partial_seal_sha256")
+        != observed["failed_partial_seal_sha256"]
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_EXTRACTION_CANDIDATE_INVALID"
+        )
+
+    primary_result = str(probe.get("primary_result", ""))
+    expected_probe_outcome = _r8u_r3_expected_proceedable_probe_outcome(
+        primary_result
+    )
+    expected_probe_errno_number, expected_errno, primary_succeeded = (
+        expected_probe_outcome if expected_probe_outcome is not None
+        else (-1, "INVALID", False)
+    )
+    if (
+        expected_probe_outcome is None
+        or type(expected_probe_errno_number) is not int
+        or expected_probe_errno_number < 0
+        or probe.get("primary_primitive")
+        != "RENAMEAT2_RENAME_NOREPLACE"
+        or type(probe.get("primary_errno_number")) is not int
+        or probe.get("primary_errno_number")
+        != expected_probe_errno_number
+        or probe.get("primary_errno") != expected_errno
+        or probe.get("primary_returned_success") is not primary_succeeded
+        or probe.get("real_source_parent_identity_sha256")
+        != candidate.get("source_parent_identity_sha256")
+        or probe.get("real_target_parent_identity_sha256")
+        != candidate.get("target_parent_identity_sha256")
+        or probe.get("real_source_mount_identity_sha256")
+        != candidate.get("source_mount_identity_sha256")
+        or probe.get("real_target_mount_identity_sha256")
+        != candidate.get("target_mount_identity_sha256")
+        or probe.get("real_parents_same_mounted_filesystem") is not True
+        or not _r8u_valid_hashes(probe, "probe_mount_identity_sha256")
+        or probe.get("probe_mount_identity_sha256")
+        != candidate.get("source_mount_identity_sha256")
+        or probe.get("probe_mount_identity_sha256")
+        != candidate.get("target_mount_identity_sha256")
+        or probe.get("probe_mount_matches_real_parents") is not True
+        or probe.get("probe_source_present_after") is primary_succeeded
+        or probe.get("probe_target_present_after") is not primary_succeeded
+        or probe.get("probe_target_exact_after") is not primary_succeeded
+        or probe.get("probe_cleanup_passed") is not True
+        or not exact_values(
+            probe,
+            {
+                "probe_directories_created": 2,
+                "probe_directories_removed": 2,
+                "scientific_file_body_reads": 0,
+                "npz_body_reads": 0,
+                "dicom_body_reads": 0,
+                "dicom_extraction_executions": 0,
+            },
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_PUBLICATION_PROBE_INVALID"
+        )
+
+    resume_job_id = str(resume_submission.get("resume_job_id", ""))
+    resume_job_name = (
+        f"lvef_c3_r8u_r3_res_{authority.implementation_commit[:8]}"
+    )
+    authority_process_projection = resume_authority.get(
+        "pre_qsub_process_projection"
+    )
+    submission_process_projection = resume_submission.get(
+        "pre_qsub_process_projection"
+    )
+    qstat_projection = resume_submission.get("initial_qstat_projection")
+    worker_process_projection = publication_claim.get(
+        "worker_process_projection"
+    )
+    authority_process_sha256 = _validate_r8u_r3_process_projection(
+        authority_process_projection,
+        expected_status="PASS_ZERO_COMPETING_R8U_R3_PROCESSES",
+    )
+    submission_process_sha256 = _validate_r8u_r3_process_projection(
+        submission_process_projection,
+        expected_status="PASS_ZERO_COMPETING_R8U_R3_PROCESSES",
+    )
+    qstat_projection_sha256 = _validate_r8u_r3_initial_qstat_projection(
+        qstat_projection,
+        resume_job_id=resume_job_id,
+        resume_job_name=resume_job_name,
+    )
+    _validate_r8u_r3_process_projection(
+        worker_process_projection,
+        expected_status="PASS_ZERO_COMPETING_R8U_R3_WORKER_PROCESSES",
+    )
+    identity_links = {
+        "source_parent_identity_sha256": "source_parent_identity_sha256",
+        "target_parent_identity_sha256": "target_parent_identity_sha256",
+        "source_mount_identity_sha256": "source_mount_identity_sha256",
+        "target_mount_identity_sha256": "target_mount_identity_sha256",
+    }
+    if (
+        re.fullmatch(r"[1-9][0-9]{0,19}", resume_job_id) is None
+        or publication_claim.get("resume_job_id") != resume_job_id
+        or publication_claim.get("r2_recovery_job_id") != r2_job_id
+        or publication_claim.get("extraction_candidate_seal_sha256")
+        != observed["extraction_candidate_seal_sha256"]
+        or publication_claim.get("publication_primitive_probe_sha256")
+        != observed["publication_primitive_probe_sha256"]
+        or publication_claim.get("resume_authority_sha256")
+        != observed["resume_authority_sha256"]
+        or publication_claim.get("resume_submission_receipt_sha256")
+        != observed["resume_submission_receipt_sha256"]
+        or publication_claim.get("failed_partial_seal_sha256")
+        != observed["failed_partial_seal_sha256"]
+        or publication_claim.get("candidate_relative_file_projection_sha256")
+        != candidate.get("candidate_relative_file_projection_sha256")
+        or publication_claim.get("target_role")
+        != "extracted_cache/c3_batch_015/dicom_extraction"
+        or publication_claim.get("publication_primitive_selected")
+        != (
+            "RENAMEAT2_RENAME_NOREPLACE"
+            if primary_succeeded
+            else "CLAIM_PROTECTED_SAME_FILESYSTEM_RENAME"
+        )
+        or publication_claim.get("primary_result") != primary_result
+        or publication_claim.get("target_absent") is not True
+        or publication_claim.get("source_target_same_mounted_filesystem")
+        is not True
+        or any(
+            publication_claim.get(claim_key) != candidate.get(candidate_key)
+            for claim_key, candidate_key in identity_links.items()
+        )
+        or authority_process_projection != submission_process_projection
+        or authority_process_sha256 != submission_process_sha256
+        or publication_claim.get("pre_qsub_process_projection_sha256")
+        != submission_process_sha256
+        or publication_claim.get("initial_qstat_projection_sha256")
+        != qstat_projection_sha256
+        or publication_claim.get("competing_active_jobs")
+        != qstat_projection.get("competing_matching_jobs")
+        or publication_claim.get("competing_active_processes")
+        != worker_process_projection.get("matching_processes")
+        or not _r8u_exact_zero(
+            publication_claim,
+            "competing_active_jobs",
+            "competing_active_processes",
+            "cloud_requests",
+            "downloads",
+            "dicom_body_reads",
+            "dicom_extraction_executions",
+            "npz_body_reads",
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_PUBLICATION_CLAIM_INVALID"
+        )
+
+    expected_fallback = not primary_succeeded
+    expected_fallback_primitive = (
+        "CLAIM_PROTECTED_SAME_FILESYSTEM_RENAME"
+        if expected_fallback
+        else "NONE"
+    )
+    publication_ruling = publication.get("publication_ruling")
+    real_rename_returned_success = publication.get(
+        "real_rename_returned_success"
+    )
+    real_rename_errno_number = publication.get("real_rename_errno_number")
+    real_rename_errno = str(publication.get("real_rename_errno", ""))
+    real_rename_errno_classification = publication.get(
+        "real_rename_errno_classification"
+    )
+    _validate_r8u_r3_real_rename_outcome(
+        returned_success=real_rename_returned_success,
+        errno_number=real_rename_errno_number,
+        errno_name=real_rename_errno,
+        errno_classification=real_rename_errno_classification,
+        publication_ruling=publication_ruling,
+    )
+    if (
+        publication.get("extraction_candidate_seal_sha256")
+        != observed["extraction_candidate_seal_sha256"]
+        or publication.get("publication_primitive_probe_sha256")
+        != observed["publication_primitive_probe_sha256"]
+        or publication.get("publication_claim_sha256")
+        != observed["publication_claim_sha256"]
+        or publication.get("primitive_attempted")
+        != (
+            "RENAMEAT2_RENAME_NOREPLACE"
+            if primary_succeeded
+            else "CLAIM_PROTECTED_SAME_FILESYSTEM_RENAME"
+        )
+        or publication.get("primary_result") != primary_result
+        or publication.get("primary_errno") != expected_errno
+        or publication.get("fallback_used") is not expected_fallback
+        or publication.get("fallback_primitive")
+        != expected_fallback_primitive
+        or type(publication.get("rename_returned_success")) is not bool
+        or publication.get("rename_returned_success")
+        is not real_rename_returned_success
+        or not _r8u_valid_hashes(
+            publication,
+            "prepublication_candidate_sha256",
+            "postpublication_target_sha256",
+        )
+        or publication.get("prepublication_candidate_sha256")
+        != publication.get("postpublication_target_sha256")
+        or publication.get("prepublication_candidate_sha256")
+        != candidate.get("candidate_relative_file_projection_sha256")
+        or not exact_values(
+            publication,
+            {
+                "source_absent": True,
+                "target_exact": True,
+                "candidate_npz_files": 10_187,
+                "candidate_total_bytes": candidate["candidate_total_bytes"],
+                "files_moved": 10_187,
+                "files_copied": 0,
+                "files_deleted_independently": 0,
+                "dicom_body_reads": 0,
+                "dicom_extraction_executions": 0,
+                "npz_body_reads": 0,
+                "cloud_requests": 0,
+                "downloads": 0,
+            },
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_PUBLICATION_RECEIPT_INVALID"
+        )
+
+    try:
+        current_script_authority = _r8r_current_script_authority()
+    except ProductionFinalizationError as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_STAGE_SCRIPT_AUTHORITY_MISMATCH"
+        ) from exc
+    if (
+        resume_authority.get("prior_implementation_commit")
+        != R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+        or type(resume_authority.get("original_task_id")) is not int
+        or resume_authority.get("original_task_id") != 16
+        or resume_authority.get("continuation_task_range") != "17-19"
+        or resume_authority.get("prefix_final_receipt_sha256") != prefix15
+        or resume_authority.get("historical_r8r_chain_authority")
+        != historical_hashes
+        or resume_authority.get(
+            "failed_r8u_recovery_epoch_authority_sha256"
+        )
+        != failed_r1_epoch_sha256
+        or resume_authority.get("r2_recovery_job_id") != r2_job_id
+        or resume_authority.get("r2_recovery_log_sha256")
+        != R8U_R2_COMPLETED_EXTRACTION_LOG_SHA256
+        or resume_authority.get("r2_recovery_capacity_receipt_sha256")
+        != observed["r2_recovery_capacity_receipt_sha256"]
+        or resume_authority.get("r2_recovery_authority_sha256")
+        != observed["r2_recovery_authority_sha256"]
+        or resume_authority.get("r2_recovery_submission_receipt_sha256")
+        != observed["r2_recovery_submission_receipt_sha256"]
+        or resume_authority.get("failed_partial_seal_sha256")
+        != observed["failed_partial_seal_sha256"]
+        or resume_authority.get("extraction_candidate_seal_sha256")
+        != observed["extraction_candidate_seal_sha256"]
+        or resume_authority.get("resume_capacity_sha256")
+        != observed["resume_capacity_receipt_sha256"]
+        or resume_authority.get("runtime_authority_sha256")
+        != core.canonical_json_sha256(expected_runtime_authority)
+        or not _r8u_valid_hashes(
+            resume_authority, "qsub_environment_sha256"
+        )
+        or resume_authority.get("script_authority")
+        != current_script_authority
+        or resume_authority.get("runtime_validation_context")
+        != "SEALED_SCHEDULER_RUNTIME_REPLAY"
+        or resume_authority.get("target_role")
+        != "extracted_cache/c3_batch_015/dicom_extraction"
+        or not _r8u_exact_zero(
+            resume_authority,
+            "cloud_requests_authorized",
+            "downloads_authorized",
+            "dicom_body_reads_authorized",
+            "dicom_extraction_executions_authorized",
+        )
+        or any(
+            type(resume_authority.get(key)) is not int
+            or resume_authority.get(key) != 1
+            for key in (
+                "echoprime_executions_authorized",
+                "gpu_executions_authorized",
+            )
+        )
+        or any(
+            resume_authority.get(key) is not False
+            for key in (
+                "failed_partial_adoption_authorized",
+                "failed_partial_mutation_authorized",
+                "raw_dicom_deletion_authorized",
+                "model_fitting_authorized",
+                "prediction_authorized",
+                "confirmatory_performance_access_authorized",
+            )
+        )
+        or type(resume_authority.get("maximum_new_qsub_submissions"))
+        is not int
+        or resume_authority.get("maximum_new_qsub_submissions") != 1
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_RESUME_AUTHORITY_INVALID"
+        )
+
+    if (
+        type(resume_submission.get("original_task_id")) is not int
+        or resume_submission.get("original_task_id") != 16
+        or resume_submission.get("resume_job_name")
+        != f"lvef_c3_r8u_r3_res_{authority.implementation_commit[:8]}"
+        or not _r8u_valid_hashes(
+            resume_submission,
+            "resume_qsub_argv_sha256",
+            "qsub_environment_sha256",
+        )
+        or resume_submission.get("resume_qsub_argv_sha256")
+        != _r8r_controller_json_sha256(
+            {
+                "argv": _r8u_r3_expected_resume_qsub_command(
+                    attempt_root=attempt_root,
+                    implementation_commit=authority.implementation_commit,
+                )
+            }
+        )
+        or resume_submission.get("qsub_environment_sha256")
+        != resume_authority.get("qsub_environment_sha256")
+        or resume_submission.get("resume_authority_sha256")
+        != observed["resume_authority_sha256"]
+        or resume_submission.get("extraction_candidate_seal_sha256")
+        != observed["extraction_candidate_seal_sha256"]
+        or resume_submission.get("resume_capacity_sha256")
+        != observed["resume_capacity_receipt_sha256"]
+        or resume_submission.get("scheduler_submission_count") != 1
+        or type(resume_submission.get("scheduler_submission_count")) is not int
+        or resume_submission.get("resume_is_array") is not False
+        or resume_submission.get("gpu_requested") is not True
+        or resume_submission.get("automatic_retry_authorized") is not False
+        or not _r8u_exact_zero(
+            resume_submission,
+            "cloud_requests",
+            "downloads",
+            "dicom_body_reads_by_submitter",
+            "dicom_extraction_executions_by_submitter",
+            "npz_body_reads_by_submitter",
+            "model_fitting_count",
+            "prediction_generation_count",
+            "confirmatory_performance_access_count",
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_RESUME_SUBMISSION_INVALID"
+        )
+    try:
+        _validate_r8r_qsub_evidence(
+            resume_submission.get("resume_qsub_evidence"),
+            accepted_stdout=[
+                f"{resume_job_id}\n".encode("ascii"),
+                resume_job_id.encode("ascii"),
+            ],
+        )
+    except ProductionFinalizationError as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_RESUME_SUBMISSION_INVALID"
+        ) from exc
+
+    _validate_r8u_r3_resume_accounting(
+        resume_accounting, resume_job_id=resume_job_id
+    )
+
+    batch16_receipt_payload = _stable_nofollow_bytes(
+        receipt_paths_by_batch["c3_batch_015"],
+        code="R8U_R3_FINALIZER_BATCH16_RECEIPT",
+        max_bytes=128 * 1024 * 1024,
+    )
+    try:
+        batch16_receipt = json.loads(
+            batch16_receipt_payload.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_pairs,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_BATCH16_RECEIPT_INVALID"
+        ) from exc
+    terminal_support_paths = {
+        "preservation_receipt_sha256": (
+            attempt_root
+            / "batches/c3_batch_015/preservation"
+            / "batch_preservation_receipt.restricted.json"
+        ),
+        "cache_retirement_authorization_sha256": (
+            attempt_root
+            / "cache_retirement_authorizations/c3_batch_015.authorization.json"
+        ),
+        "cache_retirement_transition_sha256": (
+            attempt_root
+            / "batches/c3_batch_015/preservation"
+            / "cache_retirement_finalized.restricted.json"
+        ),
+        "final_ledger_sha256": (
+            attempt_root
+            / "batches/c3_batch_015/final_resume_ledger.restricted.json"
+        ),
+    }
+    terminal_support_hashes = {
+        field: hashlib.sha256(
+            _stable_nofollow_bytes(
+                path,
+                code="R8U_R3_FINALIZER_TERMINAL_SUPPORT",
+                max_bytes=128 * 1024 * 1024,
+            )
+        ).hexdigest()
+        for field, path in terminal_support_paths.items()
+    }
+    terminal_receipt_fields = (
+        "n_selected_studies",
+        "n_expected_objects",
+        "expected_source_bytes",
+        "n_successfully_extracted_cines",
+        "n_object_technical_dispositions",
+        "n_blocking_failures",
+        "n_clip_embeddings",
+        "n_pooled_studies",
+        "n_no_cine_studies",
+        "n_new_no_cine_studies",
+        "object_substitution_count",
+        "unaccounted_multiframe_objects",
+    )
+    terminal_links = {
+        "failed_partial_seal_sha256": "failed_partial_seal_sha256",
+        "extraction_candidate_seal_sha256": (
+            "extraction_candidate_seal_sha256"
+        ),
+        "publication_primitive_probe_sha256": (
+            "publication_primitive_probe_sha256"
+        ),
+        "publication_claim_sha256": "publication_claim_sha256",
+        "publication_receipt_sha256": "publication_receipt_sha256",
+        "resume_capacity_sha256": "resume_capacity_receipt_sha256",
+        "resume_authority_sha256": "resume_authority_sha256",
+        "resume_submission_receipt_sha256": (
+            "resume_submission_receipt_sha256"
+        ),
+    }
+    if (
+        not isinstance(batch16_receipt, Mapping)
+        or batch16_receipt_payload != core.canonical_json_bytes(batch16_receipt)
+        or hashlib.sha256(batch16_receipt_payload).hexdigest()
+        != receipt_hashes_by_batch["c3_batch_015"]
+        or type(terminal.get("original_task_id")) is not int
+        or terminal.get("original_task_id") != 16
+        or any(
+            terminal.get(terminal_key) != observed[observed_key]
+            for terminal_key, observed_key in terminal_links.items()
+        )
+        or terminal.get("batch_finalization_receipt_sha256")
+        != receipt_hashes_by_batch["c3_batch_015"]
+        or any(
+            terminal.get(field) != digest
+            for field, digest in terminal_support_hashes.items()
+        )
+        or terminal.get("cache_retirement_authorization_sha256")
+        != batch16_receipt.get("cache_retirement_authorization_sha256")
+        or any(
+            type(terminal.get(key)) is not type(batch16_receipt.get(key))
+            or terminal.get(key) != batch16_receipt.get(key)
+            for key in terminal_receipt_fields
+        )
+        or not exact_values(
+            terminal,
+            {
+                "n_selected_studies": 250,
+                "n_expected_objects": R8U_BATCH16_RAW_FILES,
+                "expected_source_bytes": R8U_BATCH16_RAW_BYTES,
+                "n_successfully_extracted_cines": 10_187,
+                "n_object_technical_dispositions": 0,
+                "n_blocking_failures": 0,
+                "n_clip_embeddings": 10_187,
+                "n_pooled_studies": 250,
+                "n_no_cine_studies": 0,
+                "n_new_no_cine_studies": 0,
+                "object_substitution_count": 0,
+                "unaccounted_multiframe_objects": 0,
+                "raw_dicoms_retained": True,
+                "canonical_extraction_cache_retired": True,
+                "failed_partial_cache_retained": True,
+                "source_candidate_npz_files": 10_187,
+                "cloud_requests": 0,
+                "downloads": 0,
+                "dicom_body_reads": 0,
+                "dicom_extraction_executions": 0,
+                "echoprime_executions": 1,
+                "embedding_generations": 1,
+                "gpu_executions": 1,
+                "model_fitting_count": 0,
+                "prediction_generation_count": 0,
+                "confirmatory_performance_access_count": 0,
+            },
+        )
+        or terminal.get("raw_dicoms_retained")
+        is not batch16_receipt.get("raw_dicoms_retained")
+        or terminal.get("canonical_extraction_cache_retired")
+        is not batch16_receipt.get("extracted_cache_retired")
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_RESUME_TERMINAL_INVALID"
+        )
+
+    continuation_links = {
+        "extraction_candidate_seal_sha256": (
+            "extraction_candidate_seal_sha256"
+        ),
+        "publication_primitive_probe_sha256": (
+            "publication_primitive_probe_sha256"
+        ),
+        "publication_claim_sha256": "publication_claim_sha256",
+        "publication_receipt_sha256": "publication_receipt_sha256",
+        "resume_capacity_sha256": "resume_capacity_receipt_sha256",
+        "resume_authority_sha256": "resume_authority_sha256",
+        "resume_submission_receipt_sha256": (
+            "resume_submission_receipt_sha256"
+        ),
+        "resume_accounting_sha256": "resume_accounting_sha256",
+        "resume_terminal_receipt_sha256": "resume_terminal_receipt_sha256",
+    }
+    if (
+        continuation_claim.get("prior_implementation_commit")
+        != R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+        or continuation_claim.get("prefix_final_receipt_sha256") != prefix16
+        or continuation_claim.get("failed_partial_seal_sha256")
+        != observed["failed_partial_seal_sha256"]
+        or any(
+            continuation_claim.get(link_key) != observed[observed_key]
+            for link_key, observed_key in continuation_links.items()
+        )
+        or continuation_claim.get("runtime_authority_sha256")
+        != core.canonical_json_sha256(expected_runtime_authority)
+        or continuation_claim.get("qsub_environment_sha256")
+        != resume_submission.get("qsub_environment_sha256")
+        or continuation_claim.get("script_authority")
+        != current_script_authority
+        or continuation_claim.get("continuation_task_range") != "17-19"
+        or not exact_values(
+            continuation_claim,
+            {
+                "continuation_task_count": 3,
+                "continuation_max_concurrency": 1,
+                "held_finalizer_count": 1,
+                "total_new_qsub_maximum": 3,
+                "automatic_retry_authorized": False,
+                "whole_stage_retry_authorized": False,
+                "fourth_submission_reachable": False,
+                "cloud_requests_by_submitter": 0,
+                "dicom_body_reads_by_submitter": 0,
+                "npz_body_reads_by_submitter": 0,
+                "gpu_executions_by_submitter": 0,
+                "embedding_generations_by_submitter": 0,
+                "model_fitting_authorized": False,
+                "prediction_authorized": False,
+                "confirmatory_performance_access_authorized": False,
+            },
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CONTINUATION_CLAIM_INVALID"
+        )
+
+    array_job_id = str(continuation_submission.get("array_job_id", ""))
+    finalizer_job_id = str(
+        continuation_submission.get("finalizer_job_id", "")
+    )
+    qsub = "/usr/local/ogs-ge2011.11.p1/sge_root/bin/linux-x64/qsub"
+    runner = str(
+        Path(__file__).resolve().parent / R8R_SCHEDULER_RUNNER_BASENAME
+    )
+    continuation_scheduler_root = (
+        attempt_root / "r8u_r3_continuation_17_19" / "scheduler"
+    )
+    common_qsub = [
+        qsub, "-clear", "-terse", "-r", "n", "-P", "mimicecho",
+    ]
+    array_command = [
+        *common_qsub,
+        "-N",
+        f"lvef_c3_r8u_r3_seq_{authority.implementation_commit[:8]}",
+        "-j",
+        "y",
+        "-o",
+        str(continuation_scheduler_root),
+        "-t",
+        "17-19",
+        "-tc",
+        "1",
+        "-l",
+        "h_rt=48:00:00",
+        "-l",
+        "gpus=1",
+        "-l",
+        "gpu_c=8.0",
+        "-l",
+        "gpu_memory=48G",
+        "-pe",
+        "omp",
+        "4",
+        "-l",
+        "mem_per_core=16G",
+        runner,
+    ]
+    finalizer_command = [
+        *common_qsub,
+        "-N",
+        f"lvef_c3_r8u_r3_fin_{authority.implementation_commit[:8]}",
+        "-j",
+        "y",
+        "-o",
+        str(continuation_scheduler_root),
+        "-hold_jid",
+        array_job_id,
+        "-l",
+        "h_rt=12:00:00",
+        "-pe",
+        "omp",
+        "4",
+        "-l",
+        "mem_per_core=8G",
+        runner,
+    ]
+    if (
+        continuation_submission.get("resume_job_id") != resume_job_id
+        or continuation_submission.get("array_job_name")
+        != f"lvef_c3_r8u_r3_seq_{authority.implementation_commit[:8]}"
+        or continuation_submission.get("finalizer_job_name")
+        != f"lvef_c3_r8u_r3_fin_{authority.implementation_commit[:8]}"
+        or re.fullmatch(r"[1-9][0-9]{0,19}", array_job_id) is None
+        or re.fullmatch(r"[1-9][0-9]{0,19}", finalizer_job_id) is None
+        or len({resume_job_id, array_job_id, finalizer_job_id}) != 3
+        or continuation_submission.get("array_qsub_argv_sha256")
+        != _r8r_controller_json_sha256({"argv": array_command})
+        or continuation_submission.get("finalizer_qsub_argv_sha256")
+        != _r8r_controller_json_sha256({"argv": finalizer_command})
+        or continuation_submission.get("qsub_environment_sha256")
+        != continuation_claim.get("qsub_environment_sha256")
+        or continuation_submission.get("failed_partial_seal_sha256")
+        != observed["failed_partial_seal_sha256"]
+        or any(
+            continuation_submission.get(link_key) != observed[observed_key]
+            for link_key, observed_key in continuation_links.items()
+        )
+        or continuation_submission.get("continuation_claim_sha256")
+        != observed["continuation_claim_sha256"]
+        or not exact_values(
+            continuation_submission,
+            {
+                "scheduler_submission_count": 2,
+                "total_new_qsub_submissions": 3,
+                "scheduler_submission_maximum": 3,
+                "array_task_range": "17-19",
+                "array_task_count": 3,
+                "array_max_concurrency": 1,
+                "finalizer_held_on_array": True,
+                "whole_stage_retry_authorized": False,
+                "fourth_submission_reachable": False,
+                "cloud_requests": 0,
+                "dicom_body_reads_by_submitter": 0,
+                "npz_body_reads_by_submitter": 0,
+                "gpu_executions_by_submitter": 0,
+                "model_fitting_count": 0,
+                "prediction_generation_count": 0,
+                "confirmatory_performance_access_count": 0,
+            },
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CONTINUATION_SUBMISSION_INVALID"
+        )
+    try:
+        _validate_r8r_qsub_evidence(
+            continuation_submission.get("array_qsub_evidence"),
+            accepted_stdout=[
+                f"{array_job_id}.17-19:1\n".encode("ascii"),
+                f"{array_job_id}.17-19:1".encode("ascii"),
+                f"{array_job_id}\n".encode("ascii"),
+                array_job_id.encode("ascii"),
+            ],
+        )
+        _validate_r8r_qsub_evidence(
+            continuation_submission.get("finalizer_qsub_evidence"),
+            accepted_stdout=[
+                f"{finalizer_job_id}\n".encode("ascii"),
+                finalizer_job_id.encode("ascii"),
+            ],
+        )
+    except ProductionFinalizationError as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_CONTINUATION_SUBMISSION_INVALID"
+        ) from exc
+
+    return core.canonical_json_sha256(
+        {
+            "historical_r8r_chain_authority_sha256": (
+                historical_chain_sha256
+            ),
+            "implementation_commit": authority.implementation_commit,
+            **{
+                f"historical_r8r_{key}": value
+                for key, value in sorted(historical_hashes.items())
+            },
+            **dict(sorted(observed.items())),
+        }
+    )
+
+
 def _validate_r8u_mixed_implementation_epochs(
     receipts: Sequence[Mapping[str, Any]],
     *,
@@ -6488,17 +8793,189 @@ def _validate_r8u_mixed_implementation_epochs(
     )
 
 
+def _validate_r8u_r3_mixed_implementation_epochs(
+    receipts: Sequence[Mapping[str, Any]],
+    *,
+    receipt_hashes_by_batch: Mapping[str, str],
+    receipt_sizes_by_batch: Mapping[str, int],
+    receipt_paths_by_batch: Mapping[str, Path],
+    expected_governing_commit: str,
+    expected_attempt_id: str | None,
+    expected_runtime_authority: Mapping[str, Any] | None,
+    authority: R8UR3ImplementationAuthority,
+    plan: Mapping[str, Any] | None,
+) -> str:
+    """Accept only the fixed original/R8R/R8U-R3 2+13+4 split."""
+
+    if type(authority) is not R8UR3ImplementationAuthority:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_AUTHORITY_INVALID"
+        )
+    authority_hashes = tuple(
+        getattr(authority, field)
+        for field in authority.__dataclass_fields__
+        if field != "implementation_commit"
+    )
+    if (
+        not isinstance(authority.implementation_commit, str)
+        or COMMIT_RE.fullmatch(authority.implementation_commit) is None
+        or authority.implementation_commit
+        in {
+            R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            R8U_PRIOR_IMPLEMENTATION_COMMIT,
+            R8U_BASE_IMPLEMENTATION_COMMIT,
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+            R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        }
+        or (
+            authority.historical_r8r_recovery_authority_sha256
+            != R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES[
+                "recovery_authority_sha256"
+            ]
+        )
+        or (
+            authority.historical_r8r_recovery_terminal_receipt_sha256
+            != R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES[
+                "recovery_terminal_receipt_sha256"
+            ]
+        )
+        or (
+            authority.historical_r8r_continuation_capacity_receipt_sha256
+            != R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES[
+                "continuation_capacity_receipt_sha256"
+            ]
+        )
+        or (
+            authority.historical_r8r_continuation_claim_sha256
+            != R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES[
+                "continuation_claim_sha256"
+            ]
+        )
+        or (
+            authority.historical_r8r_continuation_submission_receipt_sha256
+            != R8U_HISTORICAL_R8R_CHAIN_AUTHORITIES[
+                "continuation_submission_receipt_sha256"
+            ]
+        )
+        or any(
+            not isinstance(value, str)
+            or SHA256_RE.fullmatch(value) is None
+            for value in authority_hashes
+        )
+        or len(set(authority_hashes)) != len(authority_hashes)
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_AUTHORITY_INVALID"
+        )
+    if (
+        expected_governing_commit != R8R_SCIENTIFIC_GOVERNING_COMMIT
+        or expected_attempt_id != R8R_ATTEMPT_ID
+        or plan is None
+        or len(receipts) != len(EXPECTED_BATCH_IDS)
+        or tuple(str(item.get("batch_id")) for item in receipts)
+        != EXPECTED_BATCH_IDS
+        or any(
+            item.get("governing_commit")
+            != R8R_SCIENTIFIC_GOVERNING_COMMIT
+            or item.get("attempt_id") != R8R_ATTEMPT_ID
+            or item.get("batch_plan_sha256") != R8R_BATCH_PLAN_SHA256
+            for item in receipts
+        )
+        or any(
+            len({item[key] for item in receipts}) != 1
+            for key in R8R_SCIENTIFIC_AUTHORITY_KEYS
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        )
+    if expected_runtime_authority is None:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        )
+    try:
+        runtime = core.validate_runtime_authority(expected_runtime_authority)
+    except core.OrchestrationError as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        ) from exc
+    first = receipts[0]
+    if (
+        runtime.get("git_commit") != R8R_SCIENTIFIC_GOVERNING_COMMIT
+        or runtime.get("batch_plan_sha256") != R8R_BATCH_PLAN_SHA256
+        or runtime.get("orchestration_contract_sha256")
+        != first["orchestration_contract_sha256"]
+        or runtime.get("checkpoint_sha256") != first["checkpoint_sha256"]
+        or runtime.get("environment_receipt_sha256")
+        != first["environment_receipt_sha256"]
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        )
+    for batch_id, (expected_bytes, expected_sha256) in (
+        R8U_PREFIX_RECEIPT_AUTHORITIES.items()
+    ):
+        if (
+            receipt_sizes_by_batch.get(batch_id) != expected_bytes
+            or receipt_hashes_by_batch.get(batch_id) != expected_sha256
+        ):
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_PREFIX_RECEIPT_MISMATCH"
+            )
+
+    original_epochs = {
+        _receipt_implementation_epoch(item) for item in receipts[:2]
+    }
+    historical_r8r_epochs = {
+        _receipt_implementation_epoch(item) for item in receipts[2:15]
+    }
+    current_r8u_r3_epochs = {
+        _receipt_implementation_epoch(item) for item in receipts[15:]
+    }
+    try:
+        expected_current_epoch = _current_r8r_implementation_epoch()
+    except (OSError, ProductionFinalizationError) as exc:
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_STAGE_SCRIPT_AUTHORITY_MISMATCH"
+        ) from exc
+    if (
+        len(original_epochs) != 1
+        or historical_r8r_epochs != {R8U_FE3_IMPLEMENTATION_EPOCH}
+        or current_r8u_r3_epochs != {expected_current_epoch}
+        or len(
+            {
+                next(iter(original_epochs), ()),
+                R8U_FE3_IMPLEMENTATION_EPOCH,
+                expected_current_epoch,
+            }
+        )
+        != 3
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R3_FINALIZER_IMPLEMENTATION_EPOCH_MISMATCH"
+        )
+    _validate_r8u_r3_repository_authority(authority.implementation_commit)
+    return _validate_r8u_r3_chain_artifacts(
+        receipt_paths_by_batch=receipt_paths_by_batch,
+        receipt_hashes_by_batch=receipt_hashes_by_batch,
+        authority=authority,
+        expected_runtime_authority=runtime,
+        plan=plan,
+    )
+
+
 def _stage_authority_receipts(
     receipts: Sequence[Mapping[str, Any]],
     *,
     r8r_mode: bool,
     r8u_mode: bool,
+    r8u_r3_mode: bool = False,
 ) -> Sequence[Mapping[str, Any]]:
-    if r8r_mode and r8u_mode:
+    if sum((r8r_mode, r8u_mode, r8u_r3_mode)) > 1:
         raise ProductionFinalizationError(
             "FINALIZER_IMPLEMENTATION_AUTHORITY_AMBIGUOUS"
         )
-    if r8u_mode:
+    if r8u_mode or r8u_r3_mode:
         return receipts[15:]
     if r8r_mode:
         return receipts[2:]
@@ -6517,17 +8994,22 @@ def finalize_receipts(
     expected_no_cine_studies: int | None = None,
     r8r_implementation_authority: R8RImplementationAuthority | None = None,
     r8u_implementation_authority: R8UImplementationAuthority | None = None,
+    r8u_r3_implementation_authority: R8UR3ImplementationAuthority | None = None,
 ) -> dict[str, Any]:
-    if (
-        r8r_implementation_authority is not None
-        and r8u_implementation_authority is not None
-    ):
+    authority_mode_count = sum(
+        value is not None
+        for value in (
+            r8r_implementation_authority,
+            r8u_implementation_authority,
+            r8u_r3_implementation_authority,
+        )
+    )
+    if authority_mode_count > 1:
         raise ProductionFinalizationError(
             "FINALIZER_IMPLEMENTATION_AUTHORITY_AMBIGUOUS"
         )
     mixed_implementation_authority = (
-        r8r_implementation_authority is not None
-        or r8u_implementation_authority is not None
+        authority_mode_count == 1
     )
     expected_batch_ids = (
         tuple(f"c3_batch_{index:03d}" for index in range(requirements.batch_count))
@@ -6543,6 +9025,7 @@ def finalize_receipts(
     receipt_paths_by_batch: dict[str, Path] = {}
     r8r_chain_authority_sha256: str | None = None
     r8u_chain_authority_sha256: str | None = None
+    r8u_r3_chain_authority_sha256: str | None = None
     for path in receipt_paths:
         receipt = load_json(path, "BATCH_RECEIPT")
         _validate_current_receipt_v3(receipt)
@@ -6582,11 +9065,7 @@ def finalize_receipts(
             expected_runtime_authority=expected_runtime_authority,
             authority=r8r_implementation_authority,
         )
-    else:
-        if r8u_implementation_authority is None:
-            raise ProductionFinalizationError(
-                "R8U_FINALIZER_AUTHORITY_INVALID"
-            )
+    elif r8u_implementation_authority is not None:
         r8u_chain_authority_sha256 = _validate_r8u_mixed_implementation_epochs(
             receipts,
             receipt_hashes_by_batch=receipt_hashes_by_batch,
@@ -6597,6 +9076,24 @@ def finalize_receipts(
             expected_runtime_authority=expected_runtime_authority,
             authority=r8u_implementation_authority,
             plan=plan,
+        )
+    else:
+        if r8u_r3_implementation_authority is None:
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_AUTHORITY_INVALID"
+            )
+        r8u_r3_chain_authority_sha256 = (
+            _validate_r8u_r3_mixed_implementation_epochs(
+                receipts,
+                receipt_hashes_by_batch=receipt_hashes_by_batch,
+                receipt_sizes_by_batch=receipt_sizes_by_batch,
+                receipt_paths_by_batch=receipt_paths_by_batch,
+                expected_governing_commit=expected_governing_commit,
+                expected_attempt_id=expected_attempt_id,
+                expected_runtime_authority=expected_runtime_authority,
+                authority=r8u_r3_implementation_authority,
+                plan=plan,
+            )
         )
     receipt_set_hash = hashlib.sha256(
         "\n".join(sorted(receipt_hashes)).encode("ascii") + b"\n"
@@ -6645,6 +9142,7 @@ def finalize_receipts(
             receipts,
             r8r_mode=r8r_implementation_authority is not None,
             r8u_mode=r8u_implementation_authority is not None,
+            r8u_r3_mode=r8u_r3_implementation_authority is not None,
         )
         if any(
             item["batch_preservation_script_sha256"]
@@ -7052,6 +9550,23 @@ def finalize_receipts(
                 ),
                 "r8u_recovery_continuation_authority_sha256": (
                     r8u_chain_authority_sha256
+                ),
+            }
+        )
+    elif r8u_r3_implementation_authority is not None:
+        if r8u_r3_chain_authority_sha256 is None:
+            raise ProductionFinalizationError(
+                "R8U_R3_FINALIZER_CHAIN_BINDING_MISMATCH"
+            )
+        result.update(
+            {
+                "all_scientific_authority_bindings_identical": True,
+                "implementation_authority_epoch_count": 3,
+                "r8u_implementation_commit": (
+                    r8u_r3_implementation_authority.implementation_commit
+                ),
+                "r8u_recovery_continuation_authority_sha256": (
+                    r8u_r3_chain_authority_sha256
                 ),
             }
         )

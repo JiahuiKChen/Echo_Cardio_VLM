@@ -131,7 +131,7 @@
       },
       "entrypoint": {
         "path": "scripts/preserve_lvef_c3_production_batch.py",
-        "sha256": "c9360f7dbfb792e33e1c783d8a80ebd45083ad361262d1197deb12a665df16fe",
+        "sha256": "d4ef98cc7381a0388bc4322002545ee1e9bafaca7c921eb1c26bfd5d0fb731ff",
         "callable": "preserve_batch"
       },
       "required_predecessor_receipts": [
@@ -163,7 +163,7 @@
       },
       "entrypoint": {
         "path": "scripts/finalize_lvef_c3_production.py",
-        "sha256": "6656f128605f16319bc98b54ea402a75552c9b14ff6f5f5d273f3a50ab7ebe54",
+        "sha256": "42fd3f44d0325f3bafa5bd9947bf62b073eb5502da4840486dbda4b354c7ab46",
         "callable": "finalize_canary_preservation_receipt"
       },
       "required_predecessor_receipts": [

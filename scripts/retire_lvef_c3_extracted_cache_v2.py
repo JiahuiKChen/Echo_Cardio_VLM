@@ -41,6 +41,10 @@ STRICT_CONTENT_HASH = preservation.STRICT_CONTENT_HASH
 R8R_FIXED_BATCH3_NO_DICOM_BODY = (
     preservation.R8R_FIXED_BATCH3_NO_DICOM_BODY
 )
+R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY = (
+    preservation.R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+)
+BODY_FREE_RAW_CONTEXTS = preservation.BODY_FREE_RAW_CONTEXTS
 AUTH_KEYS = {
     "schema_version", "artifact_type", "status", "authorization_scope",
     "owner_authorized", "owner_authorization_date_utc",
@@ -266,6 +270,103 @@ def cache_tree_sha256(root: Path) -> str:
     return hashlib.sha256(("\n".join(sorted(records)) + "\n").encode()).hexdigest()
 
 
+def _r8u_r3_cache_tree_sha256(
+    root: Path,
+    *,
+    logical_root: Path,
+    production_root: Path,
+    preservation_manifest: Path,
+) -> str:
+    """Project the fixed Batch-16 NPZ cache without reopening NPZ bodies."""
+
+    if root.is_symlink() or not root.is_dir():
+        raise CacheRetirementError("CACHE_ROOT_NOT_REGULAR")
+    root_info = os.lstat(root)
+    approved_device = int(root_info.st_dev)
+    if not preservation._r8u_r3_private_npz_directory(
+        root_info, approved_device=approved_device
+    ):
+        raise CacheRetirementError("CACHE_TREE_NONREGULAR")
+    if preservation_manifest.is_symlink() or not preservation_manifest.is_file():
+        raise CacheRetirementError("PRESERVATION_MANIFEST_NOT_REGULAR")
+    with preservation_manifest.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if reader.fieldnames != ["relative_path", "size_bytes", "sha256", "role"]:
+            raise CacheRetirementError("PRESERVATION_MANIFEST_SCHEMA_INVALID")
+        rows = list(reader)
+    by_relative: dict[str, Mapping[str, str]] = {}
+    for row in rows:
+        relative = str(row.get("relative_path", ""))
+        if relative in by_relative:
+            raise CacheRetirementError("PRESERVATION_MANIFEST_PATH_INVALID")
+        by_relative[relative] = row
+    records: list[str] = []
+    for directory, names, filenames in os.walk(root, followlinks=False):
+        current = Path(directory)
+        directory_info = os.lstat(current)
+        if not preservation._r8u_r3_private_npz_directory(
+            directory_info, approved_device=approved_device
+        ):
+            raise CacheRetirementError("CACHE_TREE_NONREGULAR")
+        for name in names:
+            child_info = os.lstat(current / name)
+            if not preservation._r8u_r3_private_npz_directory(
+                child_info, approved_device=approved_device
+            ):
+                raise CacheRetirementError("CACHE_TREE_NONREGULAR")
+        for name in filenames:
+            path = current / name
+            if path.suffix.lower() != ".npz":
+                raise CacheRetirementError("CACHE_TREE_NONREGULAR")
+            try:
+                metadata = preservation._extracted_npz_metadata_projection(path)
+            except preservation.BatchPreservationError as exc:
+                raise CacheRetirementError(exc.code) from exc
+            if metadata[0] != approved_device:
+                raise CacheRetirementError("CACHE_TREE_NONREGULAR")
+            logical = logical_root / path.relative_to(root)
+            relative = logical.relative_to(production_root).as_posix()
+            row = by_relative.get(relative)
+            if (
+                row is None
+                or row.get("role") != "extracted_npz_cache_owner_retirable"
+                or SHA_RE.fullmatch(str(row.get("sha256", ""))) is None
+                or str(metadata[6]) != str(row.get("size_bytes", ""))
+            ):
+                raise CacheRetirementError(
+                    "R8U_R3_EXTRACTION_NPZ_AUTHORITY_INVALID"
+                )
+            records.append(
+                f"{path.relative_to(root).as_posix()}\t{metadata[6]}\t{row['sha256']}"
+            )
+    if len(records) != preservation.R8U_R3_FIXED_EXTRACTION_NPZ_FILES:
+        raise CacheRetirementError("CACHE_TREE_COUNT_INVALID")
+    return hashlib.sha256(
+        ("\n".join(sorted(records)) + "\n").encode()
+    ).hexdigest()
+
+
+def _cache_tree_authority(
+    root: Path,
+    *,
+    logical_root: Path,
+    production_root: Path,
+    preservation_manifest: Path,
+    artifact_validation_context: ArtifactValidationContext,
+) -> str:
+    if (
+        artifact_validation_context
+        is R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+    ):
+        return _r8u_r3_cache_tree_sha256(
+            root,
+            logical_root=logical_root,
+            production_root=production_root,
+            preservation_manifest=preservation_manifest,
+        )
+    return cache_tree_sha256(root)
+
+
 def validate_preservation_coverage(
     manifest_path: Path, *, production_root: Path,
     required_roots: Sequence[tuple[Path, Path]],
@@ -277,7 +378,7 @@ def validate_preservation_coverage(
     context = require_artifact_validation_context(
         artifact_validation_context
     )
-    if context is R8R_FIXED_BATCH3_NO_DICOM_BODY:
+    if context in BODY_FREE_RAW_CONTEXTS:
         if sealed_raw_dicom_authority is None:
             raise CacheRetirementError(
                 "RECOVERY_RAW_DICOM_AUTHORITY_MISSING"
@@ -330,7 +431,7 @@ def validate_preservation_coverage(
                 row = by_relative.get(relative)
                 sealed = sealed_by_path.get(path)
                 if sealed is not None:
-                    if context is not R8R_FIXED_BATCH3_NO_DICOM_BODY:
+                    if context not in BODY_FREE_RAW_CONTEXTS:
                         raise CacheRetirementError(
                             "RAW_DICOM_SEALED_AUTHORITY_INVALID"
                         )
@@ -345,14 +446,42 @@ def validate_preservation_coverage(
                     observed_sha256 = sealed.observed_sha256
                 else:
                     if (
-                        context is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                        context in BODY_FREE_RAW_CONTEXTS
                         and path.suffix.lower() == ".dcm"
                     ):
                         raise CacheRetirementError(
                             "RECOVERY_RAW_DICOM_AUTHORITY_MISSING"
                         )
-                    observed_size = path.stat(follow_symlinks=False).st_size
-                    observed_sha256 = sha256_file(path)
+                    if (
+                        context
+                        is R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+                        and path.suffix.lower() == ".npz"
+                    ):
+                        try:
+                            metadata = (
+                                preservation._extracted_npz_metadata_projection(
+                                    path
+                                )
+                            )
+                        except preservation.BatchPreservationError as exc:
+                            raise CacheRetirementError(exc.code) from exc
+                        if (
+                            row is None
+                            or row.get("role")
+                            != "extracted_npz_cache_owner_retirable"
+                            or SHA_RE.fullmatch(str(row.get("sha256", "")))
+                            is None
+                        ):
+                            raise CacheRetirementError(
+                                "R8U_R3_EXTRACTION_NPZ_AUTHORITY_INVALID"
+                            )
+                        observed_size = metadata[6]
+                        observed_sha256 = str(row["sha256"])
+                    else:
+                        observed_size = path.stat(
+                            follow_symlinks=False
+                        ).st_size
+                        observed_sha256 = sha256_file(path)
                 try:
                     row_size = int(row["size_bytes"]) if row is not None else -1
                 except (TypeError, ValueError):
@@ -825,8 +954,7 @@ def validate_gate(
     )
     coverage_sealed_authority = (
         raw_dicom_authority
-        if artifact_validation_context
-        is R8R_FIXED_BATCH3_NO_DICOM_BODY
+        if artifact_validation_context in BODY_FREE_RAW_CONTEXTS
         else None
     )
     authorization = None
@@ -867,9 +995,21 @@ def validate_gate(
                 raise CacheRetirementError("CACHE_RETIREMENT_INTENT_SCHEMA_MISMATCH")
             tree_sha = str(intent.get("cache_tree_sha256"))
         else:
-            tree_sha = cache_tree_sha256(cache_root)
+            tree_sha = _cache_tree_authority(
+                cache_root,
+                logical_root=cache_root,
+                production_root=production_root,
+                preservation_manifest=preservation_manifest,
+                artifact_validation_context=artifact_validation_context,
+            )
     else:
-        tree_sha = cache_tree_sha256(cache_root)
+        tree_sha = _cache_tree_authority(
+            cache_root,
+            logical_root=cache_root,
+            production_root=production_root,
+            preservation_manifest=preservation_manifest,
+            artifact_validation_context=artifact_validation_context,
+        )
     if intent is None:
         validate_preservation_coverage(
             preservation_manifest,
@@ -960,7 +1100,16 @@ def validate_gate(
         if intent is not None and staged is None and not cache_exists and not staging_exists:
             raise CacheRetirementError("ATOMIC_STAGING_EVIDENCE_MISSING")
         if intent is not None and staged is None and staging_exists:
-            if cache_tree_sha256(retirement_staging) != tree_sha:
+            if (
+                _cache_tree_authority(
+                    retirement_staging,
+                    logical_root=cache_root,
+                    production_root=production_root,
+                    preservation_manifest=preservation_manifest,
+                    artifact_validation_context=artifact_validation_context,
+                )
+                != tree_sha
+            ):
                 raise CacheRetirementError("UNPROVEN_PARTIAL_STAGING")
             validate_preservation_coverage(
                 preservation_manifest,
@@ -1128,7 +1277,23 @@ def main(
         expected_staged["intent_receipt_sha256"] = intent_sha
         staged_path = context["staged_path"]
         if context["staged"] is None:
-            if not staging_exists or cache_tree_sha256(staging) != context["cache_tree_sha256"]:
+            preservation_manifest = (
+                args.preservation_receipt.parent
+                / "batch_preservation_manifest.restricted.tsv"
+            )
+            if (
+                not staging_exists
+                or _cache_tree_authority(
+                    staging,
+                    logical_root=cache_root,
+                    production_root=args.production_root,
+                    preservation_manifest=preservation_manifest,
+                    artifact_validation_context=context[
+                        "artifact_validation_context"
+                    ],
+                )
+                != context["cache_tree_sha256"]
+            ):
                 raise CacheRetirementError("ATOMIC_STAGING_HASH_NOT_PROVEN")
             core.atomic_write_json_no_clobber(
                 staged_path, expected_staged, attempt_id=args.attempt_id
@@ -1188,7 +1353,7 @@ def main(
                 sealed_raw_dicom_authority=(
                     context["raw_dicom_authority"]
                     if context["artifact_validation_context"]
-                    is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                    in BODY_FREE_RAW_CONTEXTS
                     else None
                 ),
             )

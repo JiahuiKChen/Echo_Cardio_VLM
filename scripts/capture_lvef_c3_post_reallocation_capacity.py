@@ -437,6 +437,149 @@ R8U_CAPACITY_KEYS = frozenset(
     }
 )
 
+# Phase 1I-R8U-R3 resumes from the complete Batch-16 extraction produced by
+# the consumed R8U-R2 scheduler epoch.  The completed candidate, retained raw
+# data, failed partial cache, and finalized Batches 1--15 are already present
+# in the live usage/file observations and therefore contribute no incremental
+# storage or file demand.  Remaining demand is limited to Batch-16 EchoPrime
+# outputs and closure, the ordinary Tasks 17--19 continuation, and cohort
+# finalization.  Keep this schema additive so no R8U-R2 receipt is ever
+# reinterpreted under the R3 arithmetic.
+R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT = (
+    "4fd8f4bf58ba56a5cc82893e80833cbc5c9332ff"
+)
+R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = frozenset(
+    {
+        "scientific_commit",
+        "r8r_implementation_commit",
+        "r8u_base_implementation_commit",
+        "r8u_projection_repair_commit",
+        "r8u_scheduler_log_repair_commit",
+        "r8u_publication_resume_repair_commit",
+    }
+)
+R8U_R3_COMPLETED_EXTRACTION_CANDIDATE_FILES = 10_187
+R8U_R3_CAPACITY_STATUS_PASS = (
+    "PASS_BATCH16_PUBLICATION_RESUME_AND_17_19_WITH_200GB_RESERVE"
+)
+R8U_R3_CAPACITY_STATUS_BLOCKED = "BLOCKED"
+R8U_R3_CAPACITY_ARTIFACT_TYPE = (
+    "lvef_c3_r8u_r3_batch16_publication_resume_capacity_v1"
+)
+R8U_R3_CAPACITY_ZERO_EFFECT_KEYS = frozenset(
+    {
+        "cloud_requests",
+        "downloads",
+        "download_reruns",
+        "qsub_submissions",
+        "scheduler_jobs_submitted",
+        "dicom_body_reads",
+        "dicom_extraction_executions",
+        "npz_body_reads",
+        "gpu_executions",
+        "echoprime_executions",
+        "embedding_generations",
+        "model_fitting",
+        "prediction_generation",
+        "confirmatory_performance_accesses",
+        "files_moved",
+        "files_copied",
+        "files_deleted",
+        "writes_performed",
+    }
+)
+R8U_R3_CAPACITY_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "blocking_reason_codes",
+        "original_attempt_id",
+        "original_plan_sha256",
+        "original_scientific_governing_commit",
+        "implementation_authority_epochs",
+        "resume_task",
+        "resume_batch_id",
+        "continuation_first_task",
+        "continuation_last_task",
+        "continuation_task_count",
+        "remaining_scope_batch_count",
+        "remaining_scope_studies",
+        "remaining_scope_source_objects",
+        "remaining_scope_source_bytes",
+        "continuation_studies",
+        "continuation_objects",
+        "continuation_source_bytes",
+        "largest_continuation_batch_objects",
+        "largest_continuation_batch_source_bytes",
+        "batch16_raw_reused",
+        "batch16_raw_object_files_baseline",
+        "batch16_raw_source_bytes_baseline",
+        "failed_partial_files_baseline",
+        "failed_partial_bytes_baseline",
+        "completed_extraction_candidate_reused",
+        "completed_extraction_candidate_files_baseline",
+        "completed_extraction_candidate_bytes_baseline",
+        "completed_extraction_candidate_seal_sha256",
+        "batch16_redownload_demand_bytes",
+        "batch16_dicom_extraction_demand_bytes",
+        "batch16_dicom_extraction_file_demand",
+        "baseline_batch16_raw_bytes_added_to_increment",
+        "baseline_batch16_raw_files_added_to_demand",
+        "baseline_failed_partial_bytes_added_to_increment",
+        "baseline_failed_partial_files_added_to_demand",
+        "baseline_completed_candidate_bytes_added_to_increment",
+        "baseline_completed_candidate_files_added_to_demand",
+        "continuation_raw_source_demand_bytes",
+        "largest_continuation_transfer_retry_demand_bytes",
+        "largest_rolling_continuation_extracted_cache_demand_bytes",
+        "batch16_clip_embedding_file_upper_bound",
+        "continuation_clip_embedding_file_upper_bound",
+        "remaining_clip_embedding_file_upper_bound",
+        "remaining_clip_embedding_upper_bound_bytes",
+        "remaining_study_embedding_upper_bound_bytes",
+        "retained_extracted_audit_demand_bytes",
+        "manifest_and_metadata_demand_bytes",
+        "log_demand_bytes",
+        "preservation_and_finalization_demand_bytes",
+        "safety_demand_bytes",
+        "r8u_r3_increment_bytes",
+        "continuation_raw_object_file_demand",
+        "largest_rolling_continuation_object_file_demand",
+        "fixed_control_file_demand",
+        "required_file_slots",
+        "research_quota_bytes",
+        "research_usage_bytes",
+        "research_quota_remaining_bytes",
+        "research_file_quota",
+        "research_files_used",
+        "research_file_slots_remaining",
+        "research_filesystem_total_bytes",
+        "research_filesystem_used_bytes",
+        "research_filesystem_available_bytes",
+        "projected_research_usage_bytes",
+        "required_quota_reserve_bytes",
+        "required_physical_reserve_bytes",
+        "quota_slack_after_r8u_r3_bytes",
+        "physical_slack_after_r8u_r3_bytes",
+        "quota_margin_beyond_reserve_bytes",
+        "physical_margin_beyond_reserve_bytes",
+        "file_slot_margin_after_demand",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "native_capacity_snapshot_captures",
+        "native_quota_file_captures",
+        "capacity_command_captures",
+        "pquota_command_captures",
+        "findmnt_command_captures",
+        "df_command_captures",
+        "native_quota_authority_read_only",
+        "pquota_display_crosscheck",
+        *R8U_R3_CAPACITY_ZERO_EFFECT_KEYS,
+    }
+)
+
 # The historical Phase 1E-F receipt above deliberately remains bound to the
 # exact allocation that existed when it was captured.  Fresh-successor
 # admission is a different authority: it is expected to observe a changed
@@ -4418,6 +4561,568 @@ def validate_fixed_r8u_batch16_recovery_capacity(
     ):
         raise PostReallocationCapacityError(
             "R8U_CAPACITY_ARITHMETIC_INVALID"
+        )
+    return dict(value)
+
+
+def _fixed_r8u_r3_implementation_authority_epochs(
+    r8u_publication_resume_repair_commit: str,
+) -> dict[str, str]:
+    """Return the closed six-epoch authority for one validated R8U-R3 HEAD."""
+
+    fixed_epochs = {
+        R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+        R8U_R8R_IMPLEMENTATION_COMMIT,
+        R8U_BASE_IMPLEMENTATION_COMMIT,
+        R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+    }
+    if (
+        type(r8u_publication_resume_repair_commit) is not str
+        or COMMIT_RE.fullmatch(r8u_publication_resume_repair_commit) is None
+        or r8u_publication_resume_repair_commit in fixed_epochs
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R3_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
+    result = {
+        "scientific_commit": R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+        "r8r_implementation_commit": R8U_R8R_IMPLEMENTATION_COMMIT,
+        "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
+        "r8u_projection_repair_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_scheduler_log_repair_commit": (
+            R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_publication_resume_repair_commit": (
+            r8u_publication_resume_repair_commit
+        ),
+    }
+    if set(result) != R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R3_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
+    return result
+
+
+def _fixed_r8u_r3_candidate_authority(
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+) -> dict[str, Any]:
+    """Validate the aggregate-only authority for the already-present cache."""
+
+    if (
+        type(completed_extraction_candidate_seal_sha256) is not str
+        or SHA256_RE.fullmatch(
+            completed_extraction_candidate_seal_sha256
+        )
+        is None
+        or type(completed_extraction_candidate_bytes) is not int
+        or completed_extraction_candidate_bytes <= 0
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R3_COMPLETED_EXTRACTION_CANDIDATE_AUTHORITY_INVALID"
+        )
+    return {
+        "completed_extraction_candidate_files_baseline": (
+            R8U_R3_COMPLETED_EXTRACTION_CANDIDATE_FILES
+        ),
+        "completed_extraction_candidate_bytes_baseline": (
+            completed_extraction_candidate_bytes
+        ),
+        "completed_extraction_candidate_seal_sha256": (
+            completed_extraction_candidate_seal_sha256
+        ),
+    }
+
+
+def _derive_fixed_r8u_r3_capacity_demands(
+    plan: Mapping[str, Any],
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+) -> dict[str, Any]:
+    """Derive remaining demand without charging completed Batch-16 inputs."""
+
+    recovery, continuation = _fixed_r8u_recovery_batches(plan)
+    candidate = _fixed_r8u_r3_candidate_authority(
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+    )
+    continuation_studies = sum(
+        int(row["n_studies"]) for row in continuation
+    )
+    continuation_objects = sum(
+        int(row["n_objects"]) for row in continuation
+    )
+    continuation_source_bytes = sum(
+        int(row["source_bytes"]) for row in continuation
+    )
+    largest_continuation_objects = max(
+        int(row["n_objects"]) for row in continuation
+    )
+    largest_continuation_source_bytes = max(
+        int(row["source_bytes"]) for row in continuation
+    )
+    remaining_studies = int(recovery["n_studies"]) + continuation_studies
+    remaining_source_objects = (
+        int(recovery["n_objects"]) + continuation_objects
+    )
+    remaining_source_bytes = (
+        int(recovery["source_bytes"]) + continuation_source_bytes
+    )
+    remaining_clip_files = (
+        R8U_R3_COMPLETED_EXTRACTION_CANDIDATE_FILES
+        + continuation_objects
+    )
+    rolling_continuation_extracted_bytes = (
+        largest_continuation_objects * R8U_EXTRACTED_BYTES_PER_OBJECT
+    )
+    clip_embedding_bytes = (
+        remaining_clip_files * R8U_CLIP_EMBEDDING_BYTES_PER_OBJECT
+    )
+    study_embedding_bytes = (
+        remaining_studies * R8U_STUDY_EMBEDDING_BYTES_PER_STUDY
+    )
+    increment = sum(
+        (
+            continuation_source_bytes,
+            largest_continuation_source_bytes,
+            rolling_continuation_extracted_bytes,
+            clip_embedding_bytes,
+            study_embedding_bytes,
+            R8U_RETAINED_EXTRACTED_AUDIT_BYTES,
+            R8U_MANIFEST_AND_METADATA_BYTES,
+            R8U_LOG_BYTES,
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES,
+            R8U_SAFETY_BYTES,
+        )
+    )
+    required_file_slots = (
+        continuation_objects
+        + largest_continuation_objects
+        + R8U_FIXED_CONTROL_FILE_DEMAND
+    )
+    return {
+        "resume_task": R8U_RECOVERY_TASK,
+        "resume_batch_id": R8U_RECOVERY_BATCH_ID,
+        "continuation_first_task": R8U_CONTINUATION_FIRST_TASK,
+        "continuation_last_task": R8U_CONTINUATION_LAST_TASK,
+        "continuation_task_count": R8U_CONTINUATION_TASK_COUNT,
+        "remaining_scope_batch_count": 1 + len(continuation),
+        "remaining_scope_studies": remaining_studies,
+        "remaining_scope_source_objects": remaining_source_objects,
+        "remaining_scope_source_bytes": remaining_source_bytes,
+        "continuation_studies": continuation_studies,
+        "continuation_objects": continuation_objects,
+        "continuation_source_bytes": continuation_source_bytes,
+        "largest_continuation_batch_objects": (
+            largest_continuation_objects
+        ),
+        "largest_continuation_batch_source_bytes": (
+            largest_continuation_source_bytes
+        ),
+        "batch16_raw_reused": True,
+        "batch16_raw_object_files_baseline": int(recovery["n_objects"]),
+        "batch16_raw_source_bytes_baseline": int(recovery["source_bytes"]),
+        "failed_partial_files_baseline": R8U_FAILED_PARTIAL_FILES_BASELINE,
+        "failed_partial_bytes_baseline": R8U_FAILED_PARTIAL_BYTES_BASELINE,
+        "completed_extraction_candidate_reused": True,
+        **candidate,
+        "batch16_redownload_demand_bytes": 0,
+        "batch16_dicom_extraction_demand_bytes": 0,
+        "batch16_dicom_extraction_file_demand": 0,
+        "baseline_batch16_raw_bytes_added_to_increment": 0,
+        "baseline_batch16_raw_files_added_to_demand": 0,
+        "baseline_failed_partial_bytes_added_to_increment": 0,
+        "baseline_failed_partial_files_added_to_demand": 0,
+        "baseline_completed_candidate_bytes_added_to_increment": 0,
+        "baseline_completed_candidate_files_added_to_demand": 0,
+        "continuation_raw_source_demand_bytes": continuation_source_bytes,
+        "largest_continuation_transfer_retry_demand_bytes": (
+            largest_continuation_source_bytes
+        ),
+        "largest_rolling_continuation_extracted_cache_demand_bytes": (
+            rolling_continuation_extracted_bytes
+        ),
+        "batch16_clip_embedding_file_upper_bound": (
+            R8U_R3_COMPLETED_EXTRACTION_CANDIDATE_FILES
+        ),
+        "continuation_clip_embedding_file_upper_bound": (
+            continuation_objects
+        ),
+        "remaining_clip_embedding_file_upper_bound": remaining_clip_files,
+        "remaining_clip_embedding_upper_bound_bytes": (
+            clip_embedding_bytes
+        ),
+        "remaining_study_embedding_upper_bound_bytes": (
+            study_embedding_bytes
+        ),
+        "retained_extracted_audit_demand_bytes": (
+            R8U_RETAINED_EXTRACTED_AUDIT_BYTES
+        ),
+        "manifest_and_metadata_demand_bytes": (
+            R8U_MANIFEST_AND_METADATA_BYTES
+        ),
+        "log_demand_bytes": R8U_LOG_BYTES,
+        "preservation_and_finalization_demand_bytes": (
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES
+        ),
+        "safety_demand_bytes": R8U_SAFETY_BYTES,
+        "r8u_r3_increment_bytes": increment,
+        "continuation_raw_object_file_demand": continuation_objects,
+        "largest_rolling_continuation_object_file_demand": (
+            largest_continuation_objects
+        ),
+        "fixed_control_file_demand": R8U_FIXED_CONTROL_FILE_DEMAND,
+        "required_file_slots": required_file_slots,
+    }
+
+
+def probe_fixed_r8u_r3_batch16_publication_resume_capacity(
+    plan: Mapping[str, Any],
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+    r8u_publication_resume_repair_commit: str,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Capture one admission observation for R3 resume plus Tasks 17--19."""
+
+    demands = _derive_fixed_r8u_r3_capacity_demands(
+        plan,
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+    )
+    implementation_authority_epochs = (
+        _fixed_r8u_r3_implementation_authority_epochs(
+            r8u_publication_resume_repair_commit
+        )
+    )
+    snapshot = _capture_current_capacity_snapshot(
+        DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
+        process_runner=process_runner,
+    )
+    native = snapshot["native"]
+    dfs = snapshot["dfs"]
+    increment = int(demands["r8u_r3_increment_bytes"])
+    required_file_slots = int(demands["required_file_slots"])
+
+    research_quota = int(native["research"]["quota_kib"]) * 1024
+    research_usage = int(native["research"]["usage_kib"]) * 1024
+    research_file_quota = int(native["research"]["file_quota"])
+    research_files_used = int(native["research"]["files_used"])
+    physical_available = int(dfs["research"]["available"])
+    projected_usage = research_usage + increment
+    quota_slack = research_quota - projected_usage
+    physical_slack = physical_available - increment
+    quota_margin = quota_slack - R8U_QUOTA_RESERVE_BYTES
+    physical_margin = physical_slack - R8U_PHYSICAL_RESERVE_BYTES
+    file_slots_remaining = research_file_quota - research_files_used
+    file_margin = file_slots_remaining - required_file_slots
+    gates = {
+        "quota_reserve_gate_passed": quota_margin >= 0,
+        "physical_reserve_gate_passed": physical_margin >= 0,
+        "file_slot_gate_passed": file_margin >= 0,
+    }
+    blocking_reason_codes = [
+        code
+        for field, code in (
+            (
+                "quota_reserve_gate_passed",
+                "R8U_R3_QUOTA_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "physical_reserve_gate_passed",
+                "R8U_R3_PHYSICAL_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "file_slot_gate_passed",
+                "R8U_R3_FILE_SLOTS_INSUFFICIENT",
+            ),
+        )
+        if gates[field] is not True
+    ]
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "artifact_type": R8U_R3_CAPACITY_ARTIFACT_TYPE,
+        "status": (
+            R8U_R3_CAPACITY_STATUS_PASS
+            if not blocking_reason_codes
+            else R8U_R3_CAPACITY_STATUS_BLOCKED
+        ),
+        "blocking_reason_codes": blocking_reason_codes,
+        "original_attempt_id": R8U_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": R8U_ORIGINAL_PLAN_SHA256,
+        "original_scientific_governing_commit": (
+            R8U_ORIGINAL_SCIENTIFIC_COMMIT
+        ),
+        "implementation_authority_epochs": implementation_authority_epochs,
+        **demands,
+        "research_quota_bytes": research_quota,
+        "research_usage_bytes": research_usage,
+        "research_quota_remaining_bytes": research_quota - research_usage,
+        "research_file_quota": research_file_quota,
+        "research_files_used": research_files_used,
+        "research_file_slots_remaining": file_slots_remaining,
+        "research_filesystem_total_bytes": int(dfs["research"]["total"]),
+        "research_filesystem_used_bytes": int(dfs["research"]["used"]),
+        "research_filesystem_available_bytes": physical_available,
+        "projected_research_usage_bytes": projected_usage,
+        "required_quota_reserve_bytes": R8U_QUOTA_RESERVE_BYTES,
+        "required_physical_reserve_bytes": R8U_PHYSICAL_RESERVE_BYTES,
+        "quota_slack_after_r8u_r3_bytes": quota_slack,
+        "physical_slack_after_r8u_r3_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "file_slot_margin_after_demand": file_margin,
+        **gates,
+        "native_capacity_snapshot_captures": int(
+            snapshot["native_capacity_snapshot_captures"]
+        ),
+        "native_quota_file_captures": int(
+            snapshot["native_quota_file_captures"]
+        ),
+        "capacity_command_captures": int(
+            snapshot["capacity_command_captures"]
+        ),
+        "pquota_command_captures": int(
+            snapshot["pquota_command_captures"]
+        ),
+        "findmnt_command_captures": int(
+            snapshot["findmnt_command_captures"]
+        ),
+        "df_command_captures": int(snapshot["df_command_captures"]),
+        "native_quota_authority_read_only": True,
+        "pquota_display_crosscheck": str(
+            snapshot["pquota_display_crosscheck"]
+        ),
+        **{key: 0 for key in R8U_R3_CAPACITY_ZERO_EFFECT_KEYS},
+    }
+    if set(result) != R8U_R3_CAPACITY_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R3_CAPACITY_SCHEMA_INVALID"
+        )
+    return validate_fixed_r8u_r3_batch16_publication_resume_capacity(
+        plan,
+        result,
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+        r8u_publication_resume_repair_commit=(
+            r8u_publication_resume_repair_commit
+        ),
+    )
+
+
+def validate_fixed_r8u_r3_batch16_publication_resume_capacity(
+    plan: Mapping[str, Any],
+    value: Mapping[str, Any],
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+    r8u_publication_resume_repair_commit: str,
+) -> dict[str, Any]:
+    """Purely replay every fixed R8U-R3 demand, margin, gate, and status."""
+
+    demands = _derive_fixed_r8u_r3_capacity_demands(
+        plan,
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+    )
+    implementation_authority_epochs = (
+        _fixed_r8u_r3_implementation_authority_epochs(
+            r8u_publication_resume_repair_commit
+        )
+    )
+    if not isinstance(value, Mapping) or set(value) != R8U_R3_CAPACITY_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R3_CAPACITY_SCHEMA_INVALID"
+        )
+
+    text_fields = {
+        "artifact_type",
+        "status",
+        "original_attempt_id",
+        "original_plan_sha256",
+        "original_scientific_governing_commit",
+        "resume_batch_id",
+        "completed_extraction_candidate_seal_sha256",
+        "pquota_display_crosscheck",
+    }
+    boolean_fields = {
+        "batch16_raw_reused",
+        "completed_extraction_candidate_reused",
+        "quota_reserve_gate_passed",
+        "physical_reserve_gate_passed",
+        "file_slot_gate_passed",
+        "native_quota_authority_read_only",
+    }
+    special_fields = text_fields | boolean_fields | {
+        "blocking_reason_codes",
+        "implementation_authority_epochs",
+    }
+    integer_fields = R8U_R3_CAPACITY_KEYS - special_fields
+    if (
+        any(type(value.get(key)) is not int for key in integer_fields)
+        or any(type(value.get(key)) is not bool for key in boolean_fields)
+        or any(type(value.get(key)) is not str for key in text_fields)
+        or not isinstance(value.get("blocking_reason_codes"), list)
+        or not isinstance(
+            value.get("implementation_authority_epochs"), Mapping
+        )
+        or set(value["implementation_authority_epochs"])
+        != R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+        or any(
+            type(value["implementation_authority_epochs"].get(key)) is not str
+            for key in R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R3_CAPACITY_SCHEMA_INVALID"
+        )
+    if dict(value["implementation_authority_epochs"]) != (
+        implementation_authority_epochs
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R3_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
+
+    quota = int(value["research_quota_bytes"])
+    usage = int(value["research_usage_bytes"])
+    file_quota = int(value["research_file_quota"])
+    files_used = int(value["research_files_used"])
+    filesystem_total = int(value["research_filesystem_total_bytes"])
+    filesystem_used = int(value["research_filesystem_used_bytes"])
+    physical_available = int(value["research_filesystem_available_bytes"])
+    if (
+        min(
+            quota,
+            usage,
+            file_quota,
+            files_used,
+            filesystem_total,
+            filesystem_used,
+            physical_available,
+        )
+        < 0
+        or quota == 0
+        or file_quota == 0
+        or filesystem_total == 0
+        or quota % 1024 != 0
+        or usage % 1024 != 0
+        or quota < EXPECTED_RESEARCH_QUOTA_KIB * 1024
+        or file_quota < EXPECTED_RESEARCH_FILE_QUOTA
+        or usage > quota
+        or files_used > file_quota
+        or filesystem_used + physical_available > filesystem_total
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R3_CAPACITY_SCHEMA_INVALID"
+        )
+
+    increment = int(demands["r8u_r3_increment_bytes"])
+    required_file_slots = int(demands["required_file_slots"])
+    projected_usage = usage + increment
+    quota_slack = quota - projected_usage
+    physical_slack = physical_available - increment
+    quota_margin = quota_slack - R8U_QUOTA_RESERVE_BYTES
+    physical_margin = physical_slack - R8U_PHYSICAL_RESERVE_BYTES
+    file_slots_remaining = file_quota - files_used
+    file_margin = file_slots_remaining - required_file_slots
+    gates = {
+        "quota_reserve_gate_passed": quota_margin >= 0,
+        "physical_reserve_gate_passed": physical_margin >= 0,
+        "file_slot_gate_passed": file_margin >= 0,
+    }
+    blocking_reason_codes = [
+        code
+        for field, code in (
+            (
+                "quota_reserve_gate_passed",
+                "R8U_R3_QUOTA_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "physical_reserve_gate_passed",
+                "R8U_R3_PHYSICAL_RESERVE_INSUFFICIENT",
+            ),
+            (
+                "file_slot_gate_passed",
+                "R8U_R3_FILE_SLOTS_INSUFFICIENT",
+            ),
+        )
+        if gates[field] is not True
+    ]
+    expected = {
+        "schema_version": 1,
+        "artifact_type": R8U_R3_CAPACITY_ARTIFACT_TYPE,
+        "status": (
+            R8U_R3_CAPACITY_STATUS_PASS
+            if not blocking_reason_codes
+            else R8U_R3_CAPACITY_STATUS_BLOCKED
+        ),
+        "blocking_reason_codes": blocking_reason_codes,
+        "original_attempt_id": R8U_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": R8U_ORIGINAL_PLAN_SHA256,
+        "original_scientific_governing_commit": (
+            R8U_ORIGINAL_SCIENTIFIC_COMMIT
+        ),
+        "implementation_authority_epochs": implementation_authority_epochs,
+        **demands,
+        "research_quota_bytes": quota,
+        "research_usage_bytes": usage,
+        "research_quota_remaining_bytes": quota - usage,
+        "research_file_quota": file_quota,
+        "research_files_used": files_used,
+        "research_file_slots_remaining": file_slots_remaining,
+        "research_filesystem_total_bytes": filesystem_total,
+        "research_filesystem_used_bytes": filesystem_used,
+        "research_filesystem_available_bytes": physical_available,
+        "projected_research_usage_bytes": projected_usage,
+        "required_quota_reserve_bytes": R8U_QUOTA_RESERVE_BYTES,
+        "required_physical_reserve_bytes": R8U_PHYSICAL_RESERVE_BYTES,
+        "quota_slack_after_r8u_r3_bytes": quota_slack,
+        "physical_slack_after_r8u_r3_bytes": physical_slack,
+        "quota_margin_beyond_reserve_bytes": quota_margin,
+        "physical_margin_beyond_reserve_bytes": physical_margin,
+        "file_slot_margin_after_demand": file_margin,
+        **gates,
+        "native_capacity_snapshot_captures": 1,
+        "native_quota_file_captures": 1,
+        "capacity_command_captures": 5,
+        "pquota_command_captures": 1,
+        "findmnt_command_captures": 2,
+        "df_command_captures": 2,
+        "native_quota_authority_read_only": True,
+        "pquota_display_crosscheck": value.get(
+            "pquota_display_crosscheck"
+        ),
+        **{key: 0 for key in R8U_R3_CAPACITY_ZERO_EFFECT_KEYS},
+    }
+    if (
+        value.get("pquota_display_crosscheck")
+        not in {DISPLAY_CROSSCHECK_PASS, DISPLAY_CROSSCHECK_UNAVAILABLE}
+        or dict(value) != expected
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R3_CAPACITY_ARITHMETIC_INVALID"
         )
     return dict(value)
 

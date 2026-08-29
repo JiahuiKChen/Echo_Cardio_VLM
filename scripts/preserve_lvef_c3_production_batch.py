@@ -196,6 +196,8 @@ R8R_FIXED_SCHEDULER_RUNNER_PATH = (
     Path(__file__).resolve().parent
     / "scc_run_lvef_c3_r8r_recovery_continuation.sh"
 )
+R8U_R3_FIXED_BATCH_ID = "c3_batch_015"
+R8U_R3_FIXED_EXTRACTION_NPZ_FILES = 10_187
 
 SAFE_NESTED_VALIDATION_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,127}$")
 CSV_NONNEGATIVE_INTEGER_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.0)?$")
@@ -214,11 +216,23 @@ class ArtifactValidationContext(Enum):
 
     STRICT_CONTENT_HASH = "STRICT_CONTENT_HASH"
     R8R_FIXED_BATCH3_NO_DICOM_BODY = "R8R_FIXED_BATCH3_NO_DICOM_BODY"
+    R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY = (
+        "R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY"
+    )
 
 
 STRICT_CONTENT_HASH = ArtifactValidationContext.STRICT_CONTENT_HASH
 R8R_FIXED_BATCH3_NO_DICOM_BODY = (
     ArtifactValidationContext.R8R_FIXED_BATCH3_NO_DICOM_BODY
+)
+R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY = (
+    ArtifactValidationContext.R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+)
+BODY_FREE_RAW_CONTEXTS = frozenset(
+    {
+        R8R_FIXED_BATCH3_NO_DICOM_BODY,
+        R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY,
+    }
 )
 
 
@@ -229,6 +243,15 @@ class SealedRawDicomAuthority:
     subject_id: str
     study_id: str
     source_relative_path: str
+    size_bytes: int
+    observed_sha256: str
+    metadata_projection: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SealedExtractedNpzAuthority:
+    path: Path
+    output_relative_path: str
     size_bytes: int
     observed_sha256: str
     metadata_projection: tuple[int, ...]
@@ -464,18 +487,32 @@ def validate_artifact_validation_scope(
     )
     if context is STRICT_CONTENT_HASH:
         return
+    fixed_batch_id = (
+        R8R_FIXED_BATCH_ID
+        if context is R8R_FIXED_BATCH3_NO_DICOM_BODY
+        else R8U_R3_FIXED_BATCH_ID
+    )
+    scope_code = (
+        "R8R_RECOVERY_SCOPE_INVALID"
+        if context is R8R_FIXED_BATCH3_NO_DICOM_BODY
+        else "R8U_R3_RECOVERY_SCOPE_INVALID"
+    )
+    runner_code = (
+        "R8R_RECOVERY_SCHEDULER_RUNNER_INVALID"
+        if context is R8R_FIXED_BATCH3_NO_DICOM_BODY
+        else "R8U_R3_RECOVERY_SCHEDULER_RUNNER_INVALID"
+    )
     if (
-        production_root != R8R_FIXED_PRODUCTION_ROOT
+        context not in BODY_FREE_RAW_CONTEXTS
+        or production_root != R8R_FIXED_PRODUCTION_ROOT
         or attempt_id != R8R_FIXED_ATTEMPT_ID
-        or batch_id != R8R_FIXED_BATCH_ID
+        or batch_id != fixed_batch_id
         or plan_sha256 != R8R_FIXED_PLAN_SHA256
         or governing_commit != R8R_FIXED_SCIENTIFIC_COMMIT
     ):
-        raise BatchPreservationError("R8R_RECOVERY_SCOPE_INVALID")
+        raise BatchPreservationError(scope_code)
     if scheduler_runner_path != R8R_FIXED_SCHEDULER_RUNNER_PATH:
-        raise BatchPreservationError(
-            "R8R_RECOVERY_SCHEDULER_RUNNER_INVALID"
-        )
+        raise BatchPreservationError(runner_code)
 
 
 def _raw_dicom_metadata_projection(
@@ -740,6 +777,170 @@ def _sealed_raw_dicom_artifact_record(
     }
 
 
+def _extracted_npz_metadata_projection(path: Path) -> tuple[int, ...]:
+    """Bind one NPZ leaf without opening its scientific payload."""
+
+    absolute = Path(os.path.abspath(path))
+    try:
+        before = os.lstat(absolute)
+        after = os.lstat(absolute)
+    except OSError as exc:
+        raise BatchPreservationError(
+            "R8U_R3_EXTRACTION_NPZ_METADATA_INVALID"
+        ) from exc
+    projection = lambda value: (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
+        int(value.st_size), int(value.st_mtime_ns), int(value.st_ctime_ns),
+    )
+    if (
+        before != after
+        or not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or before.st_size <= 0
+        or stat.S_IMODE(before.st_mode) != 0o600
+        or absolute.suffix.lower() != ".npz"
+    ):
+        raise BatchPreservationError(
+            "R8U_R3_EXTRACTION_NPZ_METADATA_INVALID"
+        )
+    return projection(before)
+
+
+def _r8u_r3_private_npz_directory(
+    info: os.stat_result, *, approved_device: int
+) -> bool:
+    mode = stat.S_IMODE(info.st_mode)
+    return bool(
+        stat.S_ISDIR(info.st_mode)
+        and not stat.S_ISLNK(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and mode & 0o700 == 0o700
+        and not mode & 0o077
+        and mode & 0o7000 in {0, stat.S_ISGID}
+        and int(info.st_dev) == approved_device
+    )
+
+
+def seal_r8u_r3_extracted_npz_authority(
+    *, extraction_manifest: Path, extraction_root: Path
+) -> dict[Path, SealedExtractedNpzAuthority]:
+    """Reproject the fixed Batch-16 cache from its manifest, metadata only."""
+
+    rows = read_csv_exact(extraction_manifest, EXTRACTION_MANIFEST_HEADER)
+    if (
+        len(rows) != R8U_R3_FIXED_EXTRACTION_NPZ_FILES
+        or any(row.get("write_ok") != "True" for row in rows)
+    ):
+        raise BatchPreservationError(
+            "R8U_R3_EXTRACTION_NPZ_MANIFEST_INVALID"
+        )
+    clips_root = extraction_root / "clips"
+    try:
+        clips_info = os.lstat(clips_root)
+    except OSError as exc:
+        raise BatchPreservationError(
+            "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+        ) from exc
+    approved_device = int(clips_info.st_dev)
+    if not _r8u_r3_private_npz_directory(
+        clips_info, approved_device=approved_device
+    ):
+        raise BatchPreservationError(
+            "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+        )
+    expected: dict[Path, SealedExtractedNpzAuthority] = {}
+    for row in rows:
+        clip_key = str(row.get("clip_key", ""))
+        relative_text = str(row.get("output_relative_path", ""))
+        digest = str(row.get("npz_sha256", ""))
+        expected_relative = f"clips/{clip_key[:2]}/{clip_key}.npz"
+        if (
+            SHA_RE.fullmatch(clip_key) is None
+            or relative_text != expected_relative
+            or SHA_RE.fullmatch(digest) is None
+        ):
+            raise BatchPreservationError(
+                "R8U_R3_EXTRACTION_NPZ_MANIFEST_INVALID"
+            )
+        relative = production_stages.safe_relative_path(relative_text)
+        path = extraction_root / relative
+        if path in expected:
+            raise BatchPreservationError(
+                "R8U_R3_EXTRACTION_NPZ_MANIFEST_INVALID"
+            )
+        metadata = _extracted_npz_metadata_projection(path)
+        if metadata[0] != approved_device:
+            raise BatchPreservationError(
+                "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+            )
+        expected[path] = SealedExtractedNpzAuthority(
+            path=path,
+            output_relative_path=relative,
+            size_bytes=metadata[6],
+            observed_sha256=digest,
+            metadata_projection=metadata,
+        )
+    observed: set[Path] = set()
+    for directory, names, filenames in os.walk(clips_root, followlinks=False):
+        current = Path(directory)
+        info = os.lstat(current)
+        if not _r8u_r3_private_npz_directory(
+            info, approved_device=approved_device
+        ):
+            raise BatchPreservationError(
+                "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+            )
+        for name in names:
+            child = current / name
+            child_info = os.lstat(child)
+            if not _r8u_r3_private_npz_directory(
+                child_info, approved_device=approved_device
+            ):
+                raise BatchPreservationError(
+                    "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+                )
+        for name in filenames:
+            path = current / name
+            if _extracted_npz_metadata_projection(path)[0] != approved_device:
+                raise BatchPreservationError(
+                    "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+                )
+            observed.add(path)
+    if observed != set(expected):
+        raise BatchPreservationError(
+            "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+        )
+    return expected
+
+
+def validate_sealed_extracted_npz_metadata(
+    authority: SealedExtractedNpzAuthority,
+) -> None:
+    if (
+        type(authority) is not SealedExtractedNpzAuthority
+        or _extracted_npz_metadata_projection(authority.path)
+        != authority.metadata_projection
+    ):
+        raise BatchPreservationError(
+            "R8U_R3_EXTRACTION_NPZ_METADATA_CHANGED"
+        )
+
+
+def _sealed_extracted_npz_artifact_record(
+    authority: SealedExtractedNpzAuthority, root: Path, role: str
+) -> dict[str, Any]:
+    validate_sealed_extracted_npz_metadata(authority)
+    return {
+        "relative_path": safe_relative(authority.path, root),
+        "size_bytes": authority.size_bytes,
+        "sha256": authority.observed_sha256,
+        "role": role,
+    }
+
+
 def _strict_csv_bool(value: str, *, code: str) -> bool:
     if value in {"true", "True"}:
         return True
@@ -800,6 +1001,7 @@ def validate_stage_csv_authority(
     clips_root: Path,
     expected_objects: int,
     expected_studies: int,
+    validate_npz_bodies: bool = True,
 ) -> dict[str, Any]:
     """Raw-parse exact schemas and independently recompute stage semantics."""
     dicom_rows = read_csv_exact(dicom_audit_path, DICOM_AUDIT_HEADER)
@@ -901,7 +1103,7 @@ def validate_stage_csv_authority(
             typed_extraction_rows,
             expected_cines=dicom_semantics["n_multiframe_candidates"],
             disposition_context=disposition_context,
-            clips_root=clips_root,
+            clips_root=clips_root if validate_npz_bodies else None,
         )
     except production_stages.ProductionStageError as exc:
         raise _nested_validation_error(
@@ -1664,6 +1866,16 @@ def preserve_batch(
             artifact_validation_context=artifact_validation_context,
         )
     )
+    extraction_root = cache_batch_root / "dicom_extraction"
+    sealed_npz_authority = (
+        seal_r8u_r3_extracted_npz_authority(
+            extraction_manifest=paths["extraction_manifest"],
+            extraction_root=extraction_root,
+        )
+        if artifact_validation_context
+        is R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+        else {}
+    )
     records: list[dict[str, Any]] = []
     for path in _walk_regular(raw_root):
         sealed = raw_dicom_authority.get(path)
@@ -1674,8 +1886,7 @@ def preserve_batch(
                     production_root,
                     "raw_dicom_and_download_authority",
                 )
-                if artifact_validation_context
-                is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                if artifact_validation_context in BODY_FREE_RAW_CONTEXTS
                 else _artifact_record(
                     path,
                     production_root,
@@ -1684,8 +1895,7 @@ def preserve_batch(
             )
         else:
             if (
-                artifact_validation_context
-                is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                artifact_validation_context in BODY_FREE_RAW_CONTEXTS
                 and path.suffix.lower() == ".dcm"
             ):
                 raise BatchPreservationError(
@@ -1697,7 +1907,6 @@ def preserve_batch(
                 "raw_dicom_and_download_authority",
             )
         records.append(record)
-    extraction_root = cache_batch_root / "dicom_extraction"
     clip_cache_root = extraction_root / "clips"
     for path in _walk_regular(extraction_root):
         role = (
@@ -1705,7 +1914,23 @@ def preserve_batch(
             if path.is_relative_to(clip_cache_root)
             else "dicom_extraction_metadata_retained"
         )
-        records.append(_artifact_record(path, production_root, role))
+        sealed_npz = sealed_npz_authority.get(path)
+        if sealed_npz is not None:
+            records.append(
+                _sealed_extracted_npz_artifact_record(
+                    sealed_npz, production_root, role
+                )
+            )
+        else:
+            if (
+                artifact_validation_context
+                is R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+                and path.suffix.lower() == ".npz"
+            ):
+                raise BatchPreservationError(
+                    "R8U_R3_EXTRACTION_NPZ_AUTHORITY_MISSING"
+                )
+            records.append(_artifact_record(path, production_root, role))
     records.extend(
         _artifact_record(path, production_root, "embedding_and_pooling_retained")
         for path in _walk_regular(batch_root / "echoprime")
@@ -1764,6 +1989,10 @@ def preserve_batch(
         clips_root=clip_cache_root,
         expected_objects=batch["n_objects"],
         expected_studies=batch["n_studies"],
+        validate_npz_bodies=(
+            artifact_validation_context
+            is not R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+        ),
     )
     dicom_semantics = stage_csvs["dicom_semantics"]
     extraction_semantics = stage_csvs["extraction_semantics"]
@@ -1916,10 +2145,10 @@ def preserve_batch(
     for item in verified:
         artifact = production_root / item["relative_path"]
         sealed = raw_dicom_authority.get(artifact)
+        sealed_npz = sealed_npz_authority.get(artifact)
         try:
             if (
-                artifact_validation_context
-                is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                artifact_validation_context in BODY_FREE_RAW_CONTEXTS
                 and sealed is not None
             ):
                 validate_sealed_raw_dicom_metadata(sealed)
@@ -1927,14 +2156,35 @@ def preserve_batch(
                     sealed.size_bytes,
                     sealed.observed_sha256,
                 )
-            else:
+            elif sealed_npz is not None:
                 if (
                     artifact_validation_context
-                    is R8R_FIXED_BATCH3_NO_DICOM_BODY
+                    is not R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+                ):
+                    raise BatchPreservationError(
+                        "R8U_R3_EXTRACTION_NPZ_AUTHORITY_INVALID"
+                    )
+                validate_sealed_extracted_npz_metadata(sealed_npz)
+                size_bytes, digest = (
+                    sealed_npz.size_bytes,
+                    sealed_npz.observed_sha256,
+                )
+            else:
+                if (
+                    artifact_validation_context in BODY_FREE_RAW_CONTEXTS
                     and artifact.suffix.lower() == ".dcm"
                 ):
                     raise BatchPreservationError(
                         "RECOVERY_RAW_DICOM_AUTHORITY_MISSING"
+                    )
+                if (
+                    artifact_validation_context
+                    is R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+                    and artifact.suffix.lower() == ".npz"
+                    and artifact.is_relative_to(clip_cache_root)
+                ):
+                    raise BatchPreservationError(
+                        "R8U_R3_EXTRACTION_NPZ_AUTHORITY_MISSING"
                     )
                 size_bytes, digest = stable_manifest_artifact_authority(
                     artifact
