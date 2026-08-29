@@ -3,16 +3,17 @@
 PHASE2JR_REPO="${JDIM_REPO_ROOT:-/restricted/project/mimicecho/code/Echo_Cardio_VLM_jdim_phase2er_driver_fix}"
 PHASE2JR_PY="${JDIM_PYTHON_BIN:-/restricted/project/mimicecho/code/Echo_Cardio_VLM/.venv-echoprime/bin/python}"
 PHASE2JR_SOURCE_COMMIT="${JDIM_PHASE2JR_SOURCE_COMMIT:-}"
-PHASE2JR_AUTHORIZED_PARENT="75453ebd1c16268870b6d588e4f54d8668e5e186"
+PHASE2JR_AUTHORIZED_PARENT="229a3a88b040eb8728e7f1e73a43711a704c4d7f"
 
-PHASE2JR_A2_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v3a"
-PHASE2JR_A3_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v3b"
+PHASE2JR_EVIDENCE_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v3a"
+PHASE2JR_A2_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v3b"
+PHASE2JR_A3_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v3c"
 PHASE2JR_SOURCE_DESTINATION="/restricted/project/mimicecho/outputs/jdim_phase2i_official_source_v1"
 PHASE2JR_INTERFACE_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_audit_interface_v2"
 PHASE2JR_B1_ROOT="${PHASE2JR_INTERFACE_ROOT}/runs/b1"
 PHASE2JR_B2_ROOT="${PHASE2JR_INTERFACE_ROOT}/runs/b2"
 PHASE2JR_OLD_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2j_restoration_v2"
-PHASE2JR_LOG_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2jr_scheduler_logs_v1"
+PHASE2JR_LOG_ROOT="/restricted/project/mimicecho/outputs/jdim_phase2jr2_scheduler_logs_v1"
 
 PHASE2JR_AUDIT_ROOT="/restricted/project/mimicecho/outputs/jdim_audit_roster_pilot_v1"
 PHASE2JR_CANONICAL_CERT="/restricted/project/mimicecho/outputs/jdim_phase2f_finalizer_v1/aggregate_safe/phase2e_corrected_outputs_canonical_certificate.json"
@@ -46,6 +47,30 @@ phase2jr_verify_sha256() {
   fi
 }
 
+phase2jr_verify_upstream_accounting() {
+  local job_id="$1"
+  local certificate_status="$2"
+  local accounting=""
+  if [[ ! "${job_id}" =~ ^[0-9]+$ ]]; then
+    echo "[error] upstream scheduler job ID is missing or malformed" >&2
+    return 2
+  fi
+  for _attempt in {1..12}; do
+    if accounting="$(qacct -j "${job_id}" 2>/dev/null)"; then
+      break
+    fi
+    sleep 10
+  done
+  if [[ -z "${accounting}" ]]; then
+    echo "[error] upstream scheduler accounting is unavailable" >&2
+    return 2
+  fi
+  printf '%s\n' "${accounting}" | "${PHASE2JR_PY}" \
+    "${PHASE2JR_REPO}/scripts/run_jdim_phase2jr.py" verify-qacct-certificate \
+    --expected-jobnumber "${job_id}" \
+    --certificate-status "${certificate_status}"
+}
+
 phase2jr_common_preflight() {
   local require_auth="${1:-no}"
   if [[ -z "${PHASE2JR_SOURCE_COMMIT}" ]]; then
@@ -68,7 +93,9 @@ phase2jr_common_preflight() {
     "${PHASE2JR_PILOT_ROWS}" \
     "${PHASE2JR_PRIMARY}" \
     "${PHASE2JR_SECOND}" \
-    "${PHASE2JR_LOCKED_URL_LIST}"; do
+    "${PHASE2JR_LOCKED_URL_LIST}" \
+    "${PHASE2JR_EVIDENCE_ROOT}/aggregate_safe/preflight/restoration_state_summary.json" \
+    "${PHASE2JR_EVIDENCE_ROOT}/restricted/preflight/restoration_state_restricted.csv"; do
     phase2jr_require_file "${path}" || return $?
   done
 
@@ -87,6 +114,12 @@ phase2jr_common_preflight() {
   phase2jr_verify_sha256 "${PHASE2JR_PRIMARY}" "d042fbc621fed3a97c2f68581e7983e46d3b559c32dfa47c45cedb886ea3b0a6" || return $?
   phase2jr_verify_sha256 "${PHASE2JR_SECOND}" "d130fa54e1142323fd515ccc72d162ae7f6c4c31fe8887b67a3cd339dbb1ec64" || return $?
   phase2jr_verify_sha256 "${PHASE2JR_LOCKED_URL_LIST}" "${PHASE2JR_LOCKED_URL_SHA256}" || return $?
+  phase2jr_verify_sha256 "${PHASE2JR_EVIDENCE_ROOT}/aggregate_safe/preflight/restoration_state_summary.json" "13415d487236678023add790edda56d3d559080932a646f0c1266013cd45fc1f" || return $?
+  phase2jr_verify_sha256 "${PHASE2JR_EVIDENCE_ROOT}/restricted/preflight/restoration_state_restricted.csv" "0b722cbf7bc2656cdc1418ec5ad10ea1d9a053ef1c1c5cca941ffdc627323ea2" || return $?
+  if [[ "$("${PHASE2JR_PY}" -c "import json; print(json.load(open('${PHASE2JR_EVIDENCE_ROOT}/aggregate_safe/preflight/restoration_state_summary.json'))['remaining_file_set_sha256'])")" != "1da97b5abdfe5272fd59888ce60f6be0e0150b9230f875a613bf40ca4d863ddd" ]]; then
+    echo "[error] preserved Phase 2J-R remaining-file hash mismatch" >&2
+    return 2
+  fi
   if [[ "$(wc -l < "${PHASE2JR_LOCKED_URL_LIST}" | tr -d ' ')" != "4808" ]]; then
     echo "[error] locked official-source URL count changed" >&2
     return 2
@@ -98,7 +131,7 @@ phase2jr_common_preflight() {
   fi
   if ! git -C "${PHASE2JR_REPO}" merge-base --is-ancestor "${PHASE2JR_AUTHORIZED_PARENT}" "${PHASE2JR_SOURCE_COMMIT}" \
     || [[ "$(git -C "${PHASE2JR_REPO}" rev-list --count "${PHASE2JR_AUTHORIZED_PARENT}..${PHASE2JR_SOURCE_COMMIT}")" != "1" ]]; then
-    echo "[error] source is not the single authorized Phase 2J-R operational repair" >&2
+    echo "[error] source is not the single authorized Phase 2J-R2 operational repair" >&2
     return 2
   fi
   if [[ -n "$(git -C "${PHASE2JR_REPO}" status --porcelain)" ]]; then

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from jdim_tier1.phase2jr import (
@@ -17,6 +18,9 @@ from jdim_tier1.phase2jr import (
     continue_audit_interface,
     resume_locked_restoration,
     verify_interface_continuation_certificate,
+    verify_phase2jr2_preflight_state,
+    verify_qacct_accounting,
+    verify_qacct_certificate_agreement,
     verify_restoration_certificate,
     verify_restoration_continuation_certificate,
 )
@@ -36,8 +40,20 @@ def parse_args() -> argparse.Namespace:
 
     assess = subparsers.add_parser("assess-restoration")
     _restoration_inputs(assess)
-    assess.add_argument("--restricted-output-csv", type=Path, required=True)
-    assess.add_argument("--safe-output-json", type=Path, required=True)
+    assess.add_argument("--restricted-output-csv", type=Path)
+    assess.add_argument("--safe-output-json", type=Path)
+    assess.add_argument("--no-write", action="store_true")
+    assess.add_argument("--require-phase2jr2-current-state", action="store_true")
+
+    qacct = subparsers.add_parser("verify-qacct")
+    qacct.add_argument("--expected-jobnumber", type=int, required=True)
+    qacct.add_argument("--expected-failed", type=int, required=True)
+    qacct.add_argument("--expected-exit-status", type=int, required=True)
+    qacct.add_argument("--expected-ru-wallclock", required=True)
+
+    qacct_certificate = subparsers.add_parser("verify-qacct-certificate")
+    qacct_certificate.add_argument("--expected-jobnumber", type=int, required=True)
+    qacct_certificate.add_argument("--certificate-status", required=True)
 
     resume = subparsers.add_parser("resume-restoration")
     _restoration_inputs(resume)
@@ -96,6 +112,11 @@ def main() -> int:
     args = parse_args()
     try:
         if args.command == "assess-restoration":
+            if args.no_write:
+                if args.restricted_output_csv is not None or args.safe_output_json is not None:
+                    raise ValueError("--no-write cannot be combined with assessment output paths")
+            elif args.restricted_output_csv is None or args.safe_output_json is None:
+                raise ValueError("assessment output paths are required unless --no-write is used")
             result = assess_restoration_state(
                 locked_url_list=args.locked_url_list,
                 restoration_manifest_csv=args.restoration_manifest_csv,
@@ -104,6 +125,22 @@ def main() -> int:
                 safe_output_json=args.safe_output_json,
                 source_commit=args.source_commit,
             ).safe_summary
+            if args.require_phase2jr2_current_state:
+                verify_phase2jr2_preflight_state(result)
+        elif args.command == "verify-qacct":
+            result = verify_qacct_accounting(
+                sys.stdin.read(),
+                expected_jobnumber=args.expected_jobnumber,
+                expected_failed=args.expected_failed,
+                expected_exit_status=args.expected_exit_status,
+                expected_ru_wallclock=args.expected_ru_wallclock,
+            )
+        elif args.command == "verify-qacct-certificate":
+            result = verify_qacct_certificate_agreement(
+                sys.stdin.read(),
+                expected_jobnumber=args.expected_jobnumber,
+                certificate_status=args.certificate_status,
+            )
         elif args.command == "resume-restoration":
             result = resume_locked_restoration(
                 locked_url_list=args.locked_url_list,

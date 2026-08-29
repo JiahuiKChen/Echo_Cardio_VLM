@@ -59,6 +59,9 @@ if [[ ! -f "${A2_CERT}" || ! -f "${A2_RESULTS}" ]]; then
   exit 2
 fi
 A2_STATUS="$("${PHASE2JR_PY}" -c "import json; print(json.load(open('${A2_CERT}')).get('status',''))")"
+phase2jr_verify_upstream_accounting \
+  "${JDIM_PHASE2JR_UPSTREAM_JOB_ID:-}" \
+  "${A2_STATUS}"
 if [[ "${A2_STATUS}" == "LOCKED_ROSTER_SOURCE_RESTORED" ]]; then
   "${PHASE2JR_PY}" scripts/run_jdim_phase2jr.py verify-restoration \
     --certificate "${A2_CERT}" \
@@ -95,8 +98,12 @@ fi
   --incomplete-status BLOCKED_LOCKED_SOURCE_RESTORATION
 A3_STATUS="$("${PHASE2JR_PY}" -c "import json; print(json.load(open('${PHASE2JR_A3_ROOT}/aggregate_safe/phase2jr_restoration_certificate.json'))['status'])")"
 case "${A3_STATUS}" in
-  LOCKED_ROSTER_SOURCE_RESTORED|BLOCKED_LOCKED_SOURCE_RESTORATION)
+  LOCKED_ROSTER_SOURCE_RESTORED)
     echo "${A3_STATUS}"
+    ;;
+  BLOCKED_LOCKED_SOURCE_RESTORATION)
+    echo "[error] ${A3_STATUS}" >&2
+    exit 2
     ;;
   *)
     echo "[error] ${A3_STATUS}" >&2

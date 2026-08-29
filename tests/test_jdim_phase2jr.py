@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -23,22 +24,50 @@ from jdim_tier1.phase2jr import (  # noqa: E402
     LOCKED_ROSTER_SOURCE_RESTORED,
     MISSING,
     PARTIAL_RESUMABLE,
+    PHASE2JR2_EXPECTED_STATE,
+    QACCT_ACCOUNTING_VERIFIED,
+    RESTARTABLE_ZERO_PLACEHOLDER,
     RESTORATION_INCOMPLETE_RESUMABLE,
+    RESTORATION_STATE_RESUMABLE,
     UNEXPECTED_OR_INVALID,
+    _download_locked_file,
     _opaque_media_id,
     assess_restoration_state,
+    parse_qacct_output,
     resume_audit_media,
     resume_locked_restoration,
     verify_interface_continuation_certificate,
+    verify_phase2jr2_preflight_state,
+    verify_qacct_accounting,
+    verify_qacct_certificate_agreement,
     verify_restoration_certificate,
     verify_restoration_continuation_certificate,
+    verify_scheduler_certificate_agreement,
 )
-from jdim_tier1.safety import Tier1BlockedError, sha256_file  # noqa: E402
+from jdim_tier1.safety import Tier1BlockedError, sha256_file, sha256_text  # noqa: E402
 
 
 def _validator(path: Path) -> tuple[bool, str]:
     valid = path.is_file() and path.read_bytes().startswith(b"DICOM")
     return valid, "validated" if valid else "invalid"
+
+
+def _qacct_output(*, separator: str = "    ", overrides: dict[str, str] | None = None) -> str:
+    fields = [
+        ("qname", "long"),
+        ("hostname", "scc-node.example.edu"),
+        ("jobnumber", "7354017"),
+        ("failed", "100 : assumedly after job"),
+        ("exit_status", "137"),
+        ("start_time", "Fri Aug 28 18:56:54 2026"),
+        ("end_time", "Sat Aug 29 06:56:55 2026"),
+        ("ru_wallclock", "43201"),
+        ("maxvmem", "5.591G"),
+    ]
+    replacements = overrides or {}
+    return "=" * 60 + "\n" + "\n".join(
+        f"{name}{separator}{replacements.get(name, value)}" for name, value in fields
+    )
 
 
 class RestorationFixture:
@@ -135,6 +164,200 @@ class Phase2JRRestorationTests(unittest.TestCase):
             self.assertEqual(result.safe_summary["partial_resumable_files"], 1)
             self.assertEqual(result.safe_summary["missing_files"], 1)
             self.assertEqual(result.safe_summary["remaining_files"], 2)
+
+    def test_expected_zero_partial_is_restartable_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            fixture.write_partial(0, b"")
+            result = fixture.assess()
+            self.assertEqual(
+                result.restricted_rows.loc[0, "state"],
+                RESTARTABLE_ZERO_PLACEHOLDER,
+            )
+            self.assertEqual(result.safe_summary["restartable_zero_placeholder_files"], 1)
+            self.assertEqual(result.safe_summary["status"], RESTORATION_STATE_RESUMABLE)
+
+    def test_zero_partial_with_final_present_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            fixture.write_complete(0)
+            fixture.write_partial(0, b"")
+            result = fixture.assess()
+            self.assertEqual(result.restricted_rows.loc[0, "state"], UNEXPECTED_OR_INVALID)
+
+    def test_zero_byte_final_dicom_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            fixture.write_complete(0, b"")
+            result = fixture.assess()
+            self.assertEqual(result.restricted_rows.loc[0, "state"], UNEXPECTED_OR_INVALID)
+            self.assertEqual(result.safe_summary["status"], BLOCKED_RESTORATION_STATE_INCONSISTENT)
+
+    def test_unexpected_zero_partial_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            unexpected = fixture.destination / "unexpected.dcm.part"
+            unexpected.parent.mkdir(parents=True)
+            unexpected.write_bytes(b"")
+            result = fixture.assess()
+            self.assertEqual(result.safe_summary["unexpected_files"], 1)
+            self.assertEqual(result.safe_summary["status"], BLOCKED_RESTORATION_STATE_INCONSISTENT)
+
+    def test_symlink_placeholder_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            target = fixture.root / "zero-target"
+            target.write_bytes(b"")
+            partial = Path(str(fixture.destination_path(0)) + ".part")
+            partial.parent.mkdir(parents=True)
+            partial.symlink_to(target)
+            result = fixture.assess()
+            self.assertEqual(result.restricted_rows.loc[0, "state"], UNEXPECTED_OR_INVALID)
+
+    def test_directory_placeholder_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            partial = Path(str(fixture.destination_path(0)) + ".part")
+            partial.mkdir(parents=True)
+            result = fixture.assess()
+            self.assertEqual(result.restricted_rows.loc[0, "state"], UNEXPECTED_OR_INVALID)
+
+    def test_destination_resolving_outside_restricted_root_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            outside = fixture.root / "outside"
+            outside.mkdir()
+            fixture.destination.mkdir()
+            (fixture.destination / "files").symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(Tier1BlockedError):
+                fixture.assess()
+
+    def test_ambiguous_locked_url_mapping_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            fixture.urls.write_text(
+                "".join(
+                    f"{OFFICIAL_SOURCE_BASE}{value}\n"
+                    for value in [fixture.relative[0], fixture.relative[0], fixture.relative[2]]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(Tier1BlockedError):
+                fixture.assess()
+
+    def test_phase2jr2_exact_preflight_counts_reconcile_to_4808(self) -> None:
+        summary = {
+            "status": RESTORATION_STATE_RESUMABLE,
+            "states_reconcile": True,
+            **PHASE2JR2_EXPECTED_STATE,
+        }
+        verified = verify_phase2jr2_preflight_state(summary)
+        self.assertEqual(verified["status"], RESTORATION_STATE_RESUMABLE)
+        self.assertEqual(
+            sum(
+                summary[field]
+                for field in (
+                    "complete_verified_files",
+                    "partial_resumable_files",
+                    "restartable_zero_placeholder_files",
+                    "missing_files",
+                    "invalid_files",
+                )
+            ),
+            4808,
+        )
+
+    def test_zero_placeholder_restarts_from_byte_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            partial = fixture.write_partial(0, b"")
+            row = fixture.assess().restricted_rows.iloc[0].to_dict()
+
+            def fake_run(command, **_kwargs):
+                self.assertIn("--continue", command)
+                self.assertEqual(partial.stat().st_size, 0)
+                partial.write_bytes(b"DICOM-restored")
+                return SimpleNamespace(returncode=0)
+
+            with patch("jdim_tier1.phase2jr.shutil.which", return_value="/usr/bin/wget"), patch(
+                "jdim_tier1.phase2jr.subprocess.run", side_effect=fake_run
+            ):
+                success, detail = _download_locked_file(
+                    row,
+                    netrc_path=fixture.netrc,
+                    validator=_validator,
+                )
+            self.assertTrue(success)
+            self.assertEqual(detail, "restored")
+            self.assertTrue(fixture.destination_path(0).is_file())
+
+    def test_download_helper_never_overwrites_complete_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            complete = fixture.write_complete(0, b"DICOM-preserve")
+            row = fixture.assess().restricted_rows.iloc[0].to_dict()
+            with patch(
+                "jdim_tier1.phase2jr.subprocess.run",
+                side_effect=AssertionError("completed file was downloaded again"),
+            ):
+                success, detail = _download_locked_file(
+                    row,
+                    netrc_path=fixture.netrc,
+                    validator=_validator,
+                )
+            self.assertTrue(success)
+            self.assertEqual(detail, "already_available_verified")
+            self.assertEqual(complete.read_bytes(), b"DICOM-preserve")
+
+    def test_download_helper_never_truncates_nonzero_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            partial = fixture.write_partial(0, b"DICOM-prefix")
+            row = fixture.assess().restricted_rows.iloc[0].to_dict()
+
+            def fake_run(command, **_kwargs):
+                self.assertIn("--continue", command)
+                self.assertEqual(partial.read_bytes(), b"DICOM-prefix")
+                with partial.open("ab") as stream:
+                    stream.write(b"-continued")
+                return SimpleNamespace(returncode=0)
+
+            with patch("jdim_tier1.phase2jr.shutil.which", return_value="/usr/bin/wget"), patch(
+                "jdim_tier1.phase2jr.subprocess.run", side_effect=fake_run
+            ):
+                success, _ = _download_locked_file(
+                    row,
+                    netrc_path=fixture.netrc,
+                    validator=_validator,
+                )
+            self.assertTrue(success)
+            self.assertEqual(
+                fixture.destination_path(0).read_bytes(),
+                b"DICOM-prefix-continued",
+            )
+
+    def test_pending_order_is_nonzero_then_zero_then_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            fixture = RestorationFixture(Path(tempdir))
+            fixture.write_partial(0, b"DICOM-partial")
+            fixture.write_partial(1, b"")
+            order: list[str] = []
+
+            def downloader(row, **_kwargs):
+                order.append(str(row["state"]))
+                destination = Path(str(row["restricted_destination"]))
+                partial = Path(str(row["restricted_partial"]))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                partial.write_bytes(b"DICOM-restored")
+                os.replace(partial, destination)
+                return True, "restored"
+
+            result = fixture.resume(downloader=downloader)
+            self.assertEqual(result.status, LOCKED_ROSTER_SOURCE_RESTORED)
+            self.assertEqual(
+                order,
+                [PARTIAL_RESUMABLE, RESTARTABLE_ZERO_PLACEHOLDER, MISSING],
+            )
 
     def test_complete_and_partial_overlap_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -346,6 +569,7 @@ class Phase2JRRestorationTests(unittest.TestCase):
     def test_aggregate_safe_outputs_contain_no_credentials_urls_or_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             fixture = RestorationFixture(Path(tempdir))
+            fixture.write_partial(0, b"")
             fixture.resume(
                 downloader=lambda *_args, **_kwargs: (False, "unused"),
                 soft_stop_seconds=0,
@@ -358,6 +582,8 @@ class Phase2JRRestorationTests(unittest.TestCase):
             self.assertNotIn("https://", safe_text)
             self.assertNotIn(str(fixture.root), safe_text)
             self.assertNotIn(".dcm", safe_text)
+            self.assertNotIn("A1", safe_text)
+            self.assertNotIn("p100", safe_text)
 
     def test_existing_terminal_certificate_makes_same_run_root_immutable(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -371,6 +597,79 @@ class Phase2JRRestorationTests(unittest.TestCase):
                     downloader=lambda *_args, **_kwargs: (False, "unused"),
                     soft_stop_seconds=0,
                 )
+
+
+class Phase2JRQacctTests(unittest.TestCase):
+    def test_normal_scc_spacing_parses_and_preserves_raw_hash(self) -> None:
+        raw = _qacct_output(separator="        ")
+        parsed = parse_qacct_output(raw)
+        self.assertEqual(parsed["jobnumber"], 7354017)
+        self.assertEqual(parsed["failed"], 100)
+        self.assertEqual(parsed["exit_status"], 137)
+        self.assertFalse(parsed["scheduler_success"])
+        self.assertEqual(parsed["raw_accounting_sha256"], sha256_text(raw))
+
+    def test_tab_separated_qacct_parses(self) -> None:
+        parsed = parse_qacct_output(_qacct_output(separator="\t"))
+        self.assertEqual(parsed["jobnumber"], 7354017)
+        self.assertEqual(str(parsed["ru_wallclock"]), "43201")
+
+    def test_missing_required_qacct_field_fails(self) -> None:
+        raw = "\n".join(
+            line for line in _qacct_output().splitlines() if not line.startswith("maxvmem")
+        )
+        with self.assertRaises(Tier1BlockedError):
+            parse_qacct_output(raw)
+
+    def test_duplicate_qacct_field_fails(self) -> None:
+        raw = _qacct_output() + "\nexit_status    137\n"
+        with self.assertRaises(Tier1BlockedError):
+            parse_qacct_output(raw)
+
+    def test_failed_zero_with_nonzero_exit_is_not_success(self) -> None:
+        raw = _qacct_output(overrides={"failed": "0", "exit_status": "1"})
+        self.assertFalse(parse_qacct_output(raw)["scheduler_success"])
+
+    def test_expected_walltime_interruption_verifies_semantically(self) -> None:
+        result = verify_qacct_accounting(
+            _qacct_output(separator="\t"),
+            expected_jobnumber=7354017,
+            expected_failed=100,
+            expected_exit_status=137,
+            expected_ru_wallclock="43201",
+        )
+        self.assertEqual(result["status"], QACCT_ACCOUNTING_VERIFIED)
+
+    def test_scheduler_and_certificate_disagreement_fails(self) -> None:
+        parsed = parse_qacct_output(
+            _qacct_output(overrides={"failed": "0", "exit_status": "0"})
+        )
+        with self.assertRaises(Tier1BlockedError):
+            verify_scheduler_certificate_agreement(
+                parsed,
+                "BLOCKED_LOCKED_SOURCE_RESTORATION",
+            )
+        failed = parse_qacct_output(_qacct_output())
+        with self.assertRaises(Tier1BlockedError):
+            verify_scheduler_certificate_agreement(
+                failed,
+                LOCKED_ROSTER_SOURCE_RESTORED,
+            )
+
+    def test_qacct_certificate_gate_is_bound_to_upstream_job(self) -> None:
+        raw = _qacct_output(overrides={"failed": "0", "exit_status": "0"})
+        result = verify_qacct_certificate_agreement(
+            raw,
+            expected_jobnumber=7354017,
+            certificate_status=RESTORATION_INCOMPLETE_RESUMABLE,
+        )
+        self.assertTrue(result["states_agree"])
+        with self.assertRaises(Tier1BlockedError):
+            verify_qacct_certificate_agreement(
+                raw,
+                expected_jobnumber=7354018,
+                certificate_status=RESTORATION_INCOMPLETE_RESUMABLE,
+            )
 
 
 class Phase2JRInterfaceTests(unittest.TestCase):
@@ -478,14 +777,24 @@ class Phase2JRInterfaceTests(unittest.TestCase):
         restoration = (ROOT / "scripts/scc_run_jdim_phase2jr_restoration.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("75453ebd1c16268870b6d588e4f54d8668e5e186", common)
+        self.assertIn("229a3a88b040eb8728e7f1e73a43711a704c4d7f", common)
+        self.assertIn("jdim_phase2j_restoration_v3b", common)
+        self.assertIn("jdim_phase2j_restoration_v3c", common)
         self.assertIn("A2->A3->B1->B2", submit)
         self.assertIn("-hold_jid", submit)
+        self.assertIn("JDIM_PHASE2JR_UPSTREAM_JOB_ID", submit)
         self.assertNotIn("-t ", submit)
         self.assertNotIn("qsub -V", submit)
         self.assertIn("--max-workers 2", restoration)
         self.assertIn("--soft-stop-seconds 38700", restoration)
         self.assertNotIn("cat \"${HOME}/.netrc\"", common)
+        self.assertIn('if [[ ! -f "${A2_CERT}" || ! -f "${A2_RESULTS}" ]]', restoration)
+        self.assertIn("phase2jr_verify_upstream_accounting", restoration)
+        interface = (ROOT / "scripts/scc_run_jdim_phase2jr_interface.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if [[ ! -f "${A3_CERT}" ]]', interface)
+        self.assertIn("phase2jr_verify_upstream_accounting", interface)
 
 
 if __name__ == "__main__":

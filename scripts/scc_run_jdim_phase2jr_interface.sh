@@ -53,6 +53,12 @@ if [[ ! -f "${RESTORATION_CERT}" || ! -f "${RESTORATION_RESULTS}" ]]; then
   echo "[error] BLOCKED_LOCKED_SOURCE_RESTORATION" >&2
   exit 2
 fi
+RESTORATION_STATUS="$("${PHASE2JR_PY}" -c "import json; print(json.load(open('${RESTORATION_CERT}')).get('status',''))")"
+if [[ "${STAGE}" == "B1" ]]; then
+  phase2jr_verify_upstream_accounting \
+    "${JDIM_PHASE2JR_UPSTREAM_JOB_ID:-}" \
+    "${RESTORATION_STATUS}"
+fi
 "${PHASE2JR_PY}" scripts/run_jdim_phase2jr.py verify-restoration \
   --certificate "${RESTORATION_CERT}" \
   --results-csv "${RESTORATION_RESULTS}" \
@@ -73,6 +79,9 @@ if [[ "${STAGE}" == "B2" ]]; then
     fi
   fi
   B1_STATUS="$("${PHASE2JR_PY}" -c "import json; print(json.load(open('${B1_CERT}')).get('status',''))")"
+  phase2jr_verify_upstream_accounting \
+    "${JDIM_PHASE2JR_UPSTREAM_JOB_ID:-}" \
+    "${B1_STATUS}"
   if [[ "${B1_STATUS}" == "INTERFACE_INCOMPLETE_RESUMABLE" ]]; then
     "${PHASE2JR_PY}" scripts/run_jdim_phase2jr.py verify-interface-continuation \
       --certificate "${B1_CERT}" \
@@ -110,8 +119,12 @@ if [[ "${STAGE}" == "B1" ]]; then
   esac
 else
   case "${STATUS}" in
-    READY_FOR_BLINDED_HUMAN_AUDIT|BLOCKED_AUDIT_INTERFACE)
+    READY_FOR_BLINDED_HUMAN_AUDIT)
       echo "${STATUS}"
+      ;;
+    BLOCKED_AUDIT_INTERFACE)
+      echo "[error] ${STATUS}" >&2
+      exit 2
       ;;
     *)
       echo "[error] ${STATUS}" >&2

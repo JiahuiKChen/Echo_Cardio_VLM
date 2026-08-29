@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -12,6 +13,8 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import quote, unquote
@@ -50,10 +53,11 @@ from .safety import (
 
 COMPLETE_VERIFIED = "COMPLETE_VERIFIED"
 PARTIAL_RESUMABLE = "PARTIAL_RESUMABLE"
+RESTARTABLE_ZERO_PLACEHOLDER = "RESTARTABLE_ZERO_PLACEHOLDER"
 MISSING = "MISSING"
 UNEXPECTED_OR_INVALID = "UNEXPECTED_OR_INVALID"
 
-RESTORATION_STATE_READY = "RESTORATION_STATE_READY"
+RESTORATION_STATE_RESUMABLE = "RESTORATION_STATE_RESUMABLE"
 RESTORATION_INCOMPLETE_RESUMABLE = "RESTORATION_INCOMPLETE_RESUMABLE"
 BLOCKED_RESTORATION_STATE_INCONSISTENT = "BLOCKED_RESTORATION_STATE_INCONSISTENT"
 BLOCKED_RESTORATION_CONTINUATION_STATE = "BLOCKED_RESTORATION_CONTINUATION_STATE"
@@ -66,6 +70,40 @@ READY_FOR_BLINDED_HUMAN_AUDIT = "READY_FOR_BLINDED_HUMAN_AUDIT"
 
 RESTORATION_POLICY = "JDIM_PHASE2JR_LOCKED_RESTORATION_V1"
 INTERFACE_POLICY = "JDIM_PHASE2JR_RESUMABLE_INTERFACE_V1"
+QACCT_ACCOUNTING_VERIFIED = "QACCT_ACCOUNTING_VERIFIED"
+
+PHASE2JR2_EXPECTED_STATE = {
+    "requested_files": 4808,
+    "complete_verified_files": 2342,
+    "partial_resumable_files": 4,
+    "restartable_zero_placeholder_files": 2111,
+    "missing_files": 351,
+    "invalid_files": 0,
+    "unexpected_files": 0,
+}
+
+_QACCT_REQUIRED_FIELDS = {
+    "jobnumber",
+    "failed",
+    "exit_status",
+    "start_time",
+    "end_time",
+    "ru_wallclock",
+    "maxvmem",
+}
+_QACCT_FIELD = re.compile(
+    r"^[ \t]*(?P<name>[A-Za-z][A-Za-z0-9_]*)[ \t]+(?P<value>\S(?:.*\S)?)[ \t]*$"
+)
+_QACCT_FAILED = re.compile(r"^(?P<code>\d+)(?:\s*:\s*.*)?$")
+_QACCT_MEMORY = re.compile(r"^\d+(?:\.\d+)?(?:[KMGTPE])?$")
+_SCHEDULER_SUCCESS_CERTIFICATES = {
+    LOCKED_ROSTER_SOURCE_RESTORED,
+    RESTORATION_INCOMPLETE_RESUMABLE,
+    AUDIT_INPUTS_TECHNICALLY_LOCKED,
+    INTERFACE_INCOMPLETE_RESUMABLE,
+    AUDIT_INTERFACE_READY,
+    READY_FOR_BLINDED_HUMAN_AUDIT,
+}
 
 
 @dataclass(frozen=True)
@@ -90,6 +128,154 @@ class InterfaceContinuationResult:
 
 def _truth(value: Any) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def parse_qacct_output(raw_output: str) -> dict[str, Any]:
+    """Parse completed-job SCC accounting by field name, independent of alignment."""
+
+    if not isinstance(raw_output, str) or not raw_output.strip():
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_CONTINUATION_STATE,
+            "qacct output is empty",
+        )
+    fields: dict[str, str] = {}
+    for raw_line in raw_output.splitlines():
+        line = raw_line.strip()
+        if not line or set(line) == {"="}:
+            continue
+        match = _QACCT_FIELD.fullmatch(raw_line)
+        if match is None:
+            raise Tier1BlockedError(
+                BLOCKED_RESTORATION_CONTINUATION_STATE,
+                "qacct output contains a malformed field",
+            )
+        name = match.group("name")
+        value = match.group("value").strip()
+        if name in fields:
+            raise Tier1BlockedError(
+                BLOCKED_RESTORATION_CONTINUATION_STATE,
+                f"qacct field {name} is duplicated",
+            )
+        fields[name] = value
+
+    missing = sorted(_QACCT_REQUIRED_FIELDS.difference(fields))
+    if missing or not ({"hostname", "qname"} & fields.keys()):
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_CONTINUATION_STATE,
+            "qacct output is missing required fields",
+        )
+    try:
+        jobnumber = int(fields["jobnumber"])
+        exit_status = int(fields["exit_status"])
+        failed_match = _QACCT_FAILED.fullmatch(fields["failed"])
+        if failed_match is None:
+            raise ValueError("invalid failed field")
+        failed = int(failed_match.group("code"))
+        wallclock = Decimal(fields["ru_wallclock"])
+        start_time = datetime.strptime(fields["start_time"], "%a %b %d %H:%M:%S %Y")
+        end_time = datetime.strptime(fields["end_time"], "%a %b %d %H:%M:%S %Y")
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_CONTINUATION_STATE,
+            "qacct output contains a malformed required value",
+        ) from exc
+    if (
+        jobnumber < 1
+        or failed < 0
+        or exit_status < 0
+        or not wallclock.is_finite()
+        or wallclock < 0
+        or end_time < start_time
+        or _QACCT_MEMORY.fullmatch(fields["maxvmem"]) is None
+    ):
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_CONTINUATION_STATE,
+            "qacct output contains a contradictory required value",
+        )
+    return {
+        "fields": fields,
+        "jobnumber": jobnumber,
+        "failed": failed,
+        "exit_status": exit_status,
+        "ru_wallclock": wallclock,
+        "scheduler_success": failed == 0 and exit_status == 0,
+        "raw_accounting_sha256": sha256_text(raw_output),
+    }
+
+
+def verify_qacct_accounting(
+    raw_output: str,
+    *,
+    expected_jobnumber: int,
+    expected_failed: int,
+    expected_exit_status: int,
+    expected_ru_wallclock: Decimal | int | str,
+) -> dict[str, Any]:
+    parsed = parse_qacct_output(raw_output)
+    expected_wallclock = Decimal(str(expected_ru_wallclock))
+    checks = {
+        "jobnumber": parsed["jobnumber"] == expected_jobnumber,
+        "failed": parsed["failed"] == expected_failed,
+        "exit_status": parsed["exit_status"] == expected_exit_status,
+        "ru_wallclock": parsed["ru_wallclock"] == expected_wallclock,
+    }
+    if not all(checks.values()):
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_CONTINUATION_STATE,
+            "qacct values differ from the locked accounting record",
+        )
+    return {
+        "status": QACCT_ACCOUNTING_VERIFIED,
+        "jobnumber": parsed["jobnumber"],
+        "failed": parsed["failed"],
+        "exit_status": parsed["exit_status"],
+        "ru_wallclock": str(parsed["ru_wallclock"]),
+        "scheduler_success": parsed["scheduler_success"],
+        "raw_accounting_sha256": parsed["raw_accounting_sha256"],
+    }
+
+
+def verify_scheduler_certificate_agreement(
+    parsed_accounting: Mapping[str, Any],
+    certificate_status: str,
+) -> dict[str, Any]:
+    scheduler_success = bool(parsed_accounting.get("scheduler_success"))
+    certificate_success = certificate_status in _SCHEDULER_SUCCESS_CERTIFICATES
+    if scheduler_success != certificate_success:
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_CONTINUATION_STATE,
+            "scheduler and certificate states disagree",
+        )
+    return {
+        "scheduler_success": scheduler_success,
+        "certificate_status": certificate_status,
+        "states_agree": True,
+    }
+
+
+def verify_qacct_certificate_agreement(
+    raw_output: str,
+    *,
+    expected_jobnumber: int,
+    certificate_status: str,
+) -> dict[str, Any]:
+    parsed = parse_qacct_output(raw_output)
+    if parsed["jobnumber"] != expected_jobnumber:
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_CONTINUATION_STATE,
+            "qacct job number differs from the declared upstream dependency",
+        )
+    agreement = verify_scheduler_certificate_agreement(parsed, certificate_status)
+    return {
+        "status": QACCT_ACCOUNTING_VERIFIED,
+        "jobnumber": parsed["jobnumber"],
+        "failed": parsed["failed"],
+        "exit_status": parsed["exit_status"],
+        "scheduler_success": parsed["scheduler_success"],
+        "certificate_status": certificate_status,
+        "states_agree": agreement["states_agree"],
+        "raw_accounting_sha256": parsed["raw_accounting_sha256"],
+    }
 
 
 def _atomic_write_text(path: Path, text: str, mode: int = 0o600) -> None:
@@ -145,6 +331,11 @@ def _locked_file_rows(
                 "locked URL is not canonically encoded",
             )
         relative_paths.append(relative)
+    if len(set(relative_paths)) != expected_files:
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_STATE_INCONSISTENT,
+            "more than one locked URL maps to the same destination",
+        )
 
     manifest = pd.read_csv(restoration_manifest_csv)
     require_columns(
@@ -189,7 +380,11 @@ def _locked_file_rows(
         lambda value: str((destination_root / value).resolve())
     )
     rows["restricted_partial"] = rows["restricted_destination"].map(lambda value: value + ".part")
-    if any(destination_root not in Path(value).parents for value in rows["restricted_destination"]):
+    if any(
+        destination_root not in Path(value).parents
+        for column in ("restricted_destination", "restricted_partial")
+        for value in rows[column]
+    ):
         raise Tier1BlockedError(
             BLOCKED_RESTORATION_STATE_INCONSISTENT,
             "locked destination escaped the restricted root",
@@ -201,14 +396,16 @@ def _unexpected_files(
     source_destination_root: Path,
     rows: pd.DataFrame,
 ) -> list[Path]:
+    source_destination_root = source_destination_root.resolve()
     if not source_destination_root.exists():
         return []
-    expected = {str(Path(value).resolve()) for value in rows["restricted_destination"]}
-    expected.update(str(Path(value).resolve()) for value in rows["restricted_partial"])
+    expected = {str(Path(value).absolute()) for value in rows["restricted_destination"]}
+    expected.update(str(Path(value).absolute()) for value in rows["restricted_partial"])
     return [
         candidate
         for candidate in source_destination_root.rglob("*")
-        if candidate.is_file() and str(candidate.resolve()) not in expected
+        if (candidate.is_file() or candidate.is_symlink())
+        and str(candidate.absolute()) not in expected
     ]
 
 
@@ -224,9 +421,11 @@ def _state_summary(
     counts = rows["state"].value_counts().to_dict()
     complete = int(counts.get(COMPLETE_VERIFIED, 0))
     partial = int(counts.get(PARTIAL_RESUMABLE, 0))
+    zero_placeholder = int(counts.get(RESTARTABLE_ZERO_PLACEHOLDER, 0))
     missing = int(counts.get(MISSING, 0))
     invalid = int(counts.get(UNEXPECTED_OR_INVALID, 0))
-    if complete + partial + missing + invalid != len(rows):
+    classified = complete + partial + zero_placeholder + missing + invalid
+    if classified != len(rows):
         raise AssertionError("restoration states do not reconcile")
     complete_paths = set(
         rows.loc[rows["state"].eq(COMPLETE_VERIFIED), "official_relative_path"].astype(str)
@@ -244,7 +443,7 @@ def _state_summary(
         if invalid or unexpected_files
         else LOCKED_ROSTER_SOURCE_RESTORED
         if complete == len(rows) and complete_studies == len(required_by_study)
-        else RESTORATION_STATE_READY
+        else RESTORATION_STATE_RESUMABLE
     )
     summary = {
         "status": status,
@@ -254,6 +453,7 @@ def _state_summary(
         "requested_studies": int(len(required_by_study)),
         "complete_verified_files": complete,
         "partial_resumable_files": partial,
+        "restartable_zero_placeholder_files": zero_placeholder,
         "missing_files": missing,
         "invalid_files": invalid,
         "unexpected_files": int(unexpected_files),
@@ -265,12 +465,15 @@ def _state_summary(
         "partial_size_bytes": int(
             rows.loc[rows["state"].eq(PARTIAL_RESUMABLE), "size_bytes"].sum()
         ),
+        "zero_placeholder_size_bytes": int(
+            rows.loc[rows["state"].eq(RESTARTABLE_ZERO_PLACEHOLDER), "size_bytes"].sum()
+        ),
         "remaining_files": int(len(rows) - complete),
         "remaining_file_set_sha256": canonical_id_set_sha256(remaining),
         "locked_url_list_sha256": sha256_file(locked_url_list),
         "locked_file_set_sha256": canonical_id_set_sha256(rows["official_relative_path"]),
         "destination_identity_sha256": sha256_text(str(source_destination_root.resolve())),
-        "states_reconcile": bool(complete + partial + missing + invalid == len(rows)),
+        "states_reconcile": bool(classified == len(rows)),
         "complete_partial_overlap": False,
         "credentials_logged": False,
         "clinical_content_reviewed": False,
@@ -285,8 +488,8 @@ def assess_restoration_state(
     locked_url_list: Path,
     restoration_manifest_csv: Path,
     source_destination_root: Path,
-    restricted_output_csv: Path,
-    safe_output_json: Path,
+    restricted_output_csv: Path | None,
+    safe_output_json: Path | None,
     source_commit: str,
     expected_files: int = 4808,
     expected_studies: int = 109,
@@ -307,20 +510,32 @@ def assess_restoration_state(
     for row in rows.itertuples(index=False):
         destination = Path(row.restricted_destination)
         partial = Path(row.restricted_partial)
-        if destination.exists() and partial.exists():
+        destination_present = os.path.lexists(destination)
+        partial_present = os.path.lexists(partial)
+        if destination_present and partial_present:
             state, detail, size = UNEXPECTED_OR_INVALID, "complete_partial_overlap", 0
-        elif destination.exists():
-            if not destination.is_file() or destination.stat().st_size <= 0:
+        elif destination_present:
+            if (
+                destination.is_symlink()
+                or not destination.is_file()
+                or destination.stat().st_size <= 0
+            ):
                 state, detail, size = UNEXPECTED_OR_INVALID, "invalid_complete_file", 0
             else:
                 valid, detail = validator(destination)
                 state = COMPLETE_VERIFIED if valid else UNEXPECTED_OR_INVALID
                 size = int(destination.stat().st_size) if valid else 0
-        elif partial.exists():
-            if partial.is_file() and partial.stat().st_size > 0:
-                state, detail, size = PARTIAL_RESUMABLE, "partial_nonzero", int(partial.stat().st_size)
-            else:
+        elif partial_present:
+            if partial.is_symlink() or not partial.is_file():
                 state, detail, size = UNEXPECTED_OR_INVALID, "invalid_partial_file", 0
+            elif partial.stat().st_size > 0:
+                state, detail, size = (
+                    PARTIAL_RESUMABLE,
+                    "partial_nonzero",
+                    int(partial.stat().st_size),
+                )
+            else:
+                state, detail, size = RESTARTABLE_ZERO_PLACEHOLDER, "partial_zero_restartable", 0
         else:
             state, detail, size = MISSING, "not_started", 0
         states.append(state)
@@ -338,10 +553,30 @@ def assess_restoration_state(
         source_commit=source_commit,
         unexpected_files=len(unexpected),
     )
-    restricted_output_csv = require_restricted_destination(restricted_output_csv)
-    _atomic_write_csv(restricted_output_csv, rows)
-    _atomic_write_json(safe_output_json, summary)
+    if (restricted_output_csv is None) != (safe_output_json is None):
+        raise ValueError("restoration assessment outputs must be both present or both omitted")
+    if restricted_output_csv is not None and safe_output_json is not None:
+        restricted_output_csv = require_restricted_destination(restricted_output_csv)
+        _atomic_write_csv(restricted_output_csv, rows)
+        _atomic_write_json(safe_output_json, summary)
     return RestorationState(rows, summary)
+
+
+def verify_phase2jr2_preflight_state(summary: Mapping[str, Any]) -> dict[str, Any]:
+    checks = {
+        "status": summary.get("status") == RESTORATION_STATE_RESUMABLE,
+        "states_reconcile": summary.get("states_reconcile") is True,
+        **{
+            field: summary.get(field) == expected
+            for field, expected in PHASE2JR2_EXPECTED_STATE.items()
+        },
+    }
+    if not all(checks.values()):
+        raise Tier1BlockedError(
+            BLOCKED_RESTORATION_STATE_INCONSISTENT,
+            "actual restoration state differs from the locked Phase 2J-R2 preflight",
+        )
+    return {"status": RESTORATION_STATE_RESUMABLE, "checks": checks}
 
 
 def _download_locked_file(
@@ -352,11 +587,17 @@ def _download_locked_file(
 ) -> tuple[bool, str]:
     destination = Path(str(row["restricted_destination"]))
     partial = Path(str(row["restricted_partial"]))
+    if str(partial) != str(destination) + ".part":
+        return False, "partial_path_mismatch"
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(destination.parent, 0o700)
-    if destination.exists():
+    if os.path.lexists(destination):
+        if destination.is_symlink() or not destination.is_file():
+            return False, "existing_final_not_regular"
         valid, detail = validator(destination)
         return (True, "already_available_verified") if valid else (False, f"existing_{detail}")
+    if os.path.lexists(partial) and (partial.is_symlink() or not partial.is_file()):
+        return False, "existing_partial_not_regular"
     wget = shutil.which("wget")
     if not wget:
         return False, "wget_unavailable"
@@ -518,9 +759,13 @@ def resume_locked_restoration(
     last_checkpoint = time.monotonic()
     try:
         pending = state.restricted_rows.loc[
-            state.restricted_rows["state"].isin([PARTIAL_RESUMABLE, MISSING])
+            state.restricted_rows["state"].isin(
+                [PARTIAL_RESUMABLE, RESTARTABLE_ZERO_PLACEHOLDER, MISSING]
+            )
         ].copy()
-        pending["state_priority"] = pending["state"].map({PARTIAL_RESUMABLE: 0, MISSING: 1})
+        pending["state_priority"] = pending["state"].map(
+            {PARTIAL_RESUMABLE: 0, RESTARTABLE_ZERO_PLACEHOLDER: 1, MISSING: 2}
+        )
         pending = pending.sort_values(["state_priority", "request_order"], kind="stable")
         records = pending.to_dict(orient="records")
         next_index = 0
@@ -564,22 +809,33 @@ def resume_locked_restoration(
                         working_rows.at[row_index, "validation_detail"] = str(detail)
                         working_rows.at[row_index, "size_bytes"] = int(destination.stat().st_size)
                     else:
-                        if partial.is_file() and partial.stat().st_size > 0:
+                        if partial.is_symlink() or (
+                            os.path.lexists(partial) and not partial.is_file()
+                        ):
+                            working_rows.at[row_index, "state"] = UNEXPECTED_OR_INVALID
+                            working_rows.at[row_index, "validation_detail"] = str(detail)
+                            working_rows.at[row_index, "size_bytes"] = 0
+                            stop_requested.set()
+                        elif partial.is_file() and partial.stat().st_size > 0:
                             working_rows.at[row_index, "state"] = PARTIAL_RESUMABLE
                             working_rows.at[row_index, "validation_detail"] = str(detail)
                             working_rows.at[row_index, "size_bytes"] = int(partial.stat().st_size)
+                        elif partial.is_file():
+                            working_rows.at[row_index, "state"] = RESTARTABLE_ZERO_PLACEHOLDER
+                            working_rows.at[row_index, "validation_detail"] = str(detail)
+                            working_rows.at[row_index, "size_bytes"] = 0
                         else:
                             working_rows.at[row_index, "state"] = MISSING
                             working_rows.at[row_index, "validation_detail"] = str(detail)
                             working_rows.at[row_index, "size_bytes"] = 0
-                        if not partial.exists() or partial.stat().st_size <= 0:
-                            stop_requested.set()
                     transfer_records.append(
                         {
                             "completion_sequence": len(transfer_records) + 1,
                             "request_order": int(row["request_order"]),
                             "official_relative_path": str(row["official_relative_path"]),
                             "restricted_destination": str(row["restricted_destination"]),
+                            "initial_state": str(row["state"]),
+                            "initial_size_bytes": int(row["size_bytes"]),
                             "success": bool(success),
                             "state": str(working_rows.at[row_index, "state"]),
                             "detail": str(detail),
@@ -631,7 +887,7 @@ def resume_locked_restoration(
             signal.signal(signum, handler)
 
     final_status = str(final_state.safe_summary["status"])
-    if final_status == RESTORATION_STATE_READY:
+    if final_status == RESTORATION_STATE_RESUMABLE:
         final_status = incomplete_status
     results_path = restricted_root / "source_restoration_results_restricted.csv"
     _write_final_restoration_manifest(final_state.restricted_rows, results_path)
@@ -677,6 +933,7 @@ def verify_restoration_certificate(
         "complete_studies": payload.get("complete_studies") == expected_studies,
         "remaining_files": payload.get("remaining_files") == 0,
         "partial_files": payload.get("partial_resumable_files") == 0,
+        "zero_placeholder_files": payload.get("restartable_zero_placeholder_files") == 0,
         "invalid_files": payload.get("invalid_files") == 0,
         "unexpected_files": payload.get("unexpected_files") == 0,
         "results_hash": payload.get("restoration_results_sha256") == sha256_file(results_path),
@@ -703,6 +960,7 @@ def verify_restoration_continuation_certificate(
     count_fields = (
         "complete_verified_files",
         "partial_resumable_files",
+        "restartable_zero_placeholder_files",
         "missing_files",
         "invalid_files",
     )

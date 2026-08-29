@@ -16,11 +16,11 @@ cd "${PHASE2JR_REPO}"
 "${PHASE2JR_PY}" -m unittest discover -s tests -p 'test_*.py' -q
 
 ACCOUNTING="$(qacct -j 7354017)"
-if ! grep -Eq '^exit_status[[:space:]]+137$' <<<"${ACCOUNTING}" \
-  || ! grep -Eq '^ru_wallclock[[:space:]]+43201$' <<<"${ACCOUNTING}"; then
-  echo "[error] prior restoration accounting no longer matches the wall-time interruption" >&2
-  exit 2
-fi
+printf '%s\n' "${ACCOUNTING}" | "${PHASE2JR_PY}" scripts/run_jdim_phase2jr.py verify-qacct \
+  --expected-jobnumber 7354017 \
+  --expected-failed 100 \
+  --expected-exit-status 137 \
+  --expected-ru-wallclock 43201
 for absent in \
   "${PHASE2JR_OLD_ROOT}/aggregate_safe/phase2j_job_a_certificate.json" \
   "${PHASE2JR_OLD_ROOT}/aggregate_safe/restoration/source_restoration_summary.json" \
@@ -42,6 +42,14 @@ for new_root in \
   fi
 done
 
+"${PHASE2JR_PY}" scripts/run_jdim_phase2jr.py assess-restoration \
+  --locked-url-list "${PHASE2JR_LOCKED_URL_LIST}" \
+  --restoration-manifest-csv "${PHASE2JR_RESTORATION_MANIFEST}" \
+  --source-destination-root "${PHASE2JR_SOURCE_DESTINATION}" \
+  --source-commit "${PHASE2JR_SOURCE_COMMIT}" \
+  --no-write \
+  --require-phase2jr2-current-state
+
 mkdir -p \
   "${PHASE2JR_A2_ROOT}/restricted/preflight" \
   "${PHASE2JR_A2_ROOT}/aggregate_safe/preflight" \
@@ -53,16 +61,9 @@ chmod 700 "${PHASE2JR_A2_ROOT}" "${PHASE2JR_LOG_ROOT}"
   --source-destination-root "${PHASE2JR_SOURCE_DESTINATION}" \
   --source-commit "${PHASE2JR_SOURCE_COMMIT}" \
   --restricted-output-csv "${PHASE2JR_A2_ROOT}/restricted/preflight/restoration_state_restricted.csv" \
-  --safe-output-json "${PHASE2JR_A2_ROOT}/aggregate_safe/preflight/restoration_state_summary.json"
-STATE_STATUS="$("${PHASE2JR_PY}" -c "import json; print(json.load(open('${PHASE2JR_A2_ROOT}/aggregate_safe/preflight/restoration_state_summary.json'))['status'])")"
-if [[ "${STATE_STATUS}" == "BLOCKED_RESTORATION_STATE_INCONSISTENT" ]]; then
-  echo "BLOCKED_RESTORATION_STATE_INCONSISTENT" >&2
-  exit 2
-fi
-if [[ "${STATE_STATUS}" != "RESTORATION_STATE_READY" && "${STATE_STATUS}" != "LOCKED_ROSTER_SOURCE_RESTORED" ]]; then
-  echo "[error] unexpected restoration-state preflight status" >&2
-  exit 2
-fi
+  --safe-output-json "${PHASE2JR_A2_ROOT}/aggregate_safe/preflight/restoration_state_summary.json" \
+  --require-phase2jr2-current-state
+STATE_STATUS="RESTORATION_STATE_RESUMABLE"
 
 QSUB_COMMON=(
   -terse
@@ -76,37 +77,16 @@ QSUB_COMMON=(
 )
 SOURCE_ENV="JDIM_PHASE2JR_SOURCE_COMMIT=${PHASE2JR_SOURCE_COMMIT}"
 
-if [[ "${STATE_STATUS}" == "LOCKED_ROSTER_SOURCE_RESTORED" ]]; then
-  "${PHASE2JR_PY}" scripts/run_jdim_phase2jr.py resume-restoration \
-    --locked-url-list "${PHASE2JR_LOCKED_URL_LIST}" \
-    --restoration-manifest-csv "${PHASE2JR_RESTORATION_MANIFEST}" \
-    --source-destination-root "${PHASE2JR_SOURCE_DESTINATION}" \
-    --source-commit "${PHASE2JR_SOURCE_COMMIT}" \
-    --run-root "${PHASE2JR_A2_ROOT}" \
-    --netrc-path "${HOME}/.netrc" \
-    --continuation-label PREFLIGHT_ALREADY_COMPLETE \
-    --max-workers 2 \
-    --checkpoint-every 25 \
-    --checkpoint-seconds 900 \
-    --soft-stop-seconds 0 \
-    --incomplete-status RESTORATION_INCOMPLETE_RESUMABLE
-  DIRECT_ENV="${SOURCE_ENV},JDIM_PHASE2JR_DIRECT_RESTORATION_ROOT=${PHASE2JR_A2_ROOT}"
-  B1_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_b1 -v "${DIRECT_ENV}" -b y \
-    "${PHASE2JR_REPO}/scripts/scc_run_jdim_phase2jr_interface.sh" B1 run)"
-  B2_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_b2 -hold_jid "${B1_JOB}" -v "${DIRECT_ENV}" -b y \
-    "${PHASE2JR_REPO}/scripts/scc_run_jdim_phase2jr_interface.sh" B2 run)"
-  printf 'STATE_STATUS=%s\nA2_JOB=SKIPPED_ALREADY_COMPLETE\nA3_JOB=SKIPPED_ALREADY_COMPLETE\nB1_JOB=%s\nB2_JOB=%s\nDEPENDENCIES=B1->B2\n' \
-    "${STATE_STATUS}" "${B1_JOB}" "${B2_JOB}"
-  exit 0
-fi
-
 A2_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_a2 -v "${SOURCE_ENV}" -b y \
   "${PHASE2JR_REPO}/scripts/scc_run_jdim_phase2jr_restoration.sh" A2 run)"
-A3_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_a3 -hold_jid "${A2_JOB}" -v "${SOURCE_ENV}" -b y \
+A3_ENV="${SOURCE_ENV},JDIM_PHASE2JR_UPSTREAM_JOB_ID=${A2_JOB}"
+A3_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_a3 -hold_jid "${A2_JOB}" -v "${A3_ENV}" -b y \
   "${PHASE2JR_REPO}/scripts/scc_run_jdim_phase2jr_restoration.sh" A3 run)"
-B1_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_b1 -hold_jid "${A3_JOB}" -v "${SOURCE_ENV}" -b y \
+B1_ENV="${SOURCE_ENV},JDIM_PHASE2JR_UPSTREAM_JOB_ID=${A3_JOB}"
+B1_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_b1 -hold_jid "${A3_JOB}" -v "${B1_ENV}" -b y \
   "${PHASE2JR_REPO}/scripts/scc_run_jdim_phase2jr_interface.sh" B1 run)"
-B2_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_b2 -hold_jid "${B1_JOB}" -v "${SOURCE_ENV}" -b y \
+B2_ENV="${SOURCE_ENV},JDIM_PHASE2JR_UPSTREAM_JOB_ID=${B1_JOB}"
+B2_JOB="$(qsub "${QSUB_COMMON[@]}" -N jdim_p2jr_b2 -hold_jid "${B1_JOB}" -v "${B2_ENV}" -b y \
   "${PHASE2JR_REPO}/scripts/scc_run_jdim_phase2jr_interface.sh" B2 run)"
 printf 'STATE_STATUS=%s\nA2_JOB=%s\nA3_JOB=%s\nB1_JOB=%s\nB2_JOB=%s\nDEPENDENCIES=A2->A3->B1->B2\n' \
   "${STATE_STATUS}" "${A2_JOB}" "${A3_JOB}" "${B1_JOB}" "${B2_JOB}"
