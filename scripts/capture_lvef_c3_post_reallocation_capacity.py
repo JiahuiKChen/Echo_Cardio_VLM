@@ -584,6 +584,41 @@ R8U_R3_CAPACITY_KEYS = frozenset(
     }
 )
 
+# Phase 1I-R8U-R4 keeps the R3 candidate seal immutable and changes only the
+# replay/locality authority used to publish that already-complete candidate.
+# Capacity arithmetic is therefore intentionally identical to R3.  The R4
+# wrapper below closes the two authority epochs that must not be caller
+# selectable while retaining one fresh portability-repair HEAD.
+R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT = (
+    "a6e80b606a76dde2512a8eedf4eb8fa4f87211ef"
+)
+R8U_R3_IMMUTABLE_CANDIDATE_SEAL_SHA256 = (
+    "cfb0b19044db53742c1fd6121f8d33b567f6a62c2661050cf4df2cc4e6f2cbf2"
+)
+R8U_R4_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = (
+    R8U_R3_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
+    | frozenset({"r8u_portability_repair_commit"})
+)
+R8U_R4_CAPACITY_STATUS_PASS = (
+    "PASS_R8U_R4_BATCH16_PUBLICATION_RESUME_AND_17_19_WITH_200GB_RESERVE"
+)
+R8U_R4_CAPACITY_STATUS_BLOCKED = R8U_R3_CAPACITY_STATUS_BLOCKED
+R8U_R4_CAPACITY_ARTIFACT_TYPE = (
+    "lvef_c3_r8u_r4_batch16_publication_resume_capacity_v1"
+)
+R8U_R4_CAPACITY_KEY_RENAMES = {
+    "r8u_r3_increment_bytes": "r8u_r4_increment_bytes",
+    "quota_slack_after_r8u_r3_bytes": "quota_slack_after_r8u_r4_bytes",
+    "physical_slack_after_r8u_r3_bytes": "physical_slack_after_r8u_r4_bytes",
+}
+R8U_R4_CAPACITY_KEYS = frozenset(
+    (
+        R8U_R3_CAPACITY_KEYS
+        - frozenset(R8U_R4_CAPACITY_KEY_RENAMES)
+    )
+    | frozenset(R8U_R4_CAPACITY_KEY_RENAMES.values())
+)
+
 # The historical Phase 1E-F receipt above deliberately remains bound to the
 # exact allocation that existed when it was captured.  Fresh-successor
 # admission is a different authority: it is expected to observe a changed
@@ -5133,6 +5168,258 @@ def validate_fixed_r8u_r3_batch16_publication_resume_capacity(
             "R8U_R3_CAPACITY_ARITHMETIC_INVALID"
         )
     return dict(value)
+
+
+def _fixed_r8u_r4_implementation_authority_epochs(
+    r8u_portability_repair_commit: str,
+) -> dict[str, str]:
+    """Return the closed eight-epoch authority for one validated R8U-R4 HEAD."""
+
+    fixed_epochs = {
+        R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+        R8U_R8R_IMPLEMENTATION_COMMIT,
+        R8U_BASE_IMPLEMENTATION_COMMIT,
+        R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT,
+        R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT,
+    }
+    if (
+        type(r8u_portability_repair_commit) is not str
+        or COMMIT_RE.fullmatch(r8u_portability_repair_commit) is None
+        or r8u_portability_repair_commit in fixed_epochs
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R4_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
+    result = {
+        "scientific_commit": R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+        "r8r_implementation_commit": R8U_R8R_IMPLEMENTATION_COMMIT,
+        "r8u_base_implementation_commit": R8U_BASE_IMPLEMENTATION_COMMIT,
+        "r8u_projection_repair_commit": (
+            R8U_PROJECTION_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_scheduler_log_repair_commit": (
+            R8U_SCHEDULER_LOG_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_publication_resume_repair_commit": (
+            R8U_PUBLICATION_RESUME_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_candidate_authority_repair_commit": (
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_portability_repair_commit": r8u_portability_repair_commit,
+    }
+    if set(result) != R8U_R4_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R4_IMPLEMENTATION_AUTHORITY_INVALID"
+        )
+    return result
+
+
+def _validate_fixed_r8u_r4_candidate_authority(
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+) -> None:
+    if (
+        completed_extraction_candidate_seal_sha256
+        != R8U_R3_IMMUTABLE_CANDIDATE_SEAL_SHA256
+        or type(completed_extraction_candidate_bytes) is not int
+        or completed_extraction_candidate_bytes <= 0
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R4_COMPLETED_EXTRACTION_CANDIDATE_AUTHORITY_INVALID"
+        )
+
+
+def _r8u_r4_capacity_from_r3(
+    value: Mapping[str, Any], *, r8u_portability_repair_commit: str
+) -> dict[str, Any]:
+    converted = {
+        R8U_R4_CAPACITY_KEY_RENAMES.get(key, key): item
+        for key, item in value.items()
+    }
+    converted["artifact_type"] = R8U_R4_CAPACITY_ARTIFACT_TYPE
+    converted["status"] = (
+        R8U_R4_CAPACITY_STATUS_PASS
+        if value.get("status") == R8U_R3_CAPACITY_STATUS_PASS
+        else R8U_R4_CAPACITY_STATUS_BLOCKED
+    )
+    converted["implementation_authority_epochs"] = (
+        _fixed_r8u_r4_implementation_authority_epochs(
+            r8u_portability_repair_commit
+        )
+    )
+    converted["blocking_reason_codes"] = [
+        str(code).replace("R8U_R3_", "R8U_R4_", 1)
+        for code in value["blocking_reason_codes"]
+    ]
+    if set(converted) != R8U_R4_CAPACITY_KEYS:
+        raise PostReallocationCapacityError("R8U_R4_CAPACITY_SCHEMA_INVALID")
+    return converted
+
+
+def _r8u_r3_capacity_from_r4(value: Mapping[str, Any]) -> dict[str, Any]:
+    reverse_names = {
+        r4_name: r3_name
+        for r3_name, r4_name in R8U_R4_CAPACITY_KEY_RENAMES.items()
+    }
+    converted = {reverse_names.get(key, key): item for key, item in value.items()}
+    converted["artifact_type"] = R8U_R3_CAPACITY_ARTIFACT_TYPE
+    converted["status"] = (
+        R8U_R3_CAPACITY_STATUS_PASS
+        if value.get("status") == R8U_R4_CAPACITY_STATUS_PASS
+        else R8U_R3_CAPACITY_STATUS_BLOCKED
+    )
+    converted["implementation_authority_epochs"] = (
+        _fixed_r8u_r3_implementation_authority_epochs(
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        )
+    )
+    converted["blocking_reason_codes"] = [
+        str(code).replace("R8U_R4_", "R8U_R3_", 1)
+        for code in value["blocking_reason_codes"]
+    ]
+    return converted
+
+
+def probe_fixed_r8u_r4_batch16_publication_resume_capacity(
+    plan: Mapping[str, Any],
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+    r8u_portability_repair_commit: str,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Capture one R4 observation with the R3 seal and prior commit closed."""
+
+    _validate_fixed_r8u_r4_candidate_authority(
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+    )
+    _fixed_r8u_r4_implementation_authority_epochs(
+        r8u_portability_repair_commit
+    )
+    r3_value = probe_fixed_r8u_r3_batch16_publication_resume_capacity(
+        plan,
+        completed_extraction_candidate_seal_sha256=(
+            R8U_R3_IMMUTABLE_CANDIDATE_SEAL_SHA256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+        r8u_candidate_authority_repair_commit=(
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        process_runner=process_runner,
+    )
+    value = _r8u_r4_capacity_from_r3(
+        r3_value,
+        r8u_portability_repair_commit=r8u_portability_repair_commit,
+    )
+    return validate_fixed_r8u_r4_batch16_publication_resume_capacity(
+        plan,
+        value,
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+        r8u_portability_repair_commit=r8u_portability_repair_commit,
+    )
+
+
+def validate_fixed_r8u_r4_batch16_publication_resume_capacity(
+    plan: Mapping[str, Any],
+    value: Mapping[str, Any],
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+    r8u_portability_repair_commit: str,
+) -> dict[str, Any]:
+    """Replay R4 through the frozen R3 arithmetic and exact R4 epochs."""
+
+    _validate_fixed_r8u_r4_candidate_authority(
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+    )
+    expected_epochs = _fixed_r8u_r4_implementation_authority_epochs(
+        r8u_portability_repair_commit
+    )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8U_R4_CAPACITY_KEYS
+        or value.get("artifact_type") != R8U_R4_CAPACITY_ARTIFACT_TYPE
+        or value.get("completed_extraction_candidate_seal_sha256")
+        != R8U_R3_IMMUTABLE_CANDIDATE_SEAL_SHA256
+        or value.get("completed_extraction_candidate_bytes_baseline")
+        != completed_extraction_candidate_bytes
+        or not isinstance(value.get("implementation_authority_epochs"), Mapping)
+        or dict(value["implementation_authority_epochs"]) != expected_epochs
+    ):
+        raise PostReallocationCapacityError("R8U_R4_CAPACITY_SCHEMA_INVALID")
+    r3_value = _r8u_r3_capacity_from_r4(value)
+    try:
+        validated_r3 = (
+            validate_fixed_r8u_r3_batch16_publication_resume_capacity(
+                plan,
+                r3_value,
+                completed_extraction_candidate_seal_sha256=(
+                    R8U_R3_IMMUTABLE_CANDIDATE_SEAL_SHA256
+                ),
+                completed_extraction_candidate_bytes=(
+                    completed_extraction_candidate_bytes
+                ),
+                r8u_candidate_authority_repair_commit=(
+                    R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+                ),
+            )
+        )
+    except PostReallocationCapacityError as exc:
+        code = exc.code.replace("R8U_R3_", "R8U_R4_", 1)
+        raise PostReallocationCapacityError(code) from exc
+    expected = _r8u_r4_capacity_from_r3(
+        validated_r3,
+        r8u_portability_repair_commit=r8u_portability_repair_commit,
+    )
+    if dict(value) != expected:
+        raise PostReallocationCapacityError(
+            "R8U_R4_CAPACITY_ARITHMETIC_INVALID"
+        )
+    return dict(value)
+
+
+def capture_r8u_r4_remaining_capacity(
+    plan: Mapping[str, Any],
+    *,
+    completed_extraction_candidate_seal_sha256: str,
+    completed_extraction_candidate_bytes: int,
+    r8u_portability_repair_commit: str,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Controller-facing name for the sole closed R8U-R4 capacity capture."""
+
+    return probe_fixed_r8u_r4_batch16_publication_resume_capacity(
+        plan,
+        completed_extraction_candidate_seal_sha256=(
+            completed_extraction_candidate_seal_sha256
+        ),
+        completed_extraction_candidate_bytes=(
+            completed_extraction_candidate_bytes
+        ),
+        r8u_portability_repair_commit=r8u_portability_repair_commit,
+        process_runner=process_runner,
+    )
 
 
 def _dynamic_capture_time(

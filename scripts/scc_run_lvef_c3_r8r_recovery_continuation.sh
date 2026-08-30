@@ -13,7 +13,7 @@ JOB_STORAGE_BASE=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/scheduler_
 
 [[ $# -eq 0 ]] || exit 64
 [[ "${JOB_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || exit 78
-[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
+[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin)|r8u_r4_(res|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
 [[ -f "$COMMON" && ! -L "$COMMON" ]] || exit 78
 # shellcheck disable=SC1090 -- fixed authority-worktree helper path.
 source "$COMMON"
@@ -94,6 +94,31 @@ case "$JOB_NAME" in
     ROLE=r8u_r3_finalizer
     MODE=--run-r8u-r3-continuation-finalizer
     PYCACHE_ROLE=lvef_c3_r8u_r3
+    ;;
+  lvef_c3_r8u_r4_res_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    JOB_FAMILY=r8u_r4
+    ROLE=r8u_r4_batch16_publication_resume
+    MODE=--run-r8u-r4-batch16-publication-resume
+    PYCACHE_ROLE=lvef_c3_r8u_r4
+    ;;
+  lvef_c3_r8u_r4_seq_*)
+    [[ "${SGE_TASK_ID:-}" =~ ^1[7-9]$ ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    JOB_FAMILY=r8u_r4
+    ROLE="r8u_r4_array_task_${SGE_TASK_ID}"
+    MODE=--run-r8u-r4-continuation-17-19-array-task
+    PYCACHE_ROLE=lvef_c3_r8u_r4
+    ;;
+  lvef_c3_r8u_r4_fin_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u_r4
+    ROLE=r8u_r4_finalizer
+    MODE=--run-r8u-r4-continuation-finalizer
+    PYCACHE_ROLE=lvef_c3_r8u_r4
     ;;
   *) exit 78 ;;
 esac

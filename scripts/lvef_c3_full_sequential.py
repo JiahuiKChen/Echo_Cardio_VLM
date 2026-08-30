@@ -437,12 +437,14 @@ class FullExecutionContext(Enum):
     R8R_FIXED_CONTINUATION = "R8R_FIXED_CONTINUATION"
     R8U_R2_FIXED_CONTINUATION = "R8U_R2_FIXED_CONTINUATION"
     R8U_R3_FIXED_CONTINUATION = "R8U_R3_FIXED_CONTINUATION"
+    R8U_R4_FIXED_CONTINUATION = "R8U_R4_FIXED_CONTINUATION"
 
 
 ORIGINAL_FULL_SUBMISSION = FullExecutionContext.ORIGINAL_FULL_SUBMISSION
 R8R_FIXED_CONTINUATION = FullExecutionContext.R8R_FIXED_CONTINUATION
 R8U_R2_FIXED_CONTINUATION = FullExecutionContext.R8U_R2_FIXED_CONTINUATION
 R8U_R3_FIXED_CONTINUATION = FullExecutionContext.R8U_R3_FIXED_CONTINUATION
+R8U_R4_FIXED_CONTINUATION = FullExecutionContext.R8U_R4_FIXED_CONTINUATION
 # Compatibility name used by the fixed controller; it resolves only to the
 # fresh R2 continuation context and does not make the consumed R1 epoch live.
 R8U_FIXED_CONTINUATION = R8U_R2_FIXED_CONTINUATION
@@ -1511,6 +1513,11 @@ def run_batch_task(
         and effective_task not in range(17, 20)
     ):
         _fail("FULL_SEQUENTIAL_R8U_R3_CONTINUATION_TASK_OUT_OF_SCOPE")
+    if (
+        dependency.execution_context is R8U_R4_FIXED_CONTINUATION
+        and effective_task not in range(17, 20)
+    ):
+        _fail("FULL_SEQUENTIAL_R8U_R4_CONTINUATION_TASK_OUT_OF_SCOPE")
 
     # This gate is deliberately first for tasks 2..N: no validation below may
     # construct a token provider, body transport, DICOM reader, or GPU object.
@@ -1551,6 +1558,12 @@ def run_batch_task(
             import lvef_c3_r8r_recovery_continuation as r8r
 
             r8r.validate_r8u_r3_frozen_partial_evidence()
+        elif dependency.execution_context is R8U_R4_FIXED_CONTINUATION:
+            if cache_inventory.active != 1:
+                _fail("FULL_SEQUENTIAL_R8U_R4_EXTRACTION_CACHE_TOPOLOGY_INVALID")
+            import lvef_c3_r8r_recovery_continuation as r8r
+
+            r8r.validate_r8u_r4_frozen_partial_evidence()
         elif cache_inventory.active != 0:
             _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
 
@@ -1580,6 +1593,12 @@ def run_batch_task(
                     current_job_id=str(os.environ.get("JOB_ID", "")),
                     role="array",
                 )
+            elif dependency.execution_context is R8U_R4_FIXED_CONTINUATION:
+                import lvef_c3_r8r_recovery_continuation as r8r
+
+                r8r.validate_r8u_r4_continuation_worker_submission(
+                    current_job_id=str(os.environ.get("JOB_ID", "")),
+                )
             else:
                 _wait_for_submission_receipt(
                     effective_run,
@@ -1599,6 +1618,7 @@ def run_batch_task(
                 R8R_FIXED_CONTINUATION,
                 R8U_R2_FIXED_CONTINUATION,
                 R8U_R3_FIXED_CONTINUATION,
+                R8U_R4_FIXED_CONTINUATION,
             }:
                 environment_arguments["runtime_validation_context"] = (
                     stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1740,6 +1760,7 @@ def run_batch_task(
             R8R_FIXED_CONTINUATION,
             R8U_R2_FIXED_CONTINUATION,
             R8U_R3_FIXED_CONTINUATION,
+            R8U_R4_FIXED_CONTINUATION,
         }:
             echoprime_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1804,6 +1825,7 @@ def run_batch_task(
             R8R_FIXED_CONTINUATION,
             R8U_R2_FIXED_CONTINUATION,
             R8U_R3_FIXED_CONTINUATION,
+            R8U_R4_FIXED_CONTINUATION,
         }:
             preservation_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1839,6 +1861,7 @@ def run_batch_task(
             R8R_FIXED_CONTINUATION,
             R8U_R2_FIXED_CONTINUATION,
             R8U_R3_FIXED_CONTINUATION,
+            R8U_R4_FIXED_CONTINUATION,
         }:
             retirement_arguments["scheduler_runner_path"] = (
                 SCRIPT_ROOT

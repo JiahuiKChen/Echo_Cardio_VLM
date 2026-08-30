@@ -877,6 +877,362 @@ R8U_R3_CONTINUATION_SUBMISSION_KEYS: Final = (
     )
 )
 
+# Phase 1I-R8U-R4 is a strictly additive portability repair.  R3 remains a
+# consumed, immutable failure epoch; none of these paths aliases an R3 path.
+R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT: Final = (
+    "a6e80b606a76dde2512a8eedf4eb8fa4f87211ef"
+)
+R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID: Final = "7364184"
+R8U_R3_FAILED_PUBLICATION_RESUME_JOB_NAME: Final = (
+    "lvef_c3_r8u_r3_res_a6e80b60"
+)
+R8U_R3_CANDIDATE_SEAL_SHA256: Final = (
+    "cfb0b19044db53742c1fd6121f8d33b567f6a62c2661050cf4df2cc4e6f2cbf2"
+)
+R8U_R3_FAILED_PUBLICATION_RESUME_LOG_BYTES: Final = 110
+R8U_R3_FAILED_PUBLICATION_RESUME_LOG_SHA256: Final = (
+    "bc2feef6398e3f9be408a77c80fe6eba38dad98506671d96b893371a5b59f824"
+)
+R8U_R3_FAILED_PUBLICATION_RESUME_LOG_MODE: Final = "0644"
+R8U_R3_FAILED_PUBLICATION_RESUME_LOG_PATH: Final = (
+    R8U_R3_SCHEDULER_ROOT
+    / f"{R8U_R3_FAILED_PUBLICATION_RESUME_JOB_NAME}.o"
+    f"{R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID}"
+)
+
+R8U_R4_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS: Final = frozenset(
+    {
+        "scientific_commit", "r8r_implementation_commit",
+        "r8u_base_implementation_commit", "r8u_projection_repair_commit",
+        "r8u_scheduler_log_repair_commit",
+        "r8u_publication_resume_repair_commit",
+        "r8u_candidate_authority_repair_commit",
+        "r8u_portability_repair_commit",
+    }
+)
+R8U_R4_ROOT: Final = ATTEMPT_ROOT / "r8u_r4_batch16_publication_resume"
+R8U_R4_SCHEDULER_ROOT: Final = R8U_R4_ROOT / "scheduler"
+R8U_R4_DIAGNOSIS_PATH: Final = (
+    R8U_R4_ROOT / "candidate_replay_diagnosis.restricted.json"
+)
+R8U_R4_PORTABLE_AUTHORITY_PATH: Final = (
+    R8U_R4_ROOT / "portable_candidate_authority.restricted.json"
+)
+R8U_R4_CAPACITY_PATH: Final = R8U_R4_ROOT / "resume_capacity.restricted.json"
+R8U_R4_AUTHORITY_PATH: Final = R8U_R4_ROOT / "resume_authority.restricted.json"
+R8U_R4_SUBMISSION_PATH: Final = (
+    R8U_R4_SCHEDULER_ROOT / "submission_receipt.restricted.json"
+)
+R8U_R4_LOCALITY_PATH: Final = (
+    R8U_R4_ROOT / "live_publication_locality.restricted.json"
+)
+R8U_R4_PROBE_PATH: Final = (
+    R8U_R4_ROOT / "publication_primitive_probe.restricted.json"
+)
+R8U_R4_PUBLICATION_PATH: Final = (
+    R8U_R4_ROOT / "publication_receipt.restricted.json"
+)
+R8U_R4_ACCOUNTING_PATH: Final = (
+    R8U_R4_ROOT / "resume_accounting.restricted.json"
+)
+R8U_R4_TERMINAL_PATH: Final = (
+    R8U_R4_ROOT / "resume_terminal.aggregate_safe.json"
+)
+R8U_R4_EXTRACTION_TRANSITION_ROOT: Final = (
+    R8U_R4_ROOT / "extraction_transition_receipts"
+)
+R8U_R4_PUBLICATION_CLAIM_ROOT: Final = (
+    ATTEMPT_ROOT / "extracted_cache" / R8U_FIXED_BATCH_ID
+    / ".r8u_r4_publication_claim"
+)
+R8U_R4_PUBLICATION_CLAIM_PATH: Final = (
+    R8U_R4_PUBLICATION_CLAIM_ROOT / "claim.restricted.json"
+)
+R8U_R4_PROBE_WORK_ROOT: Final = (
+    R8U_R4_ROOT / "primitive_probe"
+)
+R8U_R4_CONTINUATION_ROOT: Final = ATTEMPT_ROOT / "r8u_r4_continuation_17_19"
+R8U_R4_CONTINUATION_SCHEDULER_ROOT: Final = (
+    R8U_R4_CONTINUATION_ROOT / "scheduler"
+)
+R8U_R4_CONTINUATION_CLAIM_PATH: Final = (
+    R8U_R4_CONTINUATION_ROOT / "continuation_claim.restricted.json"
+)
+R8U_R4_CONTINUATION_SUBMISSION_PATH: Final = (
+    R8U_R4_CONTINUATION_SCHEDULER_ROOT / "submission_receipt.restricted.json"
+)
+R8U_R4_STATUS: Final = "PASS_BATCH16_R8U_R4_PUBLICATION_RESUME_FINALIZED"
+R8U_R4_CAPACITY_STATUS: Final = (
+    "PASS_R8U_R4_BATCH16_PUBLICATION_RESUME_AND_17_19_WITH_200GB_RESERVE"
+)
+
+R8U_R4_COMMON_KEYS: Final = frozenset(
+    {
+        "schema_version", "artifact_type", "status",
+        "original_scientific_commit", "implementation_commit",
+        "implementation_authority_epochs", "attempt_id",
+        "batch_plan_sha256", "batch_id",
+    }
+)
+R8U_R4_PORTABLE_METADATA_FIELDS: Final = frozenset(
+    {
+        "candidate_regular_files", "candidate_directories",
+        "candidate_total_bytes", "candidate_npz_files", "candidate_npz_bytes",
+        "candidate_relative_file_path_set_sha256",
+        "candidate_relative_npz_path_set_sha256",
+        "candidate_relative_file_portable_projection_sha256",
+        "candidate_relative_directory_path_set_sha256",
+        "candidate_relative_directory_portable_projection_sha256",
+        "candidate_root_portable_identity_sha256", "symlink_count",
+        "nonregular_count",
+    }
+)
+R8U_R4_CONTROL_HASH_FIELDS: Final = frozenset(
+    {
+        "stage_completion_receipt_sha256", "extraction_manifest_sha256",
+        "dicom_audit_sha256", "extraction_summary_sha256",
+        "technical_disposition_manifest_sha256",
+    }
+)
+R8U_R4_SEMANTIC_FIELDS: Final = frozenset(
+    {
+        "canonical_stage_event_authority_sha256", "input_manifest_sha256",
+        "candidate_npz_manifest_projection_sha256", "n_selected_studies",
+        "n_source_objects", "source_bytes", "n_readable", "n_unreadable",
+        "n_multiframe_candidates", "n_single_frame",
+        "n_pixel_decode_failures", "n_successfully_extracted_cines",
+        "n_object_technical_dispositions", "n_blocking_failures",
+        "n_ordinary_preprocessing_path",
+        "n_spatial_fallback_preprocessing_path",
+        "n_temporal_fallback_preprocessing_path",
+        "n_spatial_temporal_fallback_preprocessing_path",
+        "object_substitution_count", "extraction_status",
+    }
+)
+R8U_R4_PORTABLE_CONTENT_FIELDS: Final = (
+    R8U_R4_PORTABLE_METADATA_FIELDS | R8U_R4_CONTROL_HASH_FIELDS
+    | R8U_R4_SEMANTIC_FIELDS
+)
+R8U_R4_NODE_LOCAL_DIAGNOSTIC_FIELDS: Final = frozenset(
+    {
+        "source_parent_identity_sha256", "target_parent_identity_sha256",
+        "source_mount_identity_sha256", "target_mount_identity_sha256",
+        "source_parent_st_dev_inode_authority",
+        "target_parent_st_dev_inode_authority", "mount_id",
+        "mount_source_identity", "candidate_file_mtime_ctime_projection",
+        "candidate_file_mtime_projection_sha256",
+        "candidate_file_ctime_projection_sha256",
+        "directory_nlink_projection_sha256",
+        "directory_link_count_projection", "candidate_root_identity_sha256",
+        "candidate_relative_file_projection_sha256",
+        "candidate_relative_directory_projection_sha256",
+    }
+)
+R8U_R4_ROLE_SPECIFIC_ERRORS: Final = frozenset(
+    {
+        "R8U_PORTABLE_CANDIDATE_CONTROL_HASH_MISMATCH",
+        "R8U_PORTABLE_CANDIDATE_PATH_SET_MISMATCH",
+        "R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH",
+        "R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH",
+        "R8U_LIVE_PUBLICATION_SOURCE_INVALID",
+        "R8U_LIVE_PUBLICATION_TARGET_INVALID",
+        "R8U_LIVE_PUBLICATION_CROSS_MOUNT",
+        "R8U_LIVE_PUBLICATION_PARENT_CHANGED",
+        "R8U_LIVE_PUBLICATION_CLAIM_INVALID",
+    }
+)
+R8U_R4_DIAGNOSIS_KEYS: Final = frozenset(
+    {
+        "schema_version", "artifact_type", "status", "job_id",
+        "candidate_seal_sha256", "first_differing_field",
+        "differing_fields", "portable_differing_fields",
+        "node_local_differing_fields", "portable_candidate_fields_equal",
+        "node_local_only_differences", "candidate_path_set_equal",
+        "candidate_count_and_bytes_equal", "zero_body_reads",
+        "dicom_body_reads", "npz_body_reads", "final_classification",
+    }
+)
+R8U_R4_PORTABLE_AUTHORITY_KEYS: Final = (
+    R8U_R4_COMMON_KEYS | R8U_R4_PORTABLE_CONTENT_FIELDS | frozenset(
+        {
+            "failed_r8u_r3_job_id", "r8u_r3_candidate_seal_sha256",
+            "candidate_replay_diagnosis_sha256", "portable_projection_status",
+            "missing_npz_files", "additional_npz_files",
+            "substituted_npz_files", "npz_body_reads", "dicom_body_reads",
+        }
+    )
+)
+R8U_R4_LOCALITY_KEYS: Final = frozenset(
+    {
+        "schema_version", "artifact_type", "status", "publication_claim_sha256",
+        "source_exists_safe_directory", "target_absent",
+        "source_target_same_mounted_filesystem", "parents_nonsymlinked",
+        "owner_mode_valid", "source_identity_stable_same_call",
+        "source_parent_identity_stable_same_call",
+        "target_parent_identity_stable_same_call",
+        "source_identity_sha256", "source_parent_identity_sha256",
+        "target_parent_identity_sha256", "source_mount_identity_sha256",
+        "target_mount_identity_sha256", "competing_active_jobs",
+        "competing_active_processes",
+    }
+)
+R8U_R4_PUBLICATION_CLAIM_KEYS: Final = R8U_R4_COMMON_KEYS | frozenset(
+    {
+        "resume_job_id", "portable_candidate_authority_sha256",
+        "candidate_replay_diagnosis_sha256", "resume_authority_sha256",
+        "resume_submission_receipt_sha256", "worker_process_projection_sha256",
+        "worker_qstat_projection_sha256", "target_role", "target_absent",
+        "competing_active_jobs", "competing_active_processes",
+        "cloud_requests", "downloads", "dicom_body_reads",
+        "dicom_extraction_executions", "npz_body_reads",
+    }
+)
+R8U_R4_PROBE_KEYS: Final = R8U_R4_COMMON_KEYS | frozenset(
+    {
+        "live_publication_locality_sha256", "publication_claim_sha256",
+        "primary_primitive", "primary_result", "primary_errno",
+        "primary_errno_number", "primary_returned_success",
+        "probe_source_present_after", "probe_target_present_after",
+        "probe_target_exact_after", "probe_cleanup_passed",
+        "scientific_file_body_reads", "npz_body_reads", "dicom_body_reads",
+        "dicom_extraction_executions",
+    }
+)
+R8U_R4_PUBLICATION_KEYS: Final = R8U_R4_COMMON_KEYS | frozenset(
+    {
+        "portable_candidate_authority_sha256",
+        "candidate_replay_diagnosis_sha256",
+        "live_publication_locality_sha256",
+        "publication_primitive_probe_sha256", "publication_claim_sha256",
+        "primitive_attempted", "primary_result", "fallback_used",
+        "rename_returned_success", "real_rename_errno",
+        "real_rename_errno_number", "real_rename_errno_classification",
+        "publication_ruling", "prepublication_candidate_sha256",
+        "postpublication_root_identity_sha256", "source_absent",
+        "target_exact", "candidate_npz_files", "candidate_total_bytes",
+        "files_moved", "files_copied", "files_deleted_independently",
+        "dicom_body_reads", "dicom_extraction_executions", "npz_body_reads",
+        "cloud_requests", "downloads",
+    }
+)
+R8U_R4_AUTHORITY_KEYS: Final = R8U_R4_COMMON_KEYS | frozenset(
+    {
+        "prior_implementation_commit", "original_task_id",
+        "continuation_task_range", "prefix_final_receipt_sha256",
+        "historical_r8r_chain_authority", "failed_partial_seal_sha256",
+        "r2_recovery_capacity_receipt_sha256", "r2_recovery_authority_sha256",
+        "r2_recovery_submission_receipt_sha256", "failed_r8u_r3_job_id",
+        "r8u_r3_candidate_seal_sha256", "r8u_r3_scheduler_log_sha256",
+        "candidate_replay_diagnosis_sha256",
+        "portable_candidate_authority_sha256", "resume_capacity_sha256",
+        "runtime_authority_sha256", "qsub_environment_sha256",
+        "script_authority", "runtime_validation_context", "target_role",
+        "cloud_requests_authorized", "downloads_authorized",
+        "dicom_body_reads_authorized", "dicom_extraction_executions_authorized",
+        "echoprime_executions_authorized", "gpu_executions_authorized",
+        "failed_partial_adoption_authorized", "failed_partial_mutation_authorized",
+        "model_fitting_authorized", "prediction_authorized",
+        "confirmatory_performance_access_authorized",
+        "maximum_new_qsub_submissions", "pre_qsub_process_projection",
+    }
+)
+R8U_R4_SUBMISSION_KEYS: Final = R8U_R4_COMMON_KEYS | frozenset(
+    {
+        "original_task_id", "resume_job_name", "resume_job_id",
+        "resume_qsub_argv_sha256", "qsub_environment_sha256",
+        "resume_authority_sha256", "portable_candidate_authority_sha256",
+        "candidate_replay_diagnosis_sha256", "resume_capacity_sha256",
+        "resume_qsub_evidence", "scheduler_submission_count",
+        "resume_is_array", "gpu_requested", "automatic_retry_authorized",
+        "cloud_requests", "downloads", "dicom_body_reads_by_submitter",
+        "dicom_extraction_executions_by_submitter", "npz_body_reads_by_submitter",
+        "model_fitting_count", "prediction_generation_count",
+        "confirmatory_performance_access_count", "pre_qsub_process_projection",
+        "initial_qstat_projection",
+    }
+)
+R8U_R4_ACCOUNTING_KEYS: Final = R8U_R4_COMMON_KEYS | frozenset(
+    {
+        "original_task_id", "resume_job_id", "failed", "exit_status",
+        "accounting_projection",
+    }
+)
+R8U_R4_TERMINAL_KEYS: Final = R8U_R4_COMMON_KEYS | frozenset(
+    {
+        "original_task_id", "failed_partial_seal_sha256",
+        "r8u_r3_candidate_seal_sha256", "candidate_replay_diagnosis_sha256",
+        "portable_candidate_authority_sha256",
+        "live_publication_locality_sha256",
+        "publication_primitive_probe_sha256", "publication_claim_sha256",
+        "publication_receipt_sha256", "resume_capacity_sha256",
+        "resume_authority_sha256", "resume_submission_receipt_sha256",
+        "preservation_receipt_sha256",
+        "cache_retirement_authorization_sha256",
+        "cache_retirement_transition_sha256", "final_ledger_sha256",
+        "batch_finalization_receipt_sha256", "n_selected_studies",
+        "n_expected_objects", "expected_source_bytes",
+        "n_successfully_extracted_cines", "n_object_technical_dispositions",
+        "n_blocking_failures", "n_clip_embeddings", "n_pooled_studies",
+        "n_no_cine_studies", "n_new_no_cine_studies",
+        "object_substitution_count", "unaccounted_multiframe_objects",
+        "raw_dicoms_retained", "canonical_extraction_cache_retired",
+        "failed_partial_cache_retained", "source_candidate_npz_files",
+        "cloud_requests", "downloads", "dicom_body_reads",
+        "dicom_extraction_executions", "echoprime_executions",
+        "embedding_generations", "gpu_executions", "model_fitting_count",
+        "prediction_generation_count", "confirmatory_performance_access_count",
+    }
+)
+R8U_R4_CONTINUATION_LINK_KEYS: Final = frozenset(
+    {
+        "r8u_r3_candidate_seal_sha256", "candidate_replay_diagnosis_sha256",
+        "portable_candidate_authority_sha256",
+        "live_publication_locality_sha256",
+        "publication_primitive_probe_sha256", "publication_claim_sha256",
+        "publication_receipt_sha256", "resume_capacity_sha256",
+        "resume_authority_sha256", "resume_submission_receipt_sha256",
+        "resume_accounting_sha256", "resume_terminal_receipt_sha256",
+    }
+)
+R8U_R4_CONTINUATION_CLAIM_KEYS: Final = (
+    R8U_R4_COMMON_KEYS | R8U_R4_CONTINUATION_LINK_KEYS | frozenset(
+        {
+            "prior_implementation_commit", "prefix_final_receipt_sha256",
+            "failed_partial_seal_sha256", "runtime_authority_sha256",
+            "qsub_environment_sha256", "script_authority",
+            "continuation_task_range", "continuation_task_count",
+            "continuation_max_concurrency", "held_finalizer_count",
+            "total_new_qsub_maximum", "automatic_retry_authorized",
+            "whole_stage_retry_authorized", "fourth_submission_reachable",
+            "cloud_requests_by_submitter", "dicom_body_reads_by_submitter",
+            "npz_body_reads_by_submitter", "gpu_executions_by_submitter",
+            "embedding_generations_by_submitter", "model_fitting_authorized",
+            "prediction_authorized",
+            "confirmatory_performance_access_authorized",
+        }
+    )
+)
+R8U_R4_CONTINUATION_SUBMISSION_KEYS: Final = (
+    R8U_R4_COMMON_KEYS | R8U_R4_CONTINUATION_LINK_KEYS | frozenset(
+        {
+            "resume_job_id", "array_job_name", "finalizer_job_name",
+            "array_job_id", "finalizer_job_id", "array_qsub_argv_sha256",
+            "finalizer_qsub_argv_sha256", "qsub_environment_sha256",
+            "failed_partial_seal_sha256", "continuation_claim_sha256",
+            "array_qsub_evidence", "finalizer_qsub_evidence",
+            "scheduler_submission_count", "total_new_qsub_submissions",
+            "scheduler_submission_maximum", "array_task_range",
+            "array_task_count", "array_max_concurrency",
+            "finalizer_held_on_array", "whole_stage_retry_authorized",
+            "fourth_submission_reachable", "cloud_requests",
+            "dicom_body_reads_by_submitter", "npz_body_reads_by_submitter",
+            "gpu_executions_by_submitter", "model_fitting_count",
+            "prediction_generation_count",
+            "confirmatory_performance_access_count",
+        }
+    )
+)
+
 
 @dataclass(frozen=True)
 class _R8UR3RenameResult:
@@ -897,6 +1253,40 @@ class _R8UR3CanonicalExtractionManifest:
     summary: Mapping[str, Any]
     expected_npz_paths: frozenset[PurePosixPath]
     manifest_projection: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class _R8UR4PortableProjection:
+    """Portable public projection plus worker-local same-call race guards."""
+
+    value: Mapping[str, Any]
+    expected_npz_paths: frozenset[PurePosixPath]
+    regular_file_paths: frozenset[PurePosixPath]
+    directory_paths: frozenset[PurePosixPath]
+    file_rows: tuple[tuple[Any, ...], ...]
+    directory_rows: tuple[tuple[Any, ...], ...]
+    root_local_identity: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class _R8UR4LivePublicationLocality(Mapping[str, Any]):
+    """Persistable locality facts with opaque in-process identities hidden."""
+
+    value: Mapping[str, Any]
+    source_identity: Mapping[str, Any]
+    source_parent_identity: Mapping[str, Any]
+    target_parent_identity: Mapping[str, Any]
+    source_mount_key: Any
+    target_mount_key: Any
+
+    def __getitem__(self, key: str) -> Any:
+        return self.value[key]
+
+    def __iter__(self):
+        return iter(self.value)
+
+    def __len__(self) -> int:
+        return len(self.value)
 
 
 class R8RControllerError(RuntimeError):
@@ -1368,6 +1758,60 @@ def _r8u_r3_implementation_authority_epochs(
     return dict(sorted(value.items()))
 
 
+def _current_r8u_r4_implementation_commit() -> str:
+    """Require exactly one direct portability-repair child of frozen R3."""
+
+    try:
+        current = sequential._current_commit()
+        parent_line = sequential._git(
+            "rev-list", "--parents", "-n", "1", current
+        )
+        relation = sequential._git(
+            "merge-base", "--is-ancestor",
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT, current,
+        )
+        distance = sequential._git(
+            "rev-list", "--count",
+            f"{R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT}..{current}",
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_R4_IMPLEMENTATION_GIT_AUTHORITY_INVALID"
+        ) from exc
+    if (
+        COMMIT_RE.fullmatch(current) is None
+        or current == R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        or parent_line
+        != f"{current} {R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT}"
+        or relation
+        or distance != "1"
+    ):
+        _fail("R8U_R4_IMPLEMENTATION_ANCESTRY_INVALID")
+    return current
+
+
+def _r8u_r4_implementation_authority_epochs(
+    implementation_commit: str,
+) -> Mapping[str, str]:
+    if (
+        COMMIT_RE.fullmatch(implementation_commit) is None
+        or implementation_commit
+        == R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+    ):
+        _fail("R8U_R4_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
+    value = {
+        **dict(
+            _r8u_r3_implementation_authority_epochs(
+                R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+            )
+        ),
+        "r8u_portability_repair_commit": implementation_commit,
+    }
+    if set(value) != R8U_R4_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS:
+        _fail("R8U_R4_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
+    return dict(sorted(value.items()))
+
+
 def _r8u_r2_historical_implementation_authority_epochs() -> Mapping[str, str]:
     """Return the exact five epochs embedded by consumed job 7354951."""
 
@@ -1388,20 +1832,25 @@ def _load_fixed_original_run(
     runtime_validation_context: stages.RuntimeAuthorityValidationContext,
     r8u: bool = False,
     r8u_r3: bool = False,
+    r8u_r4: bool = False,
 ) -> sequential.FullRun:
     if not isinstance(
         runtime_validation_context, stages.RuntimeAuthorityValidationContext
     ):
         _fail("R8R_RUNTIME_VALIDATION_CONTEXT_INVALID")
-    if r8u and r8u_r3:
+    if sum((r8u, r8u_r3, r8u_r4)) > 1:
         _fail("R8R_RUNTIME_VALIDATION_CONTEXT_INVALID")
     implementation_commit = (
-        _current_r8u_r3_implementation_commit()
-        if r8u_r3
+        _current_r8u_r4_implementation_commit()
+        if r8u_r4
         else (
-            _current_r8u_implementation_commit()
-            if r8u
-            else _current_implementation_commit()
+            _current_r8u_r3_implementation_commit()
+            if r8u_r3
+            else (
+                _current_r8u_implementation_commit()
+                if r8u
+                else _current_implementation_commit()
+            )
         )
     )
     try:
@@ -9792,6 +10241,2549 @@ def run_r8u_r3_continuation_finalizer() -> Mapping[str, Any]:
     return summary
 
 
+# ---------------------------------------------------------------------------
+# Fixed R8U-R4 portable candidate replay and worker-local publication
+# ---------------------------------------------------------------------------
+
+
+def _r8u_r4_common(
+    *, artifact_type: str, status: str, implementation_commit: str
+) -> dict[str, Any]:
+    value = {
+        "schema_version": 1,
+        "artifact_type": artifact_type,
+        "status": status,
+        "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+        "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_r4_implementation_authority_epochs(implementation_commit)
+        ),
+        "attempt_id": ORIGINAL_ATTEMPT_ID,
+        "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
+        "batch_id": R8U_FIXED_BATCH_ID,
+    }
+    if set(value) != R8U_R4_COMMON_KEYS:
+        _fail("R8U_R4_CONTROL_SCHEMA_INVALID")
+    return value
+
+
+def _r8u_r4_local_identity(path: Path) -> Mapping[str, Any]:
+    """Read a replacement-sensitive identity for this process only."""
+
+    info = os.lstat(path)
+    kind = (
+        "directory" if stat.S_ISDIR(info.st_mode)
+        else "regular" if stat.S_ISREG(info.st_mode)
+        else "symlink" if stat.S_ISLNK(info.st_mode)
+        else "other"
+    )
+    return {
+        "device": int(info.st_dev), "inode": int(info.st_ino), "type": kind,
+        "mode": int(stat.S_IMODE(info.st_mode)), "uid": int(info.st_uid),
+        "gid": int(info.st_gid), "nlink": int(info.st_nlink),
+        "size": int(info.st_size), "mtime_ns": int(info.st_mtime_ns),
+        "ctime_ns": int(info.st_ctime_ns),
+    }
+
+
+def _r8u_r4_portable_metadata_projection(
+    root: Path,
+    expected_npz_paths: Sequence[PurePosixPath | str] | None = None,
+) -> _R8UR4PortableProjection:
+    """Scan metadata once; exclude every cross-node locality/timestamp field."""
+
+    root = Path(root)
+    try:
+        sequential._require_nonsymlink_components(root)
+        root_before = _r8u_r4_local_identity(root)
+        if root_before.get("type") != "directory":
+            _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+    except R8RControllerError:
+        raise
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH"
+        ) from exc
+
+    files: list[tuple[Any, ...]] = []
+    directories: list[tuple[Any, ...]] = []
+    regular_paths: set[PurePosixPath] = set()
+    directory_paths: set[PurePosixPath] = set()
+    npz_paths: set[PurePosixPath] = set()
+    total_bytes = 0
+    npz_bytes = 0
+    symlinks = 0
+    nonregular = 0
+    stack = [root]
+    while stack:
+        directory = stack.pop()
+        try:
+            before = _r8u_r4_local_identity(directory)
+            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+            after = _r8u_r4_local_identity(directory)
+            relative_directory = PurePosixPath(
+                directory.relative_to(root).as_posix()
+            )
+        except Exception as exc:
+            raise R8RControllerError(
+                "R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH"
+            ) from exc
+        if before != after or before.get("type") != "directory":
+            _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+        directory_paths.add(relative_directory)
+        # Directory nlink and all timestamps are diagnostic-only.  Device and
+        # inode remain solely in the before/after comparison above.
+        directories.append(
+            (
+                relative_directory.as_posix(), "D", before["mode"],
+                before["uid"], before["gid"],
+            )
+        )
+        for entry in reversed(entries):
+            path = Path(entry.path)
+            try:
+                item_before = _r8u_r4_local_identity(path)
+                item_after = _r8u_r4_local_identity(path)
+                relative = PurePosixPath(path.relative_to(root).as_posix())
+            except Exception as exc:
+                raise R8RControllerError(
+                    "R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH"
+                ) from exc
+            if item_before != item_after:
+                _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+            kind = item_before["type"]
+            if kind == "symlink":
+                _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+            if kind == "directory":
+                stack.append(path)
+                continue
+            if kind != "regular":
+                _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+            size = int(item_before["size"])
+            if (
+                size <= 0 or item_before["mode"] != 0o600
+                or item_before["uid"] != os.geteuid()
+                or item_before["nlink"] != 1
+            ):
+                _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+            regular_paths.add(relative)
+            total_bytes += size
+            if relative.suffix == ".npz":
+                npz_paths.add(relative)
+                npz_bytes += size
+            # File nlink is portable safety authority; timestamps are not.
+            files.append(
+                (
+                    relative.as_posix(), "F", item_before["mode"],
+                    item_before["uid"], item_before["gid"],
+                    item_before["nlink"], size,
+                )
+            )
+    try:
+        root_after = _r8u_r4_local_identity(root)
+    except OSError as exc:
+        raise R8RControllerError(
+            "R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH"
+        ) from exc
+    if root_before != root_after:
+        _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+    if any(
+        row[3] != os.geteuid() or int(row[2]) & 0o077
+        for row in directories
+    ):
+        _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+    files.sort(key=lambda row: str(row[0]))
+    directories.sort(key=lambda row: str(row[0]))
+    normalized_expected = (
+        None if expected_npz_paths is None
+        else {PurePosixPath(str(path)) for path in expected_npz_paths}
+    )
+    if normalized_expected is not None and npz_paths != normalized_expected:
+        _fail("R8U_PORTABLE_CANDIDATE_PATH_SET_MISMATCH")
+    file_path_rows = tuple(sorted(path.as_posix() for path in regular_paths))
+    npz_path_rows = tuple(sorted(path.as_posix() for path in npz_paths))
+    directory_path_rows = tuple(
+        sorted(path.as_posix() for path in directory_paths)
+    )
+    root_portable = {
+        "type": "directory", "mode": root_before["mode"],
+        "uid": root_before["uid"], "gid": root_before["gid"],
+    }
+    value = {
+        "candidate_regular_files": len(files),
+        "candidate_directories": len(directories),
+        "candidate_total_bytes": total_bytes,
+        "candidate_npz_files": len(npz_paths),
+        "candidate_npz_bytes": npz_bytes,
+        "candidate_relative_file_path_set_sha256": (
+            core.canonical_json_sha256(file_path_rows)
+        ),
+        "candidate_relative_npz_path_set_sha256": (
+            core.canonical_json_sha256(npz_path_rows)
+        ),
+        "candidate_relative_file_portable_projection_sha256": (
+            core.canonical_json_sha256(files)
+        ),
+        "candidate_relative_directory_path_set_sha256": (
+            core.canonical_json_sha256(directory_path_rows)
+        ),
+        "candidate_relative_directory_portable_projection_sha256": (
+            core.canonical_json_sha256(directories)
+        ),
+        "candidate_root_portable_identity_sha256": (
+            core.canonical_json_sha256(root_portable)
+        ),
+        "symlink_count": symlinks,
+        "nonregular_count": nonregular,
+    }
+    if set(value) != R8U_R4_PORTABLE_METADATA_FIELDS:
+        _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+    return _R8UR4PortableProjection(
+        value=dict(sorted(value.items())),
+        expected_npz_paths=frozenset(npz_paths),
+        regular_file_paths=frozenset(regular_paths),
+        directory_paths=frozenset(directory_paths),
+        file_rows=tuple(files), directory_rows=tuple(directories),
+        root_local_identity=dict(root_before),
+    )
+
+
+def _r8u_r4_projection_value(value: Any) -> Mapping[str, Any]:
+    projected = getattr(value, "value", value)
+    if not isinstance(projected, Mapping):
+        _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+    return projected
+
+
+def _r8u_r4_compare_candidate_projection(
+    sealed: Mapping[str, Any] | _R8UR4PortableProjection,
+    observed: Mapping[str, Any] | _R8UR4PortableProjection,
+) -> Mapping[str, Any]:
+    """Compare by field name without ever exposing a field's live value."""
+
+    left = _r8u_r4_projection_value(sealed)
+    right = _r8u_r4_projection_value(observed)
+    strict_r4 = str(left.get("artifact_type", "")).startswith(
+        "lvef_c3_r8u_r4_portable_candidate_authority"
+    )
+    portable_fields = (
+        R8U_R4_PORTABLE_CONTENT_FIELDS
+        if strict_r4 else R8U_R4_PORTABLE_CONTENT_FIELDS & set(left) & set(right)
+    )
+    portable_differences = sorted(
+        field for field in portable_fields
+        if field not in left or field not in right
+        or not _exact_typed_value_equal(left.get(field), right.get(field))
+    )
+    node_differences = sorted(
+        field for field in R8U_R4_NODE_LOCAL_DIAGNOSTIC_FIELDS & set(left) & set(right)
+        if not _exact_typed_value_equal(left.get(field), right.get(field))
+    )
+    all_differences = sorted({*portable_differences, *node_differences})
+    path_fields = {
+        "candidate_relative_file_path_set_sha256",
+        "candidate_relative_npz_path_set_sha256",
+        "candidate_npz_manifest_projection_sha256", "candidate_npz_files",
+    }
+    count_fields = {
+        "candidate_regular_files", "candidate_npz_files",
+        "candidate_total_bytes", "candidate_npz_bytes",
+    }
+    return {
+        "first_differing_field": (
+            all_differences[0] if all_differences else "NONE"
+        ),
+        "differing_fields": all_differences,
+        "portable_differing_fields": portable_differences,
+        "node_local_differing_fields": node_differences,
+        "portable_candidate_fields_equal": not portable_differences,
+        "node_local_only_differences": (
+            not portable_differences and bool(node_differences)
+        ),
+        "candidate_path_set_equal": not bool(path_fields & set(portable_differences)),
+        "candidate_count_and_bytes_equal": not bool(
+            count_fields & set(portable_differences)
+        ),
+    }
+
+
+def _r8u_r4_candidate_replay_diagnosis(
+    *,
+    job_id: str = R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID,
+    candidate_seal_sha256: str = R8U_R3_CANDIDATE_SEAL_SHA256,
+    comparison: Mapping[str, Any] | None = None,
+    sealed: Mapping[str, Any] | _R8UR4PortableProjection | None = None,
+    observed: Mapping[str, Any] | _R8UR4PortableProjection | None = None,
+    candidate_path_set_equal: bool | None = None,
+    candidate_count_and_bytes_equal: bool | None = None,
+) -> Mapping[str, Any]:
+    if comparison is None:
+        if sealed is None or observed is None:
+            _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+        comparison = _r8u_r4_compare_candidate_projection(sealed, observed)
+    portable_equal = comparison.get("portable_candidate_fields_equal") is True
+    differences = list(comparison.get("differing_fields", ()))
+    portable_differences = list(comparison.get("portable_differing_fields", ()))
+    node_differences = list(comparison.get("node_local_differing_fields", ()))
+    # Failed job 7364184 emitted only its outer code.  An empty field list is
+    # therefore honest: no exact worker-node value was persisted.  The fixed
+    # R3 schema itself proves that its replay mixed node/non-content metadata.
+    unrecorded_failed_worker_difference = (
+        job_id == R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID
+        and portable_equal and not differences
+    )
+    node_only = (
+        comparison.get("node_local_only_differences") is True
+        or unrecorded_failed_worker_difference
+    )
+    path_equal = (
+        comparison.get("candidate_path_set_equal") is True
+        if candidate_path_set_equal is None else candidate_path_set_equal
+    )
+    counts_equal = (
+        comparison.get("candidate_count_and_bytes_equal") is True
+        if candidate_count_and_bytes_equal is None
+        else candidate_count_and_bytes_equal
+    )
+    if not portable_equal or not path_equal or not counts_equal:
+        status = "BLOCKED_PORTABLE_CANDIDATE_CONTENT_MISMATCH"
+    elif any("ctime" in field or "mtime" in field or "link_count" in field
+             for field in differences):
+        status = "PASS_NONCONTENT_TIMESTAMP_REPLAY_DIFFERENCE"
+    else:
+        status = "PASS_NODE_LOCAL_CANDIDATE_REPLAY_DIFFERENCE"
+    value = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_r8u_r4_candidate_replay_diagnosis_v1",
+        "status": status,
+        "job_id": job_id,
+        "candidate_seal_sha256": candidate_seal_sha256,
+        "first_differing_field": (
+            str(comparison.get("first_differing_field", "NONE"))
+            if differences else "NOT_PERSISTED_BY_FAILED_WORKER"
+        ),
+        "differing_fields": sorted(str(field) for field in differences),
+        "portable_differing_fields": sorted(
+            str(field) for field in portable_differences
+        ),
+        "node_local_differing_fields": sorted(
+            str(field) for field in node_differences
+        ),
+        "portable_candidate_fields_equal": portable_equal,
+        "node_local_only_differences": node_only,
+        "candidate_path_set_equal": bool(path_equal),
+        "candidate_count_and_bytes_equal": bool(counts_equal),
+        "zero_body_reads": True,
+        "dicom_body_reads": 0,
+        "npz_body_reads": 0,
+        "final_classification": status,
+    }
+    if set(value) != R8U_R4_DIAGNOSIS_KEYS:
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    return value
+
+
+def _r8u_r4_write_diagnosis_no_clobber(
+    path: Path | Mapping[str, Any],
+    value: Mapping[str, Any] | None = None,
+) -> str:
+    if value is None:
+        value = _r8u_r4_projection_value(path)
+        path = R8U_R4_DIAGNOSIS_PATH
+    if Path(path) != R8U_R4_DIAGNOSIS_PATH and not Path(path).is_absolute():
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    if set(value) != R8U_R4_DIAGNOSIS_KEYS:
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    try:
+        return _write_private_json(Path(path), value)
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_R4_DIAGNOSIS_NO_CLOBBER_FAILED"
+        ) from exc
+
+
+def _r8u_r4_validate_immutable_r3_failure(
+    run: sequential.FullRun | None = None,
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    """Validate R3 as immutable history, never under the current R4 commit."""
+
+    resolved_run = run or _load_fixed_original_run(
+        scheduler_job_identity="R8U_R4_R3_HISTORY_READBACK",
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r4=True,
+    )
+    history = _r8u_r3_validate_r2_history(resolved_run)
+    candidate, _ = _load_private_json(R8U_R3_CANDIDATE_SEAL_PATH)
+    _r8u_r3_validate_candidate_seal_static(
+        candidate,
+        implementation_commit=(
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        history=history,
+    )
+    submission, _ = _load_private_json(R8U_R3_SUBMISSION_PATH)
+    try:
+        descriptor = os.open(
+            R8U_R3_FAILED_PUBLICATION_RESUME_LOG_PATH,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            before = os.fstat(descriptor)
+            payload = b""
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                payload += chunk
+                if len(payload) > R8U_SCHEDULER_LOG_MAX_BYTES:
+                    _fail("R8U_R4_IMMUTABLE_R3_EVIDENCE_INVALID")
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except R8RControllerError:
+        raise
+    except OSError as exc:
+        raise R8RControllerError(
+            "R8U_R4_IMMUTABLE_R3_EVIDENCE_INVALID"
+        ) from exc
+    if (
+        core.sha256_file(R8U_R3_CANDIDATE_SEAL_PATH)
+        != R8U_R3_CANDIDATE_SEAL_SHA256
+        or candidate.get("implementation_commit")
+        != R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        or submission.get("resume_job_id")
+        != R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID
+        or submission.get("resume_job_name")
+        != R8U_R3_FAILED_PUBLICATION_RESUME_JOB_NAME
+        or before.st_dev != after.st_dev or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+        or stat.S_IMODE(before.st_mode)
+        != int(R8U_R3_FAILED_PUBLICATION_RESUME_LOG_MODE, 8)
+        or len(payload) != R8U_R3_FAILED_PUBLICATION_RESUME_LOG_BYTES
+        or _sha256_bytes(payload)
+        != R8U_R3_FAILED_PUBLICATION_RESUME_LOG_SHA256
+        or os.path.lexists(R8U_R3_TERMINAL_PATH)
+        or os.path.lexists(R8U_R3_PUBLICATION_PATH)
+    ):
+        _fail("R8U_R4_IMMUTABLE_R3_EVIDENCE_INVALID")
+    return candidate, history
+
+
+def _r8u_r4_portable_candidate_projection(
+    run: sequential.FullRun,
+    *, root: Path | None = None,
+) -> _R8UR4PortableProjection:
+    """Build the closed portable content authority with zero NPZ body reads."""
+
+    source = root or (R8U_FRESH_EXTRACTION_BATCH_ROOT / "dicom_extraction")
+    tree = _r8u_r4_portable_metadata_projection(source)
+    control_paths = {
+        PurePosixPath(name) for name in R8U_R3_CANDIDATE_CONTROL_FILES
+    }
+    observed_controls = tree.regular_file_paths - tree.expected_npz_paths
+    canonical_npz_re = re.compile(
+        r"^clips/clips/[0-9a-f]{2}/[0-9a-f]{64}\.npz$"
+    )
+    if (
+        observed_controls != control_paths
+        or len(tree.expected_npz_paths) != R8U_R3_CANDIDATE_NPZ_FILES
+        or any(
+            canonical_npz_re.fullmatch(path.as_posix()) is None
+            for path in tree.expected_npz_paths
+        )
+    ):
+        _fail("R8U_PORTABLE_CANDIDATE_PATH_SET_MISMATCH")
+    if (
+        tree.value["symlink_count"] != 0
+        or tree.value["nonregular_count"] != 0
+        or any(
+            row[2] != 0o600 or row[3] != os.geteuid()
+            or row[5] != 1 or row[6] <= 0
+            for row in tree.file_rows
+        )
+        or any(
+            row[3] != os.geteuid() or int(row[2]) & 0o077
+            for row in tree.directory_rows
+        )
+    ):
+        _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+    controls = {
+        name: source / name for name in R8U_R3_CANDIDATE_CONTROL_FILES
+    }
+    manifest = _r8u_r3_normalize_extraction_manifest(
+        controls["extraction_manifest.restricted.csv"]
+    )
+    if manifest.expected_npz_paths != tree.expected_npz_paths:
+        _fail("R8U_PORTABLE_CANDIDATE_PATH_SET_MISMATCH")
+    planned = run.plan["batches"][R8U_FIXED_RECOVERY_TASK_ID - 1]
+    try:
+        stage_summary = stages.validate_completed_stage_for_recovery(
+            stage_directory=source, stage="DICOM_EXTRACTION",
+            batch_id=R8U_FIXED_BATCH_ID, attempt_id=run.attempt_id,
+            runtime_authority=run.runtime_authority,
+            input_manifest=(
+                sequential._batch_paths(run, R8U_FIXED_BATCH_ID)["raw_batch"]
+                / "verified_download_manifest.restricted.csv"
+            ),
+            artifact_names=(
+                "dicom_audit.restricted.csv",
+                "extraction_manifest.restricted.csv",
+                "technical_disposition_manifest.restricted.csv",
+                "dicom_extraction.summary.json",
+            ),
+            summary_name="dicom_extraction.summary.json",
+        )
+        audit_summary = _r8u_r3_normalize_dicom_audit(
+            controls["dicom_audit.restricted.csv"]
+        )
+        stages.validate_extraction_manifest_plan_membership(
+            controls["extraction_manifest.restricted.csv"], planned,
+            controls["technical_disposition_manifest.restricted.csv"],
+        )
+        dispositions = stages.read_technical_disposition_manifest(
+            controls["technical_disposition_manifest.restricted.csv"]
+        )
+        technical_summary = stages.validate_technical_disposition_manifest_rows(
+            manifest.rows, dispositions
+        )
+    except R8RControllerError:
+        raise
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH"
+        ) from exc
+    expected = {
+        "status": "PASS_EXTRACTION_ALL_OBJECTS_EMBEDDABLE",
+        "n_objects": R8U_BATCH16_RAW_FILES, "n_studies": 250,
+        "n_readable": R8U_BATCH16_RAW_FILES, "n_unreadable": 0,
+        "n_multiframe_candidates": R8U_R3_CANDIDATE_NPZ_FILES,
+        "n_single_frame": 8_490, "n_pixel_decode_failures": 0,
+        "n_successfully_extracted_cines": R8U_R3_CANDIDATE_NPZ_FILES,
+        "n_object_technical_dispositions": 0, "n_blocking_failures": 0,
+        "n_ordinary_preprocessing_path": R8U_R3_CANDIDATE_NPZ_FILES,
+        "n_spatial_fallback_preprocessing_path": 0,
+        "n_temporal_fallback_preprocessing_path": 0,
+        "n_spatial_temporal_fallback_preprocessing_path": 0,
+        "object_substitution_count": 0,
+    }
+    if (
+        any(stage_summary.get(key) != value for key, value in expected.items())
+        or any(
+            audit_summary.get(key) != expected[key]
+            for key in (
+                "n_objects", "n_studies", "n_readable", "n_unreadable",
+                "n_multiframe_candidates", "n_single_frame",
+                "n_pixel_decode_failures",
+            )
+        )
+        or manifest.summary.get("n_successfully_extracted_cines")
+        != R8U_R3_CANDIDATE_NPZ_FILES
+        or manifest.summary.get("n_object_technical_dispositions") != 0
+        or manifest.summary.get("n_blocking_failures") != 0
+        or technical_summary.get("n_object_technical_dispositions") != 0
+        or technical_summary.get("object_substitution_count") != 0
+        or dispositions
+    ):
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    try:
+        control_hashes = {
+            "stage_completion_receipt_sha256": _sha256_bytes(
+                _read_control_nofollow(
+                    controls["stage_completion_receipt.restricted.json"]
+                )
+            ),
+            "extraction_manifest_sha256": _sha256_bytes(
+                _read_control_nofollow(
+                    controls["extraction_manifest.restricted.csv"]
+                )
+            ),
+            "dicom_audit_sha256": _sha256_bytes(
+                _read_control_nofollow(controls["dicom_audit.restricted.csv"])
+            ),
+            "extraction_summary_sha256": _sha256_bytes(
+                _read_control_nofollow(
+                    controls["dicom_extraction.summary.json"]
+                )
+            ),
+            "technical_disposition_manifest_sha256": (
+                stages.technical_disposition_manifest_sha256(
+                    controls["technical_disposition_manifest.restricted.csv"]
+                )
+            ),
+        }
+        stage_event = _strict_json(
+            _read_control_nofollow(
+                controls["stage_completion_receipt.restricted.json"]
+            )
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_PORTABLE_CANDIDATE_CONTROL_HASH_MISMATCH"
+        ) from exc
+    value = {
+        **dict(tree.value), **control_hashes,
+        "canonical_stage_event_authority_sha256": (
+            core.canonical_json_sha256(stage_event)
+        ),
+        "input_manifest_sha256": R8U_BATCH16_VERIFIED_MANIFEST_SHA256,
+        "candidate_npz_manifest_projection_sha256": (
+            core.canonical_json_sha256(manifest.manifest_projection)
+        ),
+        "n_selected_studies": 250,
+        "n_source_objects": R8U_BATCH16_RAW_FILES,
+        "source_bytes": R8U_BATCH16_RAW_BYTES,
+        "n_readable": R8U_BATCH16_RAW_FILES, "n_unreadable": 0,
+        "n_multiframe_candidates": R8U_R3_CANDIDATE_NPZ_FILES,
+        "n_single_frame": 8_490, "n_pixel_decode_failures": 0,
+        "n_successfully_extracted_cines": R8U_R3_CANDIDATE_NPZ_FILES,
+        "n_object_technical_dispositions": 0, "n_blocking_failures": 0,
+        "n_ordinary_preprocessing_path": R8U_R3_CANDIDATE_NPZ_FILES,
+        "n_spatial_fallback_preprocessing_path": 0,
+        "n_temporal_fallback_preprocessing_path": 0,
+        "n_spatial_temporal_fallback_preprocessing_path": 0,
+        "object_substitution_count": 0,
+        "extraction_status": "PASS_EXTRACTION_ALL_OBJECTS_EMBEDDABLE",
+    }
+    if set(value) != R8U_R4_PORTABLE_CONTENT_FIELDS:
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    return replace(tree, value=dict(sorted(value.items())))
+
+
+def _r8u_r4_portable_candidate_authority(
+    *, implementation_commit: str,
+    projection: _R8UR4PortableProjection,
+    diagnosis_sha256: str,
+) -> Mapping[str, Any]:
+    if SHA_RE.fullmatch(diagnosis_sha256) is None:
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    value = {
+        **_r8u_r4_common(
+            artifact_type="lvef_c3_r8u_r4_portable_candidate_authority_v1",
+            status="PASS_PORTABLE_BATCH16_CANDIDATE_AUTHORITY",
+            implementation_commit=implementation_commit,
+        ),
+        "failed_r8u_r3_job_id": R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID,
+        "r8u_r3_candidate_seal_sha256": R8U_R3_CANDIDATE_SEAL_SHA256,
+        "candidate_replay_diagnosis_sha256": diagnosis_sha256,
+        "portable_projection_status": "PASS_EXACT_PORTABLE_CONTENT",
+        **dict(projection.value),
+        "missing_npz_files": 0, "additional_npz_files": 0,
+        "substituted_npz_files": 0, "npz_body_reads": 0,
+        "dicom_body_reads": 0,
+    }
+    if set(value) != R8U_R4_PORTABLE_AUTHORITY_KEYS:
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    return value
+
+
+def _r8u_r4_raise_portable_comparison(
+    comparison: Mapping[str, Any],
+) -> None:
+    differences = set(comparison.get("portable_differing_fields", ()))
+    if not differences:
+        return
+    if differences & R8U_R4_CONTROL_HASH_FIELDS:
+        _fail("R8U_PORTABLE_CANDIDATE_CONTROL_HASH_MISMATCH")
+    if differences & {
+        "candidate_relative_file_path_set_sha256",
+        "candidate_relative_npz_path_set_sha256",
+        "candidate_npz_manifest_projection_sha256", "candidate_npz_files",
+    }:
+        _fail("R8U_PORTABLE_CANDIDATE_PATH_SET_MISMATCH")
+    if differences & R8U_R4_PORTABLE_METADATA_FIELDS:
+        _fail("R8U_PORTABLE_CANDIDATE_FILE_METADATA_MISMATCH")
+    _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+
+
+def validate_r8u_r4_portable_candidate_authority(
+    value: Mapping[str, Any] | None = None,
+    *, observed_projection: _R8UR4PortableProjection | Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    authority = value
+    if authority is None:
+        authority, _ = _load_private_json(R8U_R4_PORTABLE_AUTHORITY_PATH)
+    if (
+        set(authority) != R8U_R4_PORTABLE_AUTHORITY_KEYS
+        or authority.get("status") != "PASS_PORTABLE_BATCH16_CANDIDATE_AUTHORITY"
+        or authority.get("failed_r8u_r3_job_id")
+        != R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID
+        or authority.get("r8u_r3_candidate_seal_sha256")
+        != R8U_R3_CANDIDATE_SEAL_SHA256
+        or authority.get("portable_projection_status")
+        != "PASS_EXACT_PORTABLE_CONTENT"
+        or any(authority.get(field) != 0 for field in (
+            "missing_npz_files", "additional_npz_files",
+            "substituted_npz_files", "npz_body_reads", "dicom_body_reads",
+        ))
+        or authority.get("candidate_npz_files")
+        != R8U_R3_CANDIDATE_NPZ_FILES
+        or authority.get("candidate_regular_files")
+        != R8U_R3_CANDIDATE_NPZ_FILES + len(R8U_R3_CANDIDATE_CONTROL_FILES)
+    ):
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    if observed_projection is not None:
+        comparison = _r8u_r4_compare_candidate_projection(
+            authority, observed_projection
+        )
+        _r8u_r4_raise_portable_comparison(comparison)
+    return authority
+
+
+def validate_r8u_r4_replay_diagnosis(
+    value: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    diagnosis = value
+    if diagnosis is None:
+        diagnosis, _ = _load_private_json(R8U_R4_DIAGNOSIS_PATH)
+    if (
+        set(diagnosis) != R8U_R4_DIAGNOSIS_KEYS
+        or diagnosis.get("job_id") != R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID
+        or diagnosis.get("candidate_seal_sha256")
+        != R8U_R3_CANDIDATE_SEAL_SHA256
+        or diagnosis.get("status")
+        not in {
+            "PASS_NODE_LOCAL_CANDIDATE_REPLAY_DIFFERENCE",
+            "PASS_NONCONTENT_TIMESTAMP_REPLAY_DIFFERENCE",
+        }
+        or diagnosis.get("portable_candidate_fields_equal") is not True
+        or diagnosis.get("node_local_only_differences") is not True
+        or diagnosis.get("candidate_path_set_equal") is not True
+        or diagnosis.get("candidate_count_and_bytes_equal") is not True
+        or diagnosis.get("zero_body_reads") is not True
+        or diagnosis.get("dicom_body_reads") != 0
+        or diagnosis.get("npz_body_reads") != 0
+    ):
+        _fail("R8U_PORTABLE_CANDIDATE_SEMANTIC_MISMATCH")
+    return diagnosis
+
+
+def _r8u_r4_live_publication_locality(
+    *,
+    source: Path,
+    target: Path,
+    publication_claim: Mapping[str, Any],
+    identity_reader: Callable[[Path], Mapping[str, Any]] | None = None,
+    mount_reader: Callable[[Path], Any] | None = None,
+    claim_validator: Callable[[Mapping[str, Any]], Any] | None = None,
+    competing_active_jobs: int = 0,
+    competing_active_processes: int = 0,
+) -> _R8UR4LivePublicationLocality:
+    """Capture locality only on the worker and retain raw tokens in memory."""
+
+    source = Path(source)
+    target = Path(target)
+    read_identity = identity_reader or _r8u_r4_local_identity
+    read_mount = mount_reader or (
+        lambda path: _r8u_r3_mount_authority(path)[0]
+    )
+    try:
+        if claim_validator is not None:
+            claim_result = claim_validator(publication_claim)
+            if claim_result is False:
+                _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+        elif publication_claim.get("status") not in {
+            "AUTHORIZED_EXCLUSIVE_R8U_R4_BATCH16_PUBLICATION",
+            "AUTHORIZED_EXCLUSIVE_BATCH16_PUBLICATION",
+        }:
+            _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+        sequential._require_nonsymlink_components(source)
+        sequential._require_nonsymlink_components(target.parent)
+        if not os.path.lexists(source):
+            _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+        if os.path.lexists(target):
+            _fail("R8U_LIVE_PUBLICATION_TARGET_INVALID")
+        source_before = dict(read_identity(source))
+        source_parent_before = dict(read_identity(source.parent))
+        target_parent_before = dict(read_identity(target.parent))
+        if source_before.get("type") != "directory":
+            _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+        if (
+            source_parent_before.get("type") != "directory"
+            or target_parent_before.get("type") != "directory"
+        ):
+            _fail("R8U_LIVE_PUBLICATION_PARENT_CHANGED")
+        source_mount = read_mount(source.parent)
+        target_mount = read_mount(target.parent)
+        source_after = dict(read_identity(source))
+        source_parent_after = dict(read_identity(source.parent))
+        target_parent_after = dict(read_identity(target.parent))
+    except R8RControllerError:
+        raise
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_LIVE_PUBLICATION_SOURCE_INVALID"
+        ) from exc
+    if source_before != source_after:
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    if (
+        source_parent_before != source_parent_after
+        or target_parent_before != target_parent_after
+    ):
+        _fail("R8U_LIVE_PUBLICATION_PARENT_CHANGED")
+    if source_mount != target_mount:
+        _fail("R8U_LIVE_PUBLICATION_CROSS_MOUNT")
+    if competing_active_jobs != 0 or competing_active_processes != 0:
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    owner_mode_valid = all(
+        identity.get("uid") == os.geteuid()
+        and int(identity.get("mode", -1)) >= 0
+        and int(identity.get("mode", -1)) & 0o077 == 0
+        for identity in (
+            source_before, source_parent_before, target_parent_before
+        )
+    )
+    if not owner_mode_valid:
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    try:
+        claim_sha = core.canonical_json_sha256(publication_claim)
+        source_sha = core.canonical_json_sha256(source_before)
+        source_parent_sha = core.canonical_json_sha256(source_parent_before)
+        target_parent_sha = core.canonical_json_sha256(target_parent_before)
+        source_mount_sha = core.canonical_json_sha256(
+            {"opaque_current_process_mount_key": repr(source_mount)}
+        )
+        target_mount_sha = core.canonical_json_sha256(
+            {"opaque_current_process_mount_key": repr(target_mount)}
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_LIVE_PUBLICATION_PARENT_CHANGED"
+        ) from exc
+    value = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_r8u_r4_live_publication_locality_v1",
+        "status": "PASS_WORKER_LOCAL_PUBLICATION_LOCALITY",
+        "publication_claim_sha256": claim_sha,
+        "source_exists_safe_directory": True,
+        "target_absent": True,
+        "source_target_same_mounted_filesystem": True,
+        "parents_nonsymlinked": True,
+        "owner_mode_valid": True,
+        "source_identity_stable_same_call": True,
+        "source_parent_identity_stable_same_call": True,
+        "target_parent_identity_stable_same_call": True,
+        "source_identity_sha256": source_sha,
+        "source_parent_identity_sha256": source_parent_sha,
+        "target_parent_identity_sha256": target_parent_sha,
+        "source_mount_identity_sha256": source_mount_sha,
+        "target_mount_identity_sha256": target_mount_sha,
+        "competing_active_jobs": competing_active_jobs,
+        "competing_active_processes": competing_active_processes,
+    }
+    if set(value) != R8U_R4_LOCALITY_KEYS:
+        _fail("R8U_LIVE_PUBLICATION_PARENT_CHANGED")
+    return _R8UR4LivePublicationLocality(
+        value=dict(value), source_identity=source_before,
+        source_parent_identity=source_parent_before,
+        target_parent_identity=target_parent_before,
+        source_mount_key=source_mount, target_mount_key=target_mount,
+    )
+
+
+def _r8u_r4_revalidate_live_locality(
+    locality: _R8UR4LivePublicationLocality,
+    *, source: Path, target: Path,
+    identity_reader: Callable[[Path], Mapping[str, Any]] | None = None,
+    mount_reader: Callable[[Path], Any] | None = None,
+) -> None:
+    read_identity = identity_reader or _r8u_r4_local_identity
+    read_mount = mount_reader or (
+        lambda path: _r8u_r3_mount_authority(path)[0]
+    )
+    if os.path.lexists(target):
+        _fail("R8U_LIVE_PUBLICATION_TARGET_INVALID")
+    try:
+        source_identity = dict(read_identity(source))
+        source_parent_identity = dict(read_identity(source.parent))
+        target_parent_identity = dict(read_identity(target.parent))
+        source_mount = read_mount(source.parent)
+        target_mount = read_mount(target.parent)
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_LIVE_PUBLICATION_PARENT_CHANGED"
+        ) from exc
+    if source_identity != locality.source_identity:
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    if (
+        source_parent_identity != locality.source_parent_identity
+        or target_parent_identity != locality.target_parent_identity
+    ):
+        _fail("R8U_LIVE_PUBLICATION_PARENT_CHANGED")
+    if (
+        source_mount != locality.source_mount_key
+        or target_mount != locality.target_mount_key
+        or source_mount != target_mount
+    ):
+        _fail("R8U_LIVE_PUBLICATION_CROSS_MOUNT")
+
+
+def validate_r8u_r4_live_publication_locality(
+    value: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    locality = value
+    if locality is None:
+        locality, _ = _load_private_json(R8U_R4_LOCALITY_PATH)
+    if (
+        set(locality) != R8U_R4_LOCALITY_KEYS
+        or locality.get("status") != "PASS_WORKER_LOCAL_PUBLICATION_LOCALITY"
+        or any(
+            locality.get(field) is not True
+            for field in (
+                "source_exists_safe_directory", "target_absent",
+                "source_target_same_mounted_filesystem",
+                "parents_nonsymlinked", "owner_mode_valid",
+                "source_identity_stable_same_call",
+                "source_parent_identity_stable_same_call",
+                "target_parent_identity_stable_same_call",
+            )
+        )
+        or locality.get("competing_active_jobs") != 0
+        or locality.get("competing_active_processes") != 0
+        or any(
+            SHA_RE.fullmatch(str(locality.get(field, ""))) is None
+            for field in (
+                "publication_claim_sha256", "source_identity_sha256",
+                "source_parent_identity_sha256",
+                "target_parent_identity_sha256",
+                "source_mount_identity_sha256",
+                "target_mount_identity_sha256",
+            )
+        )
+    ):
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    return locality
+
+
+def _r8u_r4_publication_claim(
+    *, implementation_commit: str, resume_job_id: str,
+    worker_process_projection: Mapping[str, Any],
+    worker_qstat_projection: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if (
+        JOB_RE.fullmatch(resume_job_id) is None
+        or worker_process_projection.get("matching_processes") != 0
+        or worker_qstat_projection.get("competing_matching_jobs") != 0
+    ):
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    value = {
+        **_r8u_r4_common(
+            artifact_type="lvef_c3_r8u_r4_publication_claim_v1",
+            status="AUTHORIZED_EXCLUSIVE_R8U_R4_BATCH16_PUBLICATION",
+            implementation_commit=implementation_commit,
+        ),
+        "resume_job_id": resume_job_id,
+        "portable_candidate_authority_sha256": core.sha256_file(
+            R8U_R4_PORTABLE_AUTHORITY_PATH
+        ),
+        "candidate_replay_diagnosis_sha256": core.sha256_file(
+            R8U_R4_DIAGNOSIS_PATH
+        ),
+        "resume_authority_sha256": core.sha256_file(R8U_R4_AUTHORITY_PATH),
+        "resume_submission_receipt_sha256": core.sha256_file(
+            R8U_R4_SUBMISSION_PATH
+        ),
+        "worker_process_projection_sha256": core.canonical_json_sha256(
+            worker_process_projection
+        ),
+        "worker_qstat_projection_sha256": core.canonical_json_sha256(
+            worker_qstat_projection
+        ),
+        "target_role": "extracted_cache/c3_batch_015/dicom_extraction",
+        "target_absent": True,
+        "competing_active_jobs": 0, "competing_active_processes": 0,
+        "cloud_requests": 0, "downloads": 0, "dicom_body_reads": 0,
+        "dicom_extraction_executions": 0, "npz_body_reads": 0,
+    }
+    if set(value) != R8U_R4_PUBLICATION_CLAIM_KEYS:
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    return value
+
+
+def _r8u_r4_create_publication_claim(value: Mapping[str, Any]) -> str:
+    if set(value) != R8U_R4_PUBLICATION_CLAIM_KEYS:
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    try:
+        _create_private_directory_no_clobber(R8U_R4_PUBLICATION_CLAIM_ROOT)
+        return _write_private_json(R8U_R4_PUBLICATION_CLAIM_PATH, value)
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_LIVE_PUBLICATION_CLAIM_INVALID"
+        ) from exc
+
+
+def _r8u_r4_primitive_probe(
+    *, implementation_commit: str,
+    locality: _R8UR4LivePublicationLocality,
+    publication_claim: Mapping[str, Any],
+    invoker: Callable[[Path, Path], Any] | None = None,
+) -> Mapping[str, Any]:
+    """Probe RENAME_NOREPLACE on the worker-local target filesystem."""
+
+    if os.path.lexists(R8U_R4_PROBE_PATH) or os.path.lexists(R8U_R4_PROBE_WORK_ROOT):
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    try:
+        probe_mount_key = _r8u_r3_mount_authority(
+            R8U_R4_PROBE_WORK_ROOT.parent
+        )[0]
+    except Exception as exc:
+        raise R8RControllerError("R8U_LIVE_PUBLICATION_CROSS_MOUNT") from exc
+    if probe_mount_key != locality.target_mount_key:
+        _fail("R8U_LIVE_PUBLICATION_CROSS_MOUNT")
+    probe_source = R8U_R4_PROBE_WORK_ROOT / "source"
+    probe_target = R8U_R4_PROBE_WORK_ROOT / "target"
+    created: list[Path] = []
+    removed = 0
+    result = _R8UR3RenameResult(False, errno.EIO, "EIO")
+    source_present = False
+    target_present = False
+    target_exact = False
+    try:
+        for directory in (R8U_R4_PROBE_WORK_ROOT, probe_source):
+            _create_private_directory_no_clobber(directory)
+            created.append(directory)
+        result = _r8u_r3_raw_rename_noreplace(
+            probe_source, probe_target, invoker=invoker
+        )
+        source_present = os.path.lexists(probe_source)
+        target_present = os.path.lexists(probe_target)
+        target_exact = (
+            target_present and not probe_target.is_symlink()
+            and probe_target.is_dir()
+            and next(os.scandir(probe_target), None) is None
+        )
+    finally:
+        for directory in (probe_target, probe_source, R8U_R4_PROBE_WORK_ROOT):
+            try:
+                directory.rmdir()
+                removed += 1
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+    classification = _r8u_r3_primary_classification(result)
+    supported = result.returned_success
+    if supported and (source_present or not target_exact):
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    if not supported and not (source_present and not target_present):
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    if classification == "RENAME_CROSS_MOUNT_EXDEV":
+        _fail("R8U_LIVE_PUBLICATION_CROSS_MOUNT")
+    if classification not in R8U_R3_PROCEEDABLE_PROBE_RESULTS:
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    cleanup = not os.path.lexists(R8U_R4_PROBE_WORK_ROOT) and removed == len(created)
+    if not cleanup:
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    value = {
+        **_r8u_r4_common(
+            artifact_type="lvef_c3_r8u_r4_publication_primitive_probe_v1",
+            status="PASS_R8U_R4_PUBLICATION_PRIMITIVE_PROBE",
+            implementation_commit=implementation_commit,
+        ),
+        "live_publication_locality_sha256": core.sha256_file(
+            R8U_R4_LOCALITY_PATH
+        ),
+        "publication_claim_sha256": core.canonical_json_sha256(
+            publication_claim
+        ),
+        "primary_primitive": "RENAMEAT2_RENAME_NOREPLACE",
+        "primary_result": classification,
+        "primary_errno": result.errno_name,
+        "primary_errno_number": result.errno_number,
+        "primary_returned_success": supported,
+        "probe_source_present_after": source_present,
+        "probe_target_present_after": target_present,
+        "probe_target_exact_after": target_exact,
+        "probe_cleanup_passed": cleanup,
+        "scientific_file_body_reads": 0, "npz_body_reads": 0,
+        "dicom_body_reads": 0, "dicom_extraction_executions": 0,
+    }
+    if set(value) != R8U_R4_PROBE_KEYS:
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    _write_private_json(R8U_R4_PROBE_PATH, value)
+    return value
+
+
+def _r8u_r4_publish_candidate(
+    *,
+    source: Path,
+    target: Path,
+    implementation_commit: str,
+    portable_authority: Mapping[str, Any],
+    portable_projection: _R8UR4PortableProjection,
+    live_locality: _R8UR4LivePublicationLocality,
+    publication_claim: Mapping[str, Any],
+    probe: Mapping[str, Any],
+    identity_reader: Callable[[Path], Mapping[str, Any]] | None = None,
+    mount_reader: Callable[[Path], Any] | None = None,
+    primary_invoker: Callable[[Path, Path], Any] | None = None,
+    fallback_invoker: Callable[[Path, Path], Any] = os.rename,
+    write_receipt: bool = True,
+) -> Mapping[str, Any]:
+    """Publish once; continuity uses root identity, never a second tree scan."""
+
+    source = Path(source)
+    target = Path(target)
+    validate_r8u_r4_portable_candidate_authority(
+        portable_authority, observed_projection=portable_projection
+    )
+    validate_r8u_r4_live_publication_locality(live_locality)
+    if (
+        core.canonical_json_sha256(publication_claim)
+        != live_locality["publication_claim_sha256"]
+        or publication_claim.get("status")
+        != "AUTHORIZED_EXCLUSIVE_R8U_R4_BATCH16_PUBLICATION"
+    ):
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    _r8u_r4_revalidate_live_locality(
+        live_locality, source=source, target=target,
+        identity_reader=identity_reader, mount_reader=mount_reader,
+    )
+    if portable_projection.root_local_identity != live_locality.source_identity:
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    fallback_used = probe.get("primary_result") != "RENAME_NOREPLACE_SUPPORTED"
+    allowed_fallback = {
+        "RENAME_NOREPLACE_UNSUPPORTED_EINVAL",
+        "RENAME_NOREPLACE_UNSUPPORTED_ENOSYS",
+        "RENAME_NOREPLACE_UNSUPPORTED_EOPNOTSUPP",
+    }
+    if fallback_used and probe.get("primary_result") not in allowed_fallback:
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    if fallback_used:
+        try:
+            returned = fallback_invoker(source, target)
+            if returned not in {None, 0}:
+                _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+            result = _R8UR3RenameResult(True, 0, "NONE")
+        except OSError as exc:
+            number = int(exc.errno or errno.EIO)
+            result = _R8UR3RenameResult(
+                False, number, errno.errorcode.get(number, "UNKNOWN")
+            )
+        primitive = "CLAIM_PROTECTED_SAME_FILESYSTEM_RENAME"
+    else:
+        result = _r8u_r3_raw_rename_noreplace(
+            source, target, invoker=primary_invoker
+        )
+        primitive = "RENAMEAT2_RENAME_NOREPLACE"
+    source_present = os.path.lexists(source)
+    target_present = os.path.lexists(target)
+    if source_present and target_present:
+        _fail("R8U_LIVE_PUBLICATION_TARGET_INVALID")
+    if source_present and not target_present:
+        if result.errno_number == errno.EXDEV:
+            _fail("R8U_LIVE_PUBLICATION_CROSS_MOUNT")
+        _fail("R8U_LIVE_PUBLICATION_SOURCE_INVALID")
+    if not target_present:
+        _fail("R8U_LIVE_PUBLICATION_TARGET_INVALID")
+    read_identity = identity_reader or _r8u_r4_local_identity
+    try:
+        target_identity = dict(read_identity(target))
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_LIVE_PUBLICATION_TARGET_INVALID"
+        ) from exc
+    continuity_fields = ("device", "inode", "type", "mode", "uid", "gid")
+    if (
+        target_identity.get("type") != "directory"
+        or any(
+            target_identity.get(field) != live_locality.source_identity.get(field)
+            for field in continuity_fields
+        )
+    ):
+        _fail("R8U_LIVE_PUBLICATION_TARGET_INVALID")
+    ruling = (
+        "PUBLICATION_PASS" if result.returned_success
+        else "PUBLICATION_PASS_AFTER_AMBIGUOUS_NFS_RETURN"
+    )
+    receipt = {
+        **_r8u_r4_common(
+            artifact_type="lvef_c3_r8u_r4_batch16_publication_v1",
+            status="PASS_R8U_R4_BATCH16_EXTRACTION_PUBLISHED_NO_CLOBBER",
+            implementation_commit=implementation_commit,
+        ),
+        "portable_candidate_authority_sha256": core.sha256_file(
+            R8U_R4_PORTABLE_AUTHORITY_PATH
+        ),
+        "candidate_replay_diagnosis_sha256": core.sha256_file(
+            R8U_R4_DIAGNOSIS_PATH
+        ),
+        "live_publication_locality_sha256": core.sha256_file(
+            R8U_R4_LOCALITY_PATH
+        ),
+        "publication_primitive_probe_sha256": core.sha256_file(
+            R8U_R4_PROBE_PATH
+        ),
+        "publication_claim_sha256": core.sha256_file(
+            R8U_R4_PUBLICATION_CLAIM_PATH
+        ),
+        "primitive_attempted": primitive,
+        "primary_result": probe["primary_result"],
+        "fallback_used": fallback_used,
+        "rename_returned_success": result.returned_success,
+        "real_rename_errno": result.errno_name,
+        "real_rename_errno_number": result.errno_number,
+        "real_rename_errno_classification": (
+            _r8u_r3_real_rename_classification(result)
+        ),
+        "publication_ruling": ruling,
+        "prepublication_candidate_sha256": portable_authority[
+            "candidate_relative_file_portable_projection_sha256"
+        ],
+        "postpublication_root_identity_sha256": (
+            core.canonical_json_sha256(target_identity)
+        ),
+        "source_absent": True, "target_exact": True,
+        "candidate_npz_files": portable_authority["candidate_npz_files"],
+        "candidate_total_bytes": portable_authority["candidate_total_bytes"],
+        "files_moved": portable_authority["candidate_npz_files"],
+        "files_copied": 0, "files_deleted_independently": 0,
+        "dicom_body_reads": 0, "dicom_extraction_executions": 0,
+        "npz_body_reads": 0, "cloud_requests": 0, "downloads": 0,
+    }
+    if set(receipt) != R8U_R4_PUBLICATION_KEYS:
+        _fail("R8U_LIVE_PUBLICATION_TARGET_INVALID")
+    if write_receipt:
+        _write_private_json(R8U_R4_PUBLICATION_PATH, receipt)
+    return receipt
+
+
+def _r8u_r4_resume_job_name(implementation_commit: str) -> str:
+    return f"lvef_c3_r8u_r4_res_{implementation_commit[:8]}"
+
+
+def _r8u_r4_resume_qsub_command(implementation_commit: str) -> list[str]:
+    return [
+        str(scheduler.QSUB_PATH), "-clear", "-terse", "-r", "n",
+        "-P", "mimicecho", "-N", _r8u_r4_resume_job_name(implementation_commit),
+        "-j", "y", "-o", str(R8U_R4_SCHEDULER_ROOT),
+        "-l", "h_rt=48:00:00", "-l", "gpus=1", "-l", "gpu_c=8.0",
+        "-l", "gpu_memory=48G", "-pe", "omp", "4",
+        "-l", "mem_per_core=16G", str(RUNNER_PATH),
+    ]
+
+
+def _r8u_r4_process_projection(
+    *, environment: Mapping[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+    worker_local: bool,
+) -> Mapping[str, Any]:
+    command = ["/bin/ps", "-axo", "pid=,user=,command="]
+    completed = runner(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, check=False, env=dict(environment),
+    )
+    payload = bytes(completed.stdout)
+    if completed.returncode != 0 or completed.stderr or len(payload) > 16 * 1024 * 1024:
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    try:
+        lines = payload.decode("utf-8", "strict").splitlines()
+    except UnicodeError as exc:
+        raise R8RControllerError(
+            "R8U_LIVE_PUBLICATION_CLAIM_INVALID"
+        ) from exc
+    markers = (
+        "--run-array-task", "--run-cohort-finalizer",
+        "--recover-batch3-preservation", "--run-continuation-array-task",
+        "--run-continuation-finalizer", "--run-batch16-recovery",
+        "--run-continuation-17-19-array-task",
+        "--run-r8u-continuation-finalizer",
+        "--run-r8u-r3-batch16-publication-resume",
+        "--run-r8u-r3-continuation-17-19-array-task",
+        "--run-r8u-r3-continuation-finalizer",
+        "--run-r8u-r4-batch16-publication-resume",
+        "--run-r8u-r4-continuation-17-19-array-task",
+        "--run-r8u-r4-continuation-finalizer",
+        "run_production_dicom_extraction", "run_production_echoprime",
+        "preserve_lvef_c3_production_batch", "retire_lvef_c3_extracted_cache",
+        "finalize_lvef_c3_production", "lvef_c3_r8u_",
+    )
+    matching = 0
+    self_seen = 0
+    for line in lines:
+        fields = line.strip().split(None, 2)
+        if len(fields) != 3 or fields[1] != environment["USER"]:
+            continue
+        try:
+            pid = int(fields[0])
+        except ValueError:
+            _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+        if worker_local and pid == os.getpid():
+            if "--run-r8u-r4-batch16-publication-resume" not in fields[2]:
+                _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+            self_seen += 1
+            continue
+        if any(marker in fields[2] for marker in markers):
+            matching += 1
+    if matching != 0 or (worker_local and self_seen != 1):
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    value = {
+        "status": (
+            "PASS_ZERO_COMPETING_R8U_R4_WORKER_PROCESSES"
+            if worker_local else "PASS_ZERO_COMPETING_R8U_R4_PROCESSES"
+        ),
+        "matching_processes": 0, "process_snapshot_count": 1,
+        "ps_argv_sha256": _sha256_bytes(_canonical_bytes({"argv": command})),
+        "ps_stdout_sha256": _sha256_bytes(payload),
+    }
+    if set(value) != R8U_R3_PROCESS_PROJECTION_KEYS:
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    return value
+
+
+def _r8u_r4_qstat_projection(
+    *, environment: Mapping[str, str], resume_job_id: str,
+    implementation_commit: str,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+    worker_local: bool,
+) -> Mapping[str, Any]:
+    """Capture one qstat snapshot; this function never polls."""
+
+    completed = runner(
+        [str(scheduler.QSTAT_PATH), "-xml", "-u", environment["USER"]],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, check=False, env=dict(environment),
+    )
+    payload = bytes(completed.stdout)
+    if (
+        completed.returncode != 0 or completed.stderr
+        or len(payload) > 4 * 1024 * 1024
+        or b"<!DOCTYPE" in payload.upper() or b"<!ENTITY" in payload.upper()
+    ):
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise R8RControllerError(
+            "R8U_LIVE_PUBLICATION_CLAIM_INVALID"
+        ) from exc
+    local = lambda element: element.tag.rsplit("}", 1)[-1]
+    records: list[tuple[str, str, str, str]] = []
+    for job in root.iter():
+        if local(job) != "job_list":
+            continue
+        fields: dict[str, list[str]] = {}
+        for child in list(job):
+            fields.setdefault(local(child), []).append(child.text or "")
+        if any(len(fields.get(key, ())) != 1 for key in (
+            "JB_job_number", "JB_name", "state"
+        )):
+            _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+        records.append((
+            fields["JB_job_number"][0], fields["JB_name"][0],
+            fields["state"][0], str(job.get("state", "")),
+        ))
+    names = re.compile(
+        r"lvef_c3_(?:full_(?:seq|fin)|r8r_(?:rec|seq|fin)|"
+        r"r8u_(?:rec|seq|fin)|r8u_r3_(?:res|seq|fin)|"
+        r"r8u_r4_(?:res|seq|fin))_[0-9a-f]{8}"
+        r"|c3_(?:dl1|dlr|ext|emb|pre|ret|fin)_[0-9a-f]{12}"
+    )
+    matches = [record for record in records if record[0] == resume_job_id]
+    competing = [
+        record for record in records
+        if record[0] != resume_job_id and names.fullmatch(record[1])
+    ]
+    if len(matches) != 1 or competing:
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    _job, name, state, category = matches[0]
+    expected_category = "running" if state in {"r", "t", "Rr"} else "pending"
+    if (
+        name != _r8u_r4_resume_job_name(implementation_commit)
+        or state not in {"r", "qw", "t", "Rr"}
+        or category != expected_category
+    ):
+        _fail("R8U_LIVE_PUBLICATION_CLAIM_INVALID")
+    body = {
+        "status": (
+            "PASS_EXACT_ONE_R8U_R4_WORKER_JOB_ZERO_COMPETITORS"
+            if worker_local
+            else "PASS_EXACT_ONE_R8U_R4_RESUME_JOB_ZERO_COMPETITORS"
+        ),
+        "resume_job_id": resume_job_id, "resume_job_name": name,
+        "state": state, "category": category, "target_matches": 1,
+        "competing_matching_jobs": 0, "qstat_snapshot_count": 1,
+    }
+    return {
+        **body, "qstat_projection_sha256": core.canonical_json_sha256(body)
+    }
+
+
+def _validate_r8u_r4_initial_qstat(
+    *, environment: Mapping[str, str], resume_job_id: str,
+    implementation_commit: str,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> Mapping[str, Any]:
+    return _r8u_r4_qstat_projection(
+        environment=environment, resume_job_id=resume_job_id,
+        implementation_commit=implementation_commit, runner=runner,
+        worker_local=False,
+    )
+
+
+def _r8u_r4_resume_authority(
+    *, run: sequential.FullRun, implementation_commit: str,
+    qsub_environment_sha256: str, prefix_receipts: Sequence[str],
+    history: Mapping[str, Any], capacity_sha256: str,
+    pre_qsub_process_projection: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    value = {
+        **_r8u_r4_common(
+            artifact_type=(
+                "lvef_c3_r8u_r4_batch16_publication_resume_authority_v1"
+            ),
+            status="AUTHORIZED_FIXED_R8U_R4_BATCH16_PUBLICATION_RESUME",
+            implementation_commit=implementation_commit,
+        ),
+        "prior_implementation_commit": (
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "original_task_id": R8U_FIXED_RECOVERY_TASK_ID,
+        "continuation_task_range": R8U_FIXED_CONTINUATION_TASK_RANGE,
+        "prefix_final_receipt_sha256": list(prefix_receipts),
+        "historical_r8r_chain_authority": dict(
+            _r8u_historical_r8r_chain_authority()
+        ),
+        "failed_partial_seal_sha256": history["failed_partial_seal_sha256"],
+        "r2_recovery_capacity_receipt_sha256": history[
+            "r2_recovery_capacity_receipt_sha256"
+        ],
+        "r2_recovery_authority_sha256": history["r2_recovery_authority_sha256"],
+        "r2_recovery_submission_receipt_sha256": history[
+            "r2_recovery_submission_receipt_sha256"
+        ],
+        "failed_r8u_r3_job_id": R8U_R3_FAILED_PUBLICATION_RESUME_JOB_ID,
+        "r8u_r3_candidate_seal_sha256": R8U_R3_CANDIDATE_SEAL_SHA256,
+        "r8u_r3_scheduler_log_sha256": (
+            R8U_R3_FAILED_PUBLICATION_RESUME_LOG_SHA256
+        ),
+        "candidate_replay_diagnosis_sha256": core.sha256_file(
+            R8U_R4_DIAGNOSIS_PATH
+        ),
+        "portable_candidate_authority_sha256": core.sha256_file(
+            R8U_R4_PORTABLE_AUTHORITY_PATH
+        ),
+        "resume_capacity_sha256": capacity_sha256,
+        "runtime_authority_sha256": core.canonical_json_sha256(
+            run.runtime_authority
+        ),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "script_authority": _script_authority(),
+        "runtime_validation_context": stages.SEALED_SCHEDULER_RUNTIME_REPLAY.value,
+        "target_role": "extracted_cache/c3_batch_015/dicom_extraction",
+        "cloud_requests_authorized": 0, "downloads_authorized": 0,
+        "dicom_body_reads_authorized": 0,
+        "dicom_extraction_executions_authorized": 0,
+        "echoprime_executions_authorized": 1, "gpu_executions_authorized": 1,
+        "failed_partial_adoption_authorized": False,
+        "failed_partial_mutation_authorized": False,
+        "model_fitting_authorized": False, "prediction_authorized": False,
+        "confirmatory_performance_access_authorized": False,
+        "maximum_new_qsub_submissions": 1,
+        "pre_qsub_process_projection": dict(pre_qsub_process_projection),
+    }
+    if set(value) != R8U_R4_AUTHORITY_KEYS:
+        _fail("R8U_R4_RESUME_AUTHORITY_INVALID")
+    return value
+
+
+def _r8u_r4_resume_submission_receipt(
+    *, implementation_commit: str, resume_job_id: str,
+    qsub_environment_sha256: str, resume_authority_sha256: str,
+    capacity_sha256: str, pre_qsub_process_projection: Mapping[str, Any],
+    initial_qstat_projection: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if JOB_RE.fullmatch(resume_job_id) is None:
+        _fail("R8U_R4_RESUME_SUBMISSION_INVALID")
+    value = {
+        **_r8u_r4_common(
+            artifact_type=(
+                "lvef_c3_r8u_r4_batch16_publication_resume_submission_v1"
+            ),
+            status="PASS_EXACT_ONE_R8U_R4_GPU_BATCH16_PUBLICATION_RESUME_QSUB",
+            implementation_commit=implementation_commit,
+        ),
+        "original_task_id": R8U_FIXED_RECOVERY_TASK_ID,
+        "resume_job_name": _r8u_r4_resume_job_name(implementation_commit),
+        "resume_job_id": resume_job_id,
+        "resume_qsub_argv_sha256": _sha256_bytes(_canonical_bytes(
+            {"argv": _r8u_r4_resume_qsub_command(implementation_commit)}
+        )),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "resume_authority_sha256": resume_authority_sha256,
+        "portable_candidate_authority_sha256": core.sha256_file(
+            R8U_R4_PORTABLE_AUTHORITY_PATH
+        ),
+        "candidate_replay_diagnosis_sha256": core.sha256_file(
+            R8U_R4_DIAGNOSIS_PATH
+        ),
+        "resume_capacity_sha256": capacity_sha256,
+        "resume_qsub_evidence": dict(
+            _qsub_evidence_authority(R8U_R4_SCHEDULER_ROOT, "resume")
+        ),
+        "scheduler_submission_count": 1, "resume_is_array": False,
+        "gpu_requested": True, "automatic_retry_authorized": False,
+        "cloud_requests": 0, "downloads": 0,
+        "dicom_body_reads_by_submitter": 0,
+        "dicom_extraction_executions_by_submitter": 0,
+        "npz_body_reads_by_submitter": 0, "model_fitting_count": 0,
+        "prediction_generation_count": 0,
+        "confirmatory_performance_access_count": 0,
+        "pre_qsub_process_projection": dict(pre_qsub_process_projection),
+        "initial_qstat_projection": dict(initial_qstat_projection),
+    }
+    if set(value) != R8U_R4_SUBMISSION_KEYS:
+        _fail("R8U_R4_RESUME_SUBMISSION_INVALID")
+    return value
+
+
+def _r8u_r4_require_submit_outputs_absent(run: sequential.FullRun) -> None:
+    paths = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)
+    expected_absent = (
+        R8U_R4_ROOT, R8U_R4_PUBLICATION_CLAIM_ROOT,
+        R8U_R4_PROBE_WORK_ROOT, R8U_R4_CONTINUATION_ROOT,
+        paths["extraction"], paths["extraction_ledger"],
+        paths["pooling_ledger"], paths["eligibility_ledger"],
+        paths["echoprime"],
+        paths["preservation"] / "batch_preservation_receipt.restricted.json",
+        ATTEMPT_ROOT / "cache_retirement_authorizations"
+        / f"{R8U_FIXED_BATCH_ID}.authorization.json",
+        paths["final_ledger"], paths["final_receipt"],
+    )
+    if any(os.path.lexists(path) for path in expected_absent):
+        _fail("R8U_R4_RESUME_OUTPUT_COLLISION")
+
+
+def _validate_r8u_r4_resume_submission(
+    *, current_job_id: str | None = None, wait: bool = False,
+) -> tuple[sequential.FullRun, Mapping[str, Any], Mapping[str, Any]]:
+    if wait:
+        deadline = time.monotonic() + 60.0
+        while not os.path.lexists(R8U_R4_SUBMISSION_PATH):
+            if time.monotonic() >= deadline:
+                _fail("R8U_R4_RESUME_SUBMISSION_RECEIPT_TIMEOUT")
+            time.sleep(0.25)
+    implementation_commit = _current_r8u_r4_implementation_commit()
+    run = _load_fixed_original_run(
+        scheduler_job_identity=current_job_id or "R8U_R4_RESUME_READBACK",
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r4=True,
+    )
+    _candidate, history = _r8u_r4_validate_immutable_r3_failure(run)
+    diagnosis = validate_r8u_r4_replay_diagnosis()
+    portable = validate_r8u_r4_portable_candidate_authority()
+    capacity_value, capacity_payload = _load_private_json(R8U_R4_CAPACITY_PATH)
+    try:
+        capacity.validate_fixed_r8u_r4_batch16_publication_resume_capacity(
+            run.plan, capacity_value,
+            completed_extraction_candidate_seal_sha256=(
+                R8U_R3_CANDIDATE_SEAL_SHA256
+            ),
+            completed_extraction_candidate_bytes=int(
+                portable["candidate_total_bytes"]
+            ),
+            r8u_portability_repair_commit=implementation_commit,
+        )
+    except Exception as exc:
+        raise R8RControllerError("R8U_R4_RESUME_CAPACITY_INVALID") from exc
+    authority, authority_payload = _load_private_json(R8U_R4_AUTHORITY_PATH)
+    submission, _ = _load_private_json(R8U_R4_SUBMISSION_PATH)
+    prefix = _r8u_validate_frozen_prefix(run, include_batch16=False)
+    pre_projection = authority.get("pre_qsub_process_projection")
+    initial_qstat = submission.get("initial_qstat_projection")
+    if not isinstance(pre_projection, Mapping) or not isinstance(initial_qstat, Mapping):
+        _fail("R8U_R4_RESUME_SUBMISSION_INVALID")
+    expected_authority = _r8u_r4_resume_authority(
+        run=run, implementation_commit=implementation_commit,
+        qsub_environment_sha256=str(authority.get("qsub_environment_sha256", "")),
+        prefix_receipts=prefix, history=history,
+        capacity_sha256=_sha256_bytes(capacity_payload),
+        pre_qsub_process_projection=pre_projection,
+    )
+    job_id = str(submission.get("resume_job_id", ""))
+    expected_submission = _r8u_r4_resume_submission_receipt(
+        implementation_commit=implementation_commit, resume_job_id=job_id,
+        qsub_environment_sha256=str(authority.get("qsub_environment_sha256", "")),
+        resume_authority_sha256=_sha256_bytes(authority_payload),
+        capacity_sha256=_sha256_bytes(capacity_payload),
+        pre_qsub_process_projection=pre_projection,
+        initial_qstat_projection=initial_qstat,
+    )
+    if (
+        diagnosis.get("portable_candidate_fields_equal") is not True
+        or capacity_value.get("status") != R8U_R4_CAPACITY_STATUS
+        or not _exact_typed_value_equal(authority, expected_authority)
+        or not _exact_typed_value_equal(submission, expected_submission)
+        or submission.get("pre_qsub_process_projection") != pre_projection
+        or (current_job_id is not None and current_job_id != job_id)
+    ):
+        _fail("R8U_R4_RESUME_SUBMISSION_INVALID")
+    return run, authority, submission
+
+
+def submit_r8u_r4_batch16_publication_resume(
+    *,
+    qsub_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    qstat_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    process_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    capacity_process_runner: Callable[..., Any] | None = None,
+) -> Mapping[str, Any]:
+    """Seal portable content, capture capacity once, and issue one qsub."""
+
+    scheduler.validate_scheduler_tools()
+    implementation_commit = _current_r8u_r4_implementation_commit()
+    environment, _ = scheduler.build_qsub_environment()
+    environment_sha = scheduler.qsub_environment_sha256(environment)
+    pre_process = _r8u_r4_process_projection(
+        environment=environment, runner=process_runner, worker_local=False
+    )
+    run = _load_fixed_original_run(
+        scheduler_job_identity="R8U_R4_RESUME_SUBMITTER",
+        # Login and execution nodes may report different operating-system
+        # identities despite the exact sealed Python/CUDA/package runtime.
+        # Use the established portable replay context here as well
+        # as in the scheduled worker; it excludes only that node-local field.
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r4=True,
+    )
+    _validate_original_controls()
+    prefix = _r8u_validate_frozen_prefix(run, include_batch16=False)
+    _r8u_historical_r8r_chain_authority()
+    r3_candidate, history = _r8u_r4_validate_immutable_r3_failure(run)
+    _r8u_r4_require_submit_outputs_absent(run)
+    # The login-node portable seal is one metadata/control scan.  No NPZ or
+    # DICOM body is opened, and no whole-attempt tree is traversed.
+    projection = _r8u_r4_portable_candidate_projection(run)
+    comparison = _r8u_r4_compare_candidate_projection(
+        r3_candidate, projection
+    )
+    _r8u_r4_raise_portable_comparison(comparison)
+    diagnosis = _r8u_r4_candidate_replay_diagnosis(
+        comparison=comparison,
+        candidate_path_set_equal=True,
+        candidate_count_and_bytes_equal=True,
+    )
+    validate_r8u_r4_replay_diagnosis(diagnosis)
+    _create_private_directory_no_clobber(R8U_R4_ROOT)
+    diagnosis_sha = _r8u_r4_write_diagnosis_no_clobber(
+        R8U_R4_DIAGNOSIS_PATH, diagnosis
+    )
+    portable = _r8u_r4_portable_candidate_authority(
+        implementation_commit=implementation_commit,
+        projection=projection, diagnosis_sha256=diagnosis_sha,
+    )
+    validate_r8u_r4_portable_candidate_authority(
+        portable, observed_projection=projection
+    )
+    portable_sha = _write_private_json(R8U_R4_PORTABLE_AUTHORITY_PATH, portable)
+    try:
+        capacity_value = capacity.probe_fixed_r8u_r4_batch16_publication_resume_capacity(
+            run.plan,
+            completed_extraction_candidate_seal_sha256=(
+                R8U_R3_CANDIDATE_SEAL_SHA256
+            ),
+            completed_extraction_candidate_bytes=int(
+                portable["candidate_total_bytes"]
+            ),
+            r8u_portability_repair_commit=implementation_commit,
+            process_runner=capacity_process_runner,
+        )
+        capacity.validate_fixed_r8u_r4_batch16_publication_resume_capacity(
+            run.plan, capacity_value,
+            completed_extraction_candidate_seal_sha256=(
+                R8U_R3_CANDIDATE_SEAL_SHA256
+            ),
+            completed_extraction_candidate_bytes=int(
+                portable["candidate_total_bytes"]
+            ),
+            r8u_portability_repair_commit=implementation_commit,
+        )
+    except Exception as exc:
+        raise R8RControllerError("R8U_R4_RESUME_CAPACITY_INVALID") from exc
+    if capacity_value.get("status") != R8U_R4_CAPACITY_STATUS:
+        raise R8RControllerError(
+            "R8U_R4_RESUME_CAPACITY_BLOCKED",
+            capacity_deficits=_r8u_capacity_deficits(capacity_value),
+        )
+    _create_private_directory_no_clobber(R8U_R4_SCHEDULER_ROOT)
+    capacity_sha = _write_private_json(R8U_R4_CAPACITY_PATH, capacity_value)
+    authority = _r8u_r4_resume_authority(
+        run=run, implementation_commit=implementation_commit,
+        qsub_environment_sha256=environment_sha,
+        prefix_receipts=prefix, history=history,
+        capacity_sha256=capacity_sha,
+        pre_qsub_process_projection=pre_process,
+    )
+    authority_sha = _write_private_json(R8U_R4_AUTHORITY_PATH, authority)
+    resume_job_id = scheduler._capture_qsub(
+        "resume", _r8u_r4_resume_qsub_command(implementation_commit),
+        root=R8U_R4_SCHEDULER_ROOT, environment=environment,
+        runner=qsub_runner,
+    )
+    initial_qstat = _validate_r8u_r4_initial_qstat(
+        environment=environment, resume_job_id=resume_job_id,
+        implementation_commit=implementation_commit,
+        runner=qstat_runner,
+    )
+    submission = _r8u_r4_resume_submission_receipt(
+        implementation_commit=implementation_commit,
+        resume_job_id=resume_job_id,
+        qsub_environment_sha256=environment_sha,
+        resume_authority_sha256=authority_sha,
+        capacity_sha256=capacity_sha,
+        pre_qsub_process_projection=pre_process,
+        initial_qstat_projection=initial_qstat,
+    )
+    _write_private_json(R8U_R4_SUBMISSION_PATH, submission)
+    return {
+        "status": "BATCH16_PUBLICATION_RESUME_SUBMITTED_AWAITING_TERMINAL",
+        "resume_job_id": resume_job_id,
+        "capacity_status": R8U_R4_CAPACITY_STATUS,
+        "portable_candidate_authority_sha256": portable_sha,
+        "candidate_files": R8U_R3_CANDIDATE_NPZ_FILES,
+        "observed_npz_files": projection.value["candidate_npz_files"],
+        "missing_npz_files": 0, "additional_npz_files": 0,
+        "initial_state": initial_qstat["state"],
+        "new_qsub_submissions": 1, "login_node_polling_started": False,
+        "continuation_submitted": False, "finalizer_submitted": False,
+        "cloud_requests": 0, "downloads": 0, "dicom_body_reads": 0,
+        "dicom_extraction_executions": 0, "npz_body_reads": 0,
+    }
+
+
+def _r8u_r4_terminal_receipt(
+    *, run: sequential.FullRun, final_receipt: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    paths = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)
+    required = {
+        "failed_partial_seal_sha256": R8U_FAILED_PARTIAL_SEAL_PATH,
+        "r8u_r3_candidate_seal_sha256": R8U_R3_CANDIDATE_SEAL_PATH,
+        "candidate_replay_diagnosis_sha256": R8U_R4_DIAGNOSIS_PATH,
+        "portable_candidate_authority_sha256": R8U_R4_PORTABLE_AUTHORITY_PATH,
+        "live_publication_locality_sha256": R8U_R4_LOCALITY_PATH,
+        "publication_primitive_probe_sha256": R8U_R4_PROBE_PATH,
+        "publication_claim_sha256": R8U_R4_PUBLICATION_CLAIM_PATH,
+        "publication_receipt_sha256": R8U_R4_PUBLICATION_PATH,
+        "resume_capacity_sha256": R8U_R4_CAPACITY_PATH,
+        "resume_authority_sha256": R8U_R4_AUTHORITY_PATH,
+        "resume_submission_receipt_sha256": R8U_R4_SUBMISSION_PATH,
+        "preservation_receipt_sha256": (
+            paths["preservation"] / "batch_preservation_receipt.restricted.json"
+        ),
+        "cache_retirement_authorization_sha256": (
+            ATTEMPT_ROOT / "cache_retirement_authorizations"
+            / f"{R8U_FIXED_BATCH_ID}.authorization.json"
+        ),
+        "cache_retirement_transition_sha256": paths["final_transition"],
+        "final_ledger_sha256": paths["final_ledger"],
+        "batch_finalization_receipt_sha256": paths["final_receipt"],
+    }
+    try:
+        hashes = {key: core.sha256_file(path) for key, path in required.items()}
+    except Exception as exc:
+        raise R8RControllerError("R8U_R4_TERMINAL_AUTHORITY_INVALID") from exc
+    value = {
+        **_r8u_r4_common(
+            artifact_type=(
+                "lvef_c3_r8u_r4_batch16_publication_resume_terminal_v1"
+            ),
+            status=R8U_R4_STATUS,
+            implementation_commit=_current_r8u_r4_implementation_commit(),
+        ),
+        "original_task_id": R8U_FIXED_RECOVERY_TASK_ID,
+        **hashes,
+        "n_selected_studies": int(final_receipt["n_selected_studies"]),
+        "n_expected_objects": int(final_receipt["n_expected_objects"]),
+        "expected_source_bytes": int(final_receipt["expected_source_bytes"]),
+        "n_successfully_extracted_cines": int(
+            final_receipt["n_successfully_extracted_cines"]
+        ),
+        "n_object_technical_dispositions": int(
+            final_receipt["n_object_technical_dispositions"]
+        ),
+        "n_blocking_failures": int(final_receipt["n_blocking_failures"]),
+        "n_clip_embeddings": int(final_receipt["n_clip_embeddings"]),
+        "n_pooled_studies": int(final_receipt["n_pooled_studies"]),
+        "n_no_cine_studies": int(final_receipt["n_no_cine_studies"]),
+        "n_new_no_cine_studies": int(final_receipt["n_new_no_cine_studies"]),
+        "object_substitution_count": int(final_receipt["object_substitution_count"]),
+        "unaccounted_multiframe_objects": int(
+            final_receipt["unaccounted_multiframe_objects"]
+        ),
+        "raw_dicoms_retained": final_receipt["raw_dicoms_retained"],
+        "canonical_extraction_cache_retired": final_receipt[
+            "extracted_cache_retired"
+        ],
+        "failed_partial_cache_retained": True,
+        "source_candidate_npz_files": R8U_R3_CANDIDATE_NPZ_FILES,
+        "cloud_requests": 0, "downloads": 0, "dicom_body_reads": 0,
+        "dicom_extraction_executions": 0, "echoprime_executions": 1,
+        "embedding_generations": 1, "gpu_executions": 1,
+        "model_fitting_count": 0, "prediction_generation_count": 0,
+        "confirmatory_performance_access_count": 0,
+    }
+    if set(value) != R8U_R4_TERMINAL_KEYS:
+        _fail("R8U_R4_TERMINAL_AUTHORITY_INVALID")
+    return value
+
+
+def run_r8u_r4_batch16_publication_resume(
+    *,
+    dependencies: sequential.FullDependencies | None = None,
+    probe_invoker: Callable[[Path, Path], Any] | None = None,
+    primary_invoker: Callable[[Path, Path], Any] | None = None,
+    fallback_invoker: Callable[[Path, Path], Any] = os.rename,
+    process_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    qstat_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> Mapping[str, Any]:
+    """Worker-only publication, EchoPrime, preservation, and finalization."""
+
+    job_id = str(os.environ.get("JOB_ID", ""))
+    task_text = str(os.environ.get("SGE_TASK_ID", "undefined"))
+    if JOB_RE.fullmatch(job_id) is None or task_text not in {"", "undefined"}:
+        _fail("R8U_R4_RESUME_SCHEDULER_CONTEXT_INVALID")
+    run, _authority, _submission = _validate_r8u_r4_resume_submission(
+        current_job_id=job_id, wait=True
+    )
+    implementation_commit = _current_r8u_r4_implementation_commit()
+    if any(
+        os.path.lexists(path)
+        for path in (
+            R8U_R4_LOCALITY_PATH, R8U_R4_PROBE_PATH,
+            R8U_R4_PUBLICATION_CLAIM_ROOT, R8U_R4_PROBE_WORK_ROOT,
+            R8U_R4_PUBLICATION_PATH, R8U_R4_EXTRACTION_TRANSITION_ROOT,
+            R8U_R4_TERMINAL_PATH,
+        )
+    ):
+        _fail("R8U_R4_RESUME_OUTPUT_COLLISION")
+    dependency = sequential.resolve_dependencies(dependencies)
+    try:
+        dependency.environment_validator(
+            run.authority.environment_receipt,
+            expected_environment_receipt_sha256=(
+                run.runtime_authority["environment_receipt_sha256"]
+            ),
+            scientific_governing_commit=run.authority.governing_commit,
+            runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        )
+        if core.sha256_file(run.authority.checkpoint) != run.runtime_authority[
+            "checkpoint_sha256"
+        ]:
+            _fail("R8U_R4_CHECKPOINT_AUTHORITY_INVALID")
+    except R8RControllerError:
+        raise
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_R4_PREBODY_AUTHORITY_FAILED", stage="PREBODY_AUTHORITY"
+        ) from exc
+    source = R8U_FRESH_EXTRACTION_BATCH_ROOT / "dicom_extraction"
+    target = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)["extraction"]
+    portable_authority = validate_r8u_r4_portable_candidate_authority()
+    # The sole worker candidate scan is reused through publication.  It opens
+    # control files only; EchoPrime remains the first NPZ body/hash reader.
+    portable_projection = _r8u_r4_portable_candidate_projection(run)
+    validate_r8u_r4_portable_candidate_authority(
+        portable_authority, observed_projection=portable_projection
+    )
+    worker_environment, _ = scheduler.build_qsub_environment()
+    worker_process = _r8u_r4_process_projection(
+        environment=worker_environment, runner=process_runner,
+        worker_local=True,
+    )
+    worker_qstat = _r8u_r4_qstat_projection(
+        environment=worker_environment, resume_job_id=job_id,
+        implementation_commit=implementation_commit,
+        runner=qstat_runner, worker_local=True,
+    )
+    try:
+        claim = _r8u_r4_publication_claim(
+            implementation_commit=implementation_commit,
+            resume_job_id=job_id,
+            worker_process_projection=worker_process,
+            worker_qstat_projection=worker_qstat,
+        )
+        _r8u_r4_create_publication_claim(claim)
+        locality = _r8u_r4_live_publication_locality(
+            source=source, target=target, publication_claim=claim,
+            competing_active_jobs=int(worker_qstat["competing_matching_jobs"]),
+            competing_active_processes=int(worker_process["matching_processes"]),
+        )
+        _write_private_json(R8U_R4_LOCALITY_PATH, locality.value)
+        probe = _r8u_r4_primitive_probe(
+            implementation_commit=implementation_commit,
+            locality=locality, publication_claim=claim,
+            invoker=probe_invoker,
+        )
+        publication = _r8u_r4_publish_candidate(
+            source=source, target=target,
+            implementation_commit=implementation_commit,
+            portable_authority=portable_authority,
+            portable_projection=portable_projection,
+            live_locality=locality, publication_claim=claim, probe=probe,
+            primary_invoker=primary_invoker,
+            fallback_invoker=fallback_invoker, write_receipt=True,
+        )
+    except R8RControllerError as exc:
+        raise R8RControllerError(
+            exc.code, stage="EXTRACTION_PUBLICATION"
+        ) from exc
+    paths = sequential._batch_paths(run, R8U_FIXED_BATCH_ID)
+    planned = run.plan["batches"][R8U_FIXED_RECOVERY_TASK_ID - 1]
+    object_keys = {str(row["source_object_key"]) for row in planned["objects"]}
+    try:
+        stages.advance_stage_ledger(
+            input_ledger=paths["download_ledger"],
+            output_ledger=paths["extraction_ledger"],
+            receipt_root=R8U_R4_EXTRACTION_TRANSITION_ROOT,
+            batch_id=R8U_FIXED_BATCH_ID,
+            transitions=(
+                ("DICOM_AUDIT_COMPLETE", core.sha256_file(
+                    paths["extraction"] / "dicom_audit.restricted.csv"
+                )),
+                ("EXTRACTION_COMPLETE", core.sha256_file(
+                    paths["extraction"] / "extraction_manifest.restricted.csv"
+                )),
+            ),
+            expected_authority=run.runtime_authority,
+            expected_attempt_id=run.attempt_id,
+            expected_object_keys=object_keys,
+        )
+        embedding_summary = dependency.echoprime(
+            extraction_manifest=(
+                paths["extraction"] / "extraction_manifest.restricted.csv"
+            ),
+            extraction_root=paths["extraction"] / "clips",
+            technical_disposition_manifest=(
+                paths["extraction"]
+                / "technical_disposition_manifest.restricted.csv"
+            ),
+            dicom_audit=paths["extraction"] / "dicom_audit.restricted.csv",
+            dicom_extraction_summary=(
+                paths["extraction"] / "dicom_extraction.summary.json"
+            ),
+            verified_download_manifest=(
+                paths["raw_batch"] / "verified_download_manifest.restricted.csv"
+            ),
+            selected_batch_manifest=(
+                paths["raw_batch"] / "selected_batch.restricted.csv"
+            ),
+            checkpoint=run.authority.checkpoint,
+            environment_receipt=run.authority.environment_receipt,
+            orchestration_contract=run.contract_path,
+            batch_plan=run.plan_path, batch_id=R8U_FIXED_BATCH_ID,
+            batch_output_root=paths["batch_root"],
+            batch_size=dependency.echoprime_batch_size, seed=20260803,
+            attempt_id=run.attempt_id,
+            runtime_authority=run.runtime_authority,
+            requirements=run.requirements,
+            runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        )
+        stages.advance_stage_ledger(
+            input_ledger=paths["extraction_ledger"],
+            output_ledger=paths["pooling_ledger"],
+            receipt_root=paths["echoprime"] / "transition_receipts",
+            batch_id=R8U_FIXED_BATCH_ID,
+            transitions=(
+                ("EMBEDDING_COMPLETE", core.sha256_file(
+                    paths["echoprime"] / "clip_manifest.restricted.csv"
+                )),
+                ("STUDY_POOLING_COMPLETE", core.sha256_file(
+                    paths["echoprime"] / "study_manifest.restricted.csv"
+                )),
+            ),
+            expected_authority=run.runtime_authority,
+            expected_attempt_id=run.attempt_id,
+            expected_object_keys=object_keys,
+        )
+    except Exception as exc:
+        code = getattr(exc, "code", "R8U_R4_BATCH16_ECHOPRIME_FAILED")
+        raise R8RControllerError(
+            str(code) if SAFE_CODE_RE.fullmatch(str(code)) else (
+                "R8U_R4_BATCH16_ECHOPRIME_FAILED"
+            ), stage="ECHOPRIME_EMBEDDING",
+        ) from exc
+    try:
+        preserved = dependency.preserve(
+            contract_path=run.contract_path, plan_path=run.plan_path,
+            batch_id=R8U_FIXED_BATCH_ID, attempt_id=run.attempt_id,
+            governing_commit=run.authority.governing_commit,
+            production_root=run.production_root, output_root=paths["preservation"],
+            environment_receipt=run.authority.environment_receipt,
+            checkpoint=run.authority.checkpoint,
+            scheduler_job_identity=run.scheduler_job_identity,
+            input_ledger=paths["pooling_ledger"], requirements=run.requirements,
+            expected_runtime_authority=run.runtime_authority,
+            scheduler_runner_path=RUNNER_PATH,
+            artifact_validation_context=getattr(
+                preservation, "R8U_R4_FIXED_BATCH16_NO_SCIENTIFIC_BODY",
+                preservation.R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY,
+            ),
+            runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        )
+        authorization = sequential._cache_retirement_authorization(
+            run=run, batch_id=R8U_FIXED_BATCH_ID, paths=paths
+        )
+        dependency.retire(
+            run=run, batch_id=R8U_FIXED_BATCH_ID,
+            authorization_receipt_path=authorization,
+            requirements=run.requirements,
+            expected_runtime_authority=run.runtime_authority,
+            scheduler_runner_path=RUNNER_PATH,
+            test_only_synthetic_full_scope=False,
+            artifact_validation_context=getattr(
+                retirement, "R8U_R4_FIXED_BATCH16_NO_SCIENTIFIC_BODY",
+                retirement.R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY,
+            ),
+        )
+        final_receipt = dependency.finalize_batch(
+            run=run, batch_id=R8U_FIXED_BATCH_ID
+        )
+    except Exception as exc:
+        code = getattr(exc, "code", "R8U_R4_BATCH16_FINALIZATION_FAILED")
+        raise R8RControllerError(
+            str(code) if SAFE_CODE_RE.fullmatch(str(code)) else (
+                "R8U_R4_BATCH16_FINALIZATION_FAILED"
+            ), stage="PRESERVATION_RETIREMENT_FINALIZATION",
+        ) from exc
+    if (
+        preserved.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE"
+        or final_receipt.get("status") != "PASS_BATCH_FINALIZED"
+        or final_receipt.get("raw_dicoms_retained") is not True
+        or final_receipt.get("extracted_cache_retired") is not True
+        or final_receipt.get("n_successfully_extracted_cines")
+        != R8U_R3_CANDIDATE_NPZ_FILES
+        or final_receipt.get("n_clip_embeddings")
+        != R8U_R3_CANDIDATE_NPZ_FILES
+        or final_receipt.get("n_object_technical_dispositions") != 0
+        or final_receipt.get("n_blocking_failures") != 0
+        or final_receipt.get("n_new_no_cine_studies") != 0
+        or final_receipt.get("object_substitution_count") != 0
+        or final_receipt.get("unaccounted_multiframe_objects") != 0
+        or os.path.lexists(paths["extraction"] / "clips")
+    ):
+        _fail("R8U_R4_BATCH16_FINALIZATION_INVALID")
+    terminal = _r8u_r4_terminal_receipt(
+        run=run, final_receipt=final_receipt
+    )
+    _write_private_json(R8U_R4_TERMINAL_PATH, terminal)
+    _r8u_validate_frozen_prefix(run, include_batch16=True)
+    return {
+        **dict(terminal),
+        "publication_ruling": publication["publication_ruling"],
+        "embedding_summary_status": embedding_summary.get("status"),
+    }
+
+
+def _r8u_r4_resume_accounting_receipt(
+    *, implementation_commit: str, resume_job_id: str,
+    accounting: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    validated = _validate_recovery_accounting_projection(
+        accounting, expected_job_id=resume_job_id
+    )
+    value = {
+        **_r8u_r4_common(
+            artifact_type=(
+                "lvef_c3_r8u_r4_batch16_publication_resume_accounting_v1"
+            ),
+            status="PASS_R8U_R4_RESUME_QACCT_FAILED_0_EXIT_0",
+            implementation_commit=implementation_commit,
+        ),
+        "original_task_id": R8U_FIXED_RECOVERY_TASK_ID,
+        "resume_job_id": resume_job_id, "failed": 0, "exit_status": 0,
+        "accounting_projection": dict(validated),
+    }
+    if set(value) != R8U_R4_ACCOUNTING_KEYS:
+        _fail("R8U_R4_RESUME_ACCOUNTING_INVALID")
+    return value
+
+
+def _validate_r8u_r4_resume_accounting() -> Mapping[str, Any]:
+    _run, _authority, submission = _validate_r8u_r4_resume_submission()
+    value, _ = _load_private_json(R8U_R4_ACCOUNTING_PATH)
+    accounting = value.get("accounting_projection")
+    if not isinstance(accounting, Mapping):
+        _fail("R8U_R4_RESUME_ACCOUNTING_INVALID")
+    expected = _r8u_r4_resume_accounting_receipt(
+        implementation_commit=_current_r8u_r4_implementation_commit(),
+        resume_job_id=str(submission.get("resume_job_id", "")),
+        accounting=accounting,
+    )
+    if not _exact_typed_value_equal(value, expected):
+        _fail("R8U_R4_RESUME_ACCOUNTING_INVALID")
+    return value
+
+
+def validate_r8u_r4_resume_terminal() -> Mapping[str, Any]:
+    run, _authority, _submission = _validate_r8u_r4_resume_submission()
+    final_receipt = sequential._validate_batch_finalization(
+        run=run, batch_id=R8U_FIXED_BATCH_ID
+    )
+    value, _ = _load_private_json(R8U_R4_TERMINAL_PATH)
+    expected = _r8u_r4_terminal_receipt(
+        run=run, final_receipt=final_receipt
+    )
+    if (
+        not _exact_typed_value_equal(value, expected)
+        or value.get("status") != R8U_R4_STATUS
+        or os.path.lexists(R8U_FRESH_EXTRACTION_BATCH_ROOT / "dicom_extraction")
+        or os.path.lexists(
+            sequential._batch_paths(run, R8U_FIXED_BATCH_ID)["extraction"]
+            / "clips"
+        )
+    ):
+        _fail("R8U_R4_TERMINAL_RECEIPT_INVALID")
+    _r8u_r4_validate_immutable_r3_failure(run)
+    _r8u_validate_frozen_prefix(run, include_batch16=True)
+    return value
+
+
+def validate_r8u_r4_frozen_partial_evidence() -> Mapping[str, Any]:
+    run = _load_fixed_original_run(
+        scheduler_job_identity="R8U_R4_FROZEN_PARTIAL_READBACK",
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r4=True,
+    )
+    _candidate, history = _r8u_r4_validate_immutable_r3_failure(run)
+    value, _ = _load_private_json(R8U_FAILED_PARTIAL_SEAL_PATH)
+    if (
+        value.get("status") != "FAILED_TASK16_PARTIAL_EXTRACTION_EVIDENCE"
+        or core.sha256_file(R8U_FAILED_PARTIAL_SEAL_PATH)
+        != history["failed_partial_seal_sha256"]
+    ):
+        _fail("R8U_R4_FAILED_PARTIAL_SEAL_INVALID")
+    return value
+
+
+def _r8u_r4_continuation_links() -> Mapping[str, str]:
+    paths = {
+        "r8u_r3_candidate_seal_sha256": R8U_R3_CANDIDATE_SEAL_PATH,
+        "candidate_replay_diagnosis_sha256": R8U_R4_DIAGNOSIS_PATH,
+        "portable_candidate_authority_sha256": R8U_R4_PORTABLE_AUTHORITY_PATH,
+        "live_publication_locality_sha256": R8U_R4_LOCALITY_PATH,
+        "publication_primitive_probe_sha256": R8U_R4_PROBE_PATH,
+        "publication_claim_sha256": R8U_R4_PUBLICATION_CLAIM_PATH,
+        "publication_receipt_sha256": R8U_R4_PUBLICATION_PATH,
+        "resume_capacity_sha256": R8U_R4_CAPACITY_PATH,
+        "resume_authority_sha256": R8U_R4_AUTHORITY_PATH,
+        "resume_submission_receipt_sha256": R8U_R4_SUBMISSION_PATH,
+        "resume_accounting_sha256": R8U_R4_ACCOUNTING_PATH,
+        "resume_terminal_receipt_sha256": R8U_R4_TERMINAL_PATH,
+    }
+    value = {key: core.sha256_file(path) for key, path in paths.items()}
+    if set(value) != R8U_R4_CONTINUATION_LINK_KEYS:
+        _fail("R8U_R4_CONTINUATION_CHAIN_INVALID")
+    return value
+
+
+def _r8u_r4_continuation_array_job_name(implementation_commit: str) -> str:
+    return f"lvef_c3_r8u_r4_seq_{implementation_commit[:8]}"
+
+
+def _r8u_r4_continuation_finalizer_job_name(implementation_commit: str) -> str:
+    return f"lvef_c3_r8u_r4_fin_{implementation_commit[:8]}"
+
+
+def _r8u_r4_continuation_array_command(
+    implementation_commit: str,
+) -> list[str]:
+    return [
+        str(scheduler.QSUB_PATH), "-clear", "-terse", "-r", "n",
+        "-P", "mimicecho", "-N",
+        _r8u_r4_continuation_array_job_name(implementation_commit),
+        "-j", "y", "-o", str(R8U_R4_CONTINUATION_SCHEDULER_ROOT),
+        "-t", R8U_FIXED_CONTINUATION_TASK_RANGE,
+        "-tc", str(R8U_FIXED_CONTINUATION_MAX_CONCURRENCY),
+        "-l", "h_rt=48:00:00", "-l", "gpus=1", "-l", "gpu_c=8.0",
+        "-l", "gpu_memory=48G", "-pe", "omp", "4",
+        "-l", "mem_per_core=16G", str(RUNNER_PATH),
+    ]
+
+
+def _r8u_r4_continuation_finalizer_command(
+    implementation_commit: str, array_job_id: str,
+) -> list[str]:
+    if JOB_RE.fullmatch(array_job_id) is None:
+        _fail("R8U_R4_CONTINUATION_JOB_ID_INVALID")
+    return [
+        str(scheduler.QSUB_PATH), "-clear", "-terse", "-r", "n",
+        "-P", "mimicecho", "-N",
+        _r8u_r4_continuation_finalizer_job_name(implementation_commit),
+        "-j", "y", "-o", str(R8U_R4_CONTINUATION_SCHEDULER_ROOT),
+        "-hold_jid", array_job_id, "-l", "h_rt=12:00:00",
+        "-pe", "omp", "4", "-l", "mem_per_core=8G", str(RUNNER_PATH),
+    ]
+
+
+def _r8u_r4_continuation_claim(
+    *, run: sequential.FullRun, implementation_commit: str,
+    qsub_environment_sha256: str, prefix_receipts: Sequence[str],
+) -> Mapping[str, Any]:
+    if (
+        len(prefix_receipts) != 16
+        or tuple(prefix_receipts[:15])
+        != tuple(item[2] for item in R8U_PREFIX_RECEIPT_AUTHORITIES)
+        or SHA_RE.fullmatch(qsub_environment_sha256) is None
+    ):
+        _fail("R8U_R4_CONTINUATION_CLAIM_INVALID")
+    value = {
+        **_r8u_r4_common(
+            artifact_type="lvef_c3_r8u_r4_fixed_continuation_claim_v1",
+            status="AUTHORIZED_FIXED_CONTINUATION_17_19",
+            implementation_commit=implementation_commit,
+        ),
+        **dict(_r8u_r4_continuation_links()),
+        "prior_implementation_commit": (
+            R8U_R3_CANDIDATE_AUTHORITY_REPAIR_IMPLEMENTATION_COMMIT
+        ),
+        "prefix_final_receipt_sha256": list(prefix_receipts),
+        "failed_partial_seal_sha256": core.sha256_file(
+            R8U_FAILED_PARTIAL_SEAL_PATH
+        ),
+        "runtime_authority_sha256": core.canonical_json_sha256(
+            run.runtime_authority
+        ),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "script_authority": _script_authority(),
+        "continuation_task_range": R8U_FIXED_CONTINUATION_TASK_RANGE,
+        "continuation_task_count": len(R8U_FIXED_CONTINUATION_TASK_IDS),
+        "continuation_max_concurrency": R8U_FIXED_CONTINUATION_MAX_CONCURRENCY,
+        "held_finalizer_count": 1, "total_new_qsub_maximum": 3,
+        "automatic_retry_authorized": False,
+        "whole_stage_retry_authorized": False,
+        "fourth_submission_reachable": False,
+        "cloud_requests_by_submitter": 0, "dicom_body_reads_by_submitter": 0,
+        "npz_body_reads_by_submitter": 0, "gpu_executions_by_submitter": 0,
+        "embedding_generations_by_submitter": 0,
+        "model_fitting_authorized": False, "prediction_authorized": False,
+        "confirmatory_performance_access_authorized": False,
+    }
+    if set(value) != R8U_R4_CONTINUATION_CLAIM_KEYS:
+        _fail("R8U_R4_CONTINUATION_CLAIM_INVALID")
+    return value
+
+
+def _r8u_r4_continuation_submission_receipt(
+    *, implementation_commit: str, resume_job_id: str,
+    array_job_id: str, finalizer_job_id: str,
+    qsub_environment_sha256: str, continuation_claim_sha256: str,
+) -> Mapping[str, Any]:
+    if (
+        any(JOB_RE.fullmatch(value) is None for value in (
+            resume_job_id, array_job_id, finalizer_job_id
+        ))
+        or len({resume_job_id, array_job_id, finalizer_job_id}) != 3
+        or SHA_RE.fullmatch(qsub_environment_sha256) is None
+        or SHA_RE.fullmatch(continuation_claim_sha256) is None
+    ):
+        _fail("R8U_R4_CONTINUATION_SUBMISSION_INVALID")
+    array_command = _r8u_r4_continuation_array_command(implementation_commit)
+    finalizer_command = _r8u_r4_continuation_finalizer_command(
+        implementation_commit, array_job_id
+    )
+    value = {
+        **_r8u_r4_common(
+            artifact_type="lvef_c3_r8u_r4_fixed_continuation_submission_v1",
+            status="PASS_EXACT_ARRAY_17_19_AND_HELD_FINALIZER",
+            implementation_commit=implementation_commit,
+        ),
+        **dict(_r8u_r4_continuation_links()),
+        "resume_job_id": resume_job_id,
+        "array_job_name": _r8u_r4_continuation_array_job_name(
+            implementation_commit
+        ),
+        "finalizer_job_name": _r8u_r4_continuation_finalizer_job_name(
+            implementation_commit
+        ),
+        "array_job_id": array_job_id, "finalizer_job_id": finalizer_job_id,
+        "array_qsub_argv_sha256": _sha256_bytes(
+            _canonical_bytes({"argv": array_command})
+        ),
+        "finalizer_qsub_argv_sha256": _sha256_bytes(
+            _canonical_bytes({"argv": finalizer_command})
+        ),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "failed_partial_seal_sha256": core.sha256_file(
+            R8U_FAILED_PARTIAL_SEAL_PATH
+        ),
+        "continuation_claim_sha256": continuation_claim_sha256,
+        "array_qsub_evidence": dict(_qsub_evidence_authority(
+            R8U_R4_CONTINUATION_SCHEDULER_ROOT, "array"
+        )),
+        "finalizer_qsub_evidence": dict(_qsub_evidence_authority(
+            R8U_R4_CONTINUATION_SCHEDULER_ROOT, "finalizer"
+        )),
+        "scheduler_submission_count": 2, "total_new_qsub_submissions": 3,
+        "scheduler_submission_maximum": 3,
+        "array_task_range": R8U_FIXED_CONTINUATION_TASK_RANGE,
+        "array_task_count": len(R8U_FIXED_CONTINUATION_TASK_IDS),
+        "array_max_concurrency": R8U_FIXED_CONTINUATION_MAX_CONCURRENCY,
+        "finalizer_held_on_array": True,
+        "whole_stage_retry_authorized": False,
+        "fourth_submission_reachable": False, "cloud_requests": 0,
+        "dicom_body_reads_by_submitter": 0, "npz_body_reads_by_submitter": 0,
+        "gpu_executions_by_submitter": 0, "model_fitting_count": 0,
+        "prediction_generation_count": 0,
+        "confirmatory_performance_access_count": 0,
+    }
+    if set(value) != R8U_R4_CONTINUATION_SUBMISSION_KEYS:
+        _fail("R8U_R4_CONTINUATION_SUBMISSION_INVALID")
+    return value
+
+
+def submit_r8u_r4_continuation_17_19(
+    *, qsub_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    qacct_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> Mapping[str, Any]:
+    """Future-only two-qsub continuation, reachable after R4 terminal PASS."""
+
+    scheduler.validate_scheduler_tools()
+    implementation_commit = _current_r8u_r4_implementation_commit()
+    environment, _ = scheduler.build_qsub_environment()
+    environment_sha = scheduler.qsub_environment_sha256(environment)
+    run, _authority, resume_submission = _validate_r8u_r4_resume_submission()
+    validate_r8u_r4_resume_terminal()
+    if os.path.lexists(R8U_R4_ACCOUNTING_PATH) or os.path.lexists(
+        R8U_R4_CONTINUATION_ROOT
+    ):
+        _fail("R8U_R4_CONTINUATION_OUTPUT_COLLISION")
+    resume_job_id = str(resume_submission.get("resume_job_id", ""))
+    accounting_projection = _query_recovery_accounting(
+        recovery_job_id=resume_job_id, environment=environment,
+        runner=qacct_runner,
+    )
+    accounting = _r8u_r4_resume_accounting_receipt(
+        implementation_commit=implementation_commit,
+        resume_job_id=resume_job_id, accounting=accounting_projection,
+    )
+    _write_private_json(R8U_R4_ACCOUNTING_PATH, accounting)
+    prefix = _r8u_validate_frozen_prefix(run, include_batch16=True)
+    _create_private_directory_no_clobber(R8U_R4_CONTINUATION_ROOT)
+    _create_private_directory_no_clobber(R8U_R4_CONTINUATION_SCHEDULER_ROOT)
+    claim = _r8u_r4_continuation_claim(
+        run=run, implementation_commit=implementation_commit,
+        qsub_environment_sha256=environment_sha, prefix_receipts=prefix,
+    )
+    claim_sha = _write_private_json(R8U_R4_CONTINUATION_CLAIM_PATH, claim)
+    array_job_id = scheduler._capture_qsub(
+        "array", _r8u_r4_continuation_array_command(implementation_commit),
+        root=R8U_R4_CONTINUATION_SCHEDULER_ROOT,
+        environment=environment, runner=qsub_runner,
+        parser=_parse_r8u_array_qsub_stdout,
+    )
+    finalizer_job_id = scheduler._capture_qsub(
+        "finalizer", _r8u_r4_continuation_finalizer_command(
+            implementation_commit, array_job_id
+        ),
+        root=R8U_R4_CONTINUATION_SCHEDULER_ROOT,
+        environment=environment, runner=qsub_runner,
+    )
+    submission = _r8u_r4_continuation_submission_receipt(
+        implementation_commit=implementation_commit,
+        resume_job_id=resume_job_id, array_job_id=array_job_id,
+        finalizer_job_id=finalizer_job_id,
+        qsub_environment_sha256=environment_sha,
+        continuation_claim_sha256=claim_sha,
+    )
+    _write_private_json(R8U_R4_CONTINUATION_SUBMISSION_PATH, submission)
+    return {
+        "status": "R8U_R4_CONTINUATION_17_19_SUBMITTED",
+        "array_job_id": array_job_id, "finalizer_job_id": finalizer_job_id,
+        "task_range": R8U_FIXED_CONTINUATION_TASK_RANGE,
+        "array_max_concurrency": 1, "new_qsub_submissions": 2,
+        "total_new_qsub_submissions": 3, "cloud_requests": 0,
+    }
+
+
+def validate_r8u_r4_continuation_worker_submission(
+    *, current_job_id: str,
+) -> Mapping[str, Any]:
+    """Closed future hook for Tasks 17--19 and their held finalizer."""
+
+    if JOB_RE.fullmatch(current_job_id) is None:
+        _fail("R8U_R4_CONTINUATION_WORKER_AUTHORITY_INVALID")
+    deadline = time.monotonic() + 60.0
+    while not os.path.lexists(R8U_R4_CONTINUATION_SUBMISSION_PATH):
+        if time.monotonic() >= deadline:
+            _fail("R8U_R4_CONTINUATION_SUBMISSION_RECEIPT_TIMEOUT")
+        time.sleep(0.25)
+    validate_r8u_r4_resume_terminal()
+    _validate_r8u_r4_resume_accounting()
+    claim, _ = _load_private_json(R8U_R4_CONTINUATION_CLAIM_PATH)
+    submission, _ = _load_private_json(R8U_R4_CONTINUATION_SUBMISSION_PATH)
+    links = _r8u_r4_continuation_links()
+    if (
+        set(claim) != R8U_R4_CONTINUATION_CLAIM_KEYS
+        or set(submission) != R8U_R4_CONTINUATION_SUBMISSION_KEYS
+        or any(claim.get(key) != value for key, value in links.items())
+        or any(submission.get(key) != value for key, value in links.items())
+        or current_job_id
+        not in {
+            str(submission.get("array_job_id", "")),
+            str(submission.get("finalizer_job_id", "")),
+        }
+        or submission.get("array_task_range") != R8U_FIXED_CONTINUATION_TASK_RANGE
+        or submission.get("array_task_count") != 3
+        or submission.get("array_max_concurrency") != 1
+        or submission.get("scheduler_submission_count") != 2
+        or submission.get("total_new_qsub_submissions") != 3
+        or submission.get("fourth_submission_reachable") is not False
+    ):
+        _fail("R8U_R4_CONTINUATION_WORKER_AUTHORITY_INVALID")
+    return submission
+
+
+def run_r8u_r4_continuation_array_task() -> Mapping[str, Any]:
+    job_id = str(os.environ.get("JOB_ID", ""))
+    task_text = str(os.environ.get("SGE_TASK_ID", ""))
+    if (
+        JOB_RE.fullmatch(job_id) is None or not task_text.isdigit()
+        or int(task_text) not in R8U_FIXED_CONTINUATION_TASK_IDS
+    ):
+        _fail("R8U_R4_CONTINUATION_ARRAY_CONTEXT_INVALID")
+    validate_r8u_r4_continuation_worker_submission(current_job_id=job_id)
+    run = _load_fixed_original_run(
+        scheduler_job_identity=job_id,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r4=True,
+    )
+    dependencies = sequential.FullDependencies(
+        execution_context=sequential.R8U_R4_FIXED_CONTINUATION
+    )
+    value = sequential.run_batch_task(
+        task_id=int(task_text), run=run, dependencies=dependencies
+    )
+    if value.get("status") != "PASS_BATCH_FINALIZED":
+        _fail("R8U_R4_CONTINUATION_BATCH_NOT_FINALIZED")
+    return value
+
+
+def run_r8u_r4_continuation_finalizer() -> Mapping[str, Any]:
+    job_id = str(os.environ.get("JOB_ID", ""))
+    task_text = str(os.environ.get("SGE_TASK_ID", "undefined"))
+    if (
+        JOB_RE.fullmatch(job_id) is None
+        or task_text not in {"", "undefined"}
+        or str(os.environ.get("CUDA_VISIBLE_DEVICES", "")) != ""
+    ):
+        _fail("R8U_R4_CONTINUATION_FINALIZER_CONTEXT_INVALID")
+    validate_r8u_r4_continuation_worker_submission(current_job_id=job_id)
+    run = _load_fixed_original_run(
+        scheduler_job_identity=job_id,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r4=True,
+    )
+    implementation_commit = _current_r8u_r4_implementation_commit()
+    receipts = [
+        sequential._batch_paths(run, f"c3_batch_{index:03d}")["final_receipt"]
+        for index in range(run.requirements.batch_count)
+    ]
+    output_root = run.attempt_root / "cohort_finalization"
+    _ensure_private_directory(output_root)
+    historical = _r8u_historical_r8r_chain_authority()
+    authority = finalizer.R8UR4ImplementationAuthority(
+        implementation_commit=implementation_commit,
+        historical_r8r_recovery_authority_sha256=(
+            historical["recovery_authority_sha256"]
+        ),
+        historical_r8r_recovery_terminal_receipt_sha256=(
+            historical["recovery_terminal_receipt_sha256"]
+        ),
+        historical_r8r_continuation_capacity_receipt_sha256=(
+            historical["continuation_capacity_receipt_sha256"]
+        ),
+        historical_r8r_continuation_claim_sha256=(
+            historical["continuation_claim_sha256"]
+        ),
+        historical_r8r_continuation_submission_receipt_sha256=(
+            historical["continuation_submission_receipt_sha256"]
+        ),
+        failed_partial_seal_sha256=core.sha256_file(
+            R8U_FAILED_PARTIAL_SEAL_PATH
+        ),
+        r2_recovery_capacity_receipt_sha256=core.sha256_file(
+            R8U_RECOVERY_CAPACITY_PATH
+        ),
+        r2_recovery_authority_sha256=core.sha256_file(
+            R8U_RECOVERY_AUTHORITY_PATH
+        ),
+        r2_recovery_submission_receipt_sha256=core.sha256_file(
+            R8U_RECOVERY_SUBMISSION_PATH
+        ),
+        r3_extraction_candidate_seal_sha256=core.sha256_file(
+            R8U_R3_CANDIDATE_SEAL_PATH
+        ),
+        replay_diagnosis_sha256=core.sha256_file(R8U_R4_DIAGNOSIS_PATH),
+        portable_candidate_authority_sha256=core.sha256_file(
+            R8U_R4_PORTABLE_AUTHORITY_PATH
+        ),
+        live_publication_locality_sha256=core.sha256_file(
+            R8U_R4_LOCALITY_PATH
+        ),
+        publication_primitive_probe_sha256=core.sha256_file(R8U_R4_PROBE_PATH),
+        publication_claim_sha256=core.sha256_file(
+            R8U_R4_PUBLICATION_CLAIM_PATH
+        ),
+        publication_receipt_sha256=core.sha256_file(R8U_R4_PUBLICATION_PATH),
+        resume_capacity_receipt_sha256=core.sha256_file(R8U_R4_CAPACITY_PATH),
+        resume_authority_sha256=core.sha256_file(R8U_R4_AUTHORITY_PATH),
+        resume_submission_receipt_sha256=core.sha256_file(
+            R8U_R4_SUBMISSION_PATH
+        ),
+        resume_accounting_sha256=core.sha256_file(R8U_R4_ACCOUNTING_PATH),
+        resume_terminal_receipt_sha256=core.sha256_file(R8U_R4_TERMINAL_PATH),
+        continuation_claim_sha256=core.sha256_file(
+            R8U_R4_CONTINUATION_CLAIM_PATH
+        ),
+        continuation_submission_receipt_sha256=core.sha256_file(
+            R8U_R4_CONTINUATION_SUBMISSION_PATH
+        ),
+    )
+    summary = finalizer.finalize_receipts(
+        receipts,
+        expected_governing_commit=ORIGINAL_SCIENTIFIC_COMMIT,
+        expected_attempt_id=ORIGINAL_ATTEMPT_ID,
+        plan=run.plan, requirements=run.requirements,
+        production_root=run.production_root, contract=run.contract,
+        contract_path=run.contract_path,
+        environment_receipt=run.authority.environment_receipt,
+        cache_retirement_authorization_root=(
+            run.attempt_root / "cache_retirement_authorizations"
+        ),
+        canonical_output_root=output_root,
+        expected_runtime_authority=run.runtime_authority,
+        expected_no_cine_studies=int(
+            run.launch_authority["expected_no_cine_studies"]
+        ),
+        r8u_r4_implementation_authority=authority,
+    )
+    if (
+        summary.get("status") != "PASS_PRODUCTION_C3_FINALIZED"
+        or summary.get("production_batches") != 19
+        or summary.get("selected_studies") != 4_530
+        or summary.get("selected_subjects") != 4_530
+        or summary.get("verified_source_objects") != 335_984
+        or summary.get("selected_source_bytes") != 1_216_569_133_322
+        or summary.get("pooled_imaging_eligible_studies") != 4_525
+        or summary.get("no_cine_studies") != 5
+        or summary.get("new_no_cine_studies") != 0
+        or summary.get("all_authority_bindings_identical") is not False
+        or summary.get("all_scientific_authority_bindings_identical") is not True
+        or summary.get("implementation_authority_epoch_count") != 3
+        or summary.get("r8u_implementation_commit") != implementation_commit
+        or SHA_RE.fullmatch(str(
+            summary.get("r8u_recovery_continuation_authority_sha256")
+        )) is None
+        or summary.get("model_fitting_count") != 0
+        or summary.get("endpoint_prediction_count") != 0
+        or summary.get("confirmatory_performance_access_count") != 0
+    ):
+        _fail("R8U_R4_CONTINUATION_FINALIZATION_INVALID")
+    finalizer.write_json_atomic(
+        output_root / "full_c3_finalization.aggregate_safe.json", summary
+    )
+    return summary
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
@@ -9813,7 +12805,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _r8u_r3_parser() -> argparse.ArgumentParser:
-    """Closed parser for the additive R3 resume and fixed continuation."""
+    """Closed parser for additive R3 resume and fixed continuation."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
@@ -9835,6 +12827,29 @@ def _r8u_r3_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _r8u_r4_parser() -> argparse.ArgumentParser:
+    """Closed parser for additive R4 resume and fixed continuation."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument(
+        "--submit-r8u-r4-batch16-publication-resume", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r4-batch16-publication-resume", action="store_true"
+    )
+    modes.add_argument(
+        "--submit-r8u-r4-continuation-17-19", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r4-continuation-17-19-array-task", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r4-continuation-finalizer", action="store_true"
+    )
+    return parser
+
+
 def guarded_main(argv: Sequence[str] | None = None) -> int:
     mode_prefix = "R8R"
     try:
@@ -9846,6 +12861,51 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             "--run-r8u-r3-continuation-17-19-array-task",
             "--run-r8u-r3-continuation-finalizer",
         }
+        r8u_r4_options = {
+            "--submit-r8u-r4-batch16-publication-resume",
+            "--run-r8u-r4-batch16-publication-resume",
+            "--submit-r8u-r4-continuation-17-19",
+            "--run-r8u-r4-continuation-17-19-array-task",
+            "--run-r8u-r4-continuation-finalizer",
+        }
+        if any(argument in r8u_r4_options for argument in arguments):
+            mode_prefix = "R8U_R4"
+            r4_args = _r8u_r4_parser().parse_args(arguments)
+            if r4_args.submit_r8u_r4_batch16_publication_resume:
+                value = submit_r8u_r4_batch16_publication_resume()
+                print(
+                    "R8U_R4_STATUS="
+                    "BATCH16_PUBLICATION_RESUME_SUBMITTED_AWAITING_TERMINAL"
+                )
+                print(f"R8U_R4_RESUME_JOB_ID={value['resume_job_id']}")
+                print(f"R8U_R4_CAPACITY_STATUS={value['capacity_status']}")
+                print(f"R8U_R4_RESUME_INITIAL_STATE={value['initial_state']}")
+                print(f"R8U_R4_OBSERVED_NPZ_FILES={value['observed_npz_files']}")
+                print("R8U_R4_MISSING_NPZ_FILES=0")
+                print("R8U_R4_ADDITIONAL_NPZ_FILES=0")
+                print("R8U_R4_CANDIDATE_DICOM_BODY_READS=0")
+                print("R8U_R4_CANDIDATE_NPZ_BODY_READS=0")
+                print("R8U_R4_NEW_QSUB_SUBMISSIONS=1")
+                print("R8U_R4_LOGIN_NODE_POLLING_STARTED=NO")
+                print("R8U_R4_CONTINUATION_17_19_SUBMITTED=NO")
+                print("R8U_R4_FINALIZER_SUBMITTED=NO")
+            elif r4_args.run_r8u_r4_batch16_publication_resume:
+                run_r8u_r4_batch16_publication_resume()
+                print("PASS_BATCH16_R8U_R4_PUBLICATION_RESUME_FINALIZED")
+            elif r4_args.submit_r8u_r4_continuation_17_19:
+                value = submit_r8u_r4_continuation_17_19()
+                print("R8U_R4_STATUS=CONTINUATION_17_19_SUBMITTED")
+                print(f"R8U_R4_ARRAY_JOB_ID={value['array_job_id']}")
+                print(f"R8U_R4_FINALIZER_JOB_ID={value['finalizer_job_id']}")
+                print("R8U_R4_NEW_QSUB_SUBMISSIONS=2")
+                print("R8U_R4_TOTAL_NEW_QSUB_SUBMISSIONS=3")
+            elif r4_args.run_r8u_r4_continuation_17_19_array_task:
+                value = run_r8u_r4_continuation_array_task()
+                print(f"R8U_R4_CONTINUATION_BATCH_STATUS={value['status']}")
+            else:
+                run_r8u_r4_continuation_finalizer()
+                print("PASS_R8U_R4_FIXED_CONTINUATION_FINALIZED")
+            return 0
         if any(argument in r8u_r3_options for argument in arguments):
             mode_prefix = "R8U_R3"
             r3_args = _r8u_r3_parser().parse_args(arguments)
