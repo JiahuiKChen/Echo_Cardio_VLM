@@ -13,10 +13,33 @@ JOB_STORAGE_BASE=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/scheduler_
 
 [[ $# -eq 0 ]] || exit 64
 [[ "${JOB_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || exit 78
-[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin)|r8u_r4_(res|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
+[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin)|r8u_r4_(res|seq|fin)|r8u_r5_(ctx|res|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
 [[ -f "$COMMON" && ! -L "$COMMON" ]] || exit 78
 # shellcheck disable=SC1090 -- fixed authority-worktree helper path.
 source "$COMMON"
+
+# R8U-R5 compute dispatch must not depend on an NSS username lookup before the
+# Python worker establishes its sealed/kernel scheduler context.  Historical
+# runners retain their fixed name-based helper; R5 uses the numeric effective
+# UID exposed by the kernel through Bash's read-only EUID value.
+r8u_r5_require_private_projectnb_directory() {
+  local candidate="$1"
+  lvef_c3_require_projectnb_path "$candidate"
+  [[ -d "$candidate" && ! -L "$candidate" ]] || \
+    lvef_c3_die PRIVATE_DIRECTORY_INVALID
+  [[ "$(stat -c '%u' "$candidate")" == "$EUID" ]] || \
+    lvef_c3_die PRIVATE_DIRECTORY_WRONG_OWNER
+  lvef_c3_private_directory_mode_ok "$(stat -c '%a' "$candidate")" || \
+    lvef_c3_die PRIVATE_DIRECTORY_WRONG_MODE
+}
+
+require_job_private_projectnb_directory() {
+  if [[ "$JOB_FAMILY" == r8u_r5 ]]; then
+    r8u_r5_require_private_projectnb_directory "$1"
+  else
+    lvef_c3_require_private_projectnb_directory "$1"
+  fi
+}
 
 case "$JOB_NAME" in
   lvef_c3_r8r_rec_*)
@@ -120,6 +143,41 @@ case "$JOB_NAME" in
     MODE=--run-r8u-r4-continuation-finalizer
     PYCACHE_ROLE=lvef_c3_r8u_r4
     ;;
+  lvef_c3_r8u_r5_ctx_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "1" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u_r5
+    ROLE=r8u_r5_worker_context_probe
+    MODE=--run-r8u-r5-worker-context-probe
+    PYCACHE_ROLE=lvef_c3_r8u_r5
+    ;;
+  lvef_c3_r8u_r5_res_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] || exit 78
+    JOB_FAMILY=r8u_r5
+    ROLE=r8u_r5_batch16_publication_resume
+    MODE=--run-r8u-r5-batch16-publication-resume
+    PYCACHE_ROLE=lvef_c3_r8u_r5
+    ;;
+  lvef_c3_r8u_r5_seq_*)
+    [[ "${SGE_TASK_ID:-}" =~ ^1[7-9]$ ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    JOB_FAMILY=r8u_r5
+    ROLE="r8u_r5_array_task_${SGE_TASK_ID}"
+    MODE=--run-r8u-r5-continuation-17-19-array-task
+    PYCACHE_ROLE=lvef_c3_r8u_r5
+    ;;
+  lvef_c3_r8u_r5_fin_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u_r5
+    ROLE=r8u_r5_finalizer
+    MODE=--run-r8u-r5-continuation-finalizer
+    PYCACHE_ROLE=lvef_c3_r8u_r5
+    ;;
   *) exit 78 ;;
 esac
 
@@ -133,7 +191,7 @@ do
   lvef_c3_require_projectnb_path "$storage_directory"
   mkdir -p "$storage_directory"
   lvef_c3_require_projectnb_path "$storage_directory"
-  lvef_c3_require_private_projectnb_directory "$storage_directory"
+  require_job_private_projectnb_directory "$storage_directory"
 done
 
 export TMPDIR="$JOB_STORAGE_ROOT/tmp"
@@ -156,7 +214,7 @@ do
   lvef_c3_require_projectnb_path "$storage_directory"
   mkdir -p "$storage_directory"
   lvef_c3_require_projectnb_path "$storage_directory"
-  lvef_c3_require_private_projectnb_directory "$storage_directory"
+  require_job_private_projectnb_directory "$storage_directory"
 done
 
 cd "$WORKTREE"

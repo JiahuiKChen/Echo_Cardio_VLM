@@ -66,6 +66,34 @@ CONTROLLED_QSUB_ENVIRONMENT: Final = {
 SCHEDULER_CONTEXT_NAMES: Final = frozenset(
     {"SGE_ROOT", "SGE_CELL", "SGE_QMASTER_PORT", "HOME", "USER", "LOGNAME", "SHELL"}
 )
+WORKER_SCHEDULER_CONTEXT_NAMES: Final = frozenset(
+    {"SGE_ROOT", "SGE_CELL", "SGE_QMASTER_PORT", "HOME", "USER", "LOGNAME"}
+)
+WORKER_ROLE_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+WORKER_JOB_ID_RE: Final = re.compile(r"[1-9][0-9]{0,19}")
+WORKER_TASK_ID_RE: Final = re.compile(r"[1-9][0-9]{0,9}")
+WORKER_PASSWD_LOOKUP_STATUSES: Final = frozenset(
+    {
+        "PASS",
+        "LOOKUP_UNAVAILABLE",
+        "NAME_MISMATCH",
+        "HOME_MISMATCH",
+        "SHELL_MISMATCH",
+    }
+)
+WORKER_DIAGNOSTIC_CLASSIFICATIONS: Final = frozenset(
+    {
+        "PASS",
+        "SCHEDULER_ACCOUNT_LOOKUP_UNAVAILABLE",
+        "SCHEDULER_ACCOUNT_NAME_MISMATCH",
+        "SCHEDULER_ACCOUNT_HOME_MISMATCH",
+        "SCHEDULER_ACCOUNT_SHELL_MISMATCH",
+        "SCHEDULER_ENV_USER_MISMATCH",
+        "SCHEDULER_ENV_LOGNAME_MISMATCH",
+        "SCHEDULER_ENV_HOME_MISMATCH",
+        "SCHEDULER_ENV_SHELL_MISMATCH",
+    }
+)
 SCIENCE_MARKERS: Final = {
     "--validate-installation": "FULL_C3_INSTALLATION=PASS",
     "--preflight-only": "FULL_C3_NO_BODY_PREFLIGHT=PASS",
@@ -249,6 +277,335 @@ def build_qsub_environment(
     if set(result) - allowed:
         _fail("QSUB_ENVIRONMENT_NOT_CLOSED")
     return result, input_class
+
+
+class WorkerSchedulerDiagnostics(NamedTuple):
+    """Aggregate-safe observations about one compute-worker context."""
+
+    user_present: bool
+    logname_present: bool
+    home_present: bool
+    shell_present: bool
+    observed_user_match: bool
+    observed_logname_match: bool
+    observed_home_match: bool
+    observed_shell_match: bool
+    passwd_lookup_available: bool
+    passwd_name_match: bool
+    passwd_home_match: bool
+    passwd_shell_match: bool
+    passwd_lookup_status: str
+    effective_uid_match: bool
+    job_id_match: bool
+    task_context_match: bool
+    job_role_match: bool
+    runner_sha256_match: bool
+    python_sha256_match: bool
+    implementation_commit_match: bool
+    qsub_environment_sha256_match: bool
+    classifications: tuple[str, ...]
+
+
+class WorkerSchedulerContext(NamedTuple):
+    """Closed subprocess environment and non-secret worker diagnostics."""
+
+    environment: dict[str, str]
+    diagnostics: WorkerSchedulerDiagnostics
+
+
+def _canonical_absolute_path(value: object) -> bool:
+    if not _safe_text(value):
+        return False
+    text = str(value)
+    path = Path(text)
+    return (
+        path.is_absolute()
+        and all(part not in {".", ".."} for part in text.split("/"))
+        and os.path.normpath(text) == text
+        and Path(os.path.abspath(text)) == path
+    )
+
+
+def _worker_binding_match(
+    expected: object, observed: object, pattern: re.Pattern[str]
+) -> bool:
+    return (
+        isinstance(expected, str)
+        and isinstance(observed, str)
+        and pattern.fullmatch(expected) is not None
+        and pattern.fullmatch(observed) is not None
+        and expected == observed
+    )
+
+
+def _validate_sealed_qsub_environment(
+    environment: Mapping[str, str],
+    *,
+    expected_scheduler_username: str,
+    canonical_home: str,
+) -> str:
+    """Validate a submitter-built environment without consulting worker identity."""
+
+    required = set(CONTROLLED_QSUB_ENVIRONMENT) | {
+        "SGE_ROOT", "HOME", "USER", "LOGNAME", "SHELL"
+    }
+    allowed = required | {"SGE_CELL", "SGE_QMASTER_PORT"}
+    if (
+        not isinstance(environment, Mapping)
+        or not required <= set(environment)
+        or set(environment) - allowed
+        or any(
+            not isinstance(name, str)
+            or not isinstance(value, str)
+            or not name
+            or "\x00" in name + value
+            or "\n" in name + value
+            or "\r" in name + value
+            for name, value in environment.items()
+        )
+        or any(
+            environment.get(name) != value
+            for name, value in CONTROLLED_QSUB_ENVIRONMENT.items()
+        )
+        or environment.get("SGE_ROOT") != str(CANONICAL_SGE_ROOT)
+        or environment.get("USER") != expected_scheduler_username
+        or environment.get("LOGNAME") != expected_scheduler_username
+        or environment.get("HOME") != canonical_home
+        or not _canonical_absolute_path(environment.get("SHELL"))
+    ):
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    cell = environment.get("SGE_CELL")
+    if cell is not None and SAFE_ACCOUNT_RE.fullmatch(cell) is None:
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    port = environment.get("SGE_QMASTER_PORT")
+    if port is not None and (
+        re.fullmatch(r"[1-9][0-9]{0,4}", port) is None or int(port) > 65535
+    ):
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    try:
+        input_class = validate_sge_root_authority(environment["SGE_ROOT"])
+    except FullSchedulerError as exc:
+        raise FullSchedulerError(
+            "SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH"
+        ) from exc
+    if input_class != "SGE_ROOT_CANONICAL_INPUT":
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    return input_class
+
+
+def build_worker_scheduler_context(
+    *,
+    expected_effective_uid: int,
+    expected_scheduler_username: str,
+    canonical_home: str,
+    expected_job_id: str,
+    expected_job_role: str,
+    observed_job_role: str,
+    expected_qsub_environment_sha256: str,
+    sealed_qsub_environment: Mapping[str, str],
+    expected_implementation_commit: str,
+    observed_implementation_commit: str,
+    expected_runner_sha256: str,
+    observed_runner_sha256: str,
+    expected_python_sha256: str,
+    observed_python_sha256: str,
+    source_environment: Mapping[str, str] | None = None,
+    expected_task_id: str | None = None,
+) -> WorkerSchedulerContext:
+    """Build a compute-worker context from kernel and sealed authorities.
+
+    Unlike :func:`build_qsub_environment`, this function never treats ambient
+    account variables or passwd/NSS as controlling identity.  It returns only
+    a closed subprocess environment and equality-only diagnostics.  Callers
+    must measure the observed commit and executable hashes independently and
+    pass a fixed dispatch role; qstat role validation remains the next gate.
+    """
+
+    observed_source = os.environ if source_environment is None else source_environment
+    if not isinstance(observed_source, Mapping):
+        _fail("SCHEDULER_WORKER_CONTEXT_INVALID")
+    observed = dict(observed_source)
+    if not isinstance(sealed_qsub_environment, Mapping):
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    sealed_environment = dict(sealed_qsub_environment)
+    if (
+        isinstance(expected_effective_uid, bool)
+        or not isinstance(expected_effective_uid, int)
+        or expected_effective_uid < 0
+        or not isinstance(expected_scheduler_username, str)
+        or SAFE_ACCOUNT_RE.fullmatch(expected_scheduler_username) is None
+        or not _canonical_absolute_path(canonical_home)
+    ):
+        _fail("SCHEDULER_WORKER_CONTEXT_INVALID")
+
+    effective_uid_match = os.geteuid() == expected_effective_uid
+    if not effective_uid_match:
+        _fail("SCHEDULER_EFFECTIVE_UID_MISMATCH")
+
+    observed_job_id = observed.get("JOB_ID")
+    job_id_match = (
+        isinstance(expected_job_id, str)
+        and isinstance(observed_job_id, str)
+        and WORKER_JOB_ID_RE.fullmatch(expected_job_id) is not None
+        and WORKER_JOB_ID_RE.fullmatch(observed_job_id) is not None
+        and expected_job_id == observed_job_id
+    )
+    if not job_id_match:
+        _fail("SCHEDULER_JOB_ID_BINDING_MISMATCH")
+
+    observed_task_id = observed.get("SGE_TASK_ID")
+    if expected_task_id is None:
+        task_context_match = observed_task_id in {None, "", "undefined"}
+    else:
+        task_context_match = (
+            isinstance(expected_task_id, str)
+            and isinstance(observed_task_id, str)
+            and WORKER_TASK_ID_RE.fullmatch(expected_task_id) is not None
+            and WORKER_TASK_ID_RE.fullmatch(observed_task_id) is not None
+            and expected_task_id == observed_task_id
+        )
+    if not task_context_match:
+        _fail("SCHEDULER_TASK_ID_BINDING_MISMATCH")
+
+    job_role_match = _worker_binding_match(
+        expected_job_role, observed_job_role, WORKER_ROLE_RE
+    )
+    if not job_role_match:
+        _fail("SCHEDULER_JOB_ROLE_MISMATCH")
+
+    runner_sha256_match = _worker_binding_match(
+        expected_runner_sha256, observed_runner_sha256, SHA256_RE
+    )
+    if not runner_sha256_match:
+        _fail("SCHEDULER_RUNNER_AUTHORITY_MISMATCH")
+    python_sha256_match = _worker_binding_match(
+        expected_python_sha256, observed_python_sha256, SHA256_RE
+    )
+    if not python_sha256_match:
+        _fail("SCHEDULER_PYTHON_AUTHORITY_MISMATCH")
+    implementation_commit_match = _worker_binding_match(
+        expected_implementation_commit, observed_implementation_commit, COMMIT_RE
+    )
+    if not implementation_commit_match:
+        _fail("SCHEDULER_IMPLEMENTATION_COMMIT_MISMATCH")
+
+    try:
+        observed_qsub_environment_sha256 = qsub_environment_sha256(
+            sealed_environment
+        )
+    except FullSchedulerError as exc:
+        raise FullSchedulerError(
+            "SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH"
+        ) from exc
+    qsub_environment_sha256_match = (
+        isinstance(expected_qsub_environment_sha256, str)
+        and SHA256_RE.fullmatch(expected_qsub_environment_sha256) is not None
+        and observed_qsub_environment_sha256 == expected_qsub_environment_sha256
+    )
+    if not qsub_environment_sha256_match:
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    _validate_sealed_qsub_environment(
+        sealed_environment,
+        expected_scheduler_username=expected_scheduler_username,
+        canonical_home=canonical_home,
+    )
+
+    sealed_shell = sealed_environment["SHELL"]
+    user_present = "USER" in observed
+    logname_present = "LOGNAME" in observed
+    home_present = "HOME" in observed
+    shell_present = "SHELL" in observed
+    observed_user_match = observed.get("USER") == expected_scheduler_username
+    observed_logname_match = observed.get("LOGNAME") == expected_scheduler_username
+    observed_home_match = observed.get("HOME") == canonical_home
+    observed_shell_match = observed.get("SHELL") == sealed_shell
+
+    passwd_lookup_available = True
+    try:
+        account = pwd.getpwuid(os.geteuid())
+    except (KeyError, OSError):
+        passwd_lookup_available = False
+        passwd_name_match = False
+        passwd_home_match = False
+        passwd_shell_match = False
+        passwd_lookup_status = "LOOKUP_UNAVAILABLE"
+    else:
+        passwd_name_match = account.pw_name == expected_scheduler_username
+        passwd_home_match = account.pw_dir == canonical_home
+        passwd_shell_match = account.pw_shell == sealed_shell
+        if not passwd_name_match:
+            passwd_lookup_status = "NAME_MISMATCH"
+        elif not passwd_home_match:
+            passwd_lookup_status = "HOME_MISMATCH"
+        elif not passwd_shell_match:
+            passwd_lookup_status = "SHELL_MISMATCH"
+        else:
+            passwd_lookup_status = "PASS"
+    if passwd_lookup_status not in WORKER_PASSWD_LOOKUP_STATUSES:
+        _fail("SCHEDULER_WORKER_CONTEXT_INVALID")
+
+    classifications: list[str] = []
+    if not passwd_lookup_available:
+        classifications.append("SCHEDULER_ACCOUNT_LOOKUP_UNAVAILABLE")
+    elif passwd_lookup_status != "PASS":
+        classifications.append(
+            {
+                "NAME_MISMATCH": "SCHEDULER_ACCOUNT_NAME_MISMATCH",
+                "HOME_MISMATCH": "SCHEDULER_ACCOUNT_HOME_MISMATCH",
+                "SHELL_MISMATCH": "SCHEDULER_ACCOUNT_SHELL_MISMATCH",
+            }[passwd_lookup_status]
+        )
+    for matches, code in (
+        (observed_user_match, "SCHEDULER_ENV_USER_MISMATCH"),
+        (observed_logname_match, "SCHEDULER_ENV_LOGNAME_MISMATCH"),
+        (observed_home_match, "SCHEDULER_ENV_HOME_MISMATCH"),
+        (observed_shell_match, "SCHEDULER_ENV_SHELL_MISMATCH"),
+    ):
+        if not matches:
+            classifications.append(code)
+    if not classifications:
+        classifications.append("PASS")
+    if any(item not in WORKER_DIAGNOSTIC_CLASSIFICATIONS for item in classifications):
+        _fail("SCHEDULER_WORKER_CONTEXT_INVALID")
+
+    environment = dict(CONTROLLED_QSUB_ENVIRONMENT)
+    environment["SGE_ROOT"] = str(CANONICAL_SGE_ROOT)
+    for name in ("SGE_CELL", "SGE_QMASTER_PORT"):
+        if name in sealed_environment:
+            environment[name] = sealed_environment[name]
+    environment["USER"] = expected_scheduler_username
+    environment["LOGNAME"] = expected_scheduler_username
+    environment["HOME"] = canonical_home
+    if set(environment) - (
+        set(CONTROLLED_QSUB_ENVIRONMENT) | WORKER_SCHEDULER_CONTEXT_NAMES
+    ) or "SHELL" in environment:
+        _fail("SCHEDULER_WORKER_CONTEXT_INVALID")
+
+    diagnostics = WorkerSchedulerDiagnostics(
+        user_present=user_present,
+        logname_present=logname_present,
+        home_present=home_present,
+        shell_present=shell_present,
+        observed_user_match=observed_user_match,
+        observed_logname_match=observed_logname_match,
+        observed_home_match=observed_home_match,
+        observed_shell_match=observed_shell_match,
+        passwd_lookup_available=passwd_lookup_available,
+        passwd_name_match=passwd_name_match,
+        passwd_home_match=passwd_home_match,
+        passwd_shell_match=passwd_shell_match,
+        passwd_lookup_status=passwd_lookup_status,
+        effective_uid_match=effective_uid_match,
+        job_id_match=job_id_match,
+        task_context_match=task_context_match,
+        job_role_match=job_role_match,
+        runner_sha256_match=runner_sha256_match,
+        python_sha256_match=python_sha256_match,
+        implementation_commit_match=implementation_commit_match,
+        qsub_environment_sha256_match=qsub_environment_sha256_match,
+        classifications=tuple(classifications),
+    )
+    return WorkerSchedulerContext(environment=environment, diagnostics=diagnostics)
 
 
 def validate_scheduler_tools() -> None:

@@ -1745,14 +1745,15 @@ def test_direct_imports_and_safe_receipt_keys_expose_no_prohibited_interface() -
     assert "to_csv(" not in source
 
 
-def test_immutable_science_replay_and_scheduler_hashes_are_unchanged() -> None:
+def test_immutable_science_replay_and_r5_scheduler_hashes_are_bound() -> None:
     # R5A deliberately versions the production stages, preservation,
-    # full-sequential adapter, and finalizer.  The frozen reconstruction
-    # science, historical replay helper, and unchanged scheduler remain the
-    # R4D2 immutability boundary.
+    # full-sequential adapter, finalizer, and scheduler-context boundary.  The
+    # frozen reconstruction science and historical replay helper remain the
+    # R4D2 immutability boundary; the scheduler hash binds the intentional R5
+    # submitter/worker split.
     expected = {
         "lvef_reconstruction_smoke.py": "23aaddbf1f108e52fc11c1ad1a2c325b1d3e038e4f86a6e9b648851964f77121",
-        "lvef_c3_full_scheduler.py": "602b42cfa5626f501bb4f4370878349b6edfd362270e5a57ac1595bd5fa8a7b3",
+        "lvef_c3_full_scheduler.py": "2aa6d5b469c7537670e47de9c2b224fb6ddfd9ed46e7e0f6f00cd7eebdf40233",
         "replay_lvef_c3_failed_extraction_one_object.py": "0f60cbc7889d97a0bb6bfd6a9c651e36b121e3b1b4b8b2708f1b6de23dc55587",
     }
     for basename, expected_sha256 in expected.items():

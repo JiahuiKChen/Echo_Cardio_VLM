@@ -22,7 +22,17 @@ def _synthetic_runner(root: Path) -> tuple[Path, Path]:
     common = scripts / "lvef_c3_production_scheduler_common.sh"
     common.write_text(
         "lvef_c3_require_projectnb_path() { :; }\n"
-        "lvef_c3_require_private_projectnb_directory() { :; }\n",
+        "lvef_c3_require_private_projectnb_directory() { :; }\n"
+        "lvef_c3_private_directory_mode_ok() { return 0; }\n"
+        "lvef_c3_die() { exit 78; }\n"
+        "stat() {\n"
+        "  [[ \"$1\" == -c ]] || return 1\n"
+        "  case \"$2\" in\n"
+        "    %u) printf '%s\\n' \"$EUID\" ;;\n"
+        "    %a) printf '700\\n' ;;\n"
+        "    *) return 1 ;;\n"
+        "  esac\n"
+        "}\n",
         encoding="utf-8",
     )
     (scripts / "lvef_c3_r8r_recovery_continuation.py").write_text(
@@ -262,6 +272,119 @@ def test_r8u_and_r8r_storage_roles_cannot_collide() -> None:
         in r8u["tmpdir"]
     )
     assert r8r["tmpdir"] != r8u["tmpdir"]
+
+
+def test_r8u_r5_context_probe_is_cpu_nonarray_nslots1() -> None:
+    completed, observed = _execute(
+        job_name="lvef_c3_r8u_r5_ctx_deadbeef",
+        task_id=None,
+        slots="1",
+        cuda="gpu6",
+    )
+    _assert_success(completed, observed)
+    assert observed["cuda"] == ""
+    assert observed["tmpdir"].endswith(
+        "/r8u_r5_job_8123456/r8u_r5_worker_context_probe/tmp"
+    )
+    assert "<pycache_prefix=/dev/null/lvef_c3_r8u_r5>" in observed["argv"]
+    assert observed["argv"].endswith(
+        "<--run-r8u-r5-worker-context-probe>"
+    )
+
+    for task_id, slots in (("1", "1"), (None, "4")):
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r5_ctx_deadbeef",
+            task_id=task_id,
+            slots=slots,
+        )
+        _assert_refused(refused, no_capture)
+
+
+def test_r8u_r5_resume_is_gpu_nonarray_nslots4() -> None:
+    completed, observed = _execute(
+        job_name="lvef_c3_r8u_r5_res_deadbeef",
+        task_id=None,
+        slots="4",
+        cuda="gpu1",
+    )
+    _assert_success(completed, observed)
+    assert observed["cuda"] == "gpu1"
+    assert observed["tmpdir"].endswith(
+        "/r8u_r5_job_8123456/r8u_r5_batch16_publication_resume/tmp"
+    )
+    assert observed["argv"].endswith(
+        "<--run-r8u-r5-batch16-publication-resume>"
+    )
+
+    invalid = (
+        ("16", "4", "gpu1"),
+        (None, "1", "gpu1"),
+        (None, "4", None),
+    )
+    for task_id, slots, cuda in invalid:
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r5_res_deadbeef",
+            task_id=task_id,
+            slots=slots,
+            cuda=cuda,
+        )
+        _assert_refused(refused, no_capture)
+
+
+def test_r8u_r5_continuation_is_exactly_tasks17_19_nslots4() -> None:
+    for task_id in ("17", "18", "19"):
+        completed, observed = _execute(
+            job_name="lvef_c3_r8u_r5_seq_deadbeef",
+            task_id=task_id,
+            slots="4",
+            cuda="gpu4",
+        )
+        _assert_success(completed, observed)
+        assert observed["cuda"] == "gpu4"
+        assert observed["tmpdir"].endswith(
+            f"/r8u_r5_job_8123456/r8u_r5_array_task_{task_id}/tmp"
+        )
+        assert observed["argv"].endswith(
+            "<--run-r8u-r5-continuation-17-19-array-task>"
+        )
+
+    for task_id in (None, "undefined", "16", "20", "17.0"):
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r5_seq_deadbeef",
+            task_id=task_id,
+        )
+        _assert_refused(refused, no_capture)
+    wrong_slots, no_capture = _execute(
+        job_name="lvef_c3_r8u_r5_seq_deadbeef",
+        task_id="17",
+        slots="1",
+    )
+    _assert_refused(wrong_slots, no_capture)
+
+
+def test_r8u_r5_finalizer_is_cpu_nonarray_nslots4() -> None:
+    completed, observed = _execute(
+        job_name="lvef_c3_r8u_r5_fin_deadbeef",
+        task_id=None,
+        slots="4",
+        cuda="gpu3",
+    )
+    _assert_success(completed, observed)
+    assert observed["cuda"] == ""
+    assert observed["tmpdir"].endswith(
+        "/r8u_r5_job_8123456/r8u_r5_finalizer/tmp"
+    )
+    assert observed["argv"].endswith(
+        "<--run-r8u-r5-continuation-finalizer>"
+    )
+
+    for task_id, slots in (("19", "4"), (None, "1")):
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r5_fin_deadbeef",
+            task_id=task_id,
+            slots=slots,
+        )
+        _assert_refused(refused, no_capture)
 
 
 def test_runner_rejects_nonfixed_names_and_positional_arguments() -> None:
