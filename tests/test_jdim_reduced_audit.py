@@ -523,12 +523,14 @@ class ReducedInterfaceTests(unittest.TestCase):
 
     def test_start_screen_has_code_role_and_claim_controls_but_no_study_list(self) -> None:
         html = (self.output / "restricted/interface/index.html").read_text(encoding="utf-8")
+        css = (self.output / "restricted/interface/style.css").read_text(encoding="utf-8")
         self.assertIn("Reviewer code", html)
         self.assertIn("Primary independent review", html)
         self.assertIn("Secondary independent review", html)
         self.assertIn("Resume my incomplete study", html)
         self.assertIn("Claim next eligible study", html)
         self.assertNotIn("select a study", html.lower())
+        self.assertIn("[hidden]{display:none!important}", css)
 
     def test_protected_media_are_reused_and_not_copied(self) -> None:
         self.assertFalse((self.output / "restricted/media").exists())
