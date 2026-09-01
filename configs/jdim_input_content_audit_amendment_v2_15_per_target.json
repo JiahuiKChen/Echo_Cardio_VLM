@@ -1,0 +1,65 @@
+{
+  "protocol_name": "JDIM_INPUT_CONTENT_AUDIT_AMENDMENT_V2_15_PER_TARGET",
+  "schema_version": "jdim-reduced-input-content-audit-v2",
+  "parent_protocol": "jdim-input-content-audit-v1",
+  "parent_target_assignments_per_target": 60,
+  "reduced_target_assignments_per_target": 15,
+  "selection_source": "immutable locked parent roster",
+  "selection_order": "locked parent review_order, then opaque audit_id",
+  "target_selection": {
+    "lvot_vti": {
+      "exact_model_input_studies": "all 7 available",
+      "source_acquisition_only_studies": 8
+    },
+    "tapse": {
+      "source_acquisition_only_studies": 15
+    }
+  },
+  "pilot_handling": {
+    "status": "INTERFACE_FAMILIARIZATION_PILOT_NOT_FOR_FINAL_ANALYSIS",
+    "identify_by": "unique study with substantive nonempty checkpoint fields",
+    "force_include": true,
+    "replacement": "last selected study in the same hidden target/tier stratum",
+    "reuse_prior_responses": false
+  },
+  "cross_target_rule": "count each target assignment and review each physical study once",
+  "all_canonical_clips_required": true,
+  "formal_reliability": {
+    "unique_physical_studies": 8,
+    "parent_second_reader_subset_first": true,
+    "deterministic_supplementation": true,
+    "minimum_tier_a_where_feasible": 2,
+    "include_cross_target_where_feasible": true,
+    "minimum_assignments_per_target_where_feasible": 3,
+    "named_reviewer_preassignment": false
+  },
+  "review_roles": [
+    "PRIMARY_INDEPENDENT_REVIEW",
+    "SECONDARY_INDEPENDENT_REVIEW"
+  ],
+  "dynamic_claiming": {
+    "reviewer_selects_role": true,
+    "system_assigns_study": true,
+    "browse_unassigned_studies": false,
+    "same_role_exclusive_claim": true,
+    "same_reviewer_both_roles_same_study": false,
+    "resume_incomplete_same_reviewer_only": true
+  },
+  "reader_blinding": {
+    "hide_target_membership": true,
+    "hide_formal_reliability_status": true,
+    "hide_split": true,
+    "hide_report_label": true,
+    "hide_prediction": true,
+    "hide_residual": true,
+    "hide_identifiers_and_paths": true,
+    "cross_role_annotations_visible": false
+  },
+  "interpretation": {
+    "exploratory_subset_audit": true,
+    "prevalence_powered": false,
+    "zero_finding_wording": "not observed in the audited sample",
+    "cohort_wide_absence_claim": false,
+    "report_tier_a_and_tier_c_separately": true
+  }
+}

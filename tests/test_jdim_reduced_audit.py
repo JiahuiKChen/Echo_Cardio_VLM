@@ -1,0 +1,591 @@
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import pandas as pd
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from jdim_tier1.audit import STUDY_OUTCOMES  # noqa: E402
+from jdim_tier1.audit_interface import CLIP_PRESENCE_FIELDS  # noqa: E402
+from jdim_tier1.reduced_audit import (  # noqa: E402
+    BLOCKED_PILOT_ANNOTATION_ISOLATION,
+    FORMAL_RELIABILITY_N,
+    LOCKED_PARENT_SHA256,
+    LVOT_VTI,
+    PILOT_STATUS,
+    PROTOCOL_STATUS,
+    TAPSE,
+    TARGET_ASSIGNMENT_N,
+    TIER_A,
+    TIER_C,
+    ParentAuditPaths,
+    build_reduced_audit_result,
+    classify_pilot_checkpoint,
+    select_formal_reliability_subset,
+    validate_locked_reduced_roster,
+    write_reduced_audit_roster,
+)
+from jdim_tier1.reduced_audit_interface import (  # noqa: E402
+    ACTION_CLAIM_NEXT,
+    ACTION_RESUME,
+    BLOCKED_READER_ROLE_INDEPENDENCE,
+    ROLE_AWARE_INTERFACE_READY,
+    ROLE_PRIMARY,
+    ROLE_SECONDARY,
+    ReviewerRegistry,
+    RoleAwareAuditService,
+    RoleAwareCheckpointStore,
+    RoleQueueStore,
+    build_role_aware_interface_package,
+    validate_role_aware_interface_package,
+    write_interface_ready_certificate,
+)
+from jdim_tier1.safety import Tier1BlockedError, sha256_file  # noqa: E402
+
+
+def write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+class ParentFixture:
+    def __init__(self, root: Path):
+        self.root = root
+        locked = root / "parent/locked"
+        interface = root / "parent/interface"
+        aggregate = root / "parent/aggregate"
+        media = root / "parent/media"
+        checkpoint = root / "parent/checkpoints/primary.reader1/checkpoint.json"
+        for path in (locked, interface, aggregate, media, checkpoint.parent):
+            path.mkdir(parents=True, exist_ok=True)
+
+        linkage_rows = []
+        technical_rows = []
+        clip_rows = []
+        for index in range(116):
+            audit_id = f"A{index:03d}"
+            clip_id = f"C{index:03d}"
+            targets = []
+            if index < 60:
+                targets.append(LVOT_VTI)
+            if index >= 56:
+                targets.append(TAPSE)
+            tier = TIER_A if index < 7 else TIER_C
+            linkage_rows.append(
+                {
+                    "audit_id": audit_id,
+                    "study_id": f"S{index:03d}",
+                    "subject_id": f"P{index:03d}",
+                    "target_membership": ";".join(targets),
+                    "target_strata": ";".join(f"{target}:train" for target in targets),
+                    "review_order": index + 1,
+                }
+            )
+            source_token = f"SRC{index:03d}"
+            model_token = f"MOD{index:03d}" if tier == TIER_A else ""
+            (media / f"{source_token}.png").write_bytes(b"source")
+            if model_token:
+                (media / f"{model_token}.png").write_bytes(b"model")
+            technical_rows.append(
+                {
+                    "audit_id": audit_id,
+                    "clip_audit_id": clip_id,
+                    "evidence_tier": tier,
+                    "source_media_id": source_token,
+                    "model_input_media_id": model_token,
+                    "model_input_verified": tier == TIER_A,
+                    "source_only": tier == TIER_C,
+                }
+            )
+            clip_rows.append(
+                {
+                    "audit_id": audit_id,
+                    "clip_audit_id": clip_id,
+                    "study_id": f"S{index:03d}",
+                    "subject_id": f"P{index:03d}",
+                    "canonical_clip_id": f"K{index:03d}",
+                }
+            )
+        self.linkage = pd.DataFrame(linkage_rows)
+        self.technical = pd.DataFrame(technical_rows)
+        self.clips = pd.DataFrame(clip_rows)
+        self.linkage_path = locked / "audit_linkage.csv"
+        self.clips_path = locked / "canonical_clip_roster_restricted.csv"
+        self.primary_path = locked / "reader_manifest.csv"
+        self.secondary_path = locked / "second_reader_manifest.csv"
+        self.technical_path = root / "parent/technical_interface_manifest_restricted.csv"
+        self.linkage.to_csv(self.linkage_path, index=False)
+        self.clips.to_csv(self.clips_path, index=False)
+        self.linkage[["audit_id", "review_order"]].to_csv(self.primary_path, index=False)
+        self.linkage.iloc[:24][["audit_id", "review_order"]].to_csv(self.secondary_path, index=False)
+        self.technical.to_csv(self.technical_path, index=False)
+
+        self.lock_path = aggregate / "audit_roster_lock.json"
+        self.technical_lock_path = aggregate / "technical_lock_certificate.json"
+        self.primary_interface_path = interface / "primary_reader_manifest.json"
+        self.secondary_interface_path = interface / "second_reader_manifest.json"
+        self.interface_policy_path = interface / "interface_policy.json"
+        write_json(self.lock_path, {"status": "AUDIT_ROSTER_LOCKED"})
+        write_json(self.technical_lock_path, {"status": "AUDIT_INPUTS_TECHNICALLY_LOCKED"})
+        write_json(self.primary_interface_path, {"studies": 116})
+        write_json(self.secondary_interface_path, {"studies": 24})
+        write_json(self.interface_policy_path, {"status": "AUDIT_INTERFACE_READY"})
+        self.ready_path = aggregate / "phase2jr_ready_certificate.json"
+        write_json(
+            self.ready_path,
+            {
+                "status": "READY_FOR_BLINDED_HUMAN_AUDIT",
+                "source_commit": "4e0ec3248b88ed8286de3a91b589627bb2da09b6",
+                "technical_lock_status": "AUDIT_INPUTS_TECHNICALLY_LOCKED",
+                "primary_studies": 116,
+                "clips": 5071,
+                "second_reader_studies": 24,
+                "technical_manifest_sha256": sha256_file(self.technical_path),
+                "primary_package_sha256": sha256_file(self.primary_interface_path),
+                "second_reader_package_sha256": sha256_file(self.secondary_interface_path),
+                "interface_policy_sha256": sha256_file(self.interface_policy_path),
+                "ocr_used": False,
+                "clinical_annotations_generated": False,
+                "public_network_binding_required": False,
+            },
+        )
+        write_json(
+            checkpoint,
+            {
+                "reader_id": "primary.reader1",
+                "annotations": {
+                    "studies": {
+                        "A050": {"reader_confidence": "moderate"},
+                        "A051": {"reader_confidence": ""},
+                    },
+                    "clips": {
+                        "C050": {"acquisition_content_type": "2d_b_mode"},
+                        "C051": {"acquisition_content_type": ""},
+                    },
+                },
+            },
+        )
+        self.checkpoint_path = checkpoint
+        self.paths = ParentAuditPaths(
+            audit_roster_lock=self.lock_path,
+            audit_linkage=self.linkage_path,
+            canonical_clip_roster=self.clips_path,
+            parent_reader_manifest=self.primary_path,
+            parent_second_reader_manifest=self.secondary_path,
+            ready_certificate=self.ready_path,
+            technical_lock_certificate=self.technical_lock_path,
+            technical_interface_manifest=self.technical_path,
+            parent_primary_interface_manifest=self.primary_interface_path,
+            parent_secondary_interface_manifest=self.secondary_interface_path,
+            parent_interface_policy=self.interface_policy_path,
+            parent_media_root=media,
+            pilot_checkpoint=self.checkpoint_path,
+        )
+        self.hashes = {
+            role: sha256_file(getattr(self.paths, role)) for role in LOCKED_PARENT_SHA256
+        }
+
+    def build_result(self):
+        with patch.dict(LOCKED_PARENT_SHA256, self.hashes, clear=True):
+            return build_reduced_audit_result(self.paths)
+
+    def build_package(self, output: Path):
+        result = self.build_result()
+        write_reduced_audit_roster(
+            result,
+            output,
+            source_commit="f" * 40,
+            created_at="2026-09-01T12:00:00Z",
+        )
+        build_role_aware_interface_package(
+            reduced_output_root=output,
+            parent_media_root=self.paths.parent_media_root,
+        )
+        validation = validate_role_aware_interface_package(output)
+        write_interface_ready_certificate(output, validation)
+        return result
+
+
+def complete_payload(study: dict[str, object]) -> dict[str, object]:
+    study_record = {field: "not_assessable" for field in STUDY_OUTCOMES}
+    study_record["reader_confidence"] = "not_assessable"
+    clips = {}
+    for clip in study["clips"]:
+        record = {field: "not_assessable" for field in CLIP_PRESENCE_FIELDS}
+        record["acquisition_content_type"] = "not_assessable"
+        record["reader_confidence"] = "not_assessable"
+        clips[clip["clip_audit_id"]] = record
+    return {"annotations": {"studies": {study["audit_id"]: study_record}, "clips": clips}}
+
+
+class ReducedAuditSamplingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.fixture = ParentFixture(self.root)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_exact_target_and_tier_assignments(self) -> None:
+        result = self.fixture.build_result()
+        counts = result.assignments.groupby("target").size().to_dict()
+        self.assertEqual(counts, {LVOT_VTI: TARGET_ASSIGNMENT_N, TAPSE: TARGET_ASSIGNMENT_N})
+        self.assertEqual(
+            len(result.assignments[(result.assignments.target == LVOT_VTI) & (result.assignments.evidence_tier == TIER_A)]),
+            7,
+        )
+        self.assertEqual(
+            len(result.assignments[(result.assignments.target == LVOT_VTI) & (result.assignments.evidence_tier == TIER_C)]),
+            8,
+        )
+        self.assertEqual(
+            len(result.assignments[(result.assignments.target == TAPSE) & (result.assignments.evidence_tier == TIER_C)]),
+            15,
+        )
+
+    def test_pilot_is_structurally_identified_force_included_and_not_reused(self) -> None:
+        result = self.fixture.build_result()
+        self.assertEqual(result.pilot.substantive_studies, 1)
+        self.assertEqual(result.pilot.structurally_empty_records, 1)
+        self.assertEqual(result.pilot.aggregate_safe()["status"], PILOT_STATUS)
+        self.assertIn(result.pilot.pilot_audit_id, set(result.assignments.audit_id))
+        self.assertTrue(result.replacement_records)
+        self.assertFalse(result.summary["pilot_prior_responses_reused"])
+
+    def test_pilot_ambiguity_fails_closed(self) -> None:
+        payload = json.loads(self.fixture.checkpoint_path.read_text(encoding="utf-8"))
+        payload["annotations"]["studies"]["A051"]["reader_confidence"] = "high"
+        write_json(self.fixture.checkpoint_path, payload)
+        with self.assertRaises(Tier1BlockedError) as caught:
+            classify_pilot_checkpoint(self.fixture.checkpoint_path, self.fixture.technical)
+        self.assertEqual(caught.exception.status, BLOCKED_PILOT_ANNOTATION_ISOLATION)
+
+    def test_selection_is_deterministic_and_does_not_mutate_parent(self) -> None:
+        before = {role: sha256_file(getattr(self.fixture.paths, role)) for role in LOCKED_PARENT_SHA256}
+        first = self.fixture.build_result()
+        second = self.fixture.build_result()
+        pd.testing.assert_frame_equal(first.assignments, second.assignments)
+        after = {role: sha256_file(getattr(self.fixture.paths, role)) for role in LOCKED_PARENT_SHA256}
+        self.assertEqual(before, after)
+
+    def test_cross_target_studies_count_twice_but_are_reviewed_once(self) -> None:
+        result = self.fixture.build_result()
+        assignment_total = len(result.assignments)
+        unique_total = result.assignments.audit_id.nunique()
+        self.assertEqual(assignment_total, 30)
+        self.assertEqual(assignment_total - unique_total, result.summary["cross_target_overlap_studies"])
+
+    def test_every_selected_study_contains_all_canonical_clips(self) -> None:
+        result = self.fixture.build_result()
+        self.assertEqual(set(result.linkage.audit_id), set(result.clip_roster.audit_id))
+        self.assertFalse(result.clip_roster[["audit_id", "clip_audit_id"]].duplicated().any())
+
+    def test_formal_reliability_subset_is_fixed_deterministic_and_unassigned(self) -> None:
+        result = self.fixture.build_result()
+        formal = result.formal_reliability
+        self.assertEqual(len(formal), FORMAL_RELIABILITY_N)
+        self.assertEqual(formal.audit_id.nunique(), FORMAL_RELIABILITY_N)
+        self.assertNotIn("reviewer_code", formal.columns)
+        again = select_formal_reliability_subset(
+            result.linkage,
+            pd.read_csv(self.fixture.secondary_path),
+        )
+        pd.testing.assert_frame_equal(formal, again)
+
+    def test_formal_subset_prefers_locked_parent_then_supplements(self) -> None:
+        result = self.fixture.build_result()
+        selected = result.linkage.copy()
+        preferred = list(selected.audit_id.head(3))
+        outside = [
+            audit_id
+            for audit_id in self.fixture.linkage.audit_id
+            if audit_id not in set(selected.audit_id)
+        ][:21]
+        parent_second = pd.DataFrame({"audit_id": [*preferred, *outside]})
+        formal = select_formal_reliability_subset(selected, parent_second)
+        self.assertEqual(len(formal), 8)
+        self.assertTrue(set(preferred).issubset(set(formal.audit_id)))
+        self.assertEqual(int(formal.in_parent_second_reader_subset.sum()), 3)
+
+    def test_locked_roster_round_trip_and_hash_validation(self) -> None:
+        output = self.root / "reduced"
+        result = self.fixture.build_result()
+        certificate = write_reduced_audit_roster(
+            result,
+            output,
+            source_commit="f" * 40,
+            created_at="2026-09-01T12:00:00Z",
+        )
+        self.assertEqual(certificate["status"], PROTOCOL_STATUS)
+        self.assertEqual(validate_locked_reduced_roster(output)["status"], PROTOCOL_STATUS)
+        path = output / "restricted/roster/reduced_target_assignments_restricted.csv"
+        path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        with self.assertRaises(Tier1BlockedError):
+            validate_locked_reduced_roster(output)
+
+
+class RoleAwareQueueTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.fixture = ParentFixture(self.root)
+        self.output = self.root / "reduced"
+        self.fixture.build_package(self.output)
+        interface = self.output / "restricted/interface"
+        self.manifest = json.loads((interface / "study_manifest_restricted.json").read_text(encoding="utf-8"))
+        self.registry = ReviewerRegistry(self.output / "restricted/reviewer_registry")
+        for code in ("readerA", "readerB", "readerC"):
+            self.registry.register(code, qualified=True)
+        self.queue = RoleQueueStore(
+            self.output / "restricted/queue",
+            interface / "queue_policy_restricted.json",
+            self.registry,
+        )
+        self.checkpoints = RoleAwareCheckpointStore(
+            self.output / "restricted/checkpoints",
+            self.queue,
+            self.manifest,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def claim(self, code: str, role: str, action: str = ACTION_CLAIM_NEXT):
+        return self.queue.claim(
+            reviewer_code=code,
+            role=role,
+            action=action,
+            qualification_confirmed=True,
+        )
+
+    def study_for(self, event: dict[str, object]) -> dict[str, object]:
+        return next(
+            study
+            for study in self.manifest["studies"]
+            if study["audit_id"] == event["physical_study_token"]
+        )
+
+    def test_reviewer_code_role_and_qualification_are_required(self) -> None:
+        with self.assertRaises((ValueError, PermissionError)):
+            self.queue.claim(reviewer_code="", role=ROLE_PRIMARY, action=ACTION_CLAIM_NEXT, qualification_confirmed=True)
+        with self.assertRaises(ValueError):
+            self.queue.claim(reviewer_code="readerA", role="", action=ACTION_CLAIM_NEXT, qualification_confirmed=True)
+        with self.assertRaises(PermissionError):
+            self.queue.claim(reviewer_code="readerA", role=ROLE_PRIMARY, action=ACTION_CLAIM_NEXT, qualification_confirmed=False)
+
+    def test_primary_claim_is_exclusive_and_resume_is_same_reviewer(self) -> None:
+        first = self.claim("readerA", ROLE_PRIMARY)
+        resumed = self.claim("readerA", ROLE_PRIMARY, ACTION_RESUME)
+        second = self.claim("readerB", ROLE_PRIMARY)
+        self.assertEqual(first["event_id"], resumed["event_id"])
+        self.assertNotEqual(first["physical_study_token"], second["physical_study_token"])
+        with self.assertRaises(FileNotFoundError):
+            self.claim("readerC", ROLE_PRIMARY, ACTION_RESUME)
+
+    def test_one_reviewer_cannot_hold_both_roles_on_one_study(self) -> None:
+        primary = self.claim("readerA", ROLE_PRIMARY)
+        secondary = self.claim("readerA", ROLE_SECONDARY)
+        self.assertNotEqual(primary["physical_study_token"], secondary["physical_study_token"])
+
+    def test_different_reviewers_may_claim_different_roles_concurrently(self) -> None:
+        primary = self.claim("readerA", ROLE_PRIMARY)
+        secondary = self.claim("readerB", ROLE_SECONDARY)
+        self.assertEqual(primary["status"], "in_progress")
+        self.assertEqual(secondary["status"], "in_progress")
+
+    def test_secondary_queue_prioritizes_hidden_formal_subset(self) -> None:
+        formal_ids = set(self.queue.policy["formal_reliability_queue"])
+        event = self.claim("readerA", ROLE_SECONDARY)
+        self.assertIn(event["physical_study_token"], formal_ids)
+        self.assertTrue(event["formal_reliability"])
+        self.assertFalse(event["supplemental_review"])
+
+    def test_supplemental_secondary_opens_only_after_all_formal_slots_lock(self) -> None:
+        formal_ids = set(self.queue.policy["formal_reliability_queue"])
+        for _ in range(FORMAL_RELIABILITY_N):
+            event = self.claim("readerA", ROLE_SECONDARY)
+            self.assertIn(event["physical_study_token"], formal_ids)
+            study = self.study_for(event)
+            self.checkpoints.save(event["event_id"], complete_payload(study))
+            self.checkpoints.lock(event["event_id"])
+        supplemental = self.claim("readerA", ROLE_SECONDARY)
+        self.assertNotIn(supplemental["physical_study_token"], formal_ids)
+        self.assertTrue(supplemental["supplemental_review"])
+        self.assertEqual(supplemental["secondary_review_class"], "SUPPLEMENTAL_DUPLICATE_REVIEW")
+
+    def test_role_is_immutable_after_first_save(self) -> None:
+        event = self.claim("readerA", ROLE_PRIMARY)
+        study = self.study_for(event)
+        self.checkpoints.save(event["event_id"], complete_payload(study))
+        checkpoint = self.checkpoints.load(event["event_id"])
+        checkpoint["role"] = ROLE_SECONDARY
+        path = self.output / f"restricted/checkpoints/{event['event_id']}/checkpoint.json"
+        write_json(path, checkpoint)
+        with self.assertRaises(Tier1BlockedError) as caught:
+            self.checkpoints.load(event["event_id"])
+        self.assertEqual(caught.exception.status, BLOCKED_READER_ROLE_INDEPENDENCE)
+
+    def test_checkpoint_rejects_annotations_outside_claimed_study(self) -> None:
+        event = self.claim("readerA", ROLE_PRIMARY)
+        payload = complete_payload(self.study_for(event))
+        payload["annotations"]["studies"]["A999"] = {"reader_confidence": "high"}
+        with self.assertRaises(Tier1BlockedError):
+            self.checkpoints.save(event["event_id"], payload)
+
+    def test_complete_study_locks_with_stable_checksum(self) -> None:
+        event = self.claim("readerA", ROLE_PRIMARY)
+        study = self.study_for(event)
+        self.checkpoints.save(event["event_id"], complete_payload(study))
+        lock_path = self.checkpoints.lock(event["event_id"])
+        first = json.loads(lock_path.read_text(encoding="utf-8"))["annotation_checksum"]
+        loaded = self.checkpoints.load(event["event_id"])
+        self.assertTrue(loaded["locked"])
+        self.assertEqual(first, self.queue.get_event(event["event_id"])["annotation_checksum"])
+        with self.assertRaises(PermissionError):
+            self.checkpoints.save(event["event_id"], complete_payload(study))
+
+    def test_positive_or_uncertain_details_are_required_before_lock(self) -> None:
+        event = self.claim("readerA", ROLE_PRIMARY)
+        study = self.study_for(event)
+        payload = complete_payload(study)
+        payload["annotations"]["studies"][study["audit_id"]]["spectral_doppler_present"] = "uncertain"
+        self.checkpoints.save(event["event_id"], payload)
+        with self.assertRaises(ValueError):
+            self.checkpoints.lock(event["event_id"])
+
+    def test_reassignment_archives_incomplete_record_and_allows_fresh_claim(self) -> None:
+        event = self.claim("readerA", ROLE_PRIMARY)
+        result = self.checkpoints.archive_for_reassignment(
+            event["event_id"],
+            owner_confirmed=True,
+            reason="reader unavailable",
+        )
+        self.assertEqual(result["event"]["status"], "archived_incomplete")
+        replacement = self.claim("readerB", ROLE_PRIMARY)
+        self.assertEqual(replacement["physical_study_token"], event["physical_study_token"])
+        self.assertEqual(self.checkpoints.load(replacement["event_id"])["annotations"]["clips"], {})
+
+    def test_reassignment_requires_owner_confirmation(self) -> None:
+        event = self.claim("readerA", ROLE_PRIMARY)
+        with self.assertRaises(PermissionError):
+            self.checkpoints.archive_for_reassignment(
+                event["event_id"],
+                owner_confirmed=False,
+                reason="reader unavailable",
+            )
+
+    def test_reviewer_registry_is_separate_and_inactive_codes_fail(self) -> None:
+        self.registry.set_active("readerC", False)
+        with self.assertRaises(PermissionError):
+            self.claim("readerC", ROLE_PRIMARY)
+        queue_text = (self.output / "restricted/queue/queue_state.json").read_text(encoding="utf-8")
+        self.assertNotIn("owner_confirmed_qualified", queue_text)
+
+
+class ReducedInterfaceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.fixture = ParentFixture(self.root)
+        self.output = self.root / "reduced"
+        self.result = self.fixture.build_package(self.output)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_interface_package_is_role_aware_and_blinded(self) -> None:
+        policy = json.loads(
+            (self.output / "restricted/interface/interface_policy.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(policy["status"], ROLE_AWARE_INTERFACE_READY)
+        for field in (
+            "target_visible",
+            "split_visible",
+            "report_label_visible",
+            "prediction_visible",
+            "residual_visible",
+            "identifiers_or_paths_visible",
+            "formal_reliability_status_visible",
+            "ocr_available",
+            "automated_annotation",
+            "image_download_button",
+        ):
+            self.assertFalse(policy[field])
+
+    def test_start_screen_has_code_role_and_claim_controls_but_no_study_list(self) -> None:
+        html = (self.output / "restricted/interface/index.html").read_text(encoding="utf-8")
+        self.assertIn("Reviewer code", html)
+        self.assertIn("Primary independent review", html)
+        self.assertIn("Secondary independent review", html)
+        self.assertIn("Resume my incomplete study", html)
+        self.assertIn("Claim next eligible study", html)
+        self.assertNotIn("select a study", html.lower())
+
+    def test_protected_media_are_reused_and_not_copied(self) -> None:
+        self.assertFalse((self.output / "restricted/media").exists())
+        summary = json.loads(
+            (self.output / "aggregate_safe/role_aware_interface_summary.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(summary["protected_media_reused"])
+        self.assertFalse(summary["protected_media_copied"])
+
+    def test_service_rejects_client_selected_study_and_scopes_media_to_claim(self) -> None:
+        service = RoleAwareAuditService(self.output, self.fixture.paths.parent_media_root)
+        service.registry.register("readerD", qualified=True)
+        with self.assertRaises(ValueError):
+            service.claim(
+                {
+                    "reviewer_code": "readerD",
+                    "role": ROLE_PRIMARY,
+                    "action": ACTION_CLAIM_NEXT,
+                    "qualification_confirmed": True,
+                    "audit_id": "A050",
+                }
+            )
+        session = service.claim(
+            {
+                "reviewer_code": "readerD",
+                "role": ROLE_PRIMARY,
+                "action": ACTION_CLAIM_NEXT,
+                "qualification_confirmed": True,
+            }
+        )
+        self.assertNotIn("formal_reliability", session["event"])
+        self.assertNotIn("target", json.dumps(session["study"]))
+        allowed = session["study"]["clips"][0]["source_media_id"]
+        self.assertTrue(service.media_path(session["session_token"], allowed).is_file())
+        with self.assertRaises(PermissionError):
+            service.media_path(session["session_token"], "SRC115")
+
+    def test_synthetic_interface_validation_leaves_no_annotations(self) -> None:
+        validation = validate_role_aware_interface_package(self.output)
+        self.assertEqual(validation["status"], ROLE_AWARE_INTERFACE_READY)
+        self.assertTrue(validation["synthetic_validation_removed"])
+        production_path = self.output / "restricted/queue/queue_state.json"
+        production_state = json.loads(production_path.read_text(encoding="utf-8"))
+        self.assertEqual(production_state["events"], [])
+
+    def test_all_45_phase2k_r2_contract_requirements_are_locked(self) -> None:
+        contract = json.loads(
+            (self.output / "aggregate_safe/phase2k_r2_validation_contract.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(contract["requirements_total"], 45)
+        self.assertEqual(contract["requirements_passed"], 45)
+        for requirement, passed in contract["requirements"].items():
+            with self.subTest(requirement=requirement):
+                self.assertTrue(passed)
+
+
+if __name__ == "__main__":
+    unittest.main()
