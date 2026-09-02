@@ -525,6 +525,108 @@ def test_r8u_r6_storage_policy_uses_numeric_effective_uid() -> None:
     _assert_refused(refused, no_capture)
 
 
+def test_r8u_r7_preservation_recovery_is_cpu_nonarray_nslots4() -> None:
+    completed, observed = _execute(
+        job_name="lvef_c3_r8u_r7_rec_deadbeef",
+        task_id=None,
+        slots="4",
+        cuda="gpu2",
+    )
+    _assert_success(completed, observed)
+    assert observed["cuda"] == ""
+    assert observed["tmpdir"].endswith(
+        "/r8u_r7_job_8123456/r8u_r7_batch16_preservation_recovery/tmp"
+    )
+    assert "<pycache_prefix=/dev/null/lvef_c3_r8u_r7>" in observed["argv"]
+    assert observed["argv"].endswith(
+        "<--run-r8u-r7-batch16-preservation-recovery>"
+    )
+
+    for task_id, slots in (("16", "4"), (None, "1")):
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r7_rec_deadbeef",
+            task_id=task_id,
+            slots=slots,
+        )
+        _assert_refused(refused, no_capture)
+
+
+def test_r8u_r7_continuation_is_exactly_tasks17_19_gpu_nslots4() -> None:
+    for task_id in ("17", "18", "19"):
+        completed, observed = _execute(
+            job_name="lvef_c3_r8u_r7_seq_deadbeef",
+            task_id=task_id,
+            slots="4",
+            cuda="gpu7",
+        )
+        _assert_success(completed, observed)
+        assert observed["cuda"] == "gpu7"
+        assert observed["tmpdir"].endswith(
+            f"/r8u_r7_job_8123456/r8u_r7_array_task_{task_id}/tmp"
+        )
+        assert observed["argv"].endswith(
+            "<--run-r8u-r7-continuation-17-19-array-task>"
+        )
+
+    for task_id in (None, "undefined", "16", "20", "17.0"):
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r7_seq_deadbeef",
+            task_id=task_id,
+        )
+        _assert_refused(refused, no_capture)
+    for slots, cuda in (("1", "gpu7"), ("4", None)):
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r7_seq_deadbeef",
+            task_id="17",
+            slots=slots,
+            cuda=cuda,
+        )
+        _assert_refused(refused, no_capture)
+
+
+def test_r8u_r7_finalizer_is_cpu_nonarray_nslots4() -> None:
+    completed, observed = _execute(
+        job_name="lvef_c3_r8u_r7_fin_deadbeef",
+        task_id=None,
+        slots="4",
+        cuda="gpu5",
+    )
+    _assert_success(completed, observed)
+    assert observed["cuda"] == ""
+    assert observed["tmpdir"].endswith(
+        "/r8u_r7_job_8123456/r8u_r7_finalizer/tmp"
+    )
+    assert observed["argv"].endswith(
+        "<--run-r8u-r7-continuation-finalizer>"
+    )
+
+    for task_id, slots in (("19", "4"), (None, "1")):
+        refused, no_capture = _execute(
+            job_name="lvef_c3_r8u_r7_fin_deadbeef",
+            task_id=task_id,
+            slots=slots,
+        )
+        _assert_refused(refused, no_capture)
+
+
+def test_r8u_r7_storage_policy_uses_numeric_effective_uid() -> None:
+    completed, observed = _execute(
+        job_name="lvef_c3_r8u_r7_rec_deadbeef",
+        task_id=None,
+        slots="4",
+        extra_environment={"R8U_TEST_NAME_HELPER_FAIL": "1"},
+    )
+    _assert_success(completed, observed)
+
+    refused, no_capture = _execute(
+        job_name="lvef_c3_r8u_r7_rec_deadbeef",
+        task_id=None,
+        slots="4",
+        extra_environment={"R8U_TEST_STAT_UID": "999999"},
+    )
+    _assert_refused(refused, no_capture)
+
+
 def test_runner_rejects_nonfixed_names_and_positional_arguments() -> None:
     for job_name in (
         "lvef_c3_r8u_rec_deadbee",

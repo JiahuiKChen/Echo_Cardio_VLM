@@ -440,6 +440,7 @@ class FullExecutionContext(Enum):
     R8U_R4_FIXED_CONTINUATION = "R8U_R4_FIXED_CONTINUATION"
     R8U_R5_FIXED_CONTINUATION = "R8U_R5_FIXED_CONTINUATION"
     R8U_R6_FIXED_CONTINUATION = "R8U_R6_FIXED_CONTINUATION"
+    R8U_R7_FIXED_CONTINUATION = "R8U_R7_FIXED_CONTINUATION"
 
 
 ORIGINAL_FULL_SUBMISSION = FullExecutionContext.ORIGINAL_FULL_SUBMISSION
@@ -449,6 +450,7 @@ R8U_R3_FIXED_CONTINUATION = FullExecutionContext.R8U_R3_FIXED_CONTINUATION
 R8U_R4_FIXED_CONTINUATION = FullExecutionContext.R8U_R4_FIXED_CONTINUATION
 R8U_R5_FIXED_CONTINUATION = FullExecutionContext.R8U_R5_FIXED_CONTINUATION
 R8U_R6_FIXED_CONTINUATION = FullExecutionContext.R8U_R6_FIXED_CONTINUATION
+R8U_R7_FIXED_CONTINUATION = FullExecutionContext.R8U_R7_FIXED_CONTINUATION
 # Compatibility name used by the fixed controller; it resolves only to the
 # fresh R2 continuation context and does not make the consumed R1 epoch live.
 R8U_FIXED_CONTINUATION = R8U_R2_FIXED_CONTINUATION
@@ -1451,13 +1453,30 @@ def _validate_batch_finalization(
 
 
 def _cache_retirement_authorization(
-    *, run: FullRun, batch_id: str, paths: Mapping[str, Path]
+    *,
+    run: FullRun,
+    batch_id: str,
+    paths: Mapping[str, Path],
+    artifact_validation_context: retirement.ArtifactValidationContext = (
+        retirement.STRICT_CONTENT_HASH
+    ),
 ) -> Path:
     receipt_path = paths["preservation"] / "batch_preservation_receipt.restricted.json"
     receipt = preservation.load_json(receipt_path, "FULL_PRESERVATION_RECEIPT")
+    if receipt.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE":
+        _fail("FULL_SEQUENTIAL_RETIREMENT_BEFORE_PRESERVATION")
     ledger = core.load_strict_json(paths["eligibility_ledger"])
     cache_root = paths["extraction"] / "clips"
-    tree_sha = retirement.cache_tree_sha256(cache_root)
+    tree_sha = retirement._cache_tree_authority(
+        cache_root,
+        logical_root=cache_root,
+        production_root=run.production_root,
+        preservation_manifest=(
+            paths["preservation"]
+            / "batch_preservation_manifest.restricted.tsv"
+        ),
+        artifact_validation_context=artifact_validation_context,
+    )
     authorization_root = run.attempt_root / "cache_retirement_authorizations"
     _ensure_private_directory(authorization_root)
     authorization_path = authorization_root / f"{batch_id}.authorization.json"
@@ -1477,8 +1496,6 @@ def _cache_retirement_authorization(
         "cache_inventory_sha256": tree_sha,
         "launch_authority_sha256": run.launch_authority_sha256,
     }
-    if receipt.get("status") != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE":
-        _fail("FULL_SEQUENTIAL_RETIREMENT_BEFORE_PRESERVATION")
     _write_private_json(authorization_path, value, attempt_id=run.attempt_id)
     return authorization_path
 
@@ -1532,6 +1549,11 @@ def run_batch_task(
         and effective_task not in range(17, 20)
     ):
         _fail("FULL_SEQUENTIAL_R8U_R6_CONTINUATION_TASK_OUT_OF_SCOPE")
+    if (
+        dependency.execution_context is R8U_R7_FIXED_CONTINUATION
+        and effective_task not in range(17, 20)
+    ):
+        _fail("FULL_SEQUENTIAL_R8U_R7_CONTINUATION_TASK_OUT_OF_SCOPE")
 
     # This gate is deliberately first for tasks 2..N: no validation below may
     # construct a token provider, body transport, DICOM reader, or GPU object.
@@ -1590,6 +1612,12 @@ def run_batch_task(
             import lvef_c3_r8r_recovery_continuation as r8r
 
             r8r.validate_r8u_r6_frozen_partial_evidence()
+        elif dependency.execution_context is R8U_R7_FIXED_CONTINUATION:
+            if cache_inventory.active != 1:
+                _fail("FULL_SEQUENTIAL_R8U_R7_EXTRACTION_CACHE_TOPOLOGY_INVALID")
+            import lvef_c3_r8r_recovery_continuation as r8r
+
+            r8r.validate_r8u_r7_frozen_partial_evidence()
         elif cache_inventory.active != 0:
             _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
 
@@ -1637,6 +1665,12 @@ def run_batch_task(
                 r8r.validate_r8u_r6_continuation_worker_submission(
                     current_job_id=str(os.environ.get("JOB_ID", "")),
                 )
+            elif dependency.execution_context is R8U_R7_FIXED_CONTINUATION:
+                import lvef_c3_r8r_recovery_continuation as r8r
+
+                r8r.validate_r8u_r7_continuation_worker_submission(
+                    current_job_id=str(os.environ.get("JOB_ID", "")),
+                )
             else:
                 _wait_for_submission_receipt(
                     effective_run,
@@ -1659,6 +1693,7 @@ def run_batch_task(
                 R8U_R4_FIXED_CONTINUATION,
                 R8U_R5_FIXED_CONTINUATION,
                 R8U_R6_FIXED_CONTINUATION,
+                R8U_R7_FIXED_CONTINUATION,
             }:
                 environment_arguments["runtime_validation_context"] = (
                     stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1803,6 +1838,7 @@ def run_batch_task(
             R8U_R4_FIXED_CONTINUATION,
             R8U_R5_FIXED_CONTINUATION,
             R8U_R6_FIXED_CONTINUATION,
+            R8U_R7_FIXED_CONTINUATION,
         }:
             echoprime_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1870,6 +1906,7 @@ def run_batch_task(
             R8U_R4_FIXED_CONTINUATION,
             R8U_R5_FIXED_CONTINUATION,
             R8U_R6_FIXED_CONTINUATION,
+            R8U_R7_FIXED_CONTINUATION,
         }:
             preservation_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1908,6 +1945,7 @@ def run_batch_task(
             R8U_R4_FIXED_CONTINUATION,
             R8U_R5_FIXED_CONTINUATION,
             R8U_R6_FIXED_CONTINUATION,
+            R8U_R7_FIXED_CONTINUATION,
         }:
             retirement_arguments["scheduler_runner_path"] = (
                 SCRIPT_ROOT

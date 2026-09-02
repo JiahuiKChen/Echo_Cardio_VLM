@@ -6,6 +6,7 @@ import csv
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 from unittest import mock
 
 import sys
@@ -15,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import preserve_lvef_c3_production_batch as preservation
 import retire_lvef_c3_extracted_cache_v2 as retirement
+import lvef_c3_full_sequential as sequential
 
 
 def _write_extraction_manifest(path: Path, clip_keys: list[str]) -> None:
@@ -78,11 +80,12 @@ def test_candidate_npz_seal_is_metadata_only_and_exact() -> None:
         manifest = extraction / "extraction_manifest.restricted.csv"
         _write_extraction_manifest(manifest, clip_keys)
         for key in clip_keys:
-            leaf = extraction / "clips" / key[:2] / f"{key}.npz"
+            leaf = extraction / "clips" / "clips" / key[:2] / f"{key}.npz"
             leaf.parent.mkdir(parents=True, exist_ok=True)
             leaf.write_bytes(b"opaque-npz-body")
             leaf.chmod(0o600)
             leaf.parent.chmod(0o700)
+        (extraction / "clips" / "clips").chmod(0o700)
         (extraction / "clips").chmod(0o700)
         with (
             mock.patch.object(
@@ -101,7 +104,9 @@ def test_candidate_npz_seal_is_metadata_only_and_exact() -> None:
             assert len(sealed) == 2
             for authority in sealed.values():
                 preservation.validate_sealed_extracted_npz_metadata(authority)
-        first_leaf = extraction / "clips" / "aa" / f"{'a' * 64}.npz"
+        first_leaf = (
+            extraction / "clips" / "clips" / "aa" / f"{'a' * 64}.npz"
+        )
         first_leaf.chmod(0o644)
         with mock.patch.object(
             preservation, "R8U_R3_FIXED_EXTRACTION_NPZ_FILES", 2
@@ -112,7 +117,7 @@ def test_candidate_npz_seal_is_metadata_only_and_exact() -> None:
                     extraction_root=extraction,
                 )
             except preservation.BatchPreservationError as exc:
-                assert exc.code == "R8U_R3_EXTRACTION_NPZ_METADATA_INVALID"
+                assert exc.code == "R8U_NPZ_MODE_INVALID"
             else:
                 raise AssertionError("world-readable NPZ was accepted")
         first_leaf.chmod(0o600)
@@ -130,7 +135,9 @@ def test_candidate_npz_seal_is_metadata_only_and_exact() -> None:
             else:
                 raise AssertionError("world-readable NPZ directory was accepted")
         first_leaf.parent.chmod(0o700)
-        extra = extraction / "clips" / "ff" / f"{'f' * 64}.npz"
+        extra = (
+            extraction / "clips" / "clips" / "ff" / f"{'f' * 64}.npz"
+        )
         extra.parent.mkdir(parents=True)
         extra.write_bytes(b"extra")
         extra.chmod(0o600)
@@ -144,7 +151,7 @@ def test_candidate_npz_seal_is_metadata_only_and_exact() -> None:
                     extraction_root=extraction,
                 )
             except preservation.BatchPreservationError as exc:
-                assert exc.code == "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+                assert exc.code == "R8U_NPZ_PATH_SET_MISMATCH"
             else:
                 raise AssertionError("additional NPZ was accepted")
 
@@ -157,7 +164,7 @@ def test_retirement_tree_authority_uses_preservation_hashes_not_npz_bodies() -> 
         keys = ["1" * 64, "2" * 64]
         rows: list[tuple[str, int, str]] = []
         for index, key in enumerate(keys):
-            leaf = actual / key[:2] / f"{key}.npz"
+            leaf = actual / "clips" / key[:2] / f"{key}.npz"
             leaf.parent.mkdir(parents=True, exist_ok=True)
             body = f"body-{index}".encode()
             leaf.write_bytes(body)
@@ -167,6 +174,7 @@ def test_retirement_tree_authority_uses_preservation_hashes_not_npz_bodies() -> 
                 production
             ).as_posix()
             rows.append((relative, len(body), chr(ord("d") + index) * 64))
+        (actual / "clips").chmod(0o700)
         actual.chmod(0o700)
         manifest = Path(temporary) / "preservation.tsv"
         with manifest.open("w", newline="", encoding="utf-8") as handle:
@@ -219,6 +227,82 @@ def test_retirement_tree_authority_uses_preservation_hashes_not_npz_bodies() -> 
                 sealed_raw_dicom_authority={},
             )
         assert retirement.SHA_RE.fullmatch(digest)
+
+
+def test_retirement_authorization_can_reuse_body_free_tree_authority() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        production = root / "production"
+        attempt = production / "attempts" / "a"
+        preservation_root = attempt / "batches" / "c3_batch_015" / "preservation"
+        extraction = (
+            attempt / "extracted_cache" / "c3_batch_015" / "dicom_extraction"
+        )
+        paths = {
+            "preservation": preservation_root,
+            "eligibility_ledger": attempt / "eligible.json",
+            "extraction": extraction,
+        }
+        run = SimpleNamespace(
+            attempt_root=attempt,
+            production_root=production,
+            attempt_id="a",
+            launch_authority_sha256="a" * 64,
+        )
+        tree_authority = mock.Mock(return_value="b" * 64)
+        strict_tree = mock.Mock(
+            side_effect=AssertionError("strict NPZ body hash was reached")
+        )
+        with (
+            mock.patch.object(
+                sequential.preservation,
+                "load_json",
+                return_value={"status": "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE"},
+            ),
+            mock.patch.object(
+                sequential.core,
+                "load_strict_json",
+                return_value={"authority": {}},
+            ),
+            mock.patch.object(
+                sequential.core,
+                "sha256_file",
+                return_value="c" * 64,
+            ),
+            mock.patch.object(
+                sequential.retirement,
+                "_cache_tree_authority",
+                tree_authority,
+            ),
+            mock.patch.object(
+                sequential.retirement, "cache_tree_sha256", strict_tree
+            ),
+            mock.patch.object(sequential, "_ensure_private_directory"),
+            mock.patch.object(
+                sequential, "_write_private_json", return_value="d" * 64
+            ),
+        ):
+            sequential._cache_retirement_authorization(
+                run=run,
+                batch_id="c3_batch_015",
+                paths=paths,
+                artifact_validation_context=(
+                    retirement.R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+                ),
+            )
+        strict_tree.assert_not_called()
+        tree_authority.assert_called_once_with(
+            extraction / "clips",
+            logical_root=extraction / "clips",
+            production_root=production,
+            preservation_manifest=(
+                preservation_root
+                / "batch_preservation_manifest.restricted.tsv"
+            ),
+            artifact_validation_context=(
+                retirement.R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+            ),
+        )
 
 
 def main() -> int:

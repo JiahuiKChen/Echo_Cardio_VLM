@@ -84,6 +84,23 @@ def test_r8u_r5_continuation_context_is_fresh_and_closed() -> None:
     assert "validate_r8u_r5_continuation_worker_submission(" in source
 
 
+def test_r8u_r7_continuation_context_is_fixed_to_tasks17_19() -> None:
+    assert sequential.R8U_R7_FIXED_CONTINUATION is (
+        sequential.FullExecutionContext.R8U_R7_FIXED_CONTINUATION
+    )
+    assert sequential.R8U_R7_FIXED_CONTINUATION.value == (
+        "R8U_R7_FIXED_CONTINUATION"
+    )
+    assert sequential.R8U_R7_FIXED_CONTINUATION is not (
+        sequential.R8U_R6_FIXED_CONTINUATION
+    )
+    source = inspect.getsource(sequential.run_batch_task)
+    assert "FULL_SEQUENTIAL_R8U_R7_CONTINUATION_TASK_OUT_OF_SCOPE" in source
+    assert "FULL_SEQUENTIAL_R8U_R7_EXTRACTION_CACHE_TOPOLOGY_INVALID" in source
+    assert "validate_r8u_r7_frozen_partial_evidence()" in source
+    assert "validate_r8u_r7_continuation_worker_submission(" in source
+
+
 def two_batch_plan() -> tuple[dict[str, Any], core.PlanRequirements]:
     """Return the scientific-path fixture, not a production-scale file test."""
 

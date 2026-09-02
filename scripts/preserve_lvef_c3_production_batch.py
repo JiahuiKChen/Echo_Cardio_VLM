@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, MutableMapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lvef_c3_orchestration_core as core
@@ -198,6 +198,18 @@ R8R_FIXED_SCHEDULER_RUNNER_PATH = (
 )
 R8U_R3_FIXED_BATCH_ID = "c3_batch_015"
 R8U_R3_FIXED_EXTRACTION_NPZ_FILES = 10_187
+NPZ_STABLE_METADATA_FIELDS = (
+    "device", "inode", "mode_including_type", "uid", "gid", "nlink",
+    "size", "mtime_ns", "ctime_ns",
+)
+NPZ_METADATA_DIAGNOSTIC_KEYS = frozenset(
+    {
+        "files_evaluated", "files_passing", "first_failed_predicate",
+        "atime_only_differences", "stable_metadata_differences",
+        "missing_paths", "additional_paths",
+    }
+)
+R8U_NPZ_ATIME_ONLY_DIFFERENCE = "R8U_NPZ_ATIME_ONLY_DIFFERENCE"
 
 SAFE_NESTED_VALIDATION_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,127}$")
 CSV_NONNEGATIVE_INTEGER_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.0)?$")
@@ -255,6 +267,16 @@ class SealedExtractedNpzAuthority:
     size_bytes: int
     observed_sha256: str
     metadata_projection: tuple[int, ...]
+    diagnostic_atime_ns: int
+
+
+@dataclass(frozen=True)
+class ExtractedNpzMetadataObservation:
+    """One body-free NPZ observation with access time kept diagnostic-only."""
+
+    stable_projection: tuple[int, ...]
+    diagnostic_atime_ns: int
+    atime_only_difference: bool
 
 
 class BatchPreservationError(RuntimeError):
@@ -777,36 +799,169 @@ def _sealed_raw_dicom_artifact_record(
     }
 
 
-def _extracted_npz_metadata_projection(path: Path) -> tuple[int, ...]:
+def new_npz_metadata_diagnostics() -> dict[str, int | str]:
+    """Return the closed aggregate-safe diagnostic for one NPZ seal."""
+
+    return {
+        "files_evaluated": 0,
+        "files_passing": 0,
+        "first_failed_predicate": "NONE",
+        "atime_only_differences": 0,
+        "stable_metadata_differences": 0,
+        "missing_paths": 0,
+        "additional_paths": 0,
+    }
+
+
+def _require_npz_metadata_diagnostics(
+    value: MutableMapping[str, int | str] | None,
+) -> MutableMapping[str, int | str] | None:
+    if value is None:
+        return None
+    if not value:
+        value.update(new_npz_metadata_diagnostics())
+    if (
+        set(value) != NPZ_METADATA_DIAGNOSTIC_KEYS
+        or value.get("first_failed_predicate") == ""
+        or any(
+            isinstance(value.get(field), bool)
+            or not isinstance(value.get(field), int)
+            or int(value.get(field, -1)) < 0
+            for field in NPZ_METADATA_DIAGNOSTIC_KEYS
+            if field != "first_failed_predicate"
+        )
+    ):
+        raise BatchPreservationError("R8U_NPZ_STABLE_METADATA_CHANGED")
+    return value
+
+
+def _record_npz_metadata_failure(
+    diagnostics: MutableMapping[str, int | str] | None,
+    code: str,
+    *, stable_difference: bool = False,
+) -> None:
+    observed = _require_npz_metadata_diagnostics(diagnostics)
+    if observed is None:
+        return
+    if observed["first_failed_predicate"] == "NONE":
+        observed["first_failed_predicate"] = code
+    if stable_difference:
+        observed["stable_metadata_differences"] = (
+            int(observed["stable_metadata_differences"]) + 1
+        )
+
+
+def _raise_npz_metadata_error(
+    code: str,
+    diagnostics: MutableMapping[str, int | str] | None,
+    *, stable_difference: bool = False,
+    cause: BaseException | None = None,
+) -> None:
+    _record_npz_metadata_failure(
+        diagnostics, code, stable_difference=stable_difference
+    )
+    error = BatchPreservationError(code)
+    if cause is None:
+        raise error
+    raise error from cause
+
+
+def _npz_stable_metadata_projection(
+    value: os.stat_result,
+) -> tuple[int, ...]:
+    """Project exactly the NPZ identity fields sealed across body-free reads."""
+
+    return (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
+        int(value.st_size), int(value.st_mtime_ns), int(value.st_ctime_ns),
+    )
+
+
+def _extracted_npz_metadata_observation(
+    path: Path,
+    *,
+    approved_device: int | None = None,
+    diagnostics: MutableMapping[str, int | str] | None = None,
+    count_evaluation: bool = False,
+) -> ExtractedNpzMetadataObservation:
     """Bind one NPZ leaf without opening its scientific payload."""
 
+    observed = _require_npz_metadata_diagnostics(diagnostics)
+    if observed is not None and count_evaluation:
+        observed["files_evaluated"] = int(observed["files_evaluated"]) + 1
     absolute = Path(os.path.abspath(path))
     try:
         before = os.lstat(absolute)
         after = os.lstat(absolute)
     except OSError as exc:
-        raise BatchPreservationError(
-            "R8U_R3_EXTRACTION_NPZ_METADATA_INVALID"
-        ) from exc
-    projection = lambda value: (
-        int(value.st_dev), int(value.st_ino), int(value.st_mode),
-        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
-        int(value.st_size), int(value.st_mtime_ns), int(value.st_ctime_ns),
-    )
-    if (
-        before != after
-        or not stat.S_ISREG(before.st_mode)
-        or stat.S_ISLNK(before.st_mode)
-        or before.st_uid != os.geteuid()
-        or before.st_nlink != 1
-        or before.st_size <= 0
-        or stat.S_IMODE(before.st_mode) != 0o600
-        or absolute.suffix.lower() != ".npz"
-    ):
-        raise BatchPreservationError(
-            "R8U_R3_EXTRACTION_NPZ_METADATA_INVALID"
+        _raise_npz_metadata_error(
+            "R8U_NPZ_LSTAT_FAILED", observed, cause=exc
         )
-    return projection(before)
+    if stat.S_ISLNK(before.st_mode):
+        _raise_npz_metadata_error("R8U_NPZ_SYMLINK_INVALID", observed)
+    if not stat.S_ISREG(before.st_mode):
+        _raise_npz_metadata_error("R8U_NPZ_NOT_REGULAR", observed)
+    if before.st_uid != os.geteuid():
+        _raise_npz_metadata_error("R8U_NPZ_OWNER_MISMATCH", observed)
+    if stat.S_IMODE(before.st_mode) != 0o600:
+        _raise_npz_metadata_error("R8U_NPZ_MODE_INVALID", observed)
+    if before.st_nlink != 1:
+        _raise_npz_metadata_error(
+            "R8U_NPZ_LINK_COUNT_INVALID", observed
+        )
+    if before.st_size <= 0:
+        _raise_npz_metadata_error("R8U_NPZ_SIZE_INVALID", observed)
+    if absolute.suffix.lower() != ".npz":
+        _raise_npz_metadata_error("R8U_NPZ_SUFFIX_INVALID", observed)
+    if approved_device is not None and int(before.st_dev) != approved_device:
+        _raise_npz_metadata_error(
+            "R8U_NPZ_DEVICE_TOPOLOGY_INVALID", observed
+        )
+    before_projection = _npz_stable_metadata_projection(before)
+    after_projection = _npz_stable_metadata_projection(after)
+    if before_projection != after_projection:
+        _raise_npz_metadata_error(
+            "R8U_NPZ_STABLE_METADATA_CHANGED",
+            observed,
+            stable_difference=True,
+        )
+    # Access time is deliberately diagnostic-only.  Naming the classification
+    # here keeps it auditable without adding a path-bearing or per-file field
+    # to the closed aggregate diagnostic.
+    atime_only_difference = int(before.st_atime_ns) != int(after.st_atime_ns)
+    atime_classification = (
+        R8U_NPZ_ATIME_ONLY_DIFFERENCE if atime_only_difference else "NONE"
+    )
+    if observed is not None:
+        if atime_classification == R8U_NPZ_ATIME_ONLY_DIFFERENCE:
+            observed["atime_only_differences"] = (
+                int(observed["atime_only_differences"]) + 1
+            )
+        if count_evaluation:
+            observed["files_passing"] = int(observed["files_passing"]) + 1
+    return ExtractedNpzMetadataObservation(
+        stable_projection=before_projection,
+        diagnostic_atime_ns=int(after.st_atime_ns),
+        atime_only_difference=atime_only_difference,
+    )
+
+
+def _extracted_npz_metadata_projection(
+    path: Path,
+    *,
+    approved_device: int | None = None,
+    diagnostics: MutableMapping[str, int | str] | None = None,
+    count_evaluation: bool = False,
+) -> tuple[int, ...]:
+    """Compatibility wrapper returning only the explicit stable projection."""
+
+    return _extracted_npz_metadata_observation(
+        path,
+        approved_device=approved_device,
+        diagnostics=diagnostics,
+        count_evaluation=count_evaluation,
+    ).stable_projection
 
 
 def _r8u_r3_private_npz_directory(
@@ -825,10 +980,14 @@ def _r8u_r3_private_npz_directory(
 
 
 def seal_r8u_r3_extracted_npz_authority(
-    *, extraction_manifest: Path, extraction_root: Path
+    *,
+    extraction_manifest: Path,
+    extraction_root: Path,
+    diagnostics: MutableMapping[str, int | str] | None = None,
 ) -> dict[Path, SealedExtractedNpzAuthority]:
     """Reproject the fixed Batch-16 cache from its manifest, metadata only."""
 
+    observed_diagnostics = _require_npz_metadata_diagnostics(diagnostics)
     rows = read_csv_exact(extraction_manifest, EXTRACTION_MANIFEST_HEADER)
     if (
         len(rows) != R8U_R3_FIXED_EXTRACTION_NPZ_FILES
@@ -851,38 +1010,31 @@ def seal_r8u_r3_extracted_npz_authority(
         raise BatchPreservationError(
             "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
         )
-    expected: dict[Path, SealedExtractedNpzAuthority] = {}
+    manifest_authority: dict[Path, tuple[Path, str]] = {}
     for row in rows:
         clip_key = str(row.get("clip_key", ""))
         relative_text = str(row.get("output_relative_path", ""))
         digest = str(row.get("npz_sha256", ""))
         expected_relative = f"clips/{clip_key[:2]}/{clip_key}.npz"
-        if (
-            SHA_RE.fullmatch(clip_key) is None
-            or relative_text != expected_relative
-            or SHA_RE.fullmatch(digest) is None
-        ):
+        if SHA_RE.fullmatch(clip_key) is None or SHA_RE.fullmatch(digest) is None:
             raise BatchPreservationError(
                 "R8U_R3_EXTRACTION_NPZ_MANIFEST_INVALID"
+            )
+        if relative_text != expected_relative:
+            _raise_npz_metadata_error(
+                "R8U_NPZ_PATH_SET_MISMATCH", observed_diagnostics
             )
         relative = production_stages.safe_relative_path(relative_text)
-        path = extraction_root / relative
-        if path in expected:
+        # The extraction producer receives <stage>/clips as its output root,
+        # while the manifest locator itself begins with clips/.  Mirror the
+        # same authority used by stage and EchoPrime validation: the physical
+        # stage-relative locator is therefore clips/<manifest locator>.
+        path = clips_root / relative
+        if path in manifest_authority:
             raise BatchPreservationError(
                 "R8U_R3_EXTRACTION_NPZ_MANIFEST_INVALID"
             )
-        metadata = _extracted_npz_metadata_projection(path)
-        if metadata[0] != approved_device:
-            raise BatchPreservationError(
-                "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
-            )
-        expected[path] = SealedExtractedNpzAuthority(
-            path=path,
-            output_relative_path=relative,
-            size_bytes=metadata[6],
-            observed_sha256=digest,
-            metadata_projection=metadata,
-        )
+        manifest_authority[path] = (relative, digest)
     observed: set[Path] = set()
     for directory, names, filenames in os.walk(clips_root, followlinks=False):
         current = Path(directory)
@@ -903,36 +1055,71 @@ def seal_r8u_r3_extracted_npz_authority(
                     "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
                 )
         for name in filenames:
-            path = current / name
-            if _extracted_npz_metadata_projection(path)[0] != approved_device:
-                raise BatchPreservationError(
-                    "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
-                )
-            observed.add(path)
-    if observed != set(expected):
-        raise BatchPreservationError(
-            "R8U_R3_EXTRACTION_NPZ_TOPOLOGY_INVALID"
+            observed.add(current / name)
+    missing = set(manifest_authority) - observed
+    additional = observed - set(manifest_authority)
+    if observed_diagnostics is not None:
+        observed_diagnostics["missing_paths"] = len(missing)
+        observed_diagnostics["additional_paths"] = len(additional)
+    if missing or additional:
+        _raise_npz_metadata_error(
+            "R8U_NPZ_PATH_SET_MISMATCH", observed_diagnostics
+        )
+    expected: dict[Path, SealedExtractedNpzAuthority] = {}
+    for path, (relative, digest) in manifest_authority.items():
+        observation = _extracted_npz_metadata_observation(
+            path,
+            approved_device=approved_device,
+            diagnostics=observed_diagnostics,
+            count_evaluation=True,
+        )
+        expected[path] = SealedExtractedNpzAuthority(
+            path=path,
+            output_relative_path=relative,
+            size_bytes=observation.stable_projection[6],
+            observed_sha256=digest,
+            metadata_projection=observation.stable_projection,
+            diagnostic_atime_ns=observation.diagnostic_atime_ns,
         )
     return expected
 
 
 def validate_sealed_extracted_npz_metadata(
     authority: SealedExtractedNpzAuthority,
+    *,
+    diagnostics: MutableMapping[str, int | str] | None = None,
 ) -> None:
+    observed_diagnostics = _require_npz_metadata_diagnostics(diagnostics)
+    if type(authority) is not SealedExtractedNpzAuthority:
+        _raise_npz_metadata_error(
+            "R8U_NPZ_SEALED_METADATA_CHANGED",
+            observed_diagnostics,
+            stable_difference=True,
+        )
+    observation = _extracted_npz_metadata_observation(
+        authority.path,
+        approved_device=int(authority.metadata_projection[0]),
+        diagnostics=observed_diagnostics,
+    )
+    if observation.stable_projection != authority.metadata_projection:
+        _raise_npz_metadata_error(
+            "R8U_NPZ_SEALED_METADATA_CHANGED",
+            observed_diagnostics,
+            stable_difference=True,
+        )
     if (
-        type(authority) is not SealedExtractedNpzAuthority
-        or _extracted_npz_metadata_projection(authority.path)
-        != authority.metadata_projection
+        observed_diagnostics is not None
+        and observation.diagnostic_atime_ns != authority.diagnostic_atime_ns
+        and not observation.atime_only_difference
     ):
-        raise BatchPreservationError(
-            "R8U_R3_EXTRACTION_NPZ_METADATA_CHANGED"
+        observed_diagnostics["atime_only_differences"] = (
+            int(observed_diagnostics["atime_only_differences"]) + 1
         )
 
 
 def _sealed_extracted_npz_artifact_record(
     authority: SealedExtractedNpzAuthority, root: Path, role: str
 ) -> dict[str, Any]:
-    validate_sealed_extracted_npz_metadata(authority)
     return {
         "relative_path": safe_relative(authority.path, root),
         "size_bytes": authority.size_bytes,
@@ -1756,10 +1943,22 @@ def preserve_batch(
     runtime_validation_context: (
         production_stages.RuntimeAuthorityValidationContext
     ) = production_stages.LIVE_RUNTIME_CAPTURE,
+    npz_metadata_diagnostics: (
+        MutableMapping[str, int | str] | None
+    ) = None,
 ) -> dict[str, Any]:
     artifact_validation_context = require_artifact_validation_context(
         artifact_validation_context
     )
+    observed_npz_diagnostics = _require_npz_metadata_diagnostics(
+        npz_metadata_diagnostics
+    )
+    if (
+        observed_npz_diagnostics is not None
+        and artifact_validation_context
+        is not R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
+    ):
+        raise BatchPreservationError("ARTIFACT_VALIDATION_CONTEXT_INVALID")
     if not isinstance(
         runtime_validation_context,
         production_stages.RuntimeAuthorityValidationContext,
@@ -1871,6 +2070,7 @@ def preserve_batch(
         seal_r8u_r3_extracted_npz_authority(
             extraction_manifest=paths["extraction_manifest"],
             extraction_root=extraction_root,
+            diagnostics=observed_npz_diagnostics,
         )
         if artifact_validation_context
         is R8U_R3_FIXED_BATCH16_NO_SCIENTIFIC_BODY
@@ -2164,7 +2364,9 @@ def preserve_batch(
                     raise BatchPreservationError(
                         "R8U_R3_EXTRACTION_NPZ_AUTHORITY_INVALID"
                     )
-                validate_sealed_extracted_npz_metadata(sealed_npz)
+                validate_sealed_extracted_npz_metadata(
+                    sealed_npz, diagnostics=observed_npz_diagnostics
+                )
                 size_bytes, digest = (
                     sealed_npz.size_bytes,
                     sealed_npz.observed_sha256,
@@ -2190,6 +2392,8 @@ def preserve_batch(
                     artifact
                 )
         except BatchPreservationError as exc:
+            if exc.code.startswith("R8U_NPZ_"):
+                raise
             raise BatchPreservationError(
                 "SECOND_PASS_ARTIFACT_NOT_REGULAR"
             ) from exc
