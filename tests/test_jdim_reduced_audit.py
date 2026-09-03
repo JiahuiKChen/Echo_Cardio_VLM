@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -36,15 +37,29 @@ from jdim_tier1.reduced_audit import (  # noqa: E402
 from jdim_tier1.reduced_audit_interface import (  # noqa: E402
     ACTION_CLAIM_NEXT,
     ACTION_RESUME,
+    ARCHIVED_INCOMPLETE,
+    BLOCKED_MIXED_REVIEWER_ATTRIBUTION,
     BLOCKED_READER_ROLE_INDEPENDENCE,
+    CLAIMED_INCOMPLETE,
+    COMPLETE_NOT_FINALIZED,
+    FINALIZATION_REQUIRED,
+    FINALIZED_LOCKED,
+    INCOMPLETE_STUDY_EXISTS,
+    NO_ELIGIBLE_STUDY,
+    NO_INCOMPLETE_STUDY,
+    QUEUE_TRANSITION_DRY_RUN_PASS,
+    REASSIGNED_FRESH,
     ROLE_AWARE_INTERFACE_READY,
     ROLE_PRIMARY,
     ROLE_SECONDARY,
+    STUDY_READY,
     ReviewerRegistry,
     RoleAwareAuditService,
     RoleAwareCheckpointStore,
     RoleQueueStore,
+    audit_queue_transition_state,
     build_role_aware_interface_package,
+    current_role_aware_interface_assets,
     validate_role_aware_interface_package,
     write_interface_ready_certificate,
 )
@@ -490,6 +505,357 @@ class RoleAwareQueueTests(unittest.TestCase):
         queue_text = (self.output / "restricted/queue/queue_state.json").read_text(encoding="utf-8")
         self.assertNotIn("owner_confirmed_qualified", queue_text)
 
+
+class QueueTransitionRepairTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.fixture = ParentFixture(self.root)
+        self.output = self.root / "reduced"
+        self.fixture.build_package(self.output)
+        self.service = RoleAwareAuditService(self.output, self.fixture.paths.parent_media_root)
+        for code in ("queueR1", "queueR2", "queueR3"):
+            self.service.registry.register(code, qualified=True)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def claim(self, code: str, role: str, action: str = ACTION_CLAIM_NEXT) -> dict[str, object]:
+        return self.service.claim(
+            {
+                "reviewer_code": code,
+                "role": role,
+                "action": action,
+                "qualification_confirmed": True,
+            }
+        )
+
+    def save_complete(self, response: dict[str, object]) -> None:
+        payload = complete_payload(response["study"])
+        self.service.save(response["session_token"], payload["annotations"])
+
+    def finalize(self, response: dict[str, object]) -> None:
+        self.save_complete(response)
+        result = self.service.lock(response["session_token"])
+        self.assertEqual(result["status"], FINALIZED_LOCKED)
+
+    def queue_events(self) -> list[dict[str, object]]:
+        path = self.output / "restricted/queue/queue_state.json"
+        return json.loads(path.read_text(encoding="utf-8"))["events"]
+
+    def test_01_primary_claim_creates_one_incomplete_review(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        self.assertEqual(response["status"], STUDY_READY)
+        self.assertEqual(response["workflow_state"], CLAIMED_INCOMPLETE)
+        self.assertEqual(len(self.queue_events()), 1)
+
+    def test_02_resume_restores_the_same_incomplete_review(self) -> None:
+        first = self.claim("queueR1", ROLE_PRIMARY)
+        self.service.save(first["session_token"], {"studies": {}, "clips": {}})
+        self.service.end_session(first["session_token"])
+        resumed = self.claim("queueR1", ROLE_PRIMARY, ACTION_RESUME)
+        self.assertEqual(first["event"]["event_id"], resumed["event"]["event_id"])
+
+    def test_03_incomplete_review_prevents_silent_next_claim(self) -> None:
+        self.claim("queueR1", ROLE_PRIMARY)
+        blocked = self.claim("queueR1", ROLE_PRIMARY)
+        self.assertFalse(blocked["open_study"])
+        self.assertEqual(len(self.queue_events()), 1)
+
+    def test_04_incomplete_next_claim_returns_explicit_state(self) -> None:
+        self.claim("queueR1", ROLE_PRIMARY)
+        blocked = self.claim("queueR1", ROLE_PRIMARY)
+        self.assertEqual(blocked["status"], INCOMPLETE_STUDY_EXISTS)
+        self.assertIn("Resume incomplete study", blocked["message"])
+
+    def test_05_complete_unfinalized_review_requires_finalization(self) -> None:
+        first = self.claim("queueR1", ROLE_PRIMARY)
+        self.save_complete(first)
+        self.service.end_session(first["session_token"])
+        blocked = self.claim("queueR1", ROLE_PRIMARY)
+        self.assertEqual(blocked["status"], FINALIZATION_REQUIRED)
+        self.assertEqual(blocked["workflow_state"], COMPLETE_NOT_FINALIZED)
+        resumed = self.claim("queueR1", ROLE_PRIMARY, ACTION_RESUME)
+        self.assertTrue(resumed["open_study"])
+        self.assertEqual(resumed["status"], FINALIZATION_REQUIRED)
+
+    def test_06_finalization_clears_active_claim_and_session(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        token = response["session_token"]
+        self.finalize(response)
+        event = self.service.queue.get_event(response["event"]["event_id"])
+        self.assertEqual(event["status"], "locked")
+        self.assertTrue(event["completed_at_utc"])
+        self.assertTrue(event["locked_at_utc"])
+        with self.assertRaises(PermissionError):
+            self.service.session(token)
+
+    def test_07_next_claim_after_finalization_assigns_a_different_study(self) -> None:
+        first = self.claim("queueR1", ROLE_PRIMARY)
+        first_study = first["study"]["audit_id"]
+        self.finalize(first)
+        second = self.claim("queueR1", ROLE_PRIMARY)
+        self.assertNotEqual(first_study, second["study"]["audit_id"])
+
+    def test_08_resume_after_finalization_reports_no_incomplete_review(self) -> None:
+        first = self.claim("queueR1", ROLE_PRIMARY)
+        self.finalize(first)
+        response = self.claim("queueR1", ROLE_PRIMARY, ACTION_RESUME)
+        self.assertEqual(response["status"], NO_INCOMPLETE_STUDY)
+        self.assertFalse(response["open_study"])
+
+    def test_09_finalized_review_never_reopens_as_editable(self) -> None:
+        first = self.claim("queueR1", ROLE_PRIMARY)
+        self.finalize(first)
+        with self.assertRaises(PermissionError):
+            self.service.checkpoints.save(
+                first["event"]["event_id"], complete_payload(first["study"])
+            )
+
+    def test_10_one_reviewer_can_complete_several_primary_studies(self) -> None:
+        studies = []
+        for _ in range(3):
+            response = self.claim("queueR1", ROLE_PRIMARY)
+            studies.append(response["study"]["audit_id"])
+            self.finalize(response)
+        self.assertEqual(len(studies), len(set(studies)))
+
+    def test_11_two_primary_reviewers_receive_different_studies(self) -> None:
+        first = self.claim("queueR1", ROLE_PRIMARY)
+        second = self.claim("queueR2", ROLE_PRIMARY)
+        self.assertNotEqual(first["study"]["audit_id"], second["study"]["audit_id"])
+
+    def test_12_same_reviewer_cannot_receive_same_study_cross_role(self) -> None:
+        primary = self.claim("queueR1", ROLE_PRIMARY)
+        secondary = self.claim("queueR1", ROLE_SECONDARY)
+        self.assertNotEqual(primary["study"]["audit_id"], secondary["study"]["audit_id"])
+
+    def test_13_other_reviewer_may_receive_eligible_cross_role_study(self) -> None:
+        formal_first = self.service.queue.policy["formal_reliability_queue"][0]
+        primary = None
+        while primary is None or primary["study"]["audit_id"] != formal_first:
+            primary = self.claim("queueR1", ROLE_PRIMARY)
+            self.finalize(primary)
+        secondary = self.claim("queueR2", ROLE_SECONDARY)
+        self.assertEqual(secondary["study"]["audit_id"], formal_first)
+
+    def test_14_formal_secondary_queue_is_unchanged(self) -> None:
+        policy_path = self.output / "restricted/interface/queue_policy_restricted.json"
+        before = sha256_file(policy_path)
+        self.claim("queueR1", ROLE_PRIMARY)
+        self.claim("queueR2", ROLE_SECONDARY)
+        self.assertEqual(sha256_file(policy_path), before)
+
+    def test_15_same_role_double_click_creates_only_one_claim(self) -> None:
+        responses: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                responses.append(self.claim("queueR1", ROLE_PRIMARY))
+            except BaseException as exc:  # pragma: no cover - assertion captures failures
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertFalse(errors)
+        self.assertEqual(len(self.queue_events()), 1)
+        self.assertEqual(
+            {response["status"] for response in responses},
+            {STUDY_READY, INCOMPLETE_STUDY_EXISTS},
+        )
+
+    def test_16_concurrent_primary_claims_cannot_assign_same_study(self) -> None:
+        responses: list[dict[str, object]] = []
+
+        def worker(code: str) -> None:
+            responses.append(self.claim(code, ROLE_PRIMARY))
+
+        threads = [
+            threading.Thread(target=worker, args=("queueR1",)),
+            threading.Thread(target=worker, args=("queueR2",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(len({response["study"]["audit_id"] for response in responses}), 2)
+
+    def test_17_stale_client_session_cannot_override_locked_backend(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        token = response["session_token"]
+        self.finalize(response)
+        with self.assertRaises(PermissionError):
+            self.service.checkpoint(token)
+
+    def test_18_reviewer_code_change_clears_client_review_state(self) -> None:
+        javascript = current_role_aware_interface_assets()["app.js"].decode("utf-8")
+        self.assertIn("addEventListener('input',clearStaleClientState)", javascript)
+        self.assertIn("resetReviewState()", javascript)
+        self.assertNotIn("localStorage", javascript)
+
+    def test_19_role_change_clears_incompatible_client_review_state(self) -> None:
+        javascript = current_role_aware_interface_assets()["app.js"].decode("utf-8")
+        self.assertIn("input.addEventListener('change',clearStaleClientState)", javascript)
+        self.assertIn("workflowState='UNCLAIMED'", javascript)
+
+    def test_20_end_session_clears_session_but_preserves_checkpoint(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        self.service.save(response["session_token"], {"studies": {}, "clips": {}})
+        checkpoint = self.output / f"restricted/checkpoints/{response['event']['event_id']}/checkpoint.json"
+        before = sha256_file(checkpoint)
+        self.service.end_session(response["session_token"])
+        with self.assertRaises(PermissionError):
+            self.service.session(response["session_token"])
+        self.assertEqual(sha256_file(checkpoint), before)
+
+    def test_21_server_restart_preserves_incomplete_and_finalized_reviews(self) -> None:
+        incomplete = self.claim("queueR1", ROLE_PRIMARY)
+        self.service.save(incomplete["session_token"], {"studies": {}, "clips": {}})
+        restarted = RoleAwareAuditService(self.output, self.fixture.paths.parent_media_root)
+        resumed = restarted.claim(
+            {
+                "reviewer_code": "queueR1",
+                "role": ROLE_PRIMARY,
+                "action": ACTION_RESUME,
+                "qualification_confirmed": True,
+            }
+        )
+        self.assertEqual(resumed["event"]["event_id"], incomplete["event"]["event_id"])
+        restarted.save(
+            resumed["session_token"],
+            complete_payload(resumed["study"])["annotations"],
+        )
+        restarted.lock(resumed["session_token"])
+        restarted_again = RoleAwareAuditService(self.output, self.fixture.paths.parent_media_root)
+        no_incomplete = restarted_again.claim(
+            {
+                "reviewer_code": "queueR1",
+                "role": ROLE_PRIMARY,
+                "action": ACTION_RESUME,
+                "qualification_confirmed": True,
+            }
+        )
+        self.assertEqual(no_incomplete["status"], NO_INCOMPLETE_STUDY)
+
+    def test_22_completed_annotations_remain_immutable(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        self.finalize(response)
+        checkpoint = self.output / f"restricted/checkpoints/{response['event']['event_id']}/checkpoint.json"
+        before = sha256_file(checkpoint)
+        with self.assertRaises(PermissionError):
+            self.service.checkpoints.save(
+                response["event"]["event_id"], complete_payload(response["study"])
+            )
+        self.assertEqual(sha256_file(checkpoint), before)
+
+    def test_23_stale_active_pointer_to_valid_lock_is_repairable(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        self.save_complete(response)
+        with patch.object(self.service.queue, "mark_locked", side_effect=RuntimeError("interrupted")):
+            with self.assertRaises(RuntimeError):
+                self.service.checkpoints.lock(response["event"]["event_id"])
+        result = audit_queue_transition_state(
+            self.output,
+            expected_stale_pointers=1,
+            repair_stale_pointers=True,
+        )
+        self.assertEqual(result["status"], QUEUE_TRANSITION_DRY_RUN_PASS)
+        self.assertEqual(result["repaired_stale_active_pointers"], 1)
+        self.assertEqual(
+            self.service.queue.get_event(response["event"]["event_id"])["status"], "locked"
+        )
+
+    def test_24_active_incomplete_pointer_is_not_cleared(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        before = sha256_file(self.service.queue.state_path)
+        result = audit_queue_transition_state(self.output)
+        self.assertEqual(result["active_incomplete_claims"], 1)
+        self.assertEqual(result["repaired_stale_active_pointers"], 0)
+        self.assertEqual(sha256_file(self.service.queue.state_path), before)
+        self.assertEqual(
+            self.service.queue.get_event(response["event"]["event_id"])["status"], "in_progress"
+        )
+
+    def test_25_pointer_repair_changes_no_annotation_values(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        self.save_complete(response)
+        checkpoint = self.output / f"restricted/checkpoints/{response['event']['event_id']}/checkpoint.json"
+        with patch.object(self.service.queue, "mark_locked", side_effect=RuntimeError("interrupted")):
+            with self.assertRaises(RuntimeError):
+                self.service.checkpoints.lock(response["event"]["event_id"])
+        before = sha256_file(checkpoint)
+        audit_queue_transition_state(
+            self.output,
+            expected_stale_pointers=1,
+            repair_stale_pointers=True,
+        )
+        self.assertEqual(sha256_file(checkpoint), before)
+
+    def test_26_transition_response_exposes_no_scientific_or_path_fields(self) -> None:
+        self.claim("queueR1", ROLE_PRIMARY)
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        text = json.dumps(response).lower()
+        for prohibited in ("target", "split", "prediction", "residual", "report_label", "/restricted/"):
+            self.assertNotIn(prohibited, text)
+
+    def test_27_transition_tests_use_synthetic_state_only(self) -> None:
+        self.assertTrue(self.output.is_relative_to(self.root))
+        self.assertTrue(self.root.is_relative_to(Path(tempfile.gettempdir()).parent))
+
+    def test_28_mixed_reviewer_records_are_not_silently_merged(self) -> None:
+        self.claim("queueR1", ROLE_PRIMARY)
+        path = self.service.queue.state_path
+        state = json.loads(path.read_text(encoding="utf-8"))
+        duplicate = dict(state["events"][0])
+        duplicate["event_id"] = "ESYNTHETICDUPLICATE"
+        duplicate["reviewer_code"] = "queueR2"
+        state["events"].append(duplicate)
+        write_json(path, state)
+        with self.assertRaises(Tier1BlockedError) as caught:
+            audit_queue_transition_state(self.output)
+        self.assertEqual(caught.exception.status, BLOCKED_MIXED_REVIEWER_ATTRIBUTION)
+
+    def test_explicit_archived_and_reassigned_states_are_preserved(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        archived = self.service.checkpoints.archive_for_reassignment(
+            response["event"]["event_id"],
+            owner_confirmed=True,
+            reason="synthetic reassignment test",
+        )
+        self.assertEqual(archived["event"]["status"], "archived_incomplete")
+        self.assertEqual(
+            self.service.checkpoints.review_state(archived["event"])["workflow_state"],
+            ARCHIVED_INCOMPLETE,
+        )
+        replacement = self.claim("queueR2", ROLE_PRIMARY)
+        self.assertEqual(replacement["workflow_state"], REASSIGNED_FRESH)
+
+    def test_no_eligible_queue_returns_explicit_state_without_reopening(self) -> None:
+        for _ in self.service.queue.policy["primary_queue"]:
+            response = self.claim("queueR1", ROLE_PRIMARY)
+            self.finalize(response)
+        exhausted = self.claim("queueR1", ROLE_PRIMARY)
+        self.assertEqual(exhausted["status"], NO_ELIGIBLE_STUDY)
+        self.assertFalse(exhausted["open_study"])
+
+    def test_missing_conditional_note_is_reported_as_an_operational_requirement(self) -> None:
+        response = self.claim("queueR1", ROLE_PRIMARY)
+        payload = complete_payload(response["study"])
+        study_id = response["study"]["audit_id"]
+        payload["annotations"]["studies"][study_id]["spectral_doppler_present"] = "uncertain"
+        self.service.save(response["session_token"], payload["annotations"])
+        self.service.end_session(response["session_token"])
+        blocked = self.claim("queueR1", ROLE_PRIMARY)
+        self.assertEqual(blocked["status"], INCOMPLETE_STUDY_EXISTS)
+        self.assertEqual(
+            blocked["requirements"],
+            ["Add restricted study notes for positive or uncertain study findings."],
+        )
 
 class ReducedInterfaceTests(unittest.TestCase):
     def setUp(self) -> None:

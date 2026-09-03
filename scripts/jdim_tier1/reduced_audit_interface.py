@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 import pandas as pd
 
@@ -54,10 +54,40 @@ ACTION_RESUME = "resume"
 ACTION_CLAIM_NEXT = "claim_next"
 ACTIONS = {ACTION_RESUME, ACTION_CLAIM_NEXT}
 
+UNCLAIMED = "UNCLAIMED"
+CLAIMED_INCOMPLETE = "CLAIMED_INCOMPLETE"
+COMPLETE_NOT_FINALIZED = "COMPLETE_NOT_FINALIZED"
+FINALIZED_LOCKED = "FINALIZED_LOCKED"
+ARCHIVED_INCOMPLETE = "ARCHIVED_INCOMPLETE"
+REASSIGNED_FRESH = "REASSIGNED_FRESH"
+
+STUDY_READY = "STUDY_READY"
+INCOMPLETE_STUDY_EXISTS = "INCOMPLETE_STUDY_EXISTS"
+FINALIZATION_REQUIRED = "FINALIZATION_REQUIRED"
+NO_INCOMPLETE_STUDY = "NO_INCOMPLETE_STUDY"
+NO_ELIGIBLE_STUDY = "NO_ELIGIBLE_STUDY"
+QUEUE_TRANSITION_DRY_RUN_PASS = "QUEUE_TRANSITION_DRY_RUN_PASS"
+
+NO_INCOMPLETE_MESSAGE = (
+    "No incomplete study is available for this reviewer and role. "
+    "Select \u201cClaim next eligible study\u201d to continue."
+)
+INCOMPLETE_EXISTS_MESSAGE = (
+    "An incomplete study is already assigned to this reviewer and role. "
+    "Select \u201cResume incomplete study\u201d to continue."
+)
+FINALIZATION_REQUIRED_MESSAGE = (
+    "This study is complete but not finalized. Please review the completion "
+    "summary and finalize it before claiming another study."
+)
+NO_ELIGIBLE_MESSAGE = "No additional eligible studies remain for this review role."
+
 ROLE_AWARE_INTERFACE_READY = "ROLE_AWARE_INTERFACE_READY"
 READY_FOR_REDUCED_BLINDED_HUMAN_AUDIT = "READY_FOR_REDUCED_BLINDED_HUMAN_AUDIT"
 BLOCKED_READER_ROLE_INDEPENDENCE = "BLOCKED_READER_ROLE_INDEPENDENCE"
 BLOCKED_REDUCED_INTERFACE = "BLOCKED_REDUCED_INTERFACE"
+BLOCKED_MIXED_REVIEWER_ATTRIBUTION = "BLOCKED_MIXED_REVIEWER_ATTRIBUTION"
+BLOCKED_QUEUE_STATE_MIGRATION = "BLOCKED_QUEUE_STATE_MIGRATION"
 FORMAL_DUPLICATE_REVIEW = "FORMAL_RELIABILITY_REVIEW"
 SUPPLEMENTAL_DUPLICATE_REVIEW = "SUPPLEMENTAL_DUPLICATE_REVIEW"
 
@@ -121,13 +151,16 @@ class InterfaceBuildResult:
 class ReviewerRegistry:
     """Restricted pseudonymous reviewer registry, separate from annotations."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, initialize: bool = True):
         self.root = require_restricted_destination(root)
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.root, 0o700)
         self.path = self.root / "reviewer_registry.json"
         self.identity_map_path = self.root / "reviewer_identity_map_optional.json"
-        if not self.path.exists():
+        if initialize:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(self.root, 0o700)
+        elif not self.path.is_file():
+            raise FileNotFoundError("reviewer registry is unavailable")
+        if initialize and not self.path.exists():
             _atomic_write_json(
                 self.path,
                 {"schema_version": REGISTRY_SCHEMA, "reviewers": []},
@@ -197,18 +230,28 @@ class ReviewerRegistry:
 class RoleQueueStore:
     """Atomic role claims with exclusive per-study role ownership."""
 
-    def __init__(self, queue_root: Path, queue_policy_path: Path, registry: ReviewerRegistry):
+    def __init__(
+        self,
+        queue_root: Path,
+        queue_policy_path: Path,
+        registry: ReviewerRegistry,
+        *,
+        initialize: bool = True,
+    ):
         self.root = require_restricted_destination(queue_root)
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.root, 0o700)
         self.policy_path = queue_policy_path
         self.registry = registry
         self.state_path = self.root / "queue_state.json"
         self.lock_path = self.root / ".queue.lock"
         self.reassignment_root = self.root / "reassignments"
-        self.reassignment_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if initialize:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(self.root, 0o700)
+            self.reassignment_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        elif not self.state_path.is_file():
+            raise FileNotFoundError("role queue state is unavailable")
         self.policy = self._load_policy()
-        if not self.state_path.exists():
+        if initialize and not self.state_path.exists():
             _atomic_write_json(
                 self.state_path,
                 {
@@ -251,8 +294,10 @@ class RoleQueueStore:
                         BLOCKED_READER_ROLE_INDEPENDENCE,
                         "role queue state does not match its locked policy",
                     )
+                original = sha256_json(state)
                 yield state
-                _atomic_write_json(self.state_path, state)
+                if sha256_json(state) != original:
+                    _atomic_write_json(self.state_path, state)
                 fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
         finally:
             pass
@@ -278,14 +323,17 @@ class RoleQueueStore:
             return open_formal
         return [study for study in primary if study not in set(formal)]
 
-    def claim(
+    def transition(
         self,
         *,
         reviewer_code: str,
         role: str,
         action: str,
         qualification_confirmed: bool,
+        classify_in_progress: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     ) -> dict[str, Any]:
+        """Resolve a queue action atomically without silently changing its meaning."""
+
         code = _code(reviewer_code)
         role = _role(role)
         action = str(action).strip().lower()
@@ -309,9 +357,45 @@ class RoleQueueStore:
                     "reviewer has multiple incomplete studies in one role",
                 )
             if incomplete:
-                return dict(incomplete[0])
+                event = incomplete[0]
+                review = dict(classify_in_progress(event))
+                workflow_state = str(review.get("workflow_state", ""))
+                if workflow_state == FINALIZED_LOCKED:
+                    raise Tier1BlockedError(
+                        BLOCKED_READER_ROLE_INDEPENDENCE,
+                        "finalized review retains a stale active queue pointer",
+                    )
+                if workflow_state not in {CLAIMED_INCOMPLETE, COMPLETE_NOT_FINALIZED}:
+                    raise Tier1BlockedError(
+                        BLOCKED_REDUCED_INTERFACE,
+                        "in-progress review has an invalid workflow state",
+                    )
+                if workflow_state == COMPLETE_NOT_FINALIZED:
+                    outcome = FINALIZATION_REQUIRED
+                    message = FINALIZATION_REQUIRED_MESSAGE
+                elif action == ACTION_CLAIM_NEXT:
+                    outcome = INCOMPLETE_STUDY_EXISTS
+                    message = INCOMPLETE_EXISTS_MESSAGE
+                else:
+                    outcome = STUDY_READY
+                    message = "Saved progress restored."
+                return {
+                    "outcome": outcome,
+                    "workflow_state": workflow_state,
+                    "event": dict(event),
+                    "open_study": action == ACTION_RESUME,
+                    "message": message,
+                    "requirements": list(review.get("requirements", [])),
+                }
             if action == ACTION_RESUME:
-                raise FileNotFoundError("no incomplete study is available for this reviewer and role")
+                return {
+                    "outcome": NO_INCOMPLETE_STUDY,
+                    "workflow_state": UNCLAIMED,
+                    "event": None,
+                    "open_study": False,
+                    "message": NO_INCOMPLETE_MESSAGE,
+                    "requirements": [],
+                }
 
             active = self._active(events)
             same_role_claimed = {
@@ -335,8 +419,21 @@ class RoleQueueStore:
                 None,
             )
             if candidate is None:
-                raise FileNotFoundError("no eligible study is currently available for this reviewer and role")
+                return {
+                    "outcome": NO_ELIGIBLE_STUDY,
+                    "workflow_state": UNCLAIMED,
+                    "event": None,
+                    "open_study": False,
+                    "message": NO_ELIGIBLE_MESSAGE,
+                    "requirements": [],
+                }
             formal = role == ROLE_SECONDARY and candidate in formal_ids
+            reassigned = any(
+                event.get("physical_study_token") == candidate
+                and event.get("role") == role
+                and event.get("status") == "archived_incomplete"
+                for event in events
+            )
             event = {
                 "schema_version": EVENT_SCHEMA,
                 "event_id": f"E{secrets.token_hex(12).upper()}",
@@ -355,6 +452,8 @@ class RoleQueueStore:
                 "claim_timestamp_utc": utc_now(),
                 "last_save_timestamp_utc": None,
                 "completion_timestamp_utc": None,
+                "completed_at_utc": None,
+                "locked_at_utc": None,
                 "status": "in_progress",
                 "lock_status": "unlocked",
                 "reassignment_history": [],
@@ -377,6 +476,77 @@ class RoleQueueStore:
                     "duplicate reviewer/study/role claim",
                 )
             events.append(event)
+            return {
+                "outcome": STUDY_READY,
+                "workflow_state": REASSIGNED_FRESH if reassigned else CLAIMED_INCOMPLETE,
+                "event": dict(event),
+                "open_study": True,
+                "message": "Eligible study claimed.",
+                "requirements": [],
+            }
+
+    def claim(
+        self,
+        *,
+        reviewer_code: str,
+        role: str,
+        action: str,
+        qualification_confirmed: bool,
+    ) -> dict[str, Any]:
+        result = self.transition(
+            reviewer_code=reviewer_code,
+            role=role,
+            action=action,
+            qualification_confirmed=qualification_confirmed,
+            classify_in_progress=lambda _event: {"workflow_state": CLAIMED_INCOMPLETE},
+        )
+        if result["open_study"] and result["event"] is not None:
+            return dict(result["event"])
+        if result["outcome"] == INCOMPLETE_STUDY_EXISTS:
+            raise FileExistsError(INCOMPLETE_EXISTS_MESSAGE)
+        if result["outcome"] == NO_INCOMPLETE_STUDY:
+            raise FileNotFoundError(NO_INCOMPLETE_MESSAGE)
+        if result["outcome"] == NO_ELIGIBLE_STUDY:
+            raise FileNotFoundError(NO_ELIGIBLE_MESSAGE)
+        raise Tier1BlockedError(BLOCKED_REDUCED_INTERFACE, "queue transition did not open a study")
+
+    def eligible_remaining_count(self, role: str) -> int:
+        """Count role slots not held or finalized, without reviewer-specific filtering."""
+
+        role = _role(role)
+        state = _load_object(self.state_path)
+        events = list(state.get("events", []))
+        claimed = {
+            str(event["physical_study_token"])
+            for event in self._active(events)
+            if event.get("role") == role
+        }
+        return sum(audit_id not in claimed for audit_id in self._candidate_order(events, role))
+
+    def repair_stale_locked_pointer(
+        self,
+        event_id: str,
+        *,
+        annotation_checksum: str,
+        completed_at_utc: str,
+        clip_completion_count: int,
+    ) -> dict[str, Any]:
+        """Repair queue metadata only after a lock/checkpoint has been validated."""
+
+        with self._locked_state() as state:
+            matches = [event for event in state["events"] if str(event.get("event_id")) == str(event_id)]
+            if len(matches) != 1 or matches[0].get("status") != "in_progress":
+                raise PermissionError("only a stale active pointer to a locked review may be repaired")
+            event = matches[0]
+            event["status"] = "locked"
+            event["lock_status"] = "locked"
+            event["completion_timestamp_utc"] = str(completed_at_utc)
+            event["completed_at_utc"] = str(completed_at_utc)
+            event["locked_at_utc"] = str(completed_at_utc)
+            event["clip_completion_count"] = int(clip_completion_count)
+            event["study_summary_complete"] = True
+            event["annotation_checksum"] = str(annotation_checksum)
+            event["active_pointer_repaired_at_utc"] = utc_now()
             return dict(event)
 
     def get_event(self, event_id: str) -> dict[str, Any]:
@@ -411,16 +581,22 @@ class RoleQueueStore:
         *,
         annotation_checksum: str,
         clip_completion_count: int,
+        completed_at_utc: str,
     ) -> dict[str, Any]:
         with self._locked_state() as state:
             matches = [event for event in state["events"] if str(event.get("event_id")) == str(event_id)]
             if len(matches) != 1 or matches[0].get("status") != "in_progress":
                 raise PermissionError("review event is unavailable or already locked")
             event = matches[0]
+            completed_at = str(completed_at_utc).strip()
+            if not completed_at:
+                raise ValueError("completion timestamp is required")
             event["status"] = "locked"
             event["lock_status"] = "locked"
-            event["completion_timestamp_utc"] = utc_now()
-            event["last_save_timestamp_utc"] = event["completion_timestamp_utc"]
+            event["completion_timestamp_utc"] = completed_at
+            event["completed_at_utc"] = completed_at
+            event["locked_at_utc"] = completed_at
+            event["last_save_timestamp_utc"] = completed_at
             event["clip_completion_count"] = int(clip_completion_count)
             event["study_summary_complete"] = True
             event["annotation_checksum"] = str(annotation_checksum)
@@ -471,21 +647,35 @@ class RoleQueueStore:
 class RoleAwareCheckpointStore:
     """One attributable, atomic checkpoint per physical-study review event."""
 
-    def __init__(self, root: Path, queue: RoleQueueStore, study_manifest: Mapping[str, Any]):
+    def __init__(
+        self,
+        root: Path,
+        queue: RoleQueueStore,
+        study_manifest: Mapping[str, Any],
+        *,
+        initialize: bool = True,
+    ):
         self.root = require_restricted_destination(root)
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.root, 0o700)
+        if initialize:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(self.root, 0o700)
+        elif not self.root.is_dir():
+            raise FileNotFoundError("checkpoint root is unavailable")
         self.queue = queue
         self.studies = {
             str(study["audit_id"]): dict(study)
             for study in study_manifest.get("studies", [])
         }
 
-    def _event_root(self, event_id: str) -> Path:
+    def _event_path(self, event_id: str) -> Path:
         event_id = _code(event_id)
         root = (self.root / event_id).resolve()
         if self.root.resolve() not in root.parents:
             raise Tier1BlockedError(BLOCKED_UNSAFE_OUTPUT, "review event escaped checkpoint root")
+        return root
+
+    def _event_root(self, event_id: str) -> Path:
+        root = self._event_path(event_id)
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(root, 0o700)
         return root
@@ -514,6 +704,184 @@ class RoleAwareCheckpointStore:
         self._validate_event_identity(payload, event)
         payload["locked"] = (root / "LOCKED.json").is_file()
         return payload
+
+    def _validated_saved_annotations(
+        self,
+        event: Mapping[str, Any],
+    ) -> tuple[Path, dict[str, dict[str, dict[str, str]]]] | None:
+        root = self._event_path(str(event["event_id"]))
+        checkpoint = root / "checkpoint.json"
+        if not checkpoint.is_file():
+            return None
+        payload = _load_object(checkpoint)
+        self._validate_event_identity(payload, event)
+        annotations = payload.get("annotations", {})
+        if not isinstance(annotations, Mapping) or set(annotations) - {"studies", "clips"}:
+            raise ValueError("checkpoint annotations must contain only studies and clips")
+        studies = CheckpointStore._validated_annotation_group(
+            annotations.get("studies", {}), STUDY_ANNOTATION_FIELDS, "study"
+        )
+        clips = CheckpointStore._validated_annotation_group(
+            annotations.get("clips", {}), CLIP_ANNOTATION_FIELDS, "clip"
+        )
+        audit_id, clip_ids = self._assignment(event)
+        if not set(studies).issubset({audit_id}) or not set(clips).issubset(clip_ids):
+            raise Tier1BlockedError(
+                BLOCKED_READER_ROLE_INDEPENDENCE,
+                "checkpoint contains annotations outside the claimed study",
+            )
+        return checkpoint, {"studies": studies, "clips": clips}
+
+    def review_state(self, event: Mapping[str, Any]) -> dict[str, Any]:
+        """Return content-free completion metadata for one review event."""
+
+        status = str(event.get("status", ""))
+        if status == "archived_incomplete":
+            return {
+                "workflow_state": ARCHIVED_INCOMPLETE,
+                "completion_validation_passed": False,
+                "requirements": [],
+                "stale_active_pointer": False,
+            }
+        if status not in {"in_progress", "locked"}:
+            raise Tier1BlockedError(BLOCKED_REDUCED_INTERFACE, "review event status is invalid")
+
+        audit_id, clip_ids = self._assignment(event)
+        root = self._event_path(str(event["event_id"]))
+        lock_path = root / "LOCKED.json"
+        saved = self._validated_saved_annotations(event)
+        if saved is None:
+            if status == "locked" or lock_path.exists():
+                raise Tier1BlockedError(
+                    BLOCKED_REDUCED_INTERFACE,
+                    "locked review is missing its checkpoint",
+                )
+            requirements = []
+            if clip_ids:
+                requirements.append(f"Complete all required fields for {len(clip_ids)} clip(s).")
+            requirements.append("Complete the study summary.")
+            return {
+                "workflow_state": CLAIMED_INCOMPLETE,
+                "completion_validation_passed": False,
+                "required_clip_count": len(clip_ids),
+                "completed_clip_count": 0,
+                "study_summary_complete": False,
+                "requirements": requirements,
+                "stale_active_pointer": False,
+            }
+
+        checkpoint, annotations = saved
+        studies = annotations["studies"]
+        clips = annotations["clips"]
+        incomplete_clips = [
+            clip_id
+            for clip_id in clip_ids
+            if clip_id not in clips
+            or not all(
+                str(clips[clip_id].get(field, "")).strip()
+                for field in REQUIRED_CLIP_ANNOTATION_FIELDS
+            )
+        ]
+        study_record = studies.get(audit_id, {})
+        study_complete = bool(study_record) and all(
+            str(study_record.get(field, "")).strip()
+            for field in REQUIRED_STUDY_ANNOTATION_FIELDS
+        )
+        study_notes_required = bool(study_record) and any(
+            str(study_record.get(field, "")) in {"yes", "uncertain"}
+            for field in STUDY_OUTCOMES
+        ) and not str(study_record.get("restricted_notes", "")).strip()
+        uncertain_clip_notes = sum(
+            any(str(record.get(field, "")) == "uncertain" for field in CLIP_PRESENCE_FIELDS)
+            and not str(record.get("restricted_notes", "")).strip()
+            for record in clips.values()
+        )
+        displayed_value_fields = (
+            "candidate_target_value",
+            "visible_unit_text",
+            "visible_measurement_name_text",
+            "display_precision",
+        )
+        incomplete_displayed_values = sum(
+            str(record.get("candidate_target_value_present", "")) == "yes"
+            and not all(str(record.get(field, "")).strip() for field in displayed_value_fields)
+            for record in clips.values()
+        )
+        requirements = []
+        if incomplete_clips:
+            requirements.append(
+                f"Complete all required fields for {len(incomplete_clips)} clip(s)."
+            )
+        if not study_complete:
+            requirements.append("Complete the study summary.")
+        if study_notes_required:
+            requirements.append(
+                "Add restricted study notes for positive or uncertain study findings."
+            )
+        if uncertain_clip_notes:
+            requirements.append(
+                f"Add restricted notes for {uncertain_clip_notes} clip(s) marked uncertain."
+            )
+        if incomplete_displayed_values:
+            requirements.append(
+                "Complete displayed-value details for "
+                f"{incomplete_displayed_values} clip(s) marked as containing a candidate value."
+            )
+        completion_valid = not requirements
+        annotation_checksum = sha256_json(annotations)
+
+        lock_payload = None
+        if lock_path.is_file():
+            if not completion_valid:
+                raise Tier1BlockedError(
+                    BLOCKED_REDUCED_INTERFACE,
+                    "locked review does not pass completion validation",
+                )
+            lock_payload = _load_object(lock_path)
+            if (
+                lock_payload.get("status") != "STUDY_ROLE_REVIEW_LOCKED"
+                or lock_payload.get("schema_version") != "jdim-reduced-audit-review-lock-v1"
+                or lock_payload.get("event_id") != event.get("event_id")
+                or lock_payload.get("reviewer_code") != event.get("reviewer_code")
+                or lock_payload.get("role") != event.get("role")
+                or lock_payload.get("physical_study_token") != audit_id
+                or lock_payload.get("annotation_checksum") != annotation_checksum
+                or lock_payload.get("checkpoint_sha256") != sha256_file(checkpoint)
+                or not str(lock_payload.get("locked_at_utc", "")).strip()
+            ):
+                raise Tier1BlockedError(
+                    BLOCKED_READER_ROLE_INDEPENDENCE,
+                    "review lock does not match its attributable checkpoint",
+                )
+        if status == "locked" and lock_payload is None:
+            raise Tier1BlockedError(
+                BLOCKED_REDUCED_INTERFACE,
+                "finalized queue event is missing its immutable lock",
+            )
+        if lock_payload is not None:
+            return {
+                "workflow_state": FINALIZED_LOCKED,
+                "completion_validation_passed": True,
+                "required_clip_count": len(clip_ids),
+                "completed_clip_count": len(clip_ids),
+                "study_summary_complete": True,
+                "requirements": [],
+                "stale_active_pointer": status == "in_progress",
+                "annotation_checksum": annotation_checksum,
+                "checkpoint_sha256": sha256_file(checkpoint),
+                "completed_at_utc": str(lock_payload.get("locked_at_utc", "")),
+            }
+        return {
+            "workflow_state": COMPLETE_NOT_FINALIZED if completion_valid else CLAIMED_INCOMPLETE,
+            "completion_validation_passed": completion_valid,
+            "required_clip_count": len(clip_ids),
+            "completed_clip_count": len(clip_ids) - len(incomplete_clips),
+            "study_summary_complete": study_complete,
+            "requirements": requirements,
+            "stale_active_pointer": False,
+            "annotation_checksum": annotation_checksum,
+            "checkpoint_sha256": sha256_file(checkpoint),
+        }
 
     @staticmethod
     def _validate_event_identity(payload: Mapping[str, Any], event: Mapping[str, Any]) -> None:
@@ -598,12 +966,20 @@ class RoleAwareCheckpointStore:
 
     def lock(self, event_id: str) -> Path:
         event = self.queue.get_event(event_id)
-        root = self._event_root(event_id)
+        if event.get("status") != "in_progress":
+            raise PermissionError("review event is unavailable or already locked")
+        root = self._event_path(event_id)
         checkpoint = root / "checkpoint.json"
         if not checkpoint.is_file():
             raise FileNotFoundError("cannot lock before saving annotations")
         if (root / "LOCKED.json").exists():
             raise FileExistsError("review event is already locked")
+        review = self.review_state(event)
+        if review["workflow_state"] != COMPLETE_NOT_FINALIZED:
+            requirements = list(review.get("requirements", []))
+            if requirements:
+                raise ValueError(" ".join(requirements))
+            raise ValueError("review does not pass completion validation")
         payload = _load_object(checkpoint)
         self._validate_event_identity(payload, event)
         audit_id, clip_ids = self._assignment(event)
@@ -624,6 +1000,7 @@ class RoleAwareCheckpointStore:
         )
         self._require_positive_uncertain_details(studies[audit_id], clips)
         annotation_checksum = sha256_json(annotations)
+        locked_at = utc_now()
         descriptor = os.open(root / "LOCKED.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(
@@ -636,7 +1013,7 @@ class RoleAwareCheckpointStore:
                     "physical_study_token": audit_id,
                     "annotation_checksum": annotation_checksum,
                     "checkpoint_sha256": sha256_file(checkpoint),
-                    "locked_at_utc": utc_now(),
+                    "locked_at_utc": locked_at,
                 },
                 stream,
                 indent=2,
@@ -647,8 +1024,25 @@ class RoleAwareCheckpointStore:
             event_id,
             annotation_checksum=annotation_checksum,
             clip_completion_count=len(clip_ids),
+            completed_at_utc=locked_at,
         )
         return root / "LOCKED.json"
+
+    def repair_stale_locked_pointer(self, event_id: str) -> dict[str, Any]:
+        """Release only an in-progress pointer backed by a valid immutable lock."""
+
+        event = self.queue.get_event(event_id)
+        review = self.review_state(event)
+        if review.get("workflow_state") != FINALIZED_LOCKED or not review.get(
+            "stale_active_pointer"
+        ):
+            raise PermissionError("review event is not a validated stale locked pointer")
+        return self.queue.repair_stale_locked_pointer(
+            event_id,
+            annotation_checksum=str(review["annotation_checksum"]),
+            completed_at_utc=str(review["completed_at_utc"]),
+            clip_completion_count=int(review["required_clip_count"]),
+        )
 
     def archive_for_reassignment(
         self,
@@ -718,17 +1112,37 @@ class RoleAwareAuditService:
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError(f"claim request contains unsupported fields: {unknown}")
-        event = self.queue.claim(
+        transition = self.queue.transition(
             reviewer_code=str(payload.get("reviewer_code", "")),
             role=str(payload.get("role", "")),
             action=str(payload.get("action", "")),
             qualification_confirmed=payload.get("qualification_confirmed") is True,
+            classify_in_progress=self.checkpoints.review_state,
         )
+        event = transition.get("event")
+        if not transition.get("open_study"):
+            return {
+                "status": str(transition["outcome"]),
+                "workflow_state": str(transition["workflow_state"]),
+                "message": str(transition["message"]),
+                "requirements": list(transition.get("requirements", [])),
+                "open_study": False,
+            }
+        if not isinstance(event, Mapping):
+            raise Tier1BlockedError(BLOCKED_REDUCED_INTERFACE, "queue transition omitted its review event")
         audit_id = str(event["physical_study_token"])
         if audit_id not in self.studies:
             raise Tier1BlockedError(BLOCKED_REDUCED_INTERFACE, "claimed study left the interface manifest")
         token = secrets.token_urlsafe(32)
         with self._session_lock:
+            stale_tokens = [
+                prior_token
+                for prior_token, prior in self._sessions.items()
+                if prior["reviewer_code"] == str(event["reviewer_code"])
+                and prior["role"] == str(event["role"])
+            ]
+            for stale_token in stale_tokens:
+                self._sessions.pop(stale_token, None)
             self._sessions[token] = {
                 "event_id": str(event["event_id"]),
                 "reviewer_code": str(event["reviewer_code"]),
@@ -736,6 +1150,11 @@ class RoleAwareAuditService:
                 "audit_id": audit_id,
             }
         return {
+            "status": str(transition["outcome"]),
+            "workflow_state": str(transition["workflow_state"]),
+            "message": str(transition["message"]),
+            "requirements": list(transition.get("requirements", [])),
+            "open_study": True,
             "session_token": token,
             "event": self._client_event(event),
             "study": self.studies[audit_id],
@@ -764,7 +1183,17 @@ class RoleAwareAuditService:
     def lock(self, token: str) -> dict[str, Any]:
         session = self.session(token)
         self.checkpoints.lock(session["event_id"])
-        return {"status": "locked"}
+        with self._session_lock:
+            self._sessions.pop(str(token), None)
+        return {
+            "status": FINALIZED_LOCKED,
+            "message": "Study finalized and locked. Select Claim next eligible study to continue.",
+        }
+
+    def end_session(self, token: str) -> dict[str, Any]:
+        with self._session_lock:
+            self._sessions.pop(str(token), None)
+        return {"status": "SESSION_ENDED"}
 
     def media_path(self, token: str, media_token: str) -> Path:
         session = self.session(token)
@@ -782,6 +1211,154 @@ class RoleAwareAuditService:
         if not path.is_file():
             raise FileNotFoundError("claimed media token is unavailable")
         return path
+
+
+def _annotation_state_hashes(checkpoint_root: Path) -> dict[str, str]:
+    if not checkpoint_root.is_dir():
+        return {}
+    return {
+        str(path.relative_to(checkpoint_root)): sha256_file(path)
+        for path in sorted(checkpoint_root.rglob("*.json"))
+        if path.is_file()
+    }
+
+
+def audit_queue_transition_state(
+    package_root: Path,
+    *,
+    expected_stale_pointers: int = 0,
+    repair_stale_pointers: bool = False,
+) -> dict[str, Any]:
+    """Audit production queue metadata without emitting review identifiers or content."""
+
+    package_root = require_restricted_destination(package_root)
+    interface_root = package_root / "restricted" / "interface"
+    queue_root = package_root / "restricted" / "queue"
+    checkpoint_root = package_root / "restricted" / "checkpoints"
+    registry = ReviewerRegistry(
+        package_root / "restricted" / "reviewer_registry",
+        initialize=False,
+    )
+    queue = RoleQueueStore(
+        queue_root,
+        interface_root / "queue_policy_restricted.json",
+        registry,
+        initialize=False,
+    )
+    manifest = _load_object(interface_root / "study_manifest_restricted.json")
+    checkpoints = RoleAwareCheckpointStore(
+        checkpoint_root,
+        queue,
+        manifest,
+        initialize=False,
+    )
+    queue_hash_before = sha256_file(queue.state_path)
+    annotation_hashes_before = _annotation_state_hashes(checkpoint_root)
+
+    state = _load_object(queue.state_path)
+    events = list(state.get("events", []))
+    if len({str(event.get("event_id", "")) for event in events}) != len(events):
+        raise Tier1BlockedError(
+            BLOCKED_MIXED_REVIEWER_ATTRIBUTION,
+            "queue contains ambiguous duplicate review events",
+        )
+
+    active_pairs: set[tuple[str, str]] = set()
+    active_reviewer_roles: set[tuple[str, str]] = set()
+    reviewer_study_roles: dict[tuple[str, str], set[str]] = {}
+    ambiguous = 0
+    for event in events:
+        status = str(event.get("status", ""))
+        role = _role(event.get("role", ""))
+        reviewer = _code(event.get("reviewer_code", ""))
+        study = str(event.get("physical_study_token", ""))
+        if status in {"in_progress", "locked"}:
+            pair = (study, role)
+            owner_role = (reviewer, role)
+            if pair in active_pairs or (status == "in_progress" and owner_role in active_reviewer_roles):
+                ambiguous += 1
+            active_pairs.add(pair)
+            if status == "in_progress":
+                active_reviewer_roles.add(owner_role)
+        if status in {"in_progress", "locked", "archived_incomplete"}:
+            reviewer_study_roles.setdefault((reviewer, study), set()).add(role)
+    ambiguous += sum(len(roles) > 1 for roles in reviewer_study_roles.values())
+    if ambiguous:
+        raise Tier1BlockedError(
+            BLOCKED_MIXED_REVIEWER_ATTRIBUTION,
+            "queue contains ambiguous or mixed-reviewer attribution metadata",
+        )
+
+    def classify_all() -> tuple[dict[str, int], list[str]]:
+        counts = {
+            "active_incomplete_claims": 0,
+            "complete_not_finalized_claims": 0,
+            "finalized_locked_reviews": 0,
+            "archived_incomplete_reviews": 0,
+        }
+        stale_event_ids: list[str] = []
+        current = _load_object(queue.state_path)
+        for event in current.get("events", []):
+            review = checkpoints.review_state(event)
+            workflow_state = str(review["workflow_state"])
+            if workflow_state == CLAIMED_INCOMPLETE:
+                counts["active_incomplete_claims"] += 1
+            elif workflow_state == COMPLETE_NOT_FINALIZED:
+                counts["complete_not_finalized_claims"] += 1
+            elif workflow_state == FINALIZED_LOCKED:
+                counts["finalized_locked_reviews"] += 1
+                if review.get("stale_active_pointer"):
+                    stale_event_ids.append(str(event["event_id"]))
+            elif workflow_state == ARCHIVED_INCOMPLETE:
+                counts["archived_incomplete_reviews"] += 1
+            else:
+                raise Tier1BlockedError(
+                    BLOCKED_QUEUE_STATE_MIGRATION,
+                    "queue event could not be assigned a supported workflow state",
+                )
+        return counts, stale_event_ids
+
+    counts, stale_event_ids = classify_all()
+    if len(stale_event_ids) != int(expected_stale_pointers):
+        raise Tier1BlockedError(
+            BLOCKED_QUEUE_STATE_MIGRATION,
+            "stale active-pointer count differs from the explicitly expected count",
+        )
+    repaired = 0
+    if repair_stale_pointers:
+        for event_id in stale_event_ids:
+            checkpoints.repair_stale_locked_pointer(event_id)
+            repaired += 1
+        counts, remaining_stale = classify_all()
+        if remaining_stale:
+            raise Tier1BlockedError(
+                BLOCKED_QUEUE_STATE_MIGRATION,
+                "validated stale active pointers were not fully repaired",
+            )
+    queue_hash_after = sha256_file(queue.state_path)
+    annotation_hashes_after = _annotation_state_hashes(checkpoint_root)
+    if annotation_hashes_before != annotation_hashes_after:
+        raise Tier1BlockedError(
+            BLOCKED_QUEUE_STATE_MIGRATION,
+            "queue audit or pointer repair changed annotation or lock files",
+        )
+    if not repair_stale_pointers and queue_hash_before != queue_hash_after:
+        raise Tier1BlockedError(
+            BLOCKED_QUEUE_STATE_MIGRATION,
+            "read-only queue audit changed queue metadata",
+        )
+    return {
+        "status": QUEUE_TRANSITION_DRY_RUN_PASS,
+        **counts,
+        "stale_active_pointers": len(stale_event_ids) - repaired,
+        "repaired_stale_active_pointers": repaired,
+        "ambiguous_or_mixed_reviewer_records": 0,
+        "eligible_remaining_primary_studies": queue.eligible_remaining_count(ROLE_PRIMARY),
+        "eligible_remaining_secondary_studies": queue.eligible_remaining_count(ROLE_SECONDARY),
+        "annotation_files_unchanged": True,
+        "queue_metadata_changed": queue_hash_before != queue_hash_after,
+        "identifiers_or_annotation_content_emitted": False,
+    }
 
 
 def _interface_html() -> str:
@@ -807,6 +1384,9 @@ def _interface_html() -> str:
       </fieldset>
       <label class="confirm"><input id="qualification" type="checkbox">I confirm that I am qualified and am using my own reviewer code.</label>
       <div class="actions"><button id="resume-review" type="button">Resume my incomplete study</button><button id="claim-review" type="button">Claim next eligible study</button></div>
+      <div class="actions"><button id="pending-action" type="button" hidden></button><button id="end-session-start" type="button">End review session</button></div>
+      <p id="start-status" class="status" aria-live="polite"></p>
+      <ul id="start-requirements"></ul>
       <p id="start-error" role="alert"></p>
     </section>
     <section id="review-screen" hidden>
@@ -814,8 +1394,10 @@ def _interface_html() -> str:
         <div id="study-id"></div>
         <div id="role-label"></div>
         <div class="counter" id="clip-progress"></div>
-        <button id="lock-study" type="button">Complete and lock study</button>
-        <button id="leave-session" type="button">Return to start</button>
+        <p id="review-status" class="status" aria-live="polite"></p>
+        <ul id="remaining-requirements"></ul>
+        <button id="lock-study" class="finalize" type="button">Finalize study</button>
+        <button id="leave-session" type="button">End review session</button>
       </aside>
       <article>
         <nav class="clip-nav" aria-label="Clip navigation"><button id="previous-clip" aria-label="Previous clip">&#8249;</button><span id="clip-counter"></span><button id="next-clip" aria-label="Next clip">&#8250;</button></nav>
@@ -840,7 +1422,7 @@ def _interface_html() -> str:
 
 
 def _interface_css() -> str:
-    return """*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;font:14px Arial,sans-serif;color:#171717;background:#f4f5f6}header{height:48px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #bbb}.start-screen{max-width:680px;margin:36px auto;padding:24px;background:#fff;border:1px solid #aaa;border-radius:6px}.start-screen h1{font-size:22px;margin:0 0 20px}.start-screen label{display:flex;align-items:center;gap:8px;margin:10px 0}.start-screen input[type=text],.start-screen input:not([type]){width:260px}.start-screen fieldset{margin:18px 0}.start-screen fieldset p{margin:3px 0 14px 28px;color:#555}.actions{display:flex;gap:8px;flex-wrap:wrap}button,select,input{min-height:34px;margin:4px;padding:5px 8px}button{cursor:pointer}#start-error{color:#9b1c1c;min-height:20px}#review-screen{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 48px)}aside{padding:16px;border-right:1px solid #bbb;background:#fff}article{padding:14px;min-width:0}.clip-nav,.frame-controls{display:flex;align-items:center;justify-content:center}.frame-controls input{width:min(420px,55vw)}.tier{font-weight:700;margin:6px 0}.views{display:grid;grid-template-columns:1fr 1fr;gap:10px}.views figure{margin:0;background:#fff;border:1px solid #aaa;padding:8px}.views canvas{display:block;width:100%;max-height:55vh;aspect-ratio:1;object-fit:contain;background:#000}.source-only #model-panel{display:none}.source-only .views{grid-template-columns:1fr}fieldset{border:1px solid #aaa;margin:10px 0;padding:10px;background:#fff}label{display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}.counter{margin:8px 0;color:#555}@media(max-width:850px){#review-screen{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #bbb}.views{grid-template-columns:1fr}}
+    return """*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;font:14px Arial,sans-serif;color:#171717;background:#f4f5f6}header{height:48px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #bbb}.start-screen{max-width:680px;margin:36px auto;padding:24px;background:#fff;border:1px solid #aaa;border-radius:6px}.start-screen h1{font-size:22px;margin:0 0 20px}.start-screen label{display:flex;align-items:center;gap:8px;margin:10px 0}.start-screen input[type=text],.start-screen input:not([type]){width:260px}.start-screen fieldset{margin:18px 0}.start-screen fieldset p{margin:3px 0 14px 28px;color:#555}.actions{display:flex;gap:8px;flex-wrap:wrap}.status{color:#234b2f;line-height:1.4}.finalize{font-weight:700;border:2px solid #1d5a35;background:#eef8f1}button,select,input{min-height:34px;margin:4px;padding:5px 8px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}#start-error{color:#9b1c1c;min-height:20px}#start-requirements,#remaining-requirements{padding-left:20px;color:#7c2d12}#review-screen{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 48px)}aside{padding:16px;border-right:1px solid #bbb;background:#fff}article{padding:14px;min-width:0}.clip-nav,.frame-controls{display:flex;align-items:center;justify-content:center}.frame-controls input{width:min(420px,55vw)}.tier{font-weight:700;margin:6px 0}.views{display:grid;grid-template-columns:1fr 1fr;gap:10px}.views figure{margin:0;background:#fff;border:1px solid #aaa;padding:8px}.views canvas{display:block;width:100%;max-height:55vh;aspect-ratio:1;object-fit:contain;background:#000}.source-only #model-panel{display:none}.source-only .views{grid-template-columns:1fr}fieldset{border:1px solid #aaa;margin:10px 0;padding:10px;background:#fff}label{display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}.counter{margin:8px 0;color:#555}@media(max-width:850px){#review-screen{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #bbb}.views{grid-template-columns:1fr}}
 """
 
 
@@ -850,30 +1432,51 @@ const presence=['waveform_or_tracing','calipers','contour_or_measurement_trace',
 const studyFields=['spectral_doppler_present','m_mode_present','caliper_or_trace_present','visible_numeric_value_present','target_specific_label_present','candidate_target_value_present'];
 const clipRequired=['acquisition_content_type',...presence,'reader_confidence'];
 const studyRequired=[...studyFields,'reader_confidence'];
-let session='',event=null,study=null,state={annotations:{studies:{},clips:{}}},ci=0,locked=false,frameIndex=0,playTimer=null;
+const displayedValueRequired=['candidate_target_value','visible_unit_text','visible_measurement_name_text','display_precision'];
+const interfaceVersion='jdim-reduced-audit-role-queue-transition-v1';
+let session='',event=null,study=null,state={annotations:{studies:{},clips:{}}},ci=0,locked=false,frameIndex=0,playTimer=null,workflowState='UNCLAIMED',requestPending=false,clientNamespace='';
 const sprites={source:null,model:null};
 const choices='<option value="">Unreviewed</option><option value="yes">Yes</option><option value="no">No</option><option value="uncertain">Uncertain</option><option value="not_assessable">Not assessable</option>';
 function fields(root,names){root.innerHTML='';names.forEach(n=>{const l=document.createElement('label');l.textContent=n.replaceAll('_',' ');const s=document.createElement('select');s.name=n;s.innerHTML=choices;l.appendChild(s);root.appendChild(l);});}
 function readForm(form){return Object.fromEntries(new FormData(form).entries());}
 function fill(form,values){[...form.elements].forEach(e=>{if(e.name)e.value=(values||{})[e.name]||'';e.disabled=locked;});}
 function complete(record,required){return !!record&&required.every(k=>String(record[k]||'').trim());}
+function selectedNamespace(){const code=document.querySelector('#reviewer-code').value.trim();const role=document.querySelector('input[name=role]:checked')?.value||'';return [interfaceVersion,code,role].join(':');}
+function requireCurrentNamespace(){if(!clientNamespace||clientNamespace!==selectedNamespace())throw new Error('Reviewer identity or role changed. End this session and resume with the correct reviewer code and role.');}
+function setQueueBusy(value){requestPending=value;['resume-review','claim-review','pending-action'].forEach(id=>{document.querySelector(`#${id}`).disabled=value;});}
 async function request(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const p=await r.json();if(!r.ok)throw new Error(p.error||'Request failed');return p;}
-async function claim(action){const code=document.querySelector('#reviewer-code').value.trim();const role=document.querySelector('input[name=role]:checked')?.value||'';const qualified=document.querySelector('#qualification').checked;const p=await request('/api/claim',{reviewer_code:code,role,action,qualification_confirmed:qualified});session=p.session_token;event=p.event;study=p.study;state=p.checkpoint;state.annotations=state.annotations||{studies:{},clips:{}};state.annotations.studies=state.annotations.studies||{};state.annotations.clips=state.annotations.clips||{};locked=!!state.locked;ci=0;document.querySelector('#start-screen').hidden=true;document.querySelector('#review-screen').hidden=false;render();}
-async function save(){if(locked||!session)return;const clip=study.clips[ci];state.annotations.clips[clip.clip_audit_id]=readForm(document.querySelector('#clip-form'));state.annotations.studies[study.audit_id]=readForm(document.querySelector('#study-form'));document.querySelector('#save-state').textContent='Saving';const p=await request('/api/checkpoint',{session_token:session,annotations:state.annotations});document.querySelector('#save-state').textContent=p.status==='saved'?'Saved':'Save error';updateProgress();}
+function resetReviewState(){stopPlayback();session='';event=null;study=null;state={annotations:{studies:{},clips:{}}};ci=0;locked=false;frameIndex=0;workflowState='UNCLAIMED';clientNamespace='';sprites.source=null;sprites.model=null;document.querySelector('#clip-form').reset();document.querySelector('#study-form').reset();document.querySelector('#remaining-requirements').innerHTML='';document.body.classList.remove('source-only');}
+function fillRequirements(rootId,requirements){const root=document.querySelector(`#${rootId}`);root.innerHTML='';(requirements||[]).forEach(message=>{const item=document.createElement('li');item.textContent=message;root.appendChild(item);});}
+function showStart(message,{preserveIdentity=true,pendingAction='',requirements=[]}={}){resetReviewState();document.querySelector('#review-screen').hidden=true;document.querySelector('#start-screen').hidden=false;document.querySelector('#start-error').textContent='';document.querySelector('#start-status').textContent=message||'';fillRequirements('start-requirements',requirements);document.querySelector('#save-state').textContent='Ready';const pending=document.querySelector('#pending-action');pending.hidden=!pendingAction;if(pendingAction==='resume'){pending.textContent='Resume incomplete study';pending.onclick=()=>claim('resume').catch(showError);}else if(pendingAction==='finalize'){pending.textContent='Finalize completed study';pending.onclick=()=>claim('resume').catch(showError);}else{pending.onclick=null;}if(!preserveIdentity){document.querySelector('#reviewer-code').value='';document.querySelectorAll('input[name=role]').forEach(input=>{input.checked=false;});document.querySelector('#qualification').checked=false;}}
+function handleQueueOutcome(payload){if(payload.status==='INCOMPLETE_STUDY_EXISTS'){showStart(payload.message,{pendingAction:'resume',requirements:payload.requirements});return;}if(payload.status==='FINALIZATION_REQUIRED'){showStart(payload.message,{pendingAction:'finalize',requirements:payload.requirements});return;}showStart(payload.message,{requirements:payload.requirements});}
+async function claim(action){if(requestPending)return;setQueueBusy(true);document.querySelector('#start-error').textContent='';try{const code=document.querySelector('#reviewer-code').value.trim();const role=document.querySelector('input[name=role]:checked')?.value||'';const qualified=document.querySelector('#qualification').checked;const p=await request('/api/claim',{reviewer_code:code,role,action,qualification_confirmed:qualified});if(!p.open_study){handleQueueOutcome(p);return;}session=p.session_token;event=p.event;study=p.study;state=p.checkpoint;workflowState=p.workflow_state;clientNamespace=[interfaceVersion,code,role].join(':');state.annotations=state.annotations||{studies:{},clips:{}};state.annotations.studies=state.annotations.studies||{};state.annotations.clips=state.annotations.clips||{};locked=!!state.locked;ci=0;document.querySelector('#start-screen').hidden=true;document.querySelector('#review-screen').hidden=false;document.querySelector('#review-status').textContent=p.message||'';fillRequirements('remaining-requirements',p.requirements);render();}finally{setQueueBusy(false);}}
+async function save(){if(locked||!session)return;requireCurrentNamespace();const clip=study.clips[ci];state.annotations.clips[clip.clip_audit_id]=readForm(document.querySelector('#clip-form'));state.annotations.studies[study.audit_id]=readForm(document.querySelector('#study-form'));document.querySelector('#save-state').textContent='Saving';const p=await request('/api/checkpoint',{session_token:session,annotations:state.annotations});document.querySelector('#save-state').textContent=p.status==='saved'?'Saved':'Save error';updateProgress();}
 function updateProgress(){const done=study.clips.filter(c=>complete(state.annotations.clips[c.clip_audit_id],clipRequired)).length;document.querySelector('#clip-progress').textContent=`${done}/${study.clips.length} clips complete`;}
 function drawSprite(name){const canvas=document.querySelector(`#${name}-canvas`),ctx=canvas.getContext('2d'),img=sprites[name];ctx.fillStyle='#000';ctx.fillRect(0,0,canvas.width,canvas.height);if(!img||!img.complete||!img.naturalWidth)return;const tw=img.naturalWidth/4,th=img.naturalHeight/4,x=(frameIndex%4)*tw,y=Math.floor(frameIndex/4)*th;ctx.drawImage(img,x,y,tw,th,0,0,canvas.width,canvas.height);}
 function renderFrame(){drawSprite('source');drawSprite('model');document.querySelector('#frame-slider').value=String(frameIndex);document.querySelector('#frame-counter').textContent=`Frame ${frameIndex+1} of 16`;}
 function loadSprite(name,token){sprites[name]=null;drawSprite(name);if(!token)return;const img=new Image();img.onload=()=>{sprites[name]=img;renderFrame();};img.src=`/media/${encodeURIComponent(token)}?session=${encodeURIComponent(session)}`;}
 function stopPlayback(){if(playTimer){clearInterval(playTimer);playTimer=null;}document.querySelector('#toggle-play').textContent='Play';}
 function togglePlayback(){if(playTimer){stopPlayback();return;}playTimer=setInterval(()=>{frameIndex=(frameIndex+1)%16;renderFrame();},250);document.querySelector('#toggle-play').textContent='Pause';}
-function render(){const clip=study.clips[ci];document.querySelector('#study-id').textContent=study.audit_id;document.querySelector('#role-label').textContent=event.role==='primary'?'Primary independent review':'Secondary independent review';document.querySelector('#clip-counter').textContent=`Clip ${ci+1} of ${study.clips.length}`;document.querySelector('#tier').textContent=clip.source_only?'SOURCE ACQUISITION ONLY — NOT VERIFIED MODEL INPUT':clip.evidence_tier.replaceAll('_',' ');document.body.classList.toggle('source-only',clip.source_only);document.querySelector('#model-caption').textContent=clip.evidence_tier==='EXACT_MODEL_INPUT'?'Exact model input':'Verified equivalent replay';fill(document.querySelector('#clip-form'),state.annotations.clips[clip.clip_audit_id]);fill(document.querySelector('#study-form'),state.annotations.studies[study.audit_id]);frameIndex=0;loadSprite('source',clip.source_media_id);loadSprite('model',clip.model_input_media_id);document.querySelector('#lock-study').disabled=locked;updateProgress();}
+function render(){const clip=study.clips[ci];document.querySelector('#study-id').textContent=study.audit_id;document.querySelector('#role-label').textContent=event.role==='primary'?'Primary independent review':'Secondary independent review';document.querySelector('#clip-counter').textContent=`Clip ${ci+1} of ${study.clips.length}`;document.querySelector('#tier').textContent=clip.source_only?'SOURCE ACQUISITION ONLY - NOT VERIFIED MODEL INPUT':clip.evidence_tier.replaceAll('_',' ');document.body.classList.toggle('source-only',clip.source_only);document.querySelector('#model-caption').textContent=clip.evidence_tier==='EXACT_MODEL_INPUT'?'Exact model input':'Verified equivalent replay';fill(document.querySelector('#clip-form'),state.annotations.clips[clip.clip_audit_id]);fill(document.querySelector('#study-form'),state.annotations.studies[study.audit_id]);frameIndex=0;loadSprite('source',clip.source_media_id);loadSprite('model',clip.model_input_media_id);document.querySelector('#lock-study').disabled=locked;updateProgress();}
 async function move(delta){await save();stopPlayback();ci=Math.max(0,Math.min(study.clips.length-1,ci+delta));render();}
-async function lockStudy(){await save();const firstMissing=study.clips.findIndex(c=>!complete(state.annotations.clips[c.clip_audit_id],clipRequired));if(firstMissing>=0){ci=firstMissing;render();throw new Error('Complete every clip before locking.');}if(!complete(state.annotations.studies[study.audit_id],studyRequired))throw new Error('Complete the study summary before locking.');if(!confirm('Lock this study-role review? It cannot be edited afterward.'))return;await request('/api/lock',{session_token:session});locked=true;stopPlayback();render();document.querySelector('#save-state').textContent='Locked';}
-function leave(){stopPlayback();session='';event=null;study=null;state={annotations:{studies:{},clips:{}}};document.querySelector('#review-screen').hidden=true;document.querySelector('#start-screen').hidden=false;document.querySelector('#save-state').textContent='Ready';}
-function showError(error){document.querySelector('#start-error').textContent=error.message||String(error);}
-function init(){fields(document.querySelector('#presence-fields'),presence);fields(document.querySelector('#study-fields'),studyFields);document.querySelector('#resume-review').onclick=()=>claim('resume').catch(showError);document.querySelector('#claim-review').onclick=()=>claim('claim_next').catch(showError);document.querySelector('#previous-clip').onclick=()=>move(-1).catch(showError);document.querySelector('#next-clip').onclick=()=>move(1).catch(showError);document.querySelector('#toggle-play').onclick=togglePlayback;document.querySelector('#frame-slider').oninput=e=>{frameIndex=Number(e.target.value);renderFrame();};document.querySelector('#lock-study').onclick=()=>lockStudy().catch(e=>{document.querySelector('#save-state').textContent=e.message;});document.querySelector('#leave-session').onclick=leave;document.querySelectorAll('#clip-form select,#study-form select').forEach(e=>e.addEventListener('change',()=>save().catch(showError)));document.querySelectorAll('#clip-form input,#study-form input').forEach(e=>e.addEventListener('change',()=>save().catch(showError)));document.addEventListener('contextmenu',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});document.addEventListener('dragstart',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});}
+function conditionalRequirement(){const studyRecord=state.annotations.studies[study.audit_id]||{};if(studyFields.some(field=>['yes','uncertain'].includes(String(studyRecord[field]||'')))&&!String(studyRecord.restricted_notes||'').trim())return 'Add restricted study notes for positive or uncertain study findings.';for(const clip of study.clips){const record=state.annotations.clips[clip.clip_audit_id]||{};if(presence.some(field=>String(record[field]||'')==='uncertain')&&!String(record.restricted_notes||'').trim())return 'Add restricted notes for every clip marked uncertain.';if(String(record.candidate_target_value_present||'')==='yes'&&!complete(record,displayedValueRequired))return 'Complete displayed-value details for every clip marked as containing a candidate value.';}return '';}
+async function lockStudy(){await save();const firstMissing=study.clips.findIndex(c=>!complete(state.annotations.clips[c.clip_audit_id],clipRequired));if(firstMissing>=0){ci=firstMissing;render();throw new Error('Complete every required clip field before finalizing.');}if(!complete(state.annotations.studies[study.audit_id],studyRequired))throw new Error('Complete the study summary before finalizing.');const conditional=conditionalRequirement();if(conditional)throw new Error(conditional);if(!confirm('Finalize and lock this study-role review? It cannot be edited afterward.'))return;const p=await request('/api/lock',{session_token:session});showStart(p.message,{preserveIdentity:true});}
+async function endSession(){const token=session;if(token&&study&&!locked&&clientNamespace===selectedNamespace()){await save();}if(token){await request('/api/end-session',{session_token:token});}showStart('Review session ended. Saved server progress was preserved.',{preserveIdentity:false});}
+function showError(error){const message=error.message||String(error);if(document.querySelector('#review-screen').hidden){document.querySelector('#start-error').textContent=message;}else{document.querySelector('#save-state').textContent=message;}}
+function clearStaleClientState(){if(!document.querySelector('#review-screen').hidden)return;resetReviewState();document.querySelector('#start-status').textContent='';document.querySelector('#start-error').textContent='';document.querySelector('#pending-action').hidden=true;}
+function init(){fields(document.querySelector('#presence-fields'),presence);fields(document.querySelector('#study-fields'),studyFields);document.querySelector('#resume-review').onclick=()=>claim('resume').catch(showError);document.querySelector('#claim-review').onclick=()=>claim('claim_next').catch(showError);document.querySelector('#previous-clip').onclick=()=>move(-1).catch(showError);document.querySelector('#next-clip').onclick=()=>move(1).catch(showError);document.querySelector('#toggle-play').onclick=togglePlayback;document.querySelector('#frame-slider').oninput=e=>{frameIndex=Number(e.target.value);renderFrame();};document.querySelector('#lock-study').onclick=()=>lockStudy().catch(showError);document.querySelector('#leave-session').onclick=()=>endSession().catch(showError);document.querySelector('#end-session-start').onclick=()=>endSession().catch(showError);document.querySelector('#reviewer-code').addEventListener('input',clearStaleClientState);document.querySelectorAll('input[name=role]').forEach(input=>input.addEventListener('change',clearStaleClientState));document.querySelectorAll('#clip-form select,#study-form select').forEach(e=>e.addEventListener('change',()=>save().catch(showError)));document.querySelectorAll('#clip-form input,#study-form input').forEach(e=>e.addEventListener('change',()=>save().catch(showError)));document.addEventListener('contextmenu',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});document.addEventListener('dragstart',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});showStart('',{preserveIdentity:false});}
 init();
 """
+
+
+def current_role_aware_interface_assets() -> dict[str, bytes]:
+    """Return source-controlled runtime assets without mutating a locked package."""
+
+    return {
+        "index.html": _interface_html().encode("utf-8"),
+        "style.css": _interface_css().encode("utf-8"),
+        "app.js": _interface_js().encode("utf-8"),
+    }
 
 
 def build_role_aware_interface_package(

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from jdim_tier1.reduced_audit_interface import (
     READY_FOR_REDUCED_BLINDED_HUMAN_AUDIT,
     RoleAwareAuditService,
+    current_role_aware_interface_assets,
 )
 from jdim_tier1.safety import require_restricted_destination
 
@@ -35,10 +36,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler]:
-    interface_root = service.package_root / "restricted" / "interface"
+    runtime_assets = current_role_aware_interface_assets()
 
     class ReducedAuditHandler(BaseHTTPRequestHandler):
-        server_version = "JDIMRestrictedReducedAudit/1"
+        server_version = "JDIMRestrictedReducedAudit/2"
 
         def _headers(self, status: int, content_type: str, length: int) -> None:
             self.send_response(status)
@@ -84,9 +85,9 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
             route = parsed.path
             try:
                 if route in STATIC_FILES:
-                    path = interface_root / STATIC_FILES[route]
-                    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-                    self._send_bytes(path.read_bytes(), content_type)
+                    filename = STATIC_FILES[route]
+                    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                    self._send_bytes(runtime_assets[filename], content_type)
                     return
                 if route == "/api/checkpoint":
                     token = parse_qs(parsed.query).get("session", [""])[0]
@@ -122,6 +123,11 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
                     if set(payload) != {"session_token"}:
                         raise ValueError("lock request contains unsupported fields")
                     self._send_json(service.lock(str(payload["session_token"])))
+                    return
+                if route == "/api/end-session":
+                    if set(payload) != {"session_token"}:
+                        raise ValueError("end-session request contains unsupported fields")
+                    self._send_json(service.end_session(str(payload["session_token"])))
                     return
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             except (FileExistsError, FileNotFoundError, KeyError, PermissionError, ValueError) as exc:
