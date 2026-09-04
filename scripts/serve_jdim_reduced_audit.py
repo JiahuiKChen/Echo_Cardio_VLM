@@ -11,9 +11,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from jdim_tier1.reduced_audit_interface import (
-    READY_FOR_REDUCED_BLINDED_HUMAN_AUDIT,
     RoleAwareAuditService,
     current_role_aware_interface_assets,
+)
+from jdim_tier1.audit_protocol_v3 import (
+    PROTOCOL_V3_NAME,
+    V3_ACTIVE,
+    validate_active_protocol_v3,
 )
 from jdim_tier1.safety import require_restricted_destination
 
@@ -39,7 +43,7 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
     runtime_assets = current_role_aware_interface_assets()
 
     class ReducedAuditHandler(BaseHTTPRequestHandler):
-        server_version = "JDIMRestrictedReducedAudit/2"
+        server_version = "JDIMRestrictedReducedAudit/3"
 
         def _headers(self, status: int, content_type: str, length: int) -> None:
             self.send_response(status)
@@ -110,6 +114,9 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
                 if route == "/api/claim":
                     self._send_json(service.claim(payload))
                     return
+                if route == "/api/view-finalized":
+                    self._send_json(service.view_finalized(payload))
+                    return
                 if route == "/api/checkpoint":
                     allowed = {"session_token", "annotations"}
                     if set(payload) - allowed:
@@ -123,6 +130,16 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
                     if set(payload) != {"session_token"}:
                         raise ValueError("lock request contains unsupported fields")
                     self._send_json(service.lock(str(payload["session_token"])))
+                    return
+                if route == "/api/restart-finalized":
+                    if set(payload) != {"session_token", "owner_confirmed"}:
+                        raise ValueError("restart request contains unsupported fields")
+                    self._send_json(
+                        service.restart_finalized(
+                            str(payload["session_token"]),
+                            owner_confirmed=payload.get("owner_confirmed") is True,
+                        )
+                    )
                     return
                 if route == "/api/end-session":
                     if set(payload) != {"session_token"}:
@@ -146,19 +163,16 @@ def main() -> int:
         raise ValueError("the restricted reduced-audit server may bind only to localhost")
     package_root = require_restricted_destination(args.package_root)
     media_root = require_restricted_destination(args.media_root)
-    ready = json.loads(
-        (package_root / "aggregate_safe" / "reduced_audit_ready_certificate.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    if ready.get("status") != READY_FOR_REDUCED_BLINDED_HUMAN_AUDIT:
-        raise ValueError("reduced audit package is not ready")
+    ready = validate_active_protocol_v3(package_root)
+    if ready.get("status") != V3_ACTIVE or ready.get("protocol_name") != PROTOCOL_V3_NAME:
+        raise ValueError("clarified V3 audit protocol is not active")
     service = RoleAwareAuditService(package_root, media_root)
     server = ThreadingHTTPServer((args.host, args.port), build_handler(service))
     print(
         json.dumps(
             {
-                "status": READY_FOR_REDUCED_BLINDED_HUMAN_AUDIT,
+                "status": V3_ACTIVE,
+                "protocol_name": PROTOCOL_V3_NAME,
                 "host": args.host,
                 "port": args.port,
             },

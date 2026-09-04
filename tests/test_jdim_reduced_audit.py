@@ -16,6 +16,23 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from jdim_tier1.audit import STUDY_OUTCOMES  # noqa: E402
 from jdim_tier1.audit_interface import CLIP_PRESENCE_FIELDS  # noqa: E402
+from jdim_tier1.audit_protocol_v3 import (  # noqa: E402
+    FIELD_DEFINITIONS,
+    PROTOCOL_ARCHIVE_STATUS,
+    PROTOCOL_V3_NAME,
+    SCORING_SCOPE_BY_TIER,
+    V3_ACTIVE,
+    V3_CLIP_PRESENCE_FIELDS,
+    V3_REQUIRED_CLIP_ANNOTATION_FIELDS,
+    V3_REQUIRED_STUDY_ANNOTATION_FIELDS,
+    V3_STUDY_OUTCOMES,
+    aggregation_eligible_events_from_state,
+    apply_protocol_v3_transition,
+    derive_study_summary,
+    plan_protocol_v3_transition,
+    rollup_presence,
+    validate_active_protocol_v3,
+)
 from jdim_tier1.reduced_audit import (  # noqa: E402
     BLOCKED_PILOT_ANNOTATION_ISOLATION,
     FORMAL_RELIABILITY_N,
@@ -239,6 +256,24 @@ def complete_payload(study: dict[str, object]) -> dict[str, object]:
         record["reader_confidence"] = "not_assessable"
         clips[clip["clip_audit_id"]] = record
     return {"annotations": {"studies": {study["audit_id"]: study_record}, "clips": clips}}
+
+
+def complete_v3_payload(study: dict[str, object]) -> dict[str, object]:
+    clips = {}
+    for clip in study["clips"]:
+        record = {field: "not_assessable" for field in V3_CLIP_PRESENCE_FIELDS}
+        record["acquisition_content_type"] = "not_assessable"
+        record["reader_confidence"] = "not_assessable"
+        clips[clip["clip_audit_id"]] = record
+    study_record = derive_study_summary(clips)
+    study_record["reader_confidence"] = "not_assessable"
+    study_record["derived_summary_confirmed"] = "yes"
+    return {
+        "annotations": {
+            "studies": {study["audit_id"]: study_record},
+            "clips": clips,
+        }
+    }
 
 
 class ReducedAuditSamplingTests(unittest.TestCase):
@@ -953,6 +988,274 @@ class ReducedInterfaceTests(unittest.TestCase):
         for requirement, passed in contract["requirements"].items():
             with self.subTest(requirement=requirement):
                 self.assertTrue(passed)
+
+
+class ProtocolV3ClarificationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.fixture = ParentFixture(self.root)
+        self.output = self.root / "reduced"
+        self.fixture.build_package(self.output)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def activate(self) -> dict[str, object]:
+        plan = plan_protocol_v3_transition(
+            self.output,
+            created_at_utc="2026-09-03T12:00:00Z",
+        )
+        return apply_protocol_v3_transition(plan, source_commit="a" * 40)
+
+    def service(self) -> RoleAwareAuditService:
+        return RoleAwareAuditService(self.output, self.fixture.paths.parent_media_root)
+
+    @staticmethod
+    def claim(service: RoleAwareAuditService, code: str, role: str) -> dict[str, object]:
+        return service.claim(
+            {
+                "reviewer_code": code,
+                "role": role,
+                "action": ACTION_CLAIM_NEXT,
+                "qualification_confirmed": True,
+            }
+        )
+
+    def test_scoring_scope_and_field_definitions_are_exact(self) -> None:
+        self.assertEqual(
+            SCORING_SCOPE_BY_TIER[TIER_A],
+            "Score the exact model input in the right panel. Use the source acquisition "
+            "only for context. Do not count source-only features as model-input content.",
+        )
+        self.assertEqual(
+            SCORING_SCOPE_BY_TIER[TIER_C],
+            "Score the source acquisition. Findings will be reported separately as "
+            "source-acquisition evidence and not as verified model-input content.",
+        )
+        self.assertIn("Numbers alone do not count", FIELD_DEFINITIONS["visible_text"])
+        self.assertIn("generic depth", FIELD_DEFINITIONS["visible_numeric_value"])
+        self.assertIn("ambiguous VTI should be Uncertain", FIELD_DEFINITIONS["lvot_vti_specific_label"])
+        self.assertIn("written-out equivalent", FIELD_DEFINITIONS["tapse_specific_label"])
+        self.assertIn("Exclude depth markers", FIELD_DEFINITIONS["candidate_target_value_present"])
+        self.assertIn("routine ECG gating strip alone does not count", FIELD_DEFINITIONS["waveform_or_measurement_tracing"])
+
+    def test_clip_rollup_hierarchy_and_not_assessable_rule(self) -> None:
+        self.assertEqual(rollup_presence(["no", "yes", "uncertain"]), "yes")
+        self.assertEqual(rollup_presence(["no", "uncertain", "not_assessable"]), "uncertain")
+        self.assertEqual(rollup_presence(["no", "not_assessable"]), "no")
+        self.assertEqual(rollup_presence(["not_assessable", "not_assessable"]), "not_assessable")
+        self.assertEqual(rollup_presence([]), "")
+        with self.assertRaises(ValueError):
+            rollup_presence(["unknown"])
+        self.assertEqual(
+            set(V3_STUDY_OUTCOMES),
+            {
+                "spectral_doppler_present",
+                "m_mode_present",
+                "waveform_or_measurement_tracing_present",
+                "calipers_present",
+                "visible_text_present",
+                "visible_numeric_value_present",
+                "lvot_vti_specific_label_present",
+                "tapse_specific_label_present",
+                "candidate_target_value_present",
+            },
+        )
+
+    def test_transition_archives_legacy_state_by_hash_and_starts_fresh(self) -> None:
+        legacy = self.service()
+        legacy.registry.register("legacyR1", qualified=True)
+        prior = self.claim(legacy, "legacyR1", ROLE_PRIMARY)
+        legacy.save(prior["session_token"], complete_payload(prior["study"])["annotations"])
+        legacy.lock(prior["session_token"])
+        source_hashes = {
+            path: sha256_file(path)
+            for root in (
+                self.output / "restricted/queue",
+                self.output / "restricted/checkpoints",
+            )
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+        result = self.activate()
+
+        self.assertEqual(result["status"], V3_ACTIVE)
+        self.assertEqual(result["current_protocol_events"], 0)
+        self.assertEqual(result["current_protocol_checkpoint_files"], 0)
+        self.assertEqual(result["aggregation_eligible_locked_reviews"], 0)
+        pointer = json.loads(
+            (self.output / "restricted/active_audit_protocol.json").read_text(encoding="utf-8")
+        )
+        archive_path = self.output / pointer["archive_manifest_relative"]
+        archive = json.loads(archive_path.read_text(encoding="utf-8"))
+        self.assertEqual(archive["status"], PROTOCOL_ARCHIVE_STATUS)
+        for field in (
+            "excluded_from_prevalence",
+            "excluded_from_agreement",
+            "excluded_from_adjudication",
+            "excluded_from_final_aggregation",
+        ):
+            self.assertTrue(archive[field])
+        for source_path, expected_hash in source_hashes.items():
+            self.assertEqual(sha256_file(source_path), expected_hash)
+        archive_root = archive_path.parent
+        for record in archive["file_records"]:
+            copied_root = "queue" if record["archive_role"] == "queue" else "checkpoints"
+            copied = archive_root / copied_root / record["relative_path"]
+            self.assertEqual(sha256_file(copied), record["sha256"])
+
+    def test_v3_has_blank_attributable_primary_and_secondary_slots(self) -> None:
+        self.activate()
+        service = self.service()
+        service.registry.register("v3primary", qualified=True)
+        service.registry.register("v3secondary", qualified=True)
+        primary = self.claim(service, "v3primary", ROLE_PRIMARY)
+        secondary = self.claim(service, "v3secondary", ROLE_SECONDARY)
+        for response in (primary, secondary):
+            self.assertEqual(response["checkpoint"]["annotations"], {"studies": {}, "clips": {}})
+            self.assertEqual(response["checkpoint"]["protocol_name"], PROTOCOL_V3_NAME)
+            self.assertEqual(response["access_mode"], "editable")
+        self.assertEqual(primary["event"]["role"], ROLE_PRIMARY)
+        self.assertEqual(secondary["event"]["role"], ROLE_SECONDARY)
+
+    def test_familiarization_study_is_replaced_if_formally_selected(self) -> None:
+        pilot_path = self.output / "restricted/roster/pilot_checkpoint_classification_restricted.json"
+        familiarization = json.loads(pilot_path.read_text(encoding="utf-8"))["pilot_audit_id"]
+        policy_path = self.output / "restricted/interface/queue_policy_restricted.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        formal = list(policy["formal_reliability_queue"])
+        if familiarization not in formal:
+            formal[-1] = familiarization
+            self.assertEqual(len(set(formal)), FORMAL_RELIABILITY_N)
+            policy["formal_reliability_queue"] = formal
+            write_json(policy_path, policy)
+            state_path = self.output / "restricted/queue/queue_state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["queue_policy_sha256"] = sha256_file(policy_path)
+            write_json(state_path, state)
+
+        plan = plan_protocol_v3_transition(
+            self.output,
+            created_at_utc="2026-09-03T12:00:00Z",
+        )
+        self.assertTrue(plan.familiarization_was_formal)
+        self.assertIsNotNone(plan.formal_replacement)
+        self.assertNotIn(familiarization, plan.v3_formal_queue)
+        self.assertIn(familiarization, plan.primary_queue)
+        apply_protocol_v3_transition(plan, source_commit="b" * 40)
+        validation = validate_active_protocol_v3(self.output, require_fresh=True)
+        self.assertTrue(validation["familiarization_excluded_from_formal_reliability"])
+
+    def test_server_derives_summary_and_rejects_inconsistent_manual_values(self) -> None:
+        self.activate()
+        service = self.service()
+        service.registry.register("v3derive", qualified=True)
+        response = self.claim(service, "v3derive", ROLE_PRIMARY)
+        payload = complete_v3_payload(response["study"])
+        audit_id = response["study"]["audit_id"]
+        payload["annotations"]["studies"][audit_id]["spectral_doppler_present"] = "yes"
+        with self.assertRaises(ValueError):
+            service.save(response["session_token"], payload["annotations"])
+
+        payload = complete_v3_payload(response["study"])
+        saved = service.save(response["session_token"], payload["annotations"])
+        study_record = saved["checkpoint"]["annotations"]["studies"][audit_id]
+        self.assertEqual(study_record, payload["annotations"]["studies"][audit_id])
+        self.assertEqual(study_record["derived_summary_confirmed"], "yes")
+
+    def test_finalized_view_is_read_only_and_owner_restart_preserves_hashes(self) -> None:
+        self.activate()
+        service = self.service()
+        service.registry.register("v3owner", qualified=True)
+        service.registry.register("v3other", qualified=True)
+        response = self.claim(service, "v3owner", ROLE_PRIMARY)
+        service.save(
+            response["session_token"],
+            complete_v3_payload(response["study"])["annotations"],
+        )
+        service.lock(response["session_token"])
+        event_id = response["event"]["event_id"]
+        event_root = service.checkpoints.root / event_id
+        checkpoint_path = event_root / "checkpoint.json"
+        lock_path = event_root / "LOCKED.json"
+        checkpoint_hash = sha256_file(checkpoint_path)
+        lock_hash = sha256_file(lock_path)
+
+        read_only = service.view_finalized(
+            {
+                "reviewer_code": "v3owner",
+                "role": ROLE_PRIMARY,
+                "qualification_confirmed": True,
+            }
+        )
+        self.assertEqual(read_only["access_mode"], "read_only_finalized")
+        with self.assertRaises(PermissionError):
+            service.save(read_only["session_token"], {"studies": {}, "clips": {}})
+        with self.assertRaises(PermissionError):
+            service.checkpoints.restart_finalized(
+                event_id,
+                reviewer_code="v3other",
+                role=ROLE_PRIMARY,
+                owner_confirmed=True,
+            )
+
+        restarted = service.restart_finalized(
+            read_only["session_token"], owner_confirmed=True
+        )
+        self.assertEqual(restarted["access_mode"], "editable")
+        self.assertEqual(restarted["checkpoint"]["annotations"], {"studies": {}, "clips": {}})
+        self.assertEqual(sha256_file(checkpoint_path), checkpoint_hash)
+        self.assertEqual(sha256_file(lock_path), lock_hash)
+        old_event = service.queue.get_event(event_id)
+        self.assertEqual(old_event["status"], "locked")
+        state = json.loads(service.queue.state_path.read_text(encoding="utf-8"))
+        self.assertIn(event_id, state["superseded_event_ids"])
+        self.assertEqual(aggregation_eligible_events_from_state(state), [])
+        restart_records = list(service.queue.restart_root.glob("restart-*.json"))
+        self.assertEqual(len(restart_records), 1)
+        restart_record = json.loads(restart_records[0].read_text(encoding="utf-8"))
+        self.assertEqual(restart_record["checkpoint_sha256"], checkpoint_hash)
+        self.assertEqual(restart_record["lock_sha256"], lock_hash)
+        self.assertTrue(restart_record["excluded_from_final_aggregation"])
+
+    def test_interface_exposes_scope_banner_definitions_rollup_and_restart(self) -> None:
+        assets = current_role_aware_interface_assets()
+        html = assets["index.html"].decode("utf-8")
+        javascript = assets["app.js"].decode("utf-8")
+        self.assertIn('id="scoring-scope" class="scope-banner"', html)
+        self.assertIn("View my latest finalized study", html)
+        self.assertIn("Archive and restart under current protocol", html)
+        self.assertIn(SCORING_SCOPE_BY_TIER[TIER_A], javascript)
+        self.assertIn(SCORING_SCOPE_BY_TIER[TIER_C], javascript)
+        self.assertIn(FIELD_DEFINITIONS["candidate_target_value_present"], javascript)
+        self.assertIn("renderStudySummary", javascript)
+        self.assertIn("derived_summary_confirmed", javascript)
+        self.assertNotIn('name="spectral_doppler_present"', html)
+
+    def test_metadata_validation_fails_if_familiarization_reenters_formal_queue(self) -> None:
+        self.activate()
+        pointer = json.loads(
+            (self.output / "restricted/active_audit_protocol.json").read_text(encoding="utf-8")
+        )
+        protocol_root = self.output / pointer["protocol_root_relative"]
+        definition_path = protocol_root / "interface/protocol_definition_restricted.json"
+        definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        familiarization = definition["familiarization_study"]["physical_study_token"]
+        policy_path = protocol_root / "interface/queue_policy_restricted.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["formal_reliability_queue"][0] = familiarization
+        write_json(policy_path, policy)
+        pointer["queue_policy_sha256"] = sha256_file(policy_path)
+        pointer_path = self.output / "restricted/active_audit_protocol.json"
+        write_json(pointer_path, pointer)
+        state_path = protocol_root / "queue/queue_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["queue_policy_sha256"] = sha256_file(policy_path)
+        write_json(state_path, state)
+        with self.assertRaises(Tier1BlockedError):
+            validate_active_protocol_v3(self.output)
 
 
 if __name__ == "__main__":
