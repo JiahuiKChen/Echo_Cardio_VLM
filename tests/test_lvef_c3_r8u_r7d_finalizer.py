@@ -219,9 +219,10 @@ def test_r7d_finalizer_api_and_authority_are_additive() -> None:
     } < names
 
 
-def test_r7e_repository_authority_is_the_sole_child_of_fixed_r7d() -> None:
+def test_r7f_repository_authority_is_the_sole_child_of_fixed_r7e() -> None:
     implementation_commit = "f" * 40
     fixed_r7d = finalizer.R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT
+    fixed_r7e = finalizer.R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT
     exact = {
         ("rev-parse", "HEAD"): f"{implementation_commit}\n".encode(),
         (
@@ -232,7 +233,10 @@ def test_r7e_repository_authority_is_the_sole_child_of_fixed_r7d() -> None:
             b"codex/lvef-multitask-revalidation\n"
         ),
         ("rev-list", "--parents", "-n", "1", implementation_commit): (
-            f"{implementation_commit} {fixed_r7d}\n".encode()
+            f"{implementation_commit} {fixed_r7e}\n".encode()
+        ),
+        ("rev-list", "--parents", "-n", "1", fixed_r7e): (
+            f"{fixed_r7e} {fixed_r7d}\n".encode()
         ),
         ("rev-list", "--parents", "-n", "1", fixed_r7d): (
             f"{fixed_r7d} "
@@ -247,18 +251,28 @@ def test_r7e_repository_authority_is_the_sole_child_of_fixed_r7d() -> None:
         ).encode(),
         (
             "rev-list", "--count",
+            f"{fixed_r7e}..{implementation_commit}",
+        ): b"1\n",
+        (
+            "rev-list", "--count",
+            f"{fixed_r7d}..{implementation_commit}",
+        ): b"2\n",
+        (
+            "rev-list", "--count",
             f"{finalizer.R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}.."
             f"{implementation_commit}",
-        ): b"2\n",
+        ): b"3\n",
         (
             "rev-list", "--count",
             f"{finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT}.."
             f"{implementation_commit}",
-        ): b"13\n",
+        ): b"14\n",
     }
+    observed: set[tuple[str, ...]] = set()
 
     def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         arguments = tuple(argv[3:])
+        observed.add(arguments)
         if arguments in exact:
             return subprocess.CompletedProcess(argv, 0, exact[arguments], b"")
         if arguments[:2] in {("cat-file", "-e"), ("merge-base", "--is-ancestor")}:
@@ -270,6 +284,57 @@ def test_r7e_repository_authority_is_the_sole_child_of_fixed_r7d() -> None:
     with mock.patch.object(finalizer.subprocess, "run", side_effect=run):
         finalizer._validate_r8u_r7d_repository_authority(
             implementation_commit
+        )
+    assert set(exact) <= observed
+
+
+def test_r7f_repository_authority_rejects_prior_epoch_as_current() -> None:
+    for implementation_commit in (
+        finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+        finalizer.R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT,
+        finalizer.R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        finalizer.R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT,
+        finalizer.R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT,
+    ):
+        _raises(
+            "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH",
+            lambda implementation_commit=implementation_commit: (
+                finalizer._validate_r8u_r7d_repository_authority(
+                    implementation_commit
+                )
+            ),
+        )
+
+
+def test_r7f_repository_authority_rejects_nonchild_of_fixed_r7e() -> None:
+    implementation_commit = "f" * 40
+    fixed_r7e = finalizer.R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT
+    initial = {
+        ("rev-parse", "HEAD"): f"{implementation_commit}\n".encode(),
+        (
+            "rev-parse",
+            "refs/remotes/origin/codex/lvef-multitask-revalidation",
+        ): f"{implementation_commit}\n".encode(),
+        ("branch", "--show-current"): (
+            b"codex/lvef-multitask-revalidation\n"
+        ),
+        ("rev-list", "--parents", "-n", "1", implementation_commit): (
+            f"{implementation_commit} {'e' * 40}\n".encode()
+        ),
+    }
+
+    def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        arguments = tuple(argv[3:])
+        if arguments in initial:
+            return subprocess.CompletedProcess(argv, 0, initial[arguments], b"")
+        raise AssertionError((fixed_r7e, arguments))
+
+    with mock.patch.object(finalizer.subprocess, "run", side_effect=run):
+        _raises(
+            "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH",
+            lambda: finalizer._validate_r8u_r7d_repository_authority(
+                implementation_commit
+            ),
         )
 
 

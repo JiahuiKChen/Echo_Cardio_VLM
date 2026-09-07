@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import lvef_c3_r8r_recovery_continuation as controller
 
 
-COMMIT = "f" * 40
+COMMIT = controller.R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT
 PASS_STATUS = "PASS_R8U_R7E_TASKS_17_19_REMAINING_CAPACITY"
 
 
@@ -60,6 +60,7 @@ def test_r7e_commit_is_the_sole_child_of_fixed_r7d() -> None:
         controller.R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT
     )
     assert epochs["r8u_r7e_capacity_recovery_commit"] == COMMIT
+    assert "r8u_r7f_plan_scope_recovery_commit" not in epochs
 
 
 def test_r7e_capacity_namespace_and_preprobe_claim_are_separate() -> None:

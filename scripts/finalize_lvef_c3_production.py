@@ -248,6 +248,9 @@ R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT = (
 R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT = (
     "85b5e847691335105f237479c4bf1b4889385e8d"
 )
+R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT = (
+    "77ad21616163ca456e9ebd82869bc315de82c40f"
+)
 R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256 = (
     "63b002947814e92c616d0eb7f74ca334cba4e77cdc17f7ce2b55cfc51e090439"
 )
@@ -7548,7 +7551,7 @@ def _validate_r8u_r7_repository_authority(
 def _validate_r8u_r7d_repository_authority(
     implementation_commit: str,
 ) -> None:
-    """Bind the R7E runtime to the sole child of immutable R7D evidence."""
+    """Bind the R7F runtime to the sole child of immutable R7E evidence."""
 
     if (
         not isinstance(implementation_commit, str)
@@ -7559,6 +7562,7 @@ def _validate_r8u_r7d_repository_authority(
             R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT,
             R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
             R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT,
+            R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT,
         }
     ):
         raise ProductionFinalizationError(
@@ -7603,6 +7607,13 @@ def _validate_r8u_r7d_repository_authority(
             "rev-list", "--parents", "-n", "1", implementation_commit,
         ): (
             f"{implementation_commit} "
+            f"{R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list", "--parents", "-n", "1",
+            R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT} "
             f"{R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT}\n"
         ).encode("ascii"),
         (
@@ -7621,13 +7632,23 @@ def _validate_r8u_r7d_repository_authority(
         ).encode("ascii"),
         (
             "rev-list", "--count",
-            f"{R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}.."
+            f"{R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT}.."
+            f"{implementation_commit}",
+        ): b"1\n",
+        (
+            "rev-list", "--count",
+            f"{R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT}.."
             f"{implementation_commit}",
         ): b"2\n",
         (
             "rev-list", "--count",
+            f"{R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}.."
+            f"{implementation_commit}",
+        ): b"3\n",
+        (
+            "rev-list", "--count",
             f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{implementation_commit}",
-        ): b"13\n",
+        ): b"14\n",
     }
     for arguments, expected_stdout in exact_outputs.items():
         result = run_git(*arguments)
@@ -7649,6 +7670,7 @@ def _validate_r8u_r7d_repository_authority(
         R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT,
         R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
         R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT,
+        R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT,
         implementation_commit,
     )
     for commit in commits:
@@ -17804,6 +17826,8 @@ def _validate_r8u_r7d_mixed_implementation_epochs(
             R8R_SCIENTIFIC_GOVERNING_COMMIT,
             R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT,
             R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+            R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT,
+            R8U_R7E_CAPACITY_RECOVERY_IMPLEMENTATION_COMMIT,
         }
         or authority.prior_r7_runtime_commit
         != R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT

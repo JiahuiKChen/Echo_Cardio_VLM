@@ -347,6 +347,501 @@ def _derive_fixed_r8u_r7d_tasks17_19_demands(
     }
 
 
+# R7F repairs only the static Tasks-17--19 projection.  These aggregate-safe
+# rows were regenerated from the canonical immutable plan identified by
+# R8U_ORIGINAL_PLAN_SHA256; they contain no study identifiers or source paths.
+# Production arithmetic below is always derived from the hash-validated plan,
+# while this frozen projection provides an independent, field-specific
+# comparator rather than an aggregate-equivalent fabricated distribution.
+R8U_R7F_TASKS17_19_SCALAR_PROJECTION = (
+    {
+        "task_id": 17,
+        "batch_ordinal": 16,
+        "batch_id": "c3_batch_016",
+        "n_studies": 250,
+        "n_objects": 18_606,
+        "source_bytes": 66_807_894_336,
+    },
+    {
+        "task_id": 18,
+        "batch_ordinal": 17,
+        "batch_id": "c3_batch_017",
+        "n_studies": 250,
+        "n_objects": 18_658,
+        "source_bytes": 68_754_613_138,
+    },
+    {
+        "task_id": 19,
+        "batch_ordinal": 18,
+        "batch_id": "c3_batch_018",
+        "n_studies": 30,
+        "n_objects": 2_343,
+        "source_bytes": 9_640_479_152,
+    },
+)
+R8U_R7E_SYNTHETIC_TASKS17_19_SCALAR_PROJECTION = (
+    {
+        "task_id": 17,
+        "batch_ordinal": 16,
+        "batch_id": "c3_batch_016",
+        "n_studies": 250,
+        "n_objects": 15_000,
+        "source_bytes": 60_000_000_000,
+    },
+    {
+        "task_id": 18,
+        "batch_ordinal": 17,
+        "batch_id": "c3_batch_017",
+        "n_studies": 250,
+        "n_objects": 15_000,
+        "source_bytes": 55_000_000_000,
+    },
+    {
+        "task_id": 19,
+        "batch_ordinal": 18,
+        "batch_id": "c3_batch_018",
+        "n_studies": 30,
+        "n_objects": 9_607,
+        "source_bytes": 28_890_036_746,
+    },
+)
+R8U_R7F_REMAINING_SOURCE_BYTES = 145_202_986_626
+R8U_R7F_LARGEST_REMAINING_BATCH_OBJECTS = 18_658
+R8U_R7F_LARGEST_REMAINING_BATCH_SOURCE_BYTES = 68_754_613_138
+R8U_R7F_ACTIVE_EXTRACTION_CACHE_DEMAND_BYTES = 89_873_645_568
+R8U_R7F_CLIP_EMBEDDING_UPPER_BOUND_BYTES = 162_230_272
+R8U_R7F_STUDY_EMBEDDING_UPPER_BOUND_BYTES = 2_170_880
+R8U_R7F_INCREMENT_BYTES = 380_995_646_484
+R8U_R7F_REQUIRED_FILE_SLOTS = 158_265
+R8U_R7F_STATIC_PLAN_PROJECTION_ARTIFACT_TYPE = (
+    "lvef_c3_r8u_r7f_tasks17_19_static_plan_projection_v1"
+)
+R8U_R7F_STATIC_PLAN_PROJECTION_STATUS_PASS = (
+    "PASS_R8U_R7F_STATIC_PLAN_PROJECTION"
+)
+R8U_R7F_STATIC_PLAN_PROJECTION_STATUS_MISMATCH = (
+    "BLOCKED_R8U_R7F_STATIC_PLAN_PROJECTION"
+)
+R8U_R7F_STATIC_COMPARATOR_KEYS = frozenset(
+    {
+        "field_name",
+        "code_frozen_expected_value",
+        "immutable_plan_derived_observed_value",
+        "comparison",
+        "mismatch_code",
+    }
+)
+R8U_R7F_STATIC_PLAN_PROJECTION_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "original_attempt_id",
+        "original_plan_sha256",
+        "original_scientific_governing_commit",
+        "task_projection",
+        "comparators",
+        "mismatching_fields",
+        "mismatch_codes",
+        "historical_r7e_comparators",
+        "historical_r7e_mismatching_fields",
+        "historical_r7e_mismatch_codes",
+    }
+)
+
+
+class R8UR7FPlanProjectionError(PostReallocationCapacityError):
+    """One exact R7F static scalar mismatch with the full comparator table."""
+
+    def __init__(self, code: str, *, projection: Mapping[str, Any]) -> None:
+        super().__init__(code)
+        self.projection = dict(projection)
+
+
+def _r8u_r7f_expected_scalar_projection() -> dict[str, int]:
+    return {
+        "continuation_batch_count": R8U_CONTINUATION_TASK_COUNT,
+        "finalized_prefix_batch_count": R8U_R7D_FINALIZED_PREFIX_BATCHES,
+        "finalized_prefix_study_count": R8U_R7D_FINALIZED_PREFIX_STUDIES,
+        "remaining_study_count": R8U_R7D_REMAINING_STUDIES,
+        "remaining_object_count": R8U_R7D_REMAINING_OBJECTS,
+        "remaining_source_byte_count": R8U_R7F_REMAINING_SOURCE_BYTES,
+        "largest_remaining_batch_object_count": (
+            R8U_R7F_LARGEST_REMAINING_BATCH_OBJECTS
+        ),
+        "largest_remaining_batch_source_byte_count": (
+            R8U_R7F_LARGEST_REMAINING_BATCH_SOURCE_BYTES
+        ),
+        "maximum_simultaneous_active_extraction_caches": 1,
+        "active_extraction_cache_demand_bytes": (
+            R8U_R7F_ACTIVE_EXTRACTION_CACHE_DEMAND_BYTES
+        ),
+        "continuation_clip_embedding_upper_bound_bytes": (
+            R8U_R7F_CLIP_EMBEDDING_UPPER_BOUND_BYTES
+        ),
+        "continuation_study_embedding_upper_bound_bytes": (
+            R8U_R7F_STUDY_EMBEDDING_UPPER_BOUND_BYTES
+        ),
+        "retained_extracted_audit_demand_bytes": (
+            R8U_RETAINED_EXTRACTED_AUDIT_BYTES
+        ),
+        "manifest_and_metadata_demand_bytes": R8U_MANIFEST_AND_METADATA_BYTES,
+        "log_demand_bytes": R8U_LOG_BYTES,
+        "final_cohort_aggregation_and_preservation_demand_bytes": (
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES
+        ),
+        "safety_demand_bytes": R8U_SAFETY_BYTES,
+        "incremental_demand_bytes": R8U_R7F_INCREMENT_BYTES,
+        "required_file_slots": R8U_R7F_REQUIRED_FILE_SLOTS,
+    }
+
+
+def _r8u_r7e_synthetic_scalar_projection() -> dict[str, int]:
+    """Return the consumed R7E fixture-derived scalars for diagnosis only."""
+
+    return {
+        **_r8u_r7f_expected_scalar_projection(),
+        "remaining_source_byte_count": R8U_R7D_REMAINING_SOURCE_BYTES,
+        "largest_remaining_batch_object_count": 15_000,
+        "largest_remaining_batch_source_byte_count": 60_000_000_000,
+        "active_extraction_cache_demand_bytes": 15_000 * 4_816_896,
+        "incremental_demand_bytes": R8U_R7D_INCREMENT_BYTES,
+        "required_file_slots": R8U_R7D_REQUIRED_FILE_SLOTS,
+    }
+
+
+def _r8u_r7f_scalar_mismatch_code(field_name: str) -> str:
+    return {
+        "continuation_batch_count": "CONTINUATION_BATCH_COUNT_MISMATCH",
+        "finalized_prefix_batch_count": "FINALIZED_PREFIX_BATCHES_MISMATCH",
+        "finalized_prefix_study_count": "FINALIZED_PREFIX_STUDIES_MISMATCH",
+        "remaining_study_count": "REMAINING_STUDIES_MISMATCH",
+        "remaining_object_count": "REMAINING_OBJECTS_MISMATCH",
+        "remaining_source_byte_count": "REMAINING_SOURCE_BYTES_MISMATCH",
+        "largest_remaining_batch_object_count": (
+            "LARGEST_BATCH_OBJECTS_MISMATCH"
+        ),
+        "largest_remaining_batch_source_byte_count": (
+            "LARGEST_BATCH_SOURCE_BYTES_MISMATCH"
+        ),
+        "maximum_simultaneous_active_extraction_caches": (
+            "ACTIVE_EXTRACTION_CACHE_COUNT_MISMATCH"
+        ),
+        "active_extraction_cache_demand_bytes": (
+            "ACTIVE_EXTRACTION_CACHE_DEMAND_MISMATCH"
+        ),
+        "continuation_clip_embedding_upper_bound_bytes": (
+            "CLIP_EMBEDDING_DEMAND_MISMATCH"
+        ),
+        "continuation_study_embedding_upper_bound_bytes": (
+            "STUDY_EMBEDDING_DEMAND_MISMATCH"
+        ),
+        "retained_extracted_audit_demand_bytes": (
+            "RETAINED_EXTRACTED_AUDIT_DEMAND_MISMATCH"
+        ),
+        "manifest_and_metadata_demand_bytes": "METADATA_DEMAND_MISMATCH",
+        "log_demand_bytes": "LOG_DEMAND_MISMATCH",
+        "final_cohort_aggregation_and_preservation_demand_bytes": (
+            "PRESERVATION_DEMAND_MISMATCH"
+        ),
+        "safety_demand_bytes": "SAFETY_DEMAND_MISMATCH",
+        "incremental_demand_bytes": "INCREMENTAL_DEMAND_MISMATCH",
+        "required_file_slots": "REQUIRED_FILE_SLOTS_MISMATCH",
+    }[field_name]
+
+
+def build_fixed_r8u_r7f_tasks17_19_plan_projection(
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compare the exact immutable-plan tail with its production scalar seal."""
+
+    _, continuation = _fixed_r8u_recovery_batches(plan)
+    batches = plan.get("batches")
+    if not isinstance(batches, list):
+        raise PostReallocationCapacityError("R8U_R7F_FIXED_PLAN_SCHEMA_INVALID")
+    task_projection = [
+        {
+            "task_id": ordinal + 1,
+            "batch_ordinal": int(batch["ordinal"]),
+            "batch_id": str(batch["batch_id"]),
+            "n_studies": int(batch["n_studies"]),
+            "n_objects": int(batch["n_objects"]),
+            "source_bytes": int(batch["source_bytes"]),
+        }
+        for ordinal, batch in enumerate(
+            continuation,
+            start=R8U_CONTINUATION_FIRST_TASK - 1,
+        )
+    ]
+    prefix = batches[:R8U_R7D_FINALIZED_PREFIX_BATCHES]
+    remaining_studies = sum(item["n_studies"] for item in task_projection)
+    remaining_objects = sum(item["n_objects"] for item in task_projection)
+    remaining_source_bytes = sum(item["source_bytes"] for item in task_projection)
+    largest_objects = max(item["n_objects"] for item in task_projection)
+    largest_source_bytes = max(item["source_bytes"] for item in task_projection)
+    active_cache_bytes = largest_objects * R8U_EXTRACTED_BYTES_PER_OBJECT
+    clip_embedding_bytes = remaining_objects * R8U_CLIP_EMBEDDING_BYTES_PER_OBJECT
+    study_embedding_bytes = remaining_studies * R8U_STUDY_EMBEDDING_BYTES_PER_STUDY
+    increment = sum(
+        (
+            remaining_source_bytes,
+            largest_source_bytes,
+            active_cache_bytes,
+            clip_embedding_bytes,
+            study_embedding_bytes,
+            R8U_RETAINED_EXTRACTED_AUDIT_BYTES,
+            R8U_MANIFEST_AND_METADATA_BYTES,
+            R8U_LOG_BYTES,
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES,
+            R8U_SAFETY_BYTES,
+        )
+    )
+    observed = {
+        "continuation_batch_count": len(task_projection),
+        "finalized_prefix_batch_count": len(prefix),
+        "finalized_prefix_study_count": sum(
+            int(batch["n_studies"]) for batch in prefix
+        ),
+        "remaining_study_count": remaining_studies,
+        "remaining_object_count": remaining_objects,
+        "remaining_source_byte_count": remaining_source_bytes,
+        "largest_remaining_batch_object_count": largest_objects,
+        "largest_remaining_batch_source_byte_count": largest_source_bytes,
+        "maximum_simultaneous_active_extraction_caches": 1,
+        "active_extraction_cache_demand_bytes": active_cache_bytes,
+        "continuation_clip_embedding_upper_bound_bytes": clip_embedding_bytes,
+        "continuation_study_embedding_upper_bound_bytes": study_embedding_bytes,
+        "retained_extracted_audit_demand_bytes": R8U_RETAINED_EXTRACTED_AUDIT_BYTES,
+        "manifest_and_metadata_demand_bytes": R8U_MANIFEST_AND_METADATA_BYTES,
+        "log_demand_bytes": R8U_LOG_BYTES,
+        "final_cohort_aggregation_and_preservation_demand_bytes": (
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES
+        ),
+        "safety_demand_bytes": R8U_SAFETY_BYTES,
+        "incremental_demand_bytes": increment,
+        "required_file_slots": (
+            remaining_objects + largest_objects + R8U_FIXED_CONTROL_FILE_DEMAND
+        ),
+    }
+    expected = _r8u_r7f_expected_scalar_projection()
+    comparator_values: list[tuple[str, Any, Any, str]] = [
+        (
+            field,
+            expected_value,
+            observed[field],
+            _r8u_r7f_scalar_mismatch_code(field),
+        )
+        for field, expected_value in expected.items()
+    ]
+    for expected_task, observed_task in zip(
+        R8U_R7F_TASKS17_19_SCALAR_PROJECTION,
+        task_projection,
+        strict=True,
+    ):
+        task_id = int(expected_task["task_id"])
+        for field in (
+            "task_id",
+            "batch_ordinal",
+            "batch_id",
+            "n_studies",
+            "n_objects",
+            "source_bytes",
+        ):
+            comparator_values.append(
+                (
+                    f"task_{task_id}.{field}",
+                    expected_task[field],
+                    observed_task[field],
+                    f"TASK_{task_id}_{field.upper()}_MISMATCH",
+                )
+            )
+    comparators = [
+        {
+            "field_name": field,
+            "code_frozen_expected_value": expected_value,
+            "immutable_plan_derived_observed_value": observed_value,
+            "comparison": "MATCH" if expected_value == observed_value else "MISMATCH",
+            "mismatch_code": mismatch_code,
+        }
+        for field, expected_value, observed_value, mismatch_code in comparator_values
+    ]
+    mismatches = [
+        item for item in comparators if item["comparison"] == "MISMATCH"
+    ]
+    historical_values: list[tuple[str, Any, Any, str]] = [
+        (
+            field,
+            expected_value,
+            observed[field],
+            _r8u_r7f_scalar_mismatch_code(field),
+        )
+        for field, expected_value in _r8u_r7e_synthetic_scalar_projection().items()
+    ]
+    for expected_task, observed_task in zip(
+        R8U_R7E_SYNTHETIC_TASKS17_19_SCALAR_PROJECTION,
+        task_projection,
+        strict=True,
+    ):
+        task_id = int(expected_task["task_id"])
+        for field in (
+            "task_id",
+            "batch_ordinal",
+            "batch_id",
+            "n_studies",
+            "n_objects",
+            "source_bytes",
+        ):
+            historical_values.append(
+                (
+                    f"task_{task_id}.{field}",
+                    expected_task[field],
+                    observed_task[field],
+                    f"TASK_{task_id}_{field.upper()}_MISMATCH",
+                )
+            )
+    historical_comparators = [
+        {
+            "field_name": field,
+            "code_frozen_expected_value": expected_value,
+            "immutable_plan_derived_observed_value": observed_value,
+            "comparison": "MATCH" if expected_value == observed_value else "MISMATCH",
+            "mismatch_code": mismatch_code,
+        }
+        for field, expected_value, observed_value, mismatch_code in historical_values
+    ]
+    historical_mismatches = [
+        item
+        for item in historical_comparators
+        if item["comparison"] == "MISMATCH"
+    ]
+    return {
+        "schema_version": 1,
+        "artifact_type": R8U_R7F_STATIC_PLAN_PROJECTION_ARTIFACT_TYPE,
+        "status": (
+            R8U_R7F_STATIC_PLAN_PROJECTION_STATUS_PASS
+            if not mismatches
+            else R8U_R7F_STATIC_PLAN_PROJECTION_STATUS_MISMATCH
+        ),
+        "original_attempt_id": R8U_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": _frozen_capacity.R8U_ORIGINAL_PLAN_SHA256,
+        "original_scientific_governing_commit": R8U_ORIGINAL_SCIENTIFIC_COMMIT,
+        "task_projection": task_projection,
+        "comparators": comparators,
+        "mismatching_fields": [item["field_name"] for item in mismatches],
+        "mismatch_codes": [item["mismatch_code"] for item in mismatches],
+        "historical_r7e_comparators": historical_comparators,
+        "historical_r7e_mismatching_fields": [
+            item["field_name"] for item in historical_mismatches
+        ],
+        "historical_r7e_mismatch_codes": [
+            item["mismatch_code"] for item in historical_mismatches
+        ],
+    }
+
+
+def validate_fixed_r8u_r7f_tasks17_19_plan_projection(
+    plan: Mapping[str, Any], value: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Purely replay the exact R7F scalar projection and comparator table."""
+
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8U_R7F_STATIC_PLAN_PROJECTION_KEYS
+        or any(
+            not isinstance(item, Mapping)
+            or set(item) != R8U_R7F_STATIC_COMPARATOR_KEYS
+            for item in value.get("comparators", [])
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7F_STATIC_PLAN_PROJECTION_SCHEMA_INVALID"
+        )
+    expected = build_fixed_r8u_r7f_tasks17_19_plan_projection(plan)
+    if _r8u_r7e_canonical(dict(value)) != _r8u_r7e_canonical(expected):
+        raise PostReallocationCapacityError(
+            "R8U_R7F_STATIC_PLAN_PROJECTION_REPLAY_INVALID"
+        )
+    return dict(value)
+
+
+def require_fixed_r8u_r7f_tasks17_19_plan_projection(
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a passing production projection or raise its first exact field."""
+
+    projection = build_fixed_r8u_r7f_tasks17_19_plan_projection(plan)
+    validate_fixed_r8u_r7f_tasks17_19_plan_projection(plan, projection)
+    if projection["status"] != R8U_R7F_STATIC_PLAN_PROJECTION_STATUS_PASS:
+        raise R8UR7FPlanProjectionError(
+            str(projection["mismatch_codes"][0]),
+            projection=projection,
+        )
+    return projection
+
+
+def _derive_fixed_r8u_r7f_tasks17_19_demands(
+    plan: Mapping[str, Any],
+) -> dict[str, int]:
+    """Derive R7F demand solely from the passing hash-bound production plan."""
+
+    projection = require_fixed_r8u_r7f_tasks17_19_plan_projection(plan)
+    scalars = {
+        item["field_name"]: int(item["immutable_plan_derived_observed_value"])
+        for item in projection["comparators"]
+        if not str(item["field_name"]).startswith("task_")
+    }
+    return {
+        "continuation_first_task": R8U_CONTINUATION_FIRST_TASK,
+        "continuation_last_task": R8U_CONTINUATION_LAST_TASK,
+        "continuation_task_count": R8U_CONTINUATION_TASK_COUNT,
+        "remaining_batch_count": scalars["continuation_batch_count"],
+        "finalized_prefix_batches": scalars["finalized_prefix_batch_count"],
+        "finalized_prefix_studies": scalars["finalized_prefix_study_count"],
+        "remaining_studies": scalars["remaining_study_count"],
+        "remaining_objects": scalars["remaining_object_count"],
+        "remaining_source_bytes": scalars["remaining_source_byte_count"],
+        "largest_remaining_batch_objects": scalars[
+            "largest_remaining_batch_object_count"
+        ],
+        "largest_remaining_batch_source_bytes": scalars[
+            "largest_remaining_batch_source_byte_count"
+        ],
+        "maximum_simultaneous_active_extraction_caches": 1,
+        "continuation_raw_source_demand_bytes": scalars[
+            "remaining_source_byte_count"
+        ],
+        "largest_transfer_retry_demand_bytes": scalars[
+            "largest_remaining_batch_source_byte_count"
+        ],
+        "active_extraction_cache_object_demand": scalars[
+            "largest_remaining_batch_object_count"
+        ],
+        "active_extraction_cache_demand_bytes": scalars[
+            "active_extraction_cache_demand_bytes"
+        ],
+        "continuation_clip_embedding_upper_bound_bytes": scalars[
+            "continuation_clip_embedding_upper_bound_bytes"
+        ],
+        "continuation_study_embedding_upper_bound_bytes": scalars[
+            "continuation_study_embedding_upper_bound_bytes"
+        ],
+        "retained_extracted_audit_demand_bytes": R8U_RETAINED_EXTRACTED_AUDIT_BYTES,
+        "manifest_and_metadata_demand_bytes": R8U_MANIFEST_AND_METADATA_BYTES,
+        "log_demand_bytes": R8U_LOG_BYTES,
+        "final_cohort_aggregation_and_preservation_demand_bytes": (
+            R8U_PRESERVATION_AND_FINALIZATION_BYTES
+        ),
+        "safety_demand_bytes": R8U_SAFETY_BYTES,
+        "r7d_increment_bytes": scalars["incremental_demand_bytes"],
+        "continuation_raw_object_file_demand": scalars["remaining_object_count"],
+        "active_extraction_cache_file_demand": scalars[
+            "largest_remaining_batch_object_count"
+        ],
+        "fixed_control_file_demand": R8U_FIXED_CONTROL_FILE_DEMAND,
+        "required_file_slots": scalars["required_file_slots"],
+    }
+
+
 def _validated_r8u_r7d_capacity_observation(
     snapshot: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -452,11 +947,14 @@ def _build_fixed_r8u_r7d_tasks17_19_capacity(
     preserved_old_evidence_files: int,
     confirmed_partial_artifact_bytes: int,
     confirmed_partial_artifact_files: int,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> dict[str, Any]:
     """Internal common constructor for pure replay and one live capture."""
 
     runtime_commit = _fixed_r8u_r7d_runtime_commit(r7d_runtime_commit)
-    demands = _derive_fixed_r8u_r7d_tasks17_19_demands(plan)
+    demands = _demand_builder(plan)
     baselines = _fixed_r8u_r7d_baselines(
         preserved_old_evidence_bytes=preserved_old_evidence_bytes,
         preserved_old_evidence_files=preserved_old_evidence_files,
@@ -615,6 +1113,9 @@ def build_fixed_r8u_r7d_tasks17_19_capacity(
     preserved_old_evidence_files: int = 0,
     confirmed_partial_artifact_bytes: int = 0,
     confirmed_partial_artifact_files: int = 0,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> dict[str, Any]:
     """Purely build one closed R7D Tasks-17--19 capacity authority."""
 
@@ -626,6 +1127,7 @@ def build_fixed_r8u_r7d_tasks17_19_capacity(
         preserved_old_evidence_files=preserved_old_evidence_files,
         confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
         confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+        _demand_builder=_demand_builder,
     )
 def validate_fixed_r8u_r7d_tasks17_19_capacity(
     plan: Mapping[str, Any],
@@ -636,6 +1138,9 @@ def validate_fixed_r8u_r7d_tasks17_19_capacity(
     preserved_old_evidence_files: int = 0,
     confirmed_partial_artifact_bytes: int = 0,
     confirmed_partial_artifact_files: int = 0,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> dict[str, Any]:
     """Purely replay the R7D demand, exact deficits, gates, and status."""
 
@@ -721,6 +1226,7 @@ def validate_fixed_r8u_r7d_tasks17_19_capacity(
         preserved_old_evidence_files=preserved_old_evidence_files,
         confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
         confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+        _demand_builder=_demand_builder,
     )
     if dict(value) != expected:
         raise PostReallocationCapacityError(
@@ -1129,9 +1635,12 @@ def _r8u_r7e_static_authority(
     preserved_old_evidence_files: int,
     confirmed_partial_artifact_bytes: int,
     confirmed_partial_artifact_files: int,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> tuple[str, dict[str, int]]:
     runtime_commit = _fixed_r8u_r7d_runtime_commit(r7e_runtime_commit)
-    _derive_fixed_r8u_r7d_tasks17_19_demands(plan)
+    _demand_builder(plan)
     baselines = _fixed_r8u_r7d_baselines(
         preserved_old_evidence_bytes=preserved_old_evidence_bytes,
         preserved_old_evidence_files=preserved_old_evidence_files,
@@ -1189,6 +1698,9 @@ def _r8u_r7e_static_receipt_authority(
     preserved_old_evidence_files: Any,
     confirmed_partial_artifact_bytes: Any,
     confirmed_partial_artifact_files: Any,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> tuple[
     dict[str, Any],
     str | None,
@@ -1247,7 +1759,7 @@ def _r8u_r7e_static_receipt_authority(
             source_error_code=exc.code,
         )
     try:
-        _derive_fixed_r8u_r7d_tasks17_19_demands(plan)
+        _demand_builder(plan)
     except (PostReallocationCapacityError, TypeError, KeyError, ValueError) as exc:
         return receipt, None, None, _r8u_r7e_failure_diagnostic(
             "PLAN_SCOPE_MISMATCH",
@@ -1639,6 +2151,9 @@ def capture_fixed_r8u_r7e_tasks17_19_capacity(
     confirmed_partial_artifact_files: int = 0,
     authority: Any = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
     process_runner: Callable[..., Any] | None = None,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> dict[str, Any]:
     """Perform one exact pquota1/findmnt2/df2/du0 R7E observation."""
 
@@ -1650,6 +2165,7 @@ def capture_fixed_r8u_r7e_tasks17_19_capacity(
         preserved_old_evidence_files=preserved_old_evidence_files,
         confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
         confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+        _demand_builder=_demand_builder,
         )
     )
     if static_failure is not None:
@@ -1973,6 +2489,7 @@ def capture_fixed_r8u_r7e_tasks17_19_capacity(
             confirmed_partial_artifact_files=(
                 confirmed_partial_artifact_files
             ),
+            _demand_builder=_demand_builder,
         )
         projection = validate_fixed_r8u_r7d_tasks17_19_capacity(
             plan,
@@ -1986,6 +2503,7 @@ def capture_fixed_r8u_r7e_tasks17_19_capacity(
             confirmed_partial_artifact_files=(
                 confirmed_partial_artifact_files
             ),
+            _demand_builder=_demand_builder,
         )
     except PostReallocationCapacityError as exc:
         raise _r8u_r7e_apply_failure(
@@ -2387,6 +2905,9 @@ def validate_fixed_r8u_r7e_tasks17_19_capacity(
     confirmed_partial_artifact_bytes: int = 0,
     confirmed_partial_artifact_files: int = 0,
     raw_capture_root: Path | None = None,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> dict[str, Any]:
     """Purely validate/replay a closed R7E success, deficit, or failure."""
 
@@ -2406,6 +2927,7 @@ def validate_fixed_r8u_r7e_tasks17_19_capacity(
             confirmed_partial_artifact_files=(
                 confirmed_partial_artifact_files
             ),
+            _demand_builder=_demand_builder,
         )
     )
     if static_failure is not None:
@@ -3008,6 +3530,7 @@ def validate_fixed_r8u_r7e_tasks17_19_capacity(
         preserved_old_evidence_files=preserved_old_evidence_files,
         confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
         confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+        _demand_builder=_demand_builder,
     )
     expected_status = (
         R8U_R7E_CAPACITY_STATUS_PASS
@@ -3038,6 +3561,9 @@ def capture_validate_and_seal_fixed_r8u_r7e_tasks17_19_capacity(
     confirmed_partial_artifact_files: int = 0,
     authority: Any = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
     process_runner: Callable[..., Any] | None = None,
+    _demand_builder: Callable[
+        [Mapping[str, Any]], dict[str, int]
+    ] = _derive_fixed_r8u_r7d_tasks17_19_demands,
 ) -> dict[str, Any]:
     """Capture, pure-replay, and seal R7E; seal known failures before raise."""
 
@@ -3057,6 +3583,7 @@ def capture_validate_and_seal_fixed_r8u_r7e_tasks17_19_capacity(
             ),
             authority=authority,
             process_runner=process_runner,
+            _demand_builder=_demand_builder,
         )
     except R8UR7ECapacityObservationError as exc:
         if exc.receipt is None:
@@ -3074,6 +3601,7 @@ def capture_validate_and_seal_fixed_r8u_r7e_tasks17_19_capacity(
                 confirmed_partial_artifact_files
             ),
             raw_capture_root=raw_capture_root,
+            _demand_builder=_demand_builder,
         )
         receipt_sha256 = write_r8u_r7e_capacity_receipt_no_clobber(
             receipt_path,
@@ -3091,6 +3619,314 @@ def capture_validate_and_seal_fixed_r8u_r7e_tasks17_19_capacity(
         confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
         confirmed_partial_artifact_files=confirmed_partial_artifact_files,
         raw_capture_root=raw_capture_root,
+        _demand_builder=_demand_builder,
     )
     write_r8u_r7e_capacity_receipt_no_clobber(receipt_path, validated)
+    return validated
+
+
+# R7F is an additive plan-projection/capacity epoch.  The mature R7E capture
+# engine remains the single implementation of the fixed five-command registry;
+# a private demand-builder seam gives R7F the corrected plan-derived arithmetic
+# without changing any default R7D/R7E call or receipt.
+R8U_R7F_CAPACITY_ARTIFACT_TYPE = (
+    "lvef_c3_r8u_r7f_tasks17_19_capacity_observation_v1"
+)
+R8U_R7F_CAPACITY_STATUS_PASS = (
+    "PASS_R8U_R7F_TASKS_17_19_REMAINING_CAPACITY"
+)
+R8U_R7F_CAPACITY_STATUS_DEFICIT = (
+    "BLOCKED_R8U_R7F_QUANTIFIED_CAPACITY_DEFICIT"
+)
+R8U_R7F_CAPACITY_STATUS_OBSERVATION_PREFIX = (
+    "BLOCKED_R8U_R7F_CAPACITY_OBSERVATION_"
+)
+R8U_R7F_CAPACITY_PROJECTION_ARTIFACT_TYPE = (
+    "lvef_c3_r8u_r7f_tasks17_19_capacity_v1"
+)
+R8U_R7F_CAPACITY_PROJECTION_STATUS_PASS = (
+    "PASS_R7F_TASKS_17_19_WITH_200GB_RESERVE"
+)
+R8U_R7F_CAPACITY_PROJECTION_STATUS_BLOCKED = (
+    "BLOCKED_R7F_TASKS_17_19_CAPACITY"
+)
+R8U_R7F_CAPACITY_KEYS = frozenset(
+    (R8U_R7E_CAPACITY_KEYS - {"r7e_runtime_commit"})
+    | {"r7f_runtime_commit"}
+)
+R8U_R7F_CAPACITY_PROJECTION_KEYS = frozenset(
+    (
+        R8U_R7D_CAPACITY_KEYS
+        - {
+            "r7d_runtime_commit",
+            "r7d_increment_bytes",
+            "quota_slack_after_r7d_bytes",
+            "physical_slack_after_r7d_bytes",
+        }
+    )
+    | {
+        "r7f_runtime_commit",
+        "r7f_increment_bytes",
+        "quota_slack_after_r7f_bytes",
+        "physical_slack_after_r7f_bytes",
+    }
+)
+
+
+class R8UR7FCapacityObservationError(PostReallocationCapacityError):
+    """One field-specific R7F observation failure with its bounded receipt."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        diagnostic: Mapping[str, Any],
+        receipt: Mapping[str, Any] | None = None,
+        receipt_sha256: str | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.diagnostic = dict(diagnostic)
+        self.receipt = None if receipt is None else dict(receipt)
+        self.receipt_sha256 = receipt_sha256
+
+
+def _r8u_relabel_epoch(value: Any, *, old: str, new: str) -> Any:
+    """Relabel one bounded receipt epoch without touching numeric evidence."""
+
+    old_lower = old.lower()
+    new_lower = new.lower()
+    if isinstance(value, Mapping):
+        return {
+            str(key).replace(old, new).replace(old_lower, new_lower): (
+                _r8u_relabel_epoch(item, old=old, new=new)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_r8u_relabel_epoch(item, old=old, new=new) for item in value]
+    if type(value) is str:
+        return value.replace(old, new).replace(old_lower, new_lower)
+    return value
+
+
+def _r8u_r7e_to_r7f_capacity_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
+    source = dict(value)
+    projection = source.pop("capacity_projection", None)
+    converted = _r8u_relabel_epoch(source, old="R7E", new="R7F")
+    converted["capacity_projection"] = (
+        None
+        if projection is None
+        else _r8u_relabel_epoch(projection, old="R7D", new="R7F")
+    )
+    return converted
+
+
+def _r8u_r7f_to_r7e_capacity_receipt(value: Mapping[str, Any]) -> dict[str, Any]:
+    source = dict(value)
+    projection = source.pop("capacity_projection", None)
+    converted = _r8u_relabel_epoch(source, old="R7F", new="R7E")
+    converted["capacity_projection"] = (
+        None
+        if projection is None
+        else _r8u_relabel_epoch(projection, old="R7F", new="R7D")
+    )
+    return converted
+
+
+def _r8u_r7f_translate_write_error(exc: PostReallocationCapacityError) -> None:
+    code = str(exc.code).replace("R8U_R7E", "R8U_R7F")
+    raise PostReallocationCapacityError(code) from exc
+
+
+def write_r8u_r7f_static_plan_projection_no_clobber(
+    path: Path, value: Mapping[str, Any],
+) -> str:
+    """Write one canonical mode-0600 R7F static projection without clobber."""
+
+    if not isinstance(value, Mapping):
+        raise PostReallocationCapacityError(
+            "R8U_R7F_STATIC_PLAN_PROJECTION_SCHEMA_INVALID"
+        )
+    try:
+        return _r8u_r7e_write_new_private_bytes(
+            path, _r8u_r7e_canonical(dict(value))
+        )
+    except PostReallocationCapacityError as exc:
+        _r8u_r7f_translate_write_error(exc)
+
+
+def write_r8u_r7f_capacity_receipt_no_clobber(
+    path: Path, value: Mapping[str, Any],
+) -> str:
+    """Write one canonical mode-0600 R7F capacity receipt without clobber."""
+
+    if not isinstance(value, Mapping) or set(value) != R8U_R7F_CAPACITY_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R7F_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    try:
+        return _r8u_r7e_write_new_private_bytes(
+            path, _r8u_r7e_canonical(dict(value))
+        )
+    except PostReallocationCapacityError as exc:
+        _r8u_r7f_translate_write_error(exc)
+
+
+def capture_fixed_r8u_r7f_tasks17_19_capacity(
+    plan: Mapping[str, Any],
+    *,
+    r7f_runtime_commit: str,
+    raw_capture_root: Path,
+    preserved_old_evidence_bytes: int = 0,
+    preserved_old_evidence_files: int = 0,
+    confirmed_partial_artifact_bytes: int = 0,
+    confirmed_partial_artifact_files: int = 0,
+    authority: Any = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Perform one exact pquota1/findmnt2/df2/du0 R7F observation."""
+
+    require_fixed_r8u_r7f_tasks17_19_plan_projection(plan)
+    try:
+        legacy = capture_fixed_r8u_r7e_tasks17_19_capacity(
+            plan,
+            r7e_runtime_commit=r7f_runtime_commit,
+            raw_capture_root=raw_capture_root,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+            confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+            authority=authority,
+            process_runner=process_runner,
+            _demand_builder=_derive_fixed_r8u_r7f_tasks17_19_demands,
+        )
+    except R8UR7ECapacityObservationError as exc:
+        receipt = (
+            None
+            if exc.receipt is None
+            else _r8u_r7e_to_r7f_capacity_receipt(exc.receipt)
+        )
+        diagnostic = _r8u_relabel_epoch(
+            exc.diagnostic, old="R7E", new="R7F"
+        )
+        raise R8UR7FCapacityObservationError(
+            str(exc.code).replace("R8U_R7E", "R8U_R7F"),
+            diagnostic=diagnostic,
+            receipt=receipt,
+        ) from exc
+    value = _r8u_r7e_to_r7f_capacity_receipt(legacy)
+    if (
+        set(value) != R8U_R7F_CAPACITY_KEYS
+        or not isinstance(value["capacity_projection"], Mapping)
+        or set(value["capacity_projection"]) != R8U_R7F_CAPACITY_PROJECTION_KEYS
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7F_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    return value
+
+
+def validate_fixed_r8u_r7f_tasks17_19_capacity(
+    plan: Mapping[str, Any],
+    value: Mapping[str, Any],
+    *,
+    r7f_runtime_commit: Any,
+    preserved_old_evidence_bytes: int = 0,
+    preserved_old_evidence_files: int = 0,
+    confirmed_partial_artifact_bytes: int = 0,
+    confirmed_partial_artifact_files: int = 0,
+    raw_capture_root: Path | None = None,
+) -> dict[str, Any]:
+    """Purely replay a closed R7F success, deficit, or observation failure."""
+
+    require_fixed_r8u_r7f_tasks17_19_plan_projection(plan)
+    if not isinstance(value, Mapping) or set(value) != R8U_R7F_CAPACITY_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R7F_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    legacy = _r8u_r7f_to_r7e_capacity_receipt(value)
+    try:
+        validated = validate_fixed_r8u_r7e_tasks17_19_capacity(
+            plan,
+            legacy,
+            r7e_runtime_commit=r7f_runtime_commit,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+            confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+            raw_capture_root=raw_capture_root,
+            _demand_builder=_derive_fixed_r8u_r7f_tasks17_19_demands,
+        )
+    except PostReallocationCapacityError as exc:
+        raise PostReallocationCapacityError(
+            str(exc.code).replace("R8U_R7E", "R8U_R7F")
+        ) from exc
+    expected = _r8u_r7e_to_r7f_capacity_receipt(validated)
+    if _r8u_r7e_canonical(dict(value)) != _r8u_r7e_canonical(expected):
+        raise PostReallocationCapacityError(
+            "R8U_R7F_CAPACITY_RECEIPT_REPLAY_INVALID"
+        )
+    return dict(value)
+
+
+def capture_validate_and_seal_fixed_r8u_r7f_tasks17_19_capacity(
+    plan: Mapping[str, Any],
+    *,
+    r7f_runtime_commit: str,
+    receipt_path: Path,
+    raw_capture_root: Path,
+    preserved_old_evidence_bytes: int = 0,
+    preserved_old_evidence_files: int = 0,
+    confirmed_partial_artifact_bytes: int = 0,
+    confirmed_partial_artifact_files: int = 0,
+    authority: Any = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Capture, replay, and no-clobber seal one R7F observation."""
+
+    try:
+        _r8u_r7e_preflight_receipt_no_clobber(receipt_path)
+    except PostReallocationCapacityError as exc:
+        _r8u_r7f_translate_write_error(exc)
+    try:
+        value = capture_fixed_r8u_r7f_tasks17_19_capacity(
+            plan,
+            r7f_runtime_commit=r7f_runtime_commit,
+            raw_capture_root=raw_capture_root,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+            confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+            authority=authority,
+            process_runner=process_runner,
+        )
+    except R8UR7FCapacityObservationError as exc:
+        if exc.receipt is None:
+            raise
+        validated = validate_fixed_r8u_r7f_tasks17_19_capacity(
+            plan,
+            exc.receipt,
+            r7f_runtime_commit=r7f_runtime_commit,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+            confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+            raw_capture_root=raw_capture_root,
+        )
+        exc.receipt = validated
+        exc.receipt_sha256 = write_r8u_r7f_capacity_receipt_no_clobber(
+            receipt_path, validated
+        )
+        raise
+    validated = validate_fixed_r8u_r7f_tasks17_19_capacity(
+        plan,
+        value,
+        r7f_runtime_commit=r7f_runtime_commit,
+        preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+        preserved_old_evidence_files=preserved_old_evidence_files,
+        confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+        confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+        raw_capture_root=raw_capture_root,
+    )
+    write_r8u_r7f_capacity_receipt_no_clobber(receipt_path, validated)
     return validated
