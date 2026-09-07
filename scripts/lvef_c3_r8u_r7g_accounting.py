@@ -42,6 +42,9 @@ SCIENTIFIC_COMMIT: Final = "e1cdb674ada23bbc9f3a1ff77c33927bd324d3ed"
 RUNTIME_IMPLEMENTATION_COMMIT: Final = (
     "2223d9768a1cc23efbe95a3c5474ea747a383a10"
 )
+R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT: Final = (
+    "4dc4b2327f91ffd3912c91a7113f16d41d0562a8"
+)
 
 ARRAY_JOB_ID: Final = "7480830"
 FINALIZER_JOB_ID: Final = "7480831"
@@ -73,9 +76,69 @@ ARRAY_SUBMISSION_PATH: Final = r7.R8U_R7F_ARRAY_SUBMISSION_PATH
 FINALIZER_SUBMISSION_PATH: Final = r7.R8U_R7F_FINALIZER_SUBMISSION_PATH
 COMBINED_SUBMISSION_PATH: Final = r7.R8U_R7D_CONTINUATION_SUBMISSION_PATH
 ACCOUNT_AUTHORITY_PATH: Final = r7.R8U_R7D_ACCOUNT_AUTHORITY_PATH
+PROBE_AUTHORITY_PATH: Final = r7.R8U_R7D_PROBE_AUTHORITY_PATH
 PROBE_SUBMISSION_PATH: Final = r7.R8U_R7D_PROBE_SUBMISSION_PATH
+PROBE_WORKER_RECEIPT_PATH: Final = r7.R8U_R7D_PROBE_WORKER_RECEIPT_PATH
+PROBE_ACCOUNTING_PATH: Final = r7.R8U_R7D_PROBE_ACCOUNTING_PATH
 PROBE_TERMINAL_PATH: Final = r7.R8U_R7D_PROBE_TERMINAL_PATH
+PROBE_SCHEDULER_ROOT: Final = r7.R8U_R7D_PROBE_SCHEDULER_ROOT
 SCHEDULER_LOG_ROOT: Final = r7.R8U_R7D_CONTINUATION_SCHEDULER_ROOT
+
+R7F_COMMON_KEYS: Final = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "original_scientific_commit",
+        "prior_finalized_runtime_commit",
+        "r7c_adjudication_commit",
+        "implementation_commit",
+        "implementation_authority_epochs",
+        "attempt_id",
+        "batch_plan_sha256",
+    }
+)
+PROBE_SUBMISSION_KEYS: Final = R7F_COMMON_KEYS | frozenset(
+    {
+        "scheduler_account_authority_sha256",
+        "probe_authority_sha256",
+        "probe_job_id",
+        "probe_job_name",
+        "worker_role",
+        "probe_qsub_argv_sha256",
+        "probe_qsub_evidence",
+        "qsub_environment_sha256",
+        "array_task_id",
+        "array_task_count",
+        "array_max_concurrency",
+        "scheduler_submission_count",
+        "scheduler_submission_maximum",
+        "scientific_execution_authorized",
+        "cloud_requests",
+        "dicom_body_reads",
+        "npz_body_reads",
+        "gpu_executions",
+        "r7f_continuation_claim_sha256",
+        "r7f_capacity_receipt_sha256",
+    }
+)
+PROBE_TERMINAL_KEYS: Final = R7F_COMMON_KEYS | frozenset(
+    {
+        "probe_submission_receipt_sha256",
+        "worker_context_receipt_sha256",
+        "accounting_receipt_sha256",
+        "qstat_classification",
+        "controlling_worker_identity",
+        "failed",
+        "exit_status",
+        "task_id",
+        "scientific_artifacts_created",
+        "cloud_requests",
+        "dicom_body_reads",
+        "npz_body_reads",
+        "gpu_executions",
+    }
+)
 
 R7F_AUTHORITY_NAMES: Final = (
     "capacity",
@@ -84,6 +147,67 @@ R7F_AUTHORITY_NAMES: Final = (
     "finalizer_submission",
     "combined_submission",
 )
+
+HASH_PINNED_HISTORICAL_PRODUCER_JSON: Final = (
+    "HASH_PINNED_HISTORICAL_PRODUCER_JSON"
+)
+PRODUCER_CANONICAL_JSON: Final = "PRODUCER_CANONICAL_JSON"
+R7G_COMPACT_CANONICAL_JSON: Final = "R7G_COMPACT_CANONICAL_JSON"
+
+# This is the closed artifact-instance audit requested for R7G-R1.  The
+# separately hash-validated immutable plan is not an artifact in this table.
+# The optional historical cohort role remains classified even when absent.
+HISTORICAL_JSON_ROLE_POLICY: Final = {
+    **{
+        role: HASH_PINNED_HISTORICAL_PRODUCER_JSON
+        for role in (
+            "R7F_CAPACITY_RECEIPT",
+            "R7F_CONTINUATION_CLAIM",
+            "R7F_ARRAY_SUBMISSION_RECEIPT",
+            "R7F_FINALIZER_SUBMISSION_RECEIPT",
+            "R7F_COMBINED_SUBMISSION_RECEIPT",
+            *(f"BATCH_{ordinal}_FINALIZATION_RECEIPT" for ordinal in range(1, 17)),
+        )
+    },
+    **{
+        role: PRODUCER_CANONICAL_JSON
+        for role in (
+            "SCHEDULER_ACCOUNT_AUTHORITY",
+            "CPU_PROBE_SUBMISSION_RECEIPT",
+            "CPU_PROBE_TERMINAL_RECEIPT",
+            "BATCH_17_FINALIZATION_RECEIPT",
+            "BATCH_18_FINALIZATION_RECEIPT",
+            "BATCH_19_FINALIZATION_RECEIPT",
+            "HISTORICAL_FULL_COHORT_RECEIPT",
+        )
+    },
+    **{
+        role: R7G_COMPACT_CANONICAL_JSON
+        for role in (
+            "R7G_TERMINAL_AUTHORITY",
+            "R7G_TASK_17_ACCOUNTING_RECEIPT",
+            "R7G_TASK_18_ACCOUNTING_RECEIPT",
+            "R7G_TASK_19_ACCOUNTING_RECEIPT",
+            "R7G_FINALIZER_ACCOUNTING_RECEIPT",
+            "R7G_COHORT_FINALIZATION_RECEIPT",
+            "R7G_POST_RECONSTRUCTION_LOCK_RECEIPT",
+        )
+    },
+}
+HISTORICAL_JSON_ROLES_AUDITED: Final = 35
+if len(HISTORICAL_JSON_ROLE_POLICY) != HISTORICAL_JSON_ROLES_AUDITED:
+    raise RuntimeError("R8U_R7G_HISTORICAL_JSON_ROLE_POLICY_INTERNAL_INVALID")
+
+FIXED_AUTHORITY_SERIALIZATION_POLICY: Final = {
+    "capacity": HASH_PINNED_HISTORICAL_PRODUCER_JSON,
+    "continuation_claim": HASH_PINNED_HISTORICAL_PRODUCER_JSON,
+    "array_submission": HASH_PINNED_HISTORICAL_PRODUCER_JSON,
+    "finalizer_submission": HASH_PINNED_HISTORICAL_PRODUCER_JSON,
+    "combined_submission": HASH_PINNED_HISTORICAL_PRODUCER_JSON,
+    "scheduler_account": PRODUCER_CANONICAL_JSON,
+    "probe_submission": PRODUCER_CANONICAL_JSON,
+    "probe_terminal": PRODUCER_CANONICAL_JSON,
+}
 EXPECTED_R7F_RECEIPT_SHA256: Final = {
     "capacity": "4163c6faf46073ce79cd5dd6999407ec583d72663904b1bbda5c7bf20d45964d",
     "continuation_claim": "3eeb09049871ea79a48f7cd7015130909492ddf5e339f9fc9cb1f432204a9f14",
@@ -172,6 +296,7 @@ TERMINAL_AUTHORITY_KEYS: Final = frozenset(
         "batch_plan_sha256",
         "scientific_commit",
         "runtime_implementation_commit",
+        "base_adjudication_implementation_commit",
         "adjudication_implementation_commit",
         "r7f_authority_receipt_paths",
         "r7f_authority_receipt_sha256",
@@ -232,6 +357,7 @@ COMMON_ACCOUNTING_RECEIPT_KEYS: Final = frozenset(
         "batch_plan_sha256",
         "scientific_commit",
         "runtime_implementation_commit",
+        "base_adjudication_implementation_commit",
         "adjudication_implementation_commit",
         "terminal_authority_receipt_path",
         "terminal_authority_receipt_sha256",
@@ -304,7 +430,10 @@ def _require_adjudication_commit(value: str) -> None:
     if (
         not isinstance(value, str)
         or COMMIT_RE.fullmatch(value) is None
-        or value == RUNTIME_IMPLEMENTATION_COMMIT
+        or value in {
+            RUNTIME_IMPLEMENTATION_COMMIT,
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        }
     ):
         _fail("R8U_R7G_ADJUDICATION_COMMIT_INVALID")
 
@@ -401,18 +530,116 @@ def _read_owner_private_regular(path: Path, *, code: str) -> bytes:
     return b"".join(blocks)
 
 
-def _read_private_json(
-    path: Path, *, file_code: str, json_code: str,
-    expected_sha256: str | None = None,
+def _fixed_authority_input_paths() -> dict[str, Path]:
+    """Return the closed role-to-path map at call time for test patchability."""
+
+    return {
+        "capacity": CAPACITY_RECEIPT_PATH,
+        "continuation_claim": CONTINUATION_CLAIM_PATH,
+        "array_submission": ARRAY_SUBMISSION_PATH,
+        "finalizer_submission": FINALIZER_SUBMISSION_PATH,
+        "combined_submission": COMBINED_SUBMISSION_PATH,
+        "scheduler_account": ACCOUNT_AUTHORITY_PATH,
+        "probe_submission": PROBE_SUBMISSION_PATH,
+        "probe_terminal": PROBE_TERMINAL_PATH,
+    }
+
+
+def _strict_authority_json_object(payload: bytes) -> dict[str, Any]:
+    """Parse an authority object with stable, representation-specific errors."""
+
+    try:
+        text = payload.decode("utf-8", "strict")
+    except UnicodeError as exc:
+        raise R7GAccountingError("R8U_R7G_AUTHORITY_UTF8_INVALID") from exc
+
+    def pairs(items: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                _fail("R8U_R7G_AUTHORITY_DUPLICATE_KEY")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> Any:
+        _fail("R8U_R7G_AUTHORITY_NONFINITE_VALUE")
+
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=pairs,
+            parse_constant=reject_constant,
+        )
+    except R7GAccountingError:
+        raise
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise R7GAccountingError(
+            "R8U_R7G_AUTHORITY_JSON_SYNTAX_INVALID"
+        ) from exc
+    if not isinstance(value, dict):
+        _fail("R8U_R7G_AUTHORITY_SCHEMA_INVALID")
+    return value
+
+
+def _read_hash_pinned_historical_json(
+    role: str,
 ) -> tuple[dict[str, Any], bytes, str]:
-    payload = _read_owner_private_regular(path, code=file_code)
+    """Read one fixed byte-authenticated producer JSON without reserializing."""
+
+    if (
+        FIXED_AUTHORITY_SERIALIZATION_POLICY.get(role)
+        != HASH_PINNED_HISTORICAL_PRODUCER_JSON
+        or role not in R7F_AUTHORITY_NAMES
+    ):
+        _fail("R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID")
+    expected_sha256 = EXPECTED_R7F_RECEIPT_SHA256.get(role)
+    if (
+        not isinstance(expected_sha256, str)
+        or SHA_RE.fullmatch(expected_sha256) is None
+    ):
+        _fail("R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID")
+    path = _fixed_authority_input_paths()[role]
+    payload = _read_owner_private_regular(
+        path, code="R8U_R7G_AUTHORITY_FILE_INVALID"
+    )
     digest = hashlib.sha256(payload).hexdigest()
-    if expected_sha256 is not None and digest != expected_sha256:
-        _fail("R8U_R7G_R7F_AUTHORITY_HASH_INVALID")
-    value = _strict_json_object(payload, code=json_code)
-    if payload != core.canonical_json_bytes(value):
-        _fail(json_code)
+    if digest != expected_sha256:
+        _fail("R8U_R7G_AUTHORITY_HASH_MISMATCH")
+    value = _strict_authority_json_object(payload)
     return value, payload, digest
+
+
+def _read_producer_canonical_json(
+    role: str,
+) -> tuple[dict[str, Any], bytes, str]:
+    """Read one fixed compact producer artifact under its own byte contract."""
+
+    if (
+        FIXED_AUTHORITY_SERIALIZATION_POLICY.get(role)
+        != PRODUCER_CANONICAL_JSON
+        or role not in {"scheduler_account", "probe_submission", "probe_terminal"}
+    ):
+        _fail("R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID")
+    path = _fixed_authority_input_paths()[role]
+    payload = _read_owner_private_regular(
+        path, code="R8U_R7G_AUTHORITY_FILE_INVALID"
+    )
+    value = _strict_authority_json_object(payload)
+    if payload != core.canonical_json_bytes(value):
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+    return value, payload, hashlib.sha256(payload).hexdigest()
+
+
+def _read_r7g_compact_json(
+    path: Path, *, file_code: str,
+) -> tuple[dict[str, Any], bytes, str]:
+    """Read a newly produced R7G object and retain compact-byte authority."""
+
+    payload = _read_owner_private_regular(path, code=file_code)
+    value = _strict_authority_json_object(payload)
+    if payload != core.canonical_json_bytes(value):
+        _fail("R8U_R7G_CURRENT_OUTPUT_CANONICAL_BYTES_INVALID")
+    return value, payload, hashlib.sha256(payload).hexdigest()
 
 
 def _validate_private_directory(path: Path) -> None:
@@ -525,27 +752,24 @@ def _atomic_write_private_json_no_clobber(
 
 def _r7f_common(value: Mapping[str, Any], *, artifact_type: str,
                 statuses: frozenset[str]) -> None:
-    expected = {
-        "schema_version": 1,
-        "artifact_type": artifact_type,
-        "original_scientific_commit": SCIENTIFIC_COMMIT,
-        "prior_finalized_runtime_commit": r7.R8U_R7_PRIOR_FINALIZED_RUNTIME_COMMIT,
-        "r7c_adjudication_commit": r7.R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
-        "implementation_commit": RUNTIME_IMPLEMENTATION_COMMIT,
-        "attempt_id": ATTEMPT_ID,
-        "batch_plan_sha256": PLAN_SHA256,
-    }
-    epochs = value.get("implementation_authority_epochs")
+    status = value.get("status")
+    expected = dict(
+        r7._r8u_r7f_common(
+            artifact_type=artifact_type,
+            status=str(status),
+            implementation_commit=RUNTIME_IMPLEMENTATION_COMMIT,
+        )
+    )
     if (
         not isinstance(value, Mapping)
-        or value.get("status") not in statuses
-        or any(not _exact_typed_equal(value.get(key), item) for key, item in expected.items())
-        or not isinstance(epochs, Mapping)
-        or epochs.get("scientific_commit") != SCIENTIFIC_COMMIT
-        or epochs.get("r8u_r7f_plan_scope_recovery_commit")
-        != RUNTIME_IMPLEMENTATION_COMMIT
+        or status not in statuses
+        or set(expected) != R7F_COMMON_KEYS
+        or any(
+            not _exact_typed_equal(value.get(key), item)
+            for key, item in expected.items()
+        )
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
 
 
 def _validate_qsub_evidence(value: object) -> None:
@@ -556,12 +780,173 @@ def _validate_qsub_evidence(value: object) -> None:
         or isinstance(value.get("stdout_bytes"), bool)
         or not isinstance(value.get("stdout_bytes"), int)
         or int(value.get("stdout_bytes", -1)) < 1
-        or value.get("stderr_bytes") != 0
-        or value.get("exit_status") != 0
+        or not _exact_typed_equal(value.get("stderr_bytes"), 0)
+        or not _exact_typed_equal(value.get("exit_status"), 0)
         or SHA_RE.fullmatch(str(value.get("stdout_sha256", ""))) is None
         or SHA_RE.fullmatch(str(value.get("stderr_sha256", ""))) is None
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+
+
+def _fixed_control_sha256(path: Path) -> str:
+    payload = _read_owner_private_regular(
+        path, code="R8U_R7G_AUTHORITY_FILE_INVALID"
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _fixed_probe_qsub_evidence() -> dict[str, Any]:
+    evidence: dict[str, bytes] = {}
+    try:
+        for kind in ("stdout", "stderr", "exit_status"):
+            evidence[kind] = scheduler._read_scheduler_evidence(
+                PROBE_SCHEDULER_ROOT / f"probe.qsub.{kind}.restricted"
+            )
+    except Exception as exc:
+        raise R7GAccountingError(
+            "R8U_R7G_AUTHORITY_FILE_INVALID"
+        ) from exc
+    if (
+        not evidence["stdout"]
+        or evidence["stderr"] != b""
+        or evidence["exit_status"] != b"0\n"
+    ):
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+    try:
+        captured_job_id = r7._parse_r8u_r7d_probe_qsub_stdout(
+            evidence["stdout"]
+        )
+    except Exception as exc:
+        raise R7GAccountingError(
+            "R8U_R7G_AUTHORITY_SEMANTIC_INVALID"
+        ) from exc
+    if captured_job_id != PROBE_JOB_ID:
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+    return {
+        "stdout_bytes": len(evidence["stdout"]),
+        "stdout_sha256": hashlib.sha256(evidence["stdout"]).hexdigest(),
+        "stderr_bytes": 0,
+        "stderr_sha256": hashlib.sha256(evidence["stderr"]).hexdigest(),
+        "exit_status": 0,
+    }
+
+
+def _validate_capacity_producer_receipt(
+    value: Mapping[str, Any], *, plan: Mapping[str, Any] | None,
+) -> None:
+    """Apply the fixed R7F producer schema and, with a plan, full replay."""
+
+    fixed = {
+        "artifact_type": r7d_capacity.R8U_R7F_CAPACITY_ARTIFACT_TYPE,
+        "status": r7d_capacity.R8U_R7F_CAPACITY_STATUS_PASS,
+        "original_attempt_id": ATTEMPT_ID,
+        "original_plan_sha256": PLAN_SHA256,
+        "original_scientific_governing_commit": SCIENTIFIC_COMMIT,
+        "r7f_runtime_commit": RUNTIME_IMPLEMENTATION_COMMIT,
+    }
+    if any(not _exact_typed_equal(value.get(key), item) for key, item in fixed.items()):
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+    if plan is None:
+        return
+    baselines = (
+        "preserved_old_control_evidence_bytes_baseline",
+        "preserved_old_control_evidence_files_baseline",
+        "confirmed_partial_artifact_bytes_baseline",
+        "confirmed_partial_artifact_files_baseline",
+    )
+    if any(
+        isinstance(value.get(field), bool)
+        or not isinstance(value.get(field), int)
+        or int(value.get(field, -1)) < 0
+        for field in baselines
+    ):
+        _fail("R8U_R7G_AUTHORITY_SCHEMA_INVALID")
+    try:
+        validated = r7d_capacity.validate_fixed_r8u_r7f_tasks17_19_capacity(
+            plan,
+            value,
+            r7f_runtime_commit=RUNTIME_IMPLEMENTATION_COMMIT,
+            preserved_old_evidence_bytes=int(value[baselines[0]]),
+            preserved_old_evidence_files=int(value[baselines[1]]),
+            confirmed_partial_artifact_bytes=int(value[baselines[2]]),
+            confirmed_partial_artifact_files=int(value[baselines[3]]),
+            raw_capture_root=None,
+        )
+    except Exception as exc:
+        code = str(getattr(exc, "code", ""))
+        classified = (
+            "R8U_R7G_AUTHORITY_SCHEMA_INVALID"
+            if "SCHEMA" in code
+            else "R8U_R7G_AUTHORITY_SEMANTIC_INVALID"
+        )
+        raise R7GAccountingError(classified) from exc
+    if not _exact_typed_equal(validated, value):
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+
+
+def _validate_fixed_authority_role(
+    role: str,
+    value: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any] | None,
+) -> None:
+    """Dispatch only the eight closed historical authority roles."""
+
+    if role == "capacity":
+        _validate_capacity_producer_receipt(value, plan=plan)
+        return
+    r7f_shapes = {
+        "continuation_claim": (
+            "lvef_c3_r8u_r7f_fixed_continuation_claim_v1",
+            frozenset({"AUTHORIZED_FRESH_R7F_CONTINUATION_17_19"}),
+        ),
+        "array_submission": (
+            "lvef_c3_r8u_r7f_array_submission_v1",
+            frozenset({"PASS_EXACT_R7F_ARRAY_17_19_QSUB"}),
+        ),
+        "finalizer_submission": (
+            "lvef_c3_r8u_r7f_finalizer_submission_v1",
+            frozenset({"PASS_EXACT_R7F_HELD_FINALIZER_QSUB"}),
+        ),
+        "combined_submission": (
+            "lvef_c3_r8u_r7f_fixed_continuation_submission_v1",
+            frozenset(
+                {
+                    "PASS_EXACT_R7F_ARRAY_17_19_AND_HELD_FINALIZER",
+                    "BLOCKED_R7F_POST_SUBMISSION_QSTAT_DIAGNOSTIC",
+                }
+            ),
+        ),
+        "probe_submission": (
+            "lvef_c3_r8u_r7f_context_probe_submission_v1",
+            frozenset({"PASS_EXACT_ONE_R7F_CPU_ARRAY_CONTEXT_PROBE_QSUB"}),
+        ),
+        "probe_terminal": (
+            "lvef_c3_r8u_r7f_context_probe_terminal_v1",
+            frozenset({"PASS_R7F_CONTINUATION_WORKER_CONTEXT_PROBE"}),
+        ),
+    }
+    if role in r7f_shapes:
+        artifact_type, statuses = r7f_shapes[role]
+        exact_probe_keys = {
+            "probe_submission": PROBE_SUBMISSION_KEYS,
+            "probe_terminal": PROBE_TERMINAL_KEYS,
+        }
+        if role in exact_probe_keys and set(value) != exact_probe_keys[role]:
+            _fail("R8U_R7G_AUTHORITY_SCHEMA_INVALID")
+        _r7f_common(value, artifact_type=artifact_type, statuses=statuses)
+        return
+    if role == "scheduler_account":
+        try:
+            validated = r7.validate_r8u_r7d_scheduler_account_authority(value)
+        except Exception as exc:
+            raise R7GAccountingError(
+                "R8U_R7G_AUTHORITY_SEMANTIC_INVALID"
+            ) from exc
+        if not _exact_typed_equal(validated, value):
+            _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+        return
+    _fail("R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID")
 
 
 def _r7f_qsub_argv_sha256(argv: Sequence[str]) -> str:
@@ -606,6 +991,9 @@ def _validate_terminal_authority_shape(
         "batch_plan_sha256": PLAN_SHA256,
         "scientific_commit": SCIENTIFIC_COMMIT,
         "runtime_implementation_commit": RUNTIME_IMPLEMENTATION_COMMIT,
+        "base_adjudication_implementation_commit": (
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
         "adjudication_implementation_commit": adjudication_implementation_commit,
         "r7f_authority_receipt_paths": _fixed_authority_paths(),
         "r7f_authority_receipt_sha256": dict(EXPECTED_R7F_RECEIPT_SHA256),
@@ -690,6 +1078,7 @@ def _derive_terminal_authority(
     *, adjudication_implementation_commit: str,
     receipts: Mapping[str, Mapping[str, Any]],
     receipt_sha256: Mapping[str, str],
+    plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Cross-bind already hash-checked R7F and probe/account authorities."""
 
@@ -700,26 +1089,18 @@ def _derive_terminal_authority(
         "probe_submission",
         "probe_terminal",
     }:
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SCHEMA_INVALID")
     if set(receipt_sha256) != set(receipts):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SCHEMA_INVALID")
 
     capacity = receipts["capacity"]
-    if (
-        capacity.get("artifact_type") != r7d_capacity.R8U_R7F_CAPACITY_ARTIFACT_TYPE
-        or capacity.get("status") != r7d_capacity.R8U_R7F_CAPACITY_STATUS_PASS
-        or capacity.get("original_attempt_id") != ATTEMPT_ID
-        or capacity.get("original_plan_sha256") != PLAN_SHA256
-        or capacity.get("original_scientific_governing_commit") != SCIENTIFIC_COMMIT
-        or capacity.get("r7f_runtime_commit") != RUNTIME_IMPLEMENTATION_COMMIT
-    ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+    _validate_capacity_producer_receipt(capacity, plan=plan)
 
     account = receipts["scheduler_account"]
     try:
         account = r7.validate_r8u_r7d_scheduler_account_authority(account)
     except Exception as exc:
-        raise R7GAccountingError("R8U_R7G_SCHEDULER_ACCOUNT_AUTHORITY_INVALID") from exc
+        raise R7GAccountingError("R8U_R7G_AUTHORITY_SEMANTIC_INVALID") from exc
     owner = str(account.get("expected_scheduler_username", ""))
     qsub_environment_sha256 = str(account.get("qsub_environment_sha256", ""))
     account_sha256 = receipt_sha256["scheduler_account"]
@@ -749,7 +1130,7 @@ def _derive_terminal_authority(
         or claim.get("fourth_submission_reachable") is not False
         or not isinstance(script_authority, Mapping)
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
 
     probe_submission = receipts["probe_submission"]
     _r7f_common(
@@ -763,6 +1144,10 @@ def _derive_terminal_authority(
         r7._r8u_r7d_probe_command(RUNTIME_IMPLEMENTATION_COMMIT)
     )
     _validate_qsub_evidence(probe_submission.get("probe_qsub_evidence"))
+    expected_probe_evidence = _fixed_probe_qsub_evidence()
+    expected_probe_authority_sha256 = _fixed_control_sha256(
+        PROBE_AUTHORITY_PATH
+    )
     if (
         probe_submission.get("scheduler_account_authority_sha256") != account_sha256
         or probe_submission.get("r7f_continuation_claim_sha256")
@@ -774,14 +1159,36 @@ def _derive_terminal_authority(
         or probe_submission.get("worker_role") != PROBE_ROLE
         or probe_submission.get("probe_qsub_argv_sha256") != expected_probe_argv
         or probe_submission.get("qsub_environment_sha256") != qsub_environment_sha256
-        or probe_submission.get("array_task_id") != 17
-        or probe_submission.get("array_task_count") != 1
-        or probe_submission.get("array_max_concurrency") != 1
-        or probe_submission.get("scheduler_submission_count") != 1
-        or probe_submission.get("scheduler_submission_maximum") != 3
+        or not _exact_typed_equal(probe_submission.get("array_task_id"), 17)
+        or not _exact_typed_equal(probe_submission.get("array_task_count"), 1)
+        or not _exact_typed_equal(
+            probe_submission.get("array_max_concurrency"), 1
+        )
+        or not _exact_typed_equal(
+            probe_submission.get("scheduler_submission_count"), 1
+        )
+        or not _exact_typed_equal(
+            probe_submission.get("scheduler_submission_maximum"), 3
+        )
         or probe_submission.get("scientific_execution_authorized") is not False
+        or probe_submission.get("probe_authority_sha256")
+        != expected_probe_authority_sha256
+        or not _exact_typed_equal(
+            probe_submission.get("probe_qsub_evidence"),
+            expected_probe_evidence,
+        )
+        or any(
+            not _exact_typed_equal(probe_submission.get(field), 0)
+            for field in (
+                "cloud_requests",
+                "dicom_body_reads",
+                "npz_body_reads",
+                "gpu_executions",
+            )
+        )
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
+    probe_job_id = str(probe_submission["probe_job_id"])
 
     probe_terminal = receipts["probe_terminal"]
     _r7f_common(
@@ -789,18 +1196,27 @@ def _derive_terminal_authority(
         artifact_type="lvef_c3_r8u_r7f_context_probe_terminal_v1",
         statuses=frozenset({"PASS_R7F_CONTINUATION_WORKER_CONTEXT_PROBE"}),
     )
+    expected_worker_receipt_sha256 = _fixed_control_sha256(
+        PROBE_WORKER_RECEIPT_PATH
+    )
+    expected_probe_accounting_sha256 = _fixed_control_sha256(
+        PROBE_ACCOUNTING_PATH
+    )
     if (
         probe_terminal.get("probe_submission_receipt_sha256")
         != receipt_sha256["probe_submission"]
-        or probe_terminal.get("probe_job_id") != PROBE_JOB_ID
+        or probe_terminal.get("worker_context_receipt_sha256")
+        != expected_worker_receipt_sha256
+        or probe_terminal.get("accounting_receipt_sha256")
+        != expected_probe_accounting_sha256
         or probe_terminal.get("qstat_classification")
         not in scheduler.R8U_R7D_QSTAT_PASS_CLASSIFICATIONS
         or probe_terminal.get("controlling_worker_identity") != "PASS"
-        or probe_terminal.get("failed") != 0
-        or probe_terminal.get("exit_status") != 0
-        or probe_terminal.get("task_id") != 17
+        or not _exact_typed_equal(probe_terminal.get("failed"), 0)
+        or not _exact_typed_equal(probe_terminal.get("exit_status"), 0)
+        or not _exact_typed_equal(probe_terminal.get("task_id"), 17)
         or any(
-            probe_terminal.get(field) != 0
+            not _exact_typed_equal(probe_terminal.get(field), 0)
             for field in (
                 "scientific_artifacts_created",
                 "cloud_requests",
@@ -810,7 +1226,7 @@ def _derive_terminal_authority(
             )
         )
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
 
     array = receipts["array_submission"]
     _r7f_common(
@@ -842,7 +1258,7 @@ def _derive_terminal_authority(
         or array.get("array_max_concurrency") != ARRAY_MAX_CONCURRENCY
         or array.get("scheduler_submission_count") != 1
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
 
     finalizer = receipts["finalizer_submission"]
     _r7f_common(
@@ -879,7 +1295,7 @@ def _derive_terminal_authority(
         or finalizer.get("finalizer_held_on_array") is not True
         or finalizer.get("scheduler_submission_count") != 1
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
 
     combined = receipts["combined_submission"]
     _r7f_common(
@@ -920,7 +1336,7 @@ def _derive_terminal_authority(
         or combined.get("whole_stage_retry_authorized") is not False
         or combined.get("fourth_submission_reachable") is not False
     ):
-        _fail("R8U_R7G_R7F_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
 
     if (
         scheduler.SAFE_ACCOUNT_RE.fullmatch(owner) is None
@@ -929,7 +1345,7 @@ def _derive_terminal_authority(
         != list(r7.R8U_R7D_WORKER_ROLES)
         or account.get("runner_sha256") != script_authority.get("runner_sha256")
     ):
-        _fail("R8U_R7G_SCHEDULER_ACCOUNT_AUTHORITY_INVALID")
+        _fail("R8U_R7G_AUTHORITY_SEMANTIC_INVALID")
 
     authority = {
         "schema_name": "lvef_c3_r8u_r7g_r7f_terminal_authority",
@@ -940,6 +1356,9 @@ def _derive_terminal_authority(
         "batch_plan_sha256": PLAN_SHA256,
         "scientific_commit": SCIENTIFIC_COMMIT,
         "runtime_implementation_commit": RUNTIME_IMPLEMENTATION_COMMIT,
+        "base_adjudication_implementation_commit": (
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
         "adjudication_implementation_commit": adjudication_implementation_commit,
         "r7f_authority_receipt_paths": _fixed_authority_paths(),
         "r7f_authority_receipt_sha256": dict(EXPECTED_R7F_RECEIPT_SHA256),
@@ -949,7 +1368,7 @@ def _derive_terminal_authority(
         "probe_submission_receipt_sha256": receipt_sha256["probe_submission"],
         "probe_terminal_receipt_path": str(PROBE_TERMINAL_PATH),
         "probe_terminal_receipt_sha256": receipt_sha256["probe_terminal"],
-        "probe_job_id": PROBE_JOB_ID,
+        "probe_job_id": probe_job_id,
         "probe_job_name": probe_name,
         "probe_role": PROBE_ROLE,
         "expected_owner": owner,
@@ -980,55 +1399,63 @@ def _derive_terminal_authority(
 
 
 def _load_and_derive_fixed_terminal_authority(
-    *, adjudication_implementation_commit: str,
+    *,
+    adjudication_implementation_commit: str,
+    plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    paths = {
-        "capacity": CAPACITY_RECEIPT_PATH,
-        "continuation_claim": CONTINUATION_CLAIM_PATH,
-        "array_submission": ARRAY_SUBMISSION_PATH,
-        "finalizer_submission": FINALIZER_SUBMISSION_PATH,
-        "combined_submission": COMBINED_SUBMISSION_PATH,
-        "scheduler_account": ACCOUNT_AUTHORITY_PATH,
-        "probe_submission": PROBE_SUBMISSION_PATH,
-        "probe_terminal": PROBE_TERMINAL_PATH,
-    }
+    if set(FIXED_AUTHORITY_SERIALIZATION_POLICY) != {
+        *R7F_AUTHORITY_NAMES,
+        "scheduler_account",
+        "probe_submission",
+        "probe_terminal",
+    }:
+        _fail("R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID")
     values: dict[str, Mapping[str, Any]] = {}
     digests: dict[str, str] = {}
-    for name, path in paths.items():
-        expected = (
-            EXPECTED_R7F_RECEIPT_SHA256[name]
-            if name in EXPECTED_R7F_RECEIPT_SHA256
-            else None
-        )
-        value, _payload, digest = _read_private_json(
-            path,
-            file_code="R8U_R7G_R7F_AUTHORITY_FILE_INVALID",
-            json_code="R8U_R7G_R7F_AUTHORITY_JSON_INVALID",
-            expected_sha256=expected,
-        )
+    for name, policy in FIXED_AUTHORITY_SERIALIZATION_POLICY.items():
+        if policy == HASH_PINNED_HISTORICAL_PRODUCER_JSON:
+            value, _payload, digest = _read_hash_pinned_historical_json(name)
+        elif policy == PRODUCER_CANONICAL_JSON:
+            value, _payload, digest = _read_producer_canonical_json(name)
+        else:
+            _fail("R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID")
+        _validate_fixed_authority_role(name, value, plan=plan)
         values[name] = value
         digests[name] = digest
     return _derive_terminal_authority(
         adjudication_implementation_commit=adjudication_implementation_commit,
         receipts=values,
         receipt_sha256=digests,
+        plan=plan,
+    )
+
+
+def preflight_fixed_terminal_authority(
+    *,
+    plan: Mapping[str, Any],
+    adjudication_implementation_commit: str,
+) -> dict[str, Any]:
+    """Purely read and validate all eight inputs; create/query nothing."""
+
+    if not isinstance(plan, Mapping):
+        _fail("R8U_R7G_AUTHORITY_SCHEMA_INVALID")
+    return _load_and_derive_fixed_terminal_authority(
+        adjudication_implementation_commit=adjudication_implementation_commit,
+        plan=plan,
     )
 
 
 def _load_terminal_authority_receipt(
     *, adjudication_implementation_commit: str,
 ) -> tuple[dict[str, Any], str]:
-    value, payload, digest = _read_private_json(
+    value, _payload, digest = _read_r7g_compact_json(
         TERMINAL_AUTHORITY_PATH,
         file_code="R8U_R7G_TERMINAL_AUTHORITY_FILE_INVALID",
-        json_code="R8U_R7G_TERMINAL_AUTHORITY_JSON_INVALID",
     )
     validated = _validate_terminal_authority_shape(
         value,
         adjudication_implementation_commit=adjudication_implementation_commit,
     )
-    if payload != core.canonical_json_bytes(validated):
-        _fail("R8U_R7G_TERMINAL_AUTHORITY_JSON_INVALID")
     return validated, digest
 
 
@@ -1049,15 +1476,18 @@ def load_terminal_authority(
 
 
 def ensure_terminal_authority(
-    *, adjudication_implementation_commit: str,
+    *,
+    plan: Mapping[str, Any],
+    adjudication_implementation_commit: str,
 ) -> TerminalAuthorityResult:
     """Create or reuse the one fixed, hash-derived R7F terminal authority."""
 
     _require_adjudication_commit(adjudication_implementation_commit)
-    ensure_fixed_accounting_directory()
     expected = _load_and_derive_fixed_terminal_authority(
-        adjudication_implementation_commit=adjudication_implementation_commit
+        adjudication_implementation_commit=adjudication_implementation_commit,
+        plan=plan,
     )
+    ensure_fixed_accounting_directory()
     if os.path.lexists(TERMINAL_AUTHORITY_PATH):
         value, digest = _load_terminal_authority_receipt(
             adjudication_implementation_commit=adjudication_implementation_commit
@@ -1420,6 +1850,9 @@ def build_accounting_receipt(
         "batch_plan_sha256": PLAN_SHA256,
         "scientific_commit": SCIENTIFIC_COMMIT,
         "runtime_implementation_commit": RUNTIME_IMPLEMENTATION_COMMIT,
+        "base_adjudication_implementation_commit": (
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
         "adjudication_implementation_commit": terminal_authority[
             "adjudication_implementation_commit"
         ],
@@ -1495,6 +1928,9 @@ def validate_accounting_receipt(
         "batch_plan_sha256": PLAN_SHA256,
         "scientific_commit": SCIENTIFIC_COMMIT,
         "runtime_implementation_commit": RUNTIME_IMPLEMENTATION_COMMIT,
+        "base_adjudication_implementation_commit": (
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
         "adjudication_implementation_commit": terminal_authority[
             "adjudication_implementation_commit"
         ],
@@ -1573,18 +2009,13 @@ def _load_accounting_receipt_at_path(
     *,
     terminal_authority: Mapping[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    payload = _read_owner_private_regular(
-        path, code="R8U_R7G_ACCOUNTING_RECEIPT_FILE_INVALID"
+    value, _payload, digest = _read_r7g_compact_json(
+        path, file_code="R8U_R7G_ACCOUNTING_RECEIPT_FILE_INVALID"
     )
-    value = _strict_json_object(
-        payload, code="R8U_R7G_ACCOUNTING_RECEIPT_JSON_INVALID"
-    )
-    if payload != core.canonical_json_bytes(value):
-        _fail("R8U_R7G_ACCOUNTING_RECEIPT_JSON_INVALID")
     validated = validate_accounting_receipt(
         value, spec, terminal_authority=terminal_authority
     )
-    return validated, hashlib.sha256(payload).hexdigest()
+    return validated, digest
 
 
 def load_accounting_receipt(
@@ -1685,10 +2116,8 @@ def validate_fixed_scheduler_accounting_environment(
         terminal_authority, adjudication_implementation_commit=commit
     )
     try:
-        account, _payload, digest = _read_private_json(
-            ACCOUNT_AUTHORITY_PATH,
-            file_code="R8U_R7G_SCHEDULER_ACCOUNT_AUTHORITY_INVALID",
-            json_code="R8U_R7G_SCHEDULER_ACCOUNT_AUTHORITY_INVALID",
+        account, _payload, digest = _read_producer_canonical_json(
+            "scheduler_account"
         )
         account = r7.validate_r8u_r7d_scheduler_account_authority(account)
     except R7GAccountingError:
@@ -1762,11 +2191,14 @@ __all__ = (
     "FINALIZER_JOB_ID",
     "FINALIZER_ROLE",
     "FixedAccountingSpec",
+    "HISTORICAL_JSON_ROLES_AUDITED",
+    "HISTORICAL_JSON_ROLE_POLICY",
     "PROBE_JOB_ID",
     "PROBE_ROLE",
     "QACCT_PATH",
     "QACCT_RECORD_NORMALIZATION",
     "R7GAccountingError",
+    "R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT",
     "R7G_ROOT",
     "RUNTIME_IMPLEMENTATION_COMMIT",
     "SCHEDULER_LOG_ROOT",
@@ -1785,6 +2217,7 @@ __all__ = (
     "normalized_qacct_record_sha256",
     "parse_qacct_records",
     "preflight_fixed_accounting_receipts",
+    "preflight_fixed_terminal_authority",
     "project_fixed_qacct_record",
     "publish_accounting_receipt",
     "query_fixed_qacct_record",

@@ -35,6 +35,15 @@ def _write_private_json(path: Path, value: dict) -> bytes:
     return payload
 
 
+def _write_producer_indented_json(path: Path, value: dict) -> bytes:
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    path.write_bytes(payload)
+    os.chmod(path, 0o600)
+    return payload
+
+
 def _summary_and_receipt(*, technical: int) -> tuple[dict, dict, dict]:
     successful = 9
     multiframe = successful + technical
@@ -359,7 +368,7 @@ def test_original_r7f_cohort_receipt_validates_r7d_epoch_and_totals() -> None:
     value = _original_summary(batches)
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "full_c3_finalization.aggregate_safe.json"
-        payload = _write_private_json(path, value)
+        payload = _write_producer_indented_json(path, value)
         with mock.patch.object(evidence, "ORIGINAL_COHORT_RECEIPT_PATH", path):
             assert evidence.load_original_cohort_finalization_receipt(batches) == (
                 value,
@@ -367,7 +376,7 @@ def test_original_r7f_cohort_receipt_validates_r7d_epoch_and_totals() -> None:
             )
             wrong = copy.deepcopy(value)
             wrong["r8u_r7d_implementation_commit"] = "8" * 40
-            _write_private_json(path, wrong)
+            _write_producer_indented_json(path, wrong)
             try:
                 evidence.load_original_cohort_finalization_receipt(batches)
             except evidence.R7GEvidenceError as exc:
@@ -376,6 +385,36 @@ def test_original_r7f_cohort_receipt_validates_r7d_epoch_and_totals() -> None:
                 )
             else:
                 raise AssertionError("wrong R7F runtime epoch accepted")
+
+
+def test_declared_producer_serializers_are_enforced() -> None:
+    value = {"artifact_type": "synthetic", "status": "PASS"}
+    compact = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    pretty = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    evidence._require_tail_batch_producer_serialization(value, compact)
+    evidence._require_original_cohort_producer_serialization(value, pretty)
+    for function, payload, code in (
+        (
+            evidence._require_tail_batch_producer_serialization,
+            pretty,
+            "R8U_R7G_BATCH_RECEIPT_INVALID",
+        ),
+        (
+            evidence._require_original_cohort_producer_serialization,
+            compact,
+            "R8U_R7G_ORIGINAL_COHORT_RECEIPT_INVALID",
+        ),
+    ):
+        try:
+            function(value, payload)
+        except evidence.R7GEvidenceError as exc:
+            assert exc.code == code
+        else:
+            raise AssertionError("non-producer JSON serialization accepted")
 
 
 def test_fixed_plan_requires_exact_canonical_and_byte_hash() -> None:

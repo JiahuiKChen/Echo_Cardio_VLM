@@ -28,6 +28,9 @@ SCIENTIFIC_COMMIT: Final = "e1cdb674ada23bbc9f3a1ff77c33927bd324d3ed"
 R7F_RUNTIME_IMPLEMENTATION_COMMIT: Final = (
     "2223d9768a1cc23efbe95a3c5474ea747a383a10"
 )
+R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT: Final = (
+    "4dc4b2327f91ffd3912c91a7113f16d41d0562a8"
+)
 BATCH16_FINAL_RECEIPT_SHA256: Final = (
     "63b002947814e92c616d0eb7f74ca334cba4e77cdc17f7ce2b55cfc51e090439"
 )
@@ -104,6 +107,7 @@ COHORT_RECEIPT_KEYS: Final = frozenset(
         "batch_plan_sha256",
         "scientific_commit",
         "runtime_implementation_commit",
+        "base_adjudication_implementation_commit",
         "adjudication_implementation_commit",
         "terminal_authority_sha256",
         *R7F_AUTHORITY_RECEIPT_KEYS,
@@ -137,6 +141,7 @@ LOCK_RECEIPT_KEYS: Final = frozenset(
         "batch_plan_sha256",
         "scientific_commit",
         "runtime_implementation_commit",
+        "base_adjudication_implementation_commit",
         "adjudication_implementation_commit",
         "terminal_authority_sha256",
         *R7F_AUTHORITY_RECEIPT_KEYS,
@@ -401,17 +406,28 @@ def _validate_fixed_authority(
     plan_sha256: str,
     scientific_commit: str,
     runtime_implementation_commit: str,
+    base_adjudication_implementation_commit: str,
     adjudication_implementation_commit: str,
 ) -> None:
+    base_adjudication = _require_commit(
+        base_adjudication_implementation_commit,
+        "BASE_ADJUDICATION_COMMIT_INVALID",
+    )
+    adjudication = _require_commit(
+        adjudication_implementation_commit, "ADJUDICATION_COMMIT_INVALID"
+    )
     if (
         attempt_id != ATTEMPT_ID
         or plan_sha256 != PLAN_SHA256
         or scientific_commit != SCIENTIFIC_COMMIT
         or runtime_implementation_commit != R7F_RUNTIME_IMPLEMENTATION_COMMIT
-        or _require_commit(
-            adjudication_implementation_commit, "ADJUDICATION_COMMIT_INVALID"
-        )
-        == R7F_RUNTIME_IMPLEMENTATION_COMMIT
+        or base_adjudication
+        != R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        or adjudication
+        in {
+            R7F_RUNTIME_IMPLEMENTATION_COMMIT,
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        }
     ):
         _fail("R7G_FIXED_AUTHORITY_MISMATCH")
 
@@ -487,6 +503,7 @@ def build_cohort_finalization_receipt(
     plan_sha256: str,
     scientific_commit: str,
     runtime_implementation_commit: str,
+    base_adjudication_implementation_commit: str,
     adjudication_implementation_commit: str,
     terminal_authority_sha256: str,
     r7f_authority_receipt_sha256: Mapping[str, Any],
@@ -502,6 +519,9 @@ def build_cohort_finalization_receipt(
         plan_sha256=plan_sha256,
         scientific_commit=scientific_commit,
         runtime_implementation_commit=runtime_implementation_commit,
+        base_adjudication_implementation_commit=(
+            base_adjudication_implementation_commit
+        ),
         adjudication_implementation_commit=adjudication_implementation_commit,
     )
     _require_hash(terminal_authority_sha256, "TERMINAL_AUTHORITY_HASH_INVALID")
@@ -531,6 +551,9 @@ def build_cohort_finalization_receipt(
         "batch_plan_sha256": plan_sha256,
         "scientific_commit": scientific_commit,
         "runtime_implementation_commit": runtime_implementation_commit,
+        "base_adjudication_implementation_commit": (
+            base_adjudication_implementation_commit
+        ),
         "adjudication_implementation_commit": adjudication_implementation_commit,
         "terminal_authority_sha256": terminal_authority_sha256,
         **r7f_hashes,
@@ -577,6 +600,8 @@ def _validate_cohort_receipt_projection(value: object) -> dict[str, Any]:
         or value.get("scientific_commit") != SCIENTIFIC_COMMIT
         or value.get("runtime_implementation_commit")
         != R7F_RUNTIME_IMPLEMENTATION_COMMIT
+        or value.get("base_adjudication_implementation_commit")
+        != R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
         or value.get("continuation_array_job_id") != ARRAY_JOB_ID
         or value.get("continuation_array_task_range") != "17-19"
         or value.get("continuation_array_max_concurrency") != 1
@@ -589,7 +614,10 @@ def _validate_cohort_receipt_projection(value: object) -> dict[str, Any]:
         value.get("adjudication_implementation_commit"),
         "ADJUDICATION_COMMIT_INVALID",
     )
-    if adjudication == R7F_RUNTIME_IMPLEMENTATION_COMMIT:
+    if adjudication in {
+        R7F_RUNTIME_IMPLEMENTATION_COMMIT,
+        R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT,
+    }:
         _fail("RUNTIME_ADJUDICATION_COMMIT_CONFLATION")
     _require_hash(
         value.get("terminal_authority_sha256"),
@@ -712,6 +740,9 @@ def build_post_reconstruction_lock_receipt(
     if canonical_json_sha256(cohort_receipt) != cohort_receipt_sha256:
         _fail("LOCK_COHORT_RECEIPT_INVALID")
     cohort = _validate_cohort_receipt_projection(cohort_receipt)
+    base_adjudication = str(
+        cohort["base_adjudication_implementation_commit"]
+    )
     adjudication = str(cohort["adjudication_implementation_commit"])
     repository = _validate_repository_state(
         repository_state,
@@ -732,6 +763,7 @@ def build_post_reconstruction_lock_receipt(
         "runtime_implementation_commit": cohort[
             "runtime_implementation_commit"
         ],
+        "base_adjudication_implementation_commit": base_adjudication,
         "adjudication_implementation_commit": adjudication,
         "terminal_authority_sha256": cohort["terminal_authority_sha256"],
         **{key: cohort[key] for key in R7F_AUTHORITY_RECEIPT_KEYS},
@@ -1015,6 +1047,7 @@ __all__ = [
     "PLAN_SHA256",
     "R7F_AUTHORITY_RECEIPT_KEYS",
     "R7F_RUNTIME_IMPLEMENTATION_COMMIT",
+    "R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT",
     "R7GMetadataError",
     "SCIENTIFIC_COMMIT",
     "ZERO_SCIENTIFIC_ACTION_KEYS",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
@@ -31,12 +32,20 @@ import lvef_c3_r8u_r7g_accounting as accounting
 ADJUDICATION_COMMIT = "a" * 40
 OWNER = "pkarim"
 SHA = "b" * 64
+FIXED_PLAN = {"synthetic_fixed_plan": True}
 QUERY_TIME = datetime(2026, 9, 7, 14, 0, tzinfo=timezone.utc)
 CREATION_TIME = datetime(2026, 9, 7, 14, 0, 1, tzinfo=timezone.utc)
 
 
 def _write_private_json(path: Path, value: Mapping[str, Any]) -> str:
     body = core.canonical_json_bytes(value)
+    path.write_bytes(body)
+    path.chmod(0o600)
+    return hashlib.sha256(body).hexdigest()
+
+
+def _write_capacity_producer_json(path: Path, value: Mapping[str, Any]) -> str:
+    body = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
     path.write_bytes(body)
     path.chmod(0o600)
     return hashlib.sha256(body).hexdigest()
@@ -52,10 +61,10 @@ def _common(artifact_type: str, status: str) -> dict[str, Any]:
     )
 
 
-def _qsub_evidence() -> dict[str, Any]:
+def _qsub_evidence(stdout: bytes = b"7480830\n") -> dict[str, Any]:
     return {
-        "stdout_bytes": 8,
-        "stdout_sha256": hashlib.sha256(b"7480830\n").hexdigest(),
+        "stdout_bytes": len(stdout),
+        "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
         "stderr_bytes": 0,
         "stderr_sha256": hashlib.sha256(b"").hexdigest(),
         "exit_status": 0,
@@ -67,6 +76,8 @@ class _Fixture:
         self.root = root.resolve()
         self.attempt_root = self.root / "attempt"
         self.input_root = self.attempt_root / "r7f_inputs"
+        self.probe_root = self.input_root / "probe_dependencies"
+        self.probe_scheduler_root = self.probe_root / "scheduler"
         self.r7g_root = self.attempt_root / "r8u_r7g_r7f_terminal_adjudication"
         self.paths = {
             "capacity": self.input_root / "capacity.restricted.json",
@@ -78,15 +89,25 @@ class _Fixture:
             "probe_submission": self.input_root / "probe_submission.restricted.json",
             "probe_terminal": self.input_root / "probe_terminal.restricted.json",
         }
+        self.probe_authority_path = self.probe_root / "authority.restricted.json"
+        self.probe_worker_path = self.probe_root / "worker.restricted.json"
+        self.probe_accounting_path = self.probe_root / "accounting.restricted.json"
+        self.capacity_validation_calls = 0
         self.attempt_root.mkdir(mode=0o700)
         self.input_root.mkdir(mode=0o700)
+        self.probe_root.mkdir(mode=0o700)
+        self.probe_scheduler_root.mkdir(mode=0o700)
         self.receipts: dict[str, dict[str, Any]] = {}
         self.hashes: dict[str, str] = {}
         self._build()
 
     def _seal(self, name: str, value: Mapping[str, Any]) -> str:
         self.receipts[name] = dict(value)
-        digest = _write_private_json(self.paths[name], value)
+        digest = (
+            _write_capacity_producer_json(self.paths[name], value)
+            if name == "capacity"
+            else _write_private_json(self.paths[name], value)
+        )
         self.hashes[name] = digest
         return digest
 
@@ -111,6 +132,23 @@ class _Fixture:
         self.environment = environment
         self.environment_sha = environment_sha
         self.scripts = scripts
+        probe_authority_sha = _write_private_json(
+            self.probe_authority_path, {"synthetic": "probe-authority"}
+        )
+        worker_receipt_sha = _write_private_json(
+            self.probe_worker_path, {"synthetic": "worker-receipt"}
+        )
+        probe_accounting_sha = _write_private_json(
+            self.probe_accounting_path, {"synthetic": "probe-accounting"}
+        )
+        for name, payload in {
+            "stdout": b"7480822\n",
+            "stderr": b"",
+            "exit_status": b"0\n",
+        }.items():
+            path = self.probe_scheduler_root / f"probe.qsub.{name}.restricted"
+            path.write_bytes(payload)
+            path.chmod(0o600)
 
         capacity_receipt = {
             "artifact_type": capacity.R8U_R7F_CAPACITY_ARTIFACT_TYPE,
@@ -119,6 +157,10 @@ class _Fixture:
             "original_plan_sha256": accounting.PLAN_SHA256,
             "original_scientific_governing_commit": accounting.SCIENTIFIC_COMMIT,
             "r7f_runtime_commit": runtime,
+            "preserved_old_control_evidence_bytes_baseline": 0,
+            "preserved_old_control_evidence_files_baseline": 0,
+            "confirmed_partial_artifact_bytes_baseline": 0,
+            "confirmed_partial_artifact_files_baseline": 0,
         }
         capacity_sha = self._seal("capacity", capacity_receipt)
 
@@ -175,6 +217,7 @@ class _Fixture:
                 "PASS_EXACT_ONE_R7F_CPU_ARRAY_CONTEXT_PROBE_QSUB",
             ),
             "scheduler_account_authority_sha256": account_sha,
+            "probe_authority_sha256": probe_authority_sha,
             "r7f_continuation_claim_sha256": claim_sha,
             "r7f_capacity_receipt_sha256": capacity_sha,
             "probe_job_id": "7480822",
@@ -183,7 +226,7 @@ class _Fixture:
             "probe_qsub_argv_sha256": accounting._r7f_qsub_argv_sha256(
                 r7._r8u_r7d_probe_command(runtime)
             ),
-            "probe_qsub_evidence": _qsub_evidence(),
+            "probe_qsub_evidence": _qsub_evidence(b"7480822\n"),
             "qsub_environment_sha256": environment_sha,
             "array_task_id": 17,
             "array_task_count": 1,
@@ -191,6 +234,10 @@ class _Fixture:
             "scheduler_submission_count": 1,
             "scheduler_submission_maximum": 3,
             "scientific_execution_authorized": False,
+            "cloud_requests": 0,
+            "dicom_body_reads": 0,
+            "npz_body_reads": 0,
+            "gpu_executions": 0,
         }
         probe_submission_sha = self._seal("probe_submission", probe_submission)
 
@@ -200,7 +247,8 @@ class _Fixture:
                 "PASS_R7F_CONTINUATION_WORKER_CONTEXT_PROBE",
             ),
             "probe_submission_receipt_sha256": probe_submission_sha,
-            "probe_job_id": "7480822",
+            "worker_context_receipt_sha256": worker_receipt_sha,
+            "accounting_receipt_sha256": probe_accounting_sha,
             "qstat_classification": next(
                 iter(scheduler.R8U_R7D_QSTAT_PASS_CLASSIFICATIONS)
             ),
@@ -307,8 +355,12 @@ class _Fixture:
             "FINALIZER_SUBMISSION_PATH": self.paths["finalizer_submission"],
             "COMBINED_SUBMISSION_PATH": self.paths["combined_submission"],
             "ACCOUNT_AUTHORITY_PATH": self.paths["scheduler_account"],
+            "PROBE_AUTHORITY_PATH": self.probe_authority_path,
             "PROBE_SUBMISSION_PATH": self.paths["probe_submission"],
+            "PROBE_WORKER_RECEIPT_PATH": self.probe_worker_path,
+            "PROBE_ACCOUNTING_PATH": self.probe_accounting_path,
             "PROBE_TERMINAL_PATH": self.paths["probe_terminal"],
+            "PROBE_SCHEDULER_ROOT": self.probe_scheduler_root,
             "R7G_ROOT": self.r7g_root,
             "TERMINAL_AUTHORITY_PATH": terminal_path,
             "ACCOUNTING_ROOT": accounting_root,
@@ -324,6 +376,46 @@ class _Fixture:
                         for name in accounting.R7F_AUTHORITY_NAMES
                     },
                     clear=True,
+                )
+            )
+            def validate_capacity(
+                plan: Mapping[str, Any],
+                value: Mapping[str, Any],
+                **kwargs: Any,
+            ) -> dict[str, Any]:
+                self.capacity_validation_calls += 1
+                expected_keys = {
+                    "artifact_type",
+                    "status",
+                    "original_attempt_id",
+                    "original_plan_sha256",
+                    "original_scientific_governing_commit",
+                    "r7f_runtime_commit",
+                    "preserved_old_control_evidence_bytes_baseline",
+                    "preserved_old_control_evidence_files_baseline",
+                    "confirmed_partial_artifact_bytes_baseline",
+                    "confirmed_partial_artifact_files_baseline",
+                }
+                if plan != FIXED_PLAN or set(value) != expected_keys:
+                    raise capacity.PostReallocationCapacityError(
+                        "R8U_R7F_CAPACITY_RECEIPT_SCHEMA_INVALID"
+                    )
+                if (
+                    value.get("status") != capacity.R8U_R7F_CAPACITY_STATUS_PASS
+                    or kwargs.get("r7f_runtime_commit")
+                    != accounting.RUNTIME_IMPLEMENTATION_COMMIT
+                    or kwargs.get("raw_capture_root", "missing") is not None
+                ):
+                    raise capacity.PostReallocationCapacityError(
+                        "R8U_R7F_CAPACITY_RECEIPT_REPLAY_INVALID"
+                    )
+                return dict(value)
+
+            stack.enter_context(
+                mock.patch.object(
+                    capacity,
+                    "validate_fixed_r8u_r7f_tasks17_19_capacity",
+                    side_effect=validate_capacity,
                 )
             )
             yield
@@ -348,6 +440,7 @@ def _expect_code(code: str, callback: Callable[[], object]) -> None:
 
 def _authority() -> accounting.TerminalAuthorityResult:
     return accounting.ensure_terminal_authority(
+        plan=FIXED_PLAN,
         adjudication_implementation_commit=ADJUDICATION_COMMIT
     )
 
@@ -392,6 +485,10 @@ def test_terminal_authority_is_derived_sealed_and_reused() -> None:
         assert authority["runtime_implementation_commit"] == (
             "2223d9768a1cc23efbe95a3c5474ea747a383a10"
         )
+        assert authority["base_adjudication_implementation_commit"] == (
+            accounting.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        )
+        assert authority["adjudication_implementation_commit"] == ADJUDICATION_COMMIT
         assert authority["probe_job_id"] == "7480822"
         assert authority["expected_owner"] == OWNER
         assert authority["array_job_name"] == "lvef_c3_r8u_r7d_seq_2223d976"
@@ -404,6 +501,9 @@ def test_terminal_authority_is_derived_sealed_and_reused() -> None:
             "finalizer": "lvef_c3_r8u_r7d_fin_2223d976.o7480831",
         }
         assert stat.S_IMODE(accounting.TERMINAL_AUTHORITY_PATH.stat().st_mode) == 0o600
+        assert accounting.TERMINAL_AUTHORITY_PATH.read_bytes() == (
+            core.canonical_json_bytes(authority)
+        )
         reused = _authority()
         assert reused.created is False
         assert reused.authority_sha256 == created.authority_sha256
@@ -475,7 +575,7 @@ def test_hash_substitution_and_cross_binding_fail_closed() -> None:
         replacement = dict(fixture.receipts["capacity"])
         replacement["extra"] = "substitution"
         _write_private_json(fixture.paths["capacity"], replacement)
-        _expect_code("R8U_R7G_R7F_AUTHORITY_HASH_INVALID", _authority)
+        _expect_code("R8U_R7G_AUTHORITY_HASH_MISMATCH", _authority)
 
     with _fixture() as fixture:
         replacement = dict(fixture.receipts["combined_submission"])
@@ -484,7 +584,182 @@ def test_hash_substitution_and_cross_binding_fail_closed() -> None:
             fixture.paths["combined_submission"], replacement
         )
         accounting.EXPECTED_R7F_RECEIPT_SHA256["combined_submission"] = replacement_sha
-        _expect_code("R8U_R7G_R7F_AUTHORITY_INVALID", _authority)
+        _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+
+def _install_capacity_bytes(
+    fixture: _Fixture, payload: bytes, *, pin: bool,
+) -> None:
+    fixture.paths["capacity"].write_bytes(payload)
+    fixture.paths["capacity"].chmod(0o600)
+    if pin:
+        accounting.EXPECTED_R7F_RECEIPT_SHA256["capacity"] = hashlib.sha256(
+            payload
+        ).hexdigest()
+
+
+def test_hash_pinned_capacity_accepts_exact_producer_bytes_only() -> None:
+    with _fixture() as fixture:
+        payload = fixture.paths["capacity"].read_bytes()
+        assert payload.startswith(b"{\n") and payload.endswith(b"\n")
+        assert payload != core.canonical_json_bytes(fixture.receipts["capacity"])
+        value, observed, digest = accounting._read_hash_pinned_historical_json(
+            "capacity"
+        )
+        assert value == fixture.receipts["capacity"]
+        assert observed == payload
+        assert digest == fixture.hashes["capacity"]
+        result = accounting.preflight_fixed_terminal_authority(
+            plan=FIXED_PLAN,
+            adjudication_implementation_commit=ADJUDICATION_COMMIT,
+        )
+        assert result["probe_job_id"] == "7480822"
+        assert fixture.capacity_validation_calls >= 1
+        assert not fixture.r7g_root.exists()
+
+    for transform in (
+        lambda value, payload: core.canonical_json_bytes(value),
+        lambda _value, payload: payload + b" ",
+        lambda value, _payload: _write_changed_capacity(value),
+    ):
+        with _fixture() as fixture:
+            original = fixture.paths["capacity"].read_bytes()
+            changed = transform(fixture.receipts["capacity"], original)
+            _install_capacity_bytes(fixture, changed, pin=False)
+            _expect_code(
+                "R8U_R7G_AUTHORITY_HASH_MISMATCH",
+                lambda: accounting._read_hash_pinned_historical_json("capacity"),
+            )
+
+
+def _write_changed_capacity(value: Mapping[str, Any]) -> bytes:
+    changed = dict(value)
+    changed["preserved_old_control_evidence_bytes_baseline"] = 1
+    return (json.dumps(changed, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def test_authority_parser_error_partition_and_capacity_validation() -> None:
+    malformed = (
+        (b'{"x":1,"x":2}', "R8U_R7G_AUTHORITY_DUPLICATE_KEY"),
+        (b'{"x":"\xff"}', "R8U_R7G_AUTHORITY_UTF8_INVALID"),
+        (b'{"x":NaN}', "R8U_R7G_AUTHORITY_NONFINITE_VALUE"),
+        (b'{"x":', "R8U_R7G_AUTHORITY_JSON_SYNTAX_INVALID"),
+        (b'[]', "R8U_R7G_AUTHORITY_SCHEMA_INVALID"),
+    )
+    for payload, code in malformed:
+        with _fixture() as fixture:
+            _install_capacity_bytes(fixture, payload, pin=True)
+            _expect_code(
+                code,
+                lambda: accounting._read_hash_pinned_historical_json("capacity"),
+            )
+
+    with _fixture() as fixture:
+        wrong_schema = dict(fixture.receipts["capacity"])
+        wrong_schema["unexpected"] = True
+        payload = (json.dumps(wrong_schema, indent=2, sort_keys=True) + "\n").encode()
+        _install_capacity_bytes(fixture, payload, pin=True)
+        _expect_code("R8U_R7G_AUTHORITY_SCHEMA_INVALID", _authority)
+
+    with _fixture() as fixture:
+        wrong_status = dict(fixture.receipts["capacity"])
+        wrong_status["status"] = "NOT_PASS"
+        payload = (json.dumps(wrong_status, indent=2, sort_keys=True) + "\n").encode()
+        _install_capacity_bytes(fixture, payload, pin=True)
+        _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+
+def test_closed_role_policy_requires_fixed_role_and_hash() -> None:
+    assert len(accounting.HISTORICAL_JSON_ROLE_POLICY) == 35
+    assert set(accounting.FIXED_AUTHORITY_SERIALIZATION_POLICY) == {
+        *accounting.R7F_AUTHORITY_NAMES,
+        "scheduler_account",
+        "probe_submission",
+        "probe_terminal",
+    }
+    with _fixture():
+        accounting.EXPECTED_R7F_RECEIPT_SHA256.pop("capacity")
+        _expect_code(
+            "R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID",
+            lambda: accounting._read_hash_pinned_historical_json("capacity"),
+        )
+    with _fixture():
+        _expect_code(
+            "R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID",
+            lambda: accounting._read_hash_pinned_historical_json("caller_role"),
+        )
+
+
+def test_probe_roles_require_exact_producer_schema_and_effects() -> None:
+    for role in ("probe_submission", "probe_terminal"):
+        with _fixture() as fixture:
+            changed = dict(fixture.receipts[role])
+            changed["unexpected"] = True
+            _write_private_json(fixture.paths[role], changed)
+            _expect_code("R8U_R7G_AUTHORITY_SCHEMA_INVALID", _authority)
+
+    with _fixture() as fixture:
+        changed = dict(fixture.receipts["probe_submission"])
+        changed["gpu_executions"] = 1
+        _write_private_json(fixture.paths["probe_submission"], changed)
+        _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+    with _fixture() as fixture:
+        changed = dict(fixture.receipts["probe_terminal"])
+        changed["worker_context_receipt_sha256"] = "not-a-sha"
+        _write_private_json(fixture.paths["probe_terminal"], changed)
+        _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+    for field, value in (
+        ("array_task_count", True),
+        ("scheduler_submission_count", True),
+    ):
+        with _fixture() as fixture:
+            changed = dict(fixture.receipts["probe_submission"])
+            changed[field] = value
+            _write_private_json(fixture.paths["probe_submission"], changed)
+            _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+    with _fixture() as fixture:
+        changed = dict(fixture.receipts["probe_terminal"])
+        changed["failed"] = False
+        _write_private_json(fixture.paths["probe_terminal"], changed)
+        _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+
+def test_probe_roles_replay_fixed_producer_hashes_and_qsub_capture() -> None:
+    for dependency in (
+        "probe_authority_path",
+        "probe_worker_path",
+        "probe_accounting_path",
+    ):
+        with _fixture() as fixture:
+            path = getattr(fixture, dependency)
+            path.write_bytes(b'{"changed":true}')
+            path.chmod(0o600)
+            _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+    with _fixture() as fixture:
+        path = fixture.probe_scheduler_root / "probe.qsub.stdout.restricted"
+        path.write_bytes(b"7480822.17\n")
+        path.chmod(0o600)
+        _expect_code("R8U_R7G_AUTHORITY_SEMANTIC_INVALID", _authority)
+
+
+def test_new_r7g_output_rejects_noncompact_reserialization() -> None:
+    with _fixture():
+        authority = _authority().authority
+        noncompact = (
+            json.dumps(authority, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        accounting.TERMINAL_AUTHORITY_PATH.write_bytes(noncompact)
+        accounting.TERMINAL_AUTHORITY_PATH.chmod(0o600)
+        _expect_code(
+            "R8U_R7G_CURRENT_OUTPUT_CANONICAL_BYTES_INVALID",
+            lambda: accounting.load_terminal_authority(
+                adjudication_implementation_commit=ADJUDICATION_COMMIT
+            ),
+        )
 
 
 def test_valid_current_qacct_records_and_failure_projection() -> None:
@@ -593,6 +868,9 @@ def test_receipt_reuse_collision_mode_and_symlink() -> None:
         assert first.created is True and first.qacct_query_count == 1
         assert calls == 1
         assert stat.S_IMODE(spec.receipt_path.stat().st_mode) == 0o600
+        assert spec.receipt_path.read_bytes() == core.canonical_json_bytes(
+            first.receipt
+        )
         second = accounting.reuse_or_query_fixed_accounting(
             spec,
             terminal_authority=authority,
@@ -634,7 +912,7 @@ def test_receipt_reuse_collision_mode_and_symlink() -> None:
 def test_non_private_authority_and_receipt_modes_fail() -> None:
     with _fixture() as fixture:
         fixture.paths["capacity"].chmod(0o644)
-        _expect_code("R8U_R7G_R7F_AUTHORITY_FILE_INVALID", _authority)
+        _expect_code("R8U_R7G_AUTHORITY_FILE_INVALID", _authority)
 
     with _fixture():
         authority = _authority().authority
@@ -673,6 +951,12 @@ TESTS = (
     test_terminal_authority_is_derived_sealed_and_reused,
     test_exact_four_fixed_specs_and_no_caller_scope,
     test_hash_substitution_and_cross_binding_fail_closed,
+    test_hash_pinned_capacity_accepts_exact_producer_bytes_only,
+    test_authority_parser_error_partition_and_capacity_validation,
+    test_closed_role_policy_requires_fixed_role_and_hash,
+    test_probe_roles_require_exact_producer_schema_and_effects,
+    test_probe_roles_replay_fixed_producer_hashes_and_qsub_capture,
+    test_new_r7g_output_rejects_noncompact_reserialization,
     test_valid_current_qacct_records_and_failure_projection,
     test_wrong_name_owner_and_chronology_fail,
     test_exactly_one_qacct_record_and_exact_argv,

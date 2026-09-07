@@ -32,6 +32,7 @@ import lvef_c3_r8u_r7g_terminal_adjudicator as adjudicator
 ADJUDICATION_COMMIT = "a" * 40
 AUTHORITY_SHA256 = "b" * 64
 PROBE_SHA256 = "c" * 64
+FIXED_PLAN = {"synthetic_fixed_plan": True}
 REPOSITORY_STATE = {
     "branch": adjudicator.BRANCH,
     "local_head": ADJUDICATION_COMMIT,
@@ -164,6 +165,19 @@ def _install_fixed_start(
     )
     stack.enter_context(
         mock.patch.object(
+            evidence, "load_fixed_plan", return_value=FIXED_PLAN
+        )
+    )
+    stack.enter_context(
+        mock.patch.object(
+            accounting,
+            "preflight_fixed_terminal_authority",
+            return_value=_terminal_authority(),
+            create=True,
+        )
+    )
+    stack.enter_context(
+        mock.patch.object(
             accounting,
             "ensure_terminal_authority",
             return_value=accounting.TerminalAuthorityResult(
@@ -185,9 +199,6 @@ def _install_fixed_start(
             accounting, "fixed_accounting_specs", return_value=fixed_specs
         )
     )
-    stack.enter_context(
-        mock.patch.object(evidence, "load_fixed_plan", return_value={})
-    )
     return fixed_specs
 
 
@@ -197,7 +208,7 @@ def _install_successful_reconciliation(
     quiescence_result: object,
     finalizer_classification: str = "PASS",
     finalizer_scope: str = "NOT_APPLICABLE",
-) -> tuple[mock.Mock, mock.Mock, mock.Mock, mock.Mock]:
+) -> tuple[mock.Mock, mock.Mock, mock.Mock, mock.Mock, mock.Mock]:
     """Install all synthetic operations after fixed repository authority."""
 
     accounting_events: list[int | None] = []
@@ -275,7 +286,7 @@ def _install_successful_reconciliation(
     stack.enter_context(
         mock.patch.object(evidence, "fixed_cache_topology", return_value={})
     )
-    stack.enter_context(
+    cohort_build_mock = stack.enter_context(
         mock.patch.object(
             adjudicator.metadata,
             "build_cohort_finalization_receipt",
@@ -321,7 +332,13 @@ def _install_successful_reconciliation(
         )
     )
     accounting_mock.accounting_events = accounting_events
-    return accounting_mock, log_mock, tail_mock, prefix_mock
+    return (
+        accounting_mock,
+        log_mock,
+        tail_mock,
+        prefix_mock,
+        cohort_build_mock,
+    )
 
 
 def _expect_stop(status: str, code: str) -> adjudicator.R7GTerminalStop:
@@ -336,7 +353,7 @@ def _expect_stop(status: str, code: str) -> adjudicator.R7GTerminalStop:
     raise AssertionError(f"expected terminal stop {status}: {code}")
 
 
-def test_repository_authority_accepts_only_direct_child_of_r7f_runtime() -> None:
+def test_repository_authority_accepts_only_direct_child_of_r7g_base() -> None:
     head = ADJUDICATION_COMMIT
 
     def direct_child_git(arguments: tuple[str, ...]) -> str:
@@ -345,18 +362,26 @@ def test_repository_authority_accepts_only_direct_child_of_r7f_runtime() -> None
             ("rev-parse", "HEAD"): head,
             ("rev-parse", f"origin/{adjudicator.BRANCH}"): head,
             ("rev-list", "--parents", "-n", "1", head): (
-                f"{head} {accounting.RUNTIME_IMPLEMENTATION_COMMIT}"
+                f"{head} "
+                f"{adjudicator.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT}"
             ),
             (
                 "rev-list",
                 "--count",
-                f"{accounting.RUNTIME_IMPLEMENTATION_COMMIT}..{head}",
+                f"{adjudicator.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT}"
+                f"..{head}",
             ): "1",
             ("status", "--porcelain=v1", "--untracked-files=no"): "",
             (
                 "merge-base",
                 "--is-ancestor",
                 accounting.RUNTIME_IMPLEMENTATION_COMMIT,
+                head,
+            ): "",
+            (
+                "merge-base",
+                "--is-ancestor",
+                adjudicator.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT,
                 head,
             ): "",
             (
@@ -389,7 +414,7 @@ def test_repository_authority_accepts_only_direct_child_of_r7f_runtime() -> None
         if arguments == (
             "rev-list",
             "--count",
-            f"{accounting.RUNTIME_IMPLEMENTATION_COMMIT}..{head}",
+            f"{adjudicator.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT}..{head}",
         ):
             return "2"
         return direct_child_git(arguments)
@@ -407,7 +432,7 @@ def test_repository_authority_accepts_only_direct_child_of_r7f_runtime() -> None
             raise AssertionError("a non-direct descendant was accepted")
 
 
-def test_closed_cli_accepts_exactly_one_fixed_flag() -> None:
+def test_closed_cli_accepts_only_the_two_exact_fixed_modes() -> None:
     invalid = (
         [],
         ["--help"],
@@ -429,6 +454,100 @@ def test_closed_cli_accepts_exactly_one_fixed_flag() -> None:
     ) as run, redirect_stdout(io.StringIO()):
         assert adjudicator.guarded_main([adjudicator.ENTRYPOINT_FLAG]) == 0
         run.assert_called_once_with()
+
+    output = io.StringIO()
+    with mock.patch.object(
+        adjudicator,
+        "_repository_authority",
+        return_value=(ADJUDICATION_COMMIT, dict(REPOSITORY_STATE)),
+    ) as repository, mock.patch.object(
+        adjudicator, "_preflight_fixed_authorities", return_value=FIXED_PLAN
+    ) as preflight, redirect_stdout(output):
+        assert adjudicator.guarded_main([adjudicator.PREFLIGHT_FLAG]) == 0
+    assert output.getvalue() == adjudicator.PREFLIGHT_PASS + "\n"
+    repository.assert_called_once_with()
+    preflight.assert_called_once_with(
+        adjudication_implementation_commit=ADJUDICATION_COMMIT
+    )
+
+
+def test_preflight_is_read_only_and_exercises_compact_output_policy() -> None:
+    with mock.patch.object(
+        evidence, "load_fixed_plan", return_value=FIXED_PLAN
+    ) as load_plan, mock.patch.object(
+        accounting,
+        "preflight_fixed_terminal_authority",
+        return_value=_terminal_authority(),
+        create=True,
+    ) as preflight, mock.patch.object(
+        accounting, "ensure_terminal_authority"
+    ) as ensure, mock.patch.object(
+        accounting, "ensure_fixed_accounting_directory"
+    ) as ensure_directory, mock.patch.object(
+        accounting, "reuse_or_query_fixed_accounting"
+    ) as query:
+        observed = adjudicator._preflight_fixed_authorities(
+            adjudication_implementation_commit=ADJUDICATION_COMMIT
+        )
+
+    assert observed is FIXED_PLAN
+    load_plan.assert_called_once_with()
+    preflight.assert_called_once_with(
+        plan=FIXED_PLAN,
+        adjudication_implementation_commit=ADJUDICATION_COMMIT,
+    )
+    ensure.assert_not_called()
+    ensure_directory.assert_not_called()
+    query.assert_not_called()
+
+    with mock.patch.object(
+        adjudicator.metadata, "canonical_json_bytes", return_value=b"{}"
+    ):
+        try:
+            adjudicator._validate_compact_output_machinery()
+        except RuntimeError as exc:
+            assert str(exc) == (
+                "R8U_R7G_CURRENT_OUTPUT_CANONICAL_BYTES_INVALID"
+            )
+        else:
+            raise AssertionError("non-compact output machinery was accepted")
+
+
+def test_initial_report_binds_runtime_base_and_r1_authorities() -> None:
+    report = adjudicator._initial_report(ADJUDICATION_COMMIT)
+    assert report["preceding_result"] == (
+        "R7G_HISTORICAL_PRODUCER_SERIALIZATION_COMPATIBILITY_DEFECT"
+    )
+    assert report["starting_commit"] == (
+        adjudicator.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+    )
+    assert report["runtime_implementation_commit"] == (
+        accounting.RUNTIME_IMPLEMENTATION_COMMIT
+    )
+    assert report["base_adjudication_implementation_commit"] == (
+        adjudicator.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+    )
+    assert report["adjudication_implementation_commit"] == ADJUDICATION_COMMIT
+
+
+def test_terminal_statuses_are_exactly_the_r1_closed_set() -> None:
+    assert {
+        adjudicator.SUCCESS,
+        adjudicator.IMPLEMENTATION_STOP,
+        adjudicator.HISTORICAL_STOP,
+        adjudicator.ACCOUNTING_STOP,
+        adjudicator.TASK_STOP,
+        adjudicator.COHORT_STOP,
+        adjudicator.LOCK_STOP,
+    } == {
+        "FULL_SELECTED_COHORT_RECONSTRUCTION_FINALIZED_AND_LOCKED",
+        "STOPPED_ON_R7G_R1_IMPLEMENTATION_OR_SYNC_FAILURE",
+        "STOPPED_ON_HISTORICAL_AUTHORITY_HASH_OR_SCHEMA_CONTRADICTION",
+        "STOPPED_ON_ACCOUNTING_PENDING",
+        "STOPPED_ON_FINAL_TAIL_TASK_FAILURE",
+        "STOPPED_ON_COHORT_FINALIZATION_CONTRADICTION",
+        "STOPPED_ON_POST_RECONSTRUCTION_LOCK_CONTRADICTION",
+    }
 
 
 def test_implementation_and_accounting_failures_have_distinct_stops() -> None:
@@ -468,7 +587,7 @@ def test_implementation_and_accounting_failures_have_distinct_stops() -> None:
         logs.assert_not_called()
 
 
-def test_unrecognized_accounting_defect_is_structural_not_pending() -> None:
+def test_unrecognized_accounting_defect_is_implementation_not_pending() -> None:
     with ExitStack() as stack:
         _install_fixed_start(stack)
         stack.enter_context(
@@ -481,12 +600,56 @@ def test_unrecognized_accounting_defect_is_structural_not_pending() -> None:
             )
         )
         exc = _expect_stop(
-            adjudicator.STRUCTURAL_STOP,
+            adjudicator.IMPLEMENTATION_STOP,
             "R8U_R7G_ACCOUNTING_RECEIPT_SCHEMA_INVALID",
         )
         assert exc.report["structural_function"] == (
             "accounting.reuse_or_query_fixed_accounting"
         )
+
+
+def test_historical_preflight_failure_precedes_publication_and_qacct() -> None:
+    events: list[str] = []
+
+    def load_plan() -> dict[str, bool]:
+        events.append("plan")
+        return FIXED_PLAN
+
+    def fail_preflight(**_kwargs: object) -> None:
+        events.append("preflight")
+        raise accounting.R7GAccountingError(
+            "R8U_R7G_AUTHORITY_HASH_MISMATCH"
+        )
+
+    with mock.patch.object(
+        adjudicator,
+        "_repository_authority",
+        return_value=(ADJUDICATION_COMMIT, dict(REPOSITORY_STATE)),
+    ), mock.patch.object(
+        evidence, "load_fixed_plan", side_effect=load_plan
+    ), mock.patch.object(
+        accounting,
+        "preflight_fixed_terminal_authority",
+        side_effect=fail_preflight,
+        create=True,
+    ) as preflight, mock.patch.object(
+        accounting, "ensure_terminal_authority"
+    ) as ensure, mock.patch.object(
+        accounting, "reuse_or_query_fixed_accounting"
+    ) as query:
+        exc = _expect_stop(
+            adjudicator.HISTORICAL_STOP,
+            "R8U_R7G_AUTHORITY_HASH_MISMATCH",
+        )
+
+    assert events == ["plan", "preflight"]
+    preflight.assert_called_once_with(
+        plan=FIXED_PLAN,
+        adjudication_implementation_commit=ADJUDICATION_COMMIT,
+    )
+    ensure.assert_not_called()
+    query.assert_not_called()
+    assert exc.report["first_failed_stage"] == "AUTHORITY_PREFLIGHT"
 
 
 def test_tasks_are_adjudicated_independently_and_stop_in_fixed_order() -> None:
@@ -616,7 +779,7 @@ def test_full_success_allows_affirmative_finalizer_control_plane_case() -> None:
     )
     with ExitStack() as stack:
         _install_fixed_start(stack, repository=repository)
-        accounting_mock, log_mock, tail_mock, prefix_mock = (
+        accounting_mock, log_mock, tail_mock, prefix_mock, cohort_build_mock = (
             _install_successful_reconciliation(
                 stack,
                 quiescence_result=SimpleNamespace(scheduler_state={}),
@@ -638,6 +801,9 @@ def test_full_success_allows_affirmative_finalizer_control_plane_case() -> None:
         range(16)
     )
     assert repository.call_count == 2
+    assert cohort_build_mock.call_args.kwargs[
+        "base_adjudication_implementation_commit"
+    ] == adjudicator.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
     assert result["status"] == adjudicator.SUCCESS
     assert result["current_r7f_task_runtime_status"] == "ADJUDICATED"
     assert result["finalized_batches"] == 19
@@ -772,6 +938,34 @@ def test_entrypoint_has_no_caller_selected_job_task_or_path_surface() -> None:
     assert len(spec_calls[0].args) == 1 and not spec_calls[0].keywords
     assert isinstance(spec_calls[0].args[0], ast.Name)
     assert spec_calls[0].args[0].id == "terminal_authority"
+
+    calls = [node for node in ast.walk(adjudicate) if isinstance(node, ast.Call)]
+    preflight_calls = [
+        node
+        for node in calls
+        if _dotted_name(node.func) == "_preflight_fixed_authorities"
+    ]
+    ensure_calls = [
+        node
+        for node in calls
+        if _dotted_name(node.func) == "accounting.ensure_terminal_authority"
+    ]
+    qacct_calls = [
+        node
+        for node in calls
+        if _dotted_name(node.func) == "_obtain_accounting"
+    ]
+    assert len(preflight_calls) == len(ensure_calls) == 1
+    assert len(qacct_calls) == 2
+    assert preflight_calls[0].lineno < ensure_calls[0].lineno
+    assert ensure_calls[0].lineno < min(node.lineno for node in qacct_calls)
+    ensure_keywords = {item.arg: item.value for item in ensure_calls[0].keywords}
+    assert set(ensure_keywords) == {
+        "plan",
+        "adjudication_implementation_commit",
+    }
+    assert isinstance(ensure_keywords["plan"], ast.Name)
+    assert ensure_keywords["plan"].id == "plan"
 
 
 def test_entrypoint_has_no_reachable_scientific_or_submission_path() -> None:

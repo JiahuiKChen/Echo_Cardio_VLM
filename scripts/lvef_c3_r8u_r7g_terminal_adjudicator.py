@@ -4,7 +4,8 @@
 This closed entrypoint is retrospective and metadata-only.  It has no caller
 surface for a job, task, attempt, plan, log, artifact, or receipt path.  The
 completed scheduler event remains bound to the R7F runtime commit while the
-new receipts are bound separately to the one direct-child R7G commit.
+new receipts bind both the base R7G adjudicator and its one direct-child R1
+repair commit.
 """
 from __future__ import annotations
 
@@ -45,6 +46,11 @@ LOCK_RECEIPT_PATH: Final = (
     accounting.R7G_ROOT / "post_reconstruction_lock_receipt.restricted.json"
 )
 ENTRYPOINT_FLAG: Final = "--adjudicate-fixed-r8u-r7f-existing-jobs"
+PREFLIGHT_FLAG: Final = "--preflight-fixed-r8u-r7f-authorities"
+PREFLIGHT_PASS: Final = "PASS_R7G_R1_ALL_FIXED_AUTHORITY_INPUTS"
+R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT: Final = (
+    "4dc4b2327f91ffd3912c91a7113f16d41d0562a8"
+)
 COMMIT_RE: Final = re.compile(r"^[0-9a-f]{40}$")
 
 TAIL_TASKS: Final = (
@@ -63,12 +69,14 @@ PREFIX_EXPECTED: Final = {
 }
 
 SUCCESS: Final = "FULL_SELECTED_COHORT_RECONSTRUCTION_FINALIZED_AND_LOCKED"
-IMPLEMENTATION_STOP: Final = "STOPPED_ON_R7G_IMPLEMENTATION_OR_SYNC_FAILURE"
+IMPLEMENTATION_STOP: Final = "STOPPED_ON_R7G_R1_IMPLEMENTATION_OR_SYNC_FAILURE"
+HISTORICAL_STOP: Final = (
+    "STOPPED_ON_HISTORICAL_AUTHORITY_HASH_OR_SCHEMA_CONTRADICTION"
+)
 ACCOUNTING_STOP: Final = "STOPPED_ON_ACCOUNTING_PENDING"
 TASK_STOP: Final = "STOPPED_ON_FINAL_TAIL_TASK_FAILURE"
 COHORT_STOP: Final = "STOPPED_ON_COHORT_FINALIZATION_CONTRADICTION"
 LOCK_STOP: Final = "STOPPED_ON_POST_RECONSTRUCTION_LOCK_CONTRADICTION"
-STRUCTURAL_STOP: Final = "STOPPED_ON_R7G_STRUCTURAL_DEFECT"
 
 ACCOUNTING_PENDING_CODES: Final = frozenset(
     {
@@ -144,7 +152,7 @@ def _git(arguments: tuple[str, ...]) -> str:
 
 
 def _repository_authority() -> tuple[str, dict[str, Any]]:
-    """Require the synchronized SCC checkout at exactly one R7G commit."""
+    """Require the synchronized SCC checkout at exactly the R7G-R1 commit."""
 
     if REPOSITORY_ROOT != SCC_REPOSITORY_ROOT:
         raise RuntimeError("R8U_R7G_SCC_CHECKOUT_INVALID")
@@ -158,7 +166,7 @@ def _repository_authority() -> tuple[str, dict[str, Any]]:
         (
             "rev-list",
             "--count",
-            f"{accounting.RUNTIME_IMPLEMENTATION_COMMIT}..{head}",
+            f"{R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT}..{head}",
         )
     )
     tracked_status = _git(("status", "--porcelain=v1", "--untracked-files=no"))
@@ -168,13 +176,15 @@ def _repository_authority() -> tuple[str, dict[str, Any]]:
         or origin != head
         or local_head != head
         or local_clean != "YES"
-        or parent_projection != [head, accounting.RUNTIME_IMPLEMENTATION_COMMIT]
+        or parent_projection
+        != [head, R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT]
         or descendant_count != "1"
         or tracked_status
     ):
         raise RuntimeError("R8U_R7G_GIT_AUTHORITY_INVALID")
     for ancestor in (
         accounting.RUNTIME_IMPLEMENTATION_COMMIT,
+        R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT,
         accounting.SCIENTIFIC_COMMIT,
     ):
         try:
@@ -195,9 +205,14 @@ def _initial_report(adjudication_commit: str) -> dict[str, Any]:
     return {
         "status": "IN_PROGRESS",
         "error_code": "NONE",
-        "preceding_result": "R7FT_TERMINAL_ADJUDICATION_TOOLING_INCOMPATIBILITY",
-        "starting_commit": accounting.RUNTIME_IMPLEMENTATION_COMMIT,
+        "preceding_result": (
+            "R7G_HISTORICAL_PRODUCER_SERIALIZATION_COMPATIBILITY_DEFECT"
+        ),
+        "starting_commit": R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT,
         "runtime_implementation_commit": accounting.RUNTIME_IMPLEMENTATION_COMMIT,
+        "base_adjudication_implementation_commit": (
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
         "adjudication_implementation_commit": adjudication_commit,
         "current_r7f_task_runtime_status": "UNADJUDICATED",
         "terminal_authority_created": False,
@@ -229,7 +244,7 @@ def _stop(
     raise R7GTerminalStop(status, code, report)
 
 
-def _structural_stop(
+def _implementation_stop(
     code: str,
     report: dict[str, Any],
     *,
@@ -238,7 +253,7 @@ def _structural_stop(
     artifact: str,
 ) -> None:
     _stop(
-        STRUCTURAL_STOP,
+        IMPLEMENTATION_STOP,
         code,
         report,
         structural_function=function,
@@ -287,7 +302,7 @@ def _obtain_accounting(
                 report,
                 accounting_pending_record=key,
             )
-        _structural_stop(
+        _implementation_stop(
             exc.code,
             report,
             function="accounting.reuse_or_query_fixed_accounting",
@@ -306,7 +321,7 @@ def _obtain_accounting(
         )
     except terminal_logs.R7GTerminalLogError as exc:
         if exc.code in STRUCTURAL_TERMINAL_LOG_CODES:
-            _structural_stop(
+            _implementation_stop(
                 exc.code,
                 report,
                 function="terminal_logs.inspect_fixed_terminal_logs",
@@ -531,6 +546,48 @@ def _r7f_authority_hashes(
     }
 
 
+def _validate_compact_output_machinery() -> None:
+    """Exercise both current R7G compact serializers without touching disk."""
+
+    specimen = {"z": [0, False, None], "a": "\u00e9"}
+    expected = b'{"a":"\\u00e9","z":[0,false,null]}'
+    try:
+        accounting_bytes = accounting.core.canonical_json_bytes(specimen)
+        metadata_bytes = metadata.canonical_json_bytes(specimen)
+    except Exception as exc:
+        raise RuntimeError(
+            "R8U_R7G_CURRENT_OUTPUT_CANONICAL_BYTES_INVALID"
+        ) from exc
+    if accounting_bytes != expected or metadata_bytes != expected:
+        raise RuntimeError("R8U_R7G_CURRENT_OUTPUT_CANONICAL_BYTES_INVALID")
+
+
+def _preflight_fixed_authorities(
+    *, adjudication_implementation_commit: str,
+) -> Mapping[str, Any]:
+    """Read and validate every fixed input without publishing or querying."""
+
+    plan = evidence.load_fixed_plan()
+    accounting.preflight_fixed_terminal_authority(
+        plan=plan,
+        adjudication_implementation_commit=adjudication_implementation_commit,
+    )
+    _validate_compact_output_machinery()
+    return plan
+
+
+def _is_historical_authority_error(code: str) -> bool:
+    return (
+        code.startswith("R8U_R7G_AUTHORITY_")
+        or code.startswith("R8U_R7G_R7F_AUTHORITY_")
+        or code
+        in {
+            "R8U_R7G_HISTORICAL_SERIALIZATION_ROLE_INVALID",
+            "R8U_R7G_SCHEDULER_ACCOUNT_AUTHORITY_INVALID",
+        }
+    )
+
+
 def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
     """Adjudicate four fixed records, validate 19 batches, and seal the lock."""
 
@@ -542,8 +599,25 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
     report = _initial_report(adjudication_commit)
 
     try:
-        authority_result = accounting.ensure_terminal_authority(
+        plan = _preflight_fixed_authorities(
             adjudication_implementation_commit=adjudication_commit
+        )
+    except evidence.R7GEvidenceError as exc:
+        _stop(HISTORICAL_STOP, exc.code, report, first_failed_stage="PLAN_AUTHORITY")
+    except accounting.R7GAccountingError as exc:
+        destination = (
+            HISTORICAL_STOP
+            if _is_historical_authority_error(exc.code)
+            else IMPLEMENTATION_STOP
+        )
+        _stop(destination, exc.code, report, first_failed_stage="AUTHORITY_PREFLIGHT")
+    except RuntimeError as exc:
+        _stop(IMPLEMENTATION_STOP, str(exc), report)
+
+    try:
+        authority_result = accounting.ensure_terminal_authority(
+            plan=plan,
+            adjudication_implementation_commit=adjudication_commit,
         )
         terminal_authority = authority_result.authority
         environment = accounting.validate_fixed_scheduler_accounting_environment(
@@ -551,7 +625,14 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
         )
         specs = accounting.fixed_accounting_specs(terminal_authority)
     except accounting.R7GAccountingError as exc:
-        _structural_stop(
+        if _is_historical_authority_error(exc.code):
+            _stop(
+                HISTORICAL_STOP,
+                exc.code,
+                report,
+                first_failed_stage="TERMINAL_AUTHORITY_REVALIDATION",
+            )
+        _implementation_stop(
             exc.code,
             report,
             function="accounting.ensure_terminal_authority",
@@ -559,7 +640,7 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
             artifact=str(accounting.TERMINAL_AUTHORITY_PATH),
         )
     if len(specs) != 4 or [spec.task_id for spec in specs] != [17, 18, 19, None]:
-        _structural_stop(
+        _implementation_stop(
             "R8U_R7G_ACCOUNTING_SCOPE_INVALID",
             report,
             function="accounting.fixed_accounting_specs",
@@ -571,11 +652,6 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
     report["r7f_probe_terminal_receipt_sha256"] = terminal_authority[
         "probe_terminal_receipt_sha256"
     ]
-
-    try:
-        plan = evidence.load_fixed_plan()
-    except evidence.R7GEvidenceError as exc:
-        _stop(COHORT_STOP, exc.code, report, first_failed_stage="PLAN_AUTHORITY")
 
     tail_metadata: list[dict[str, Any]] = []
     for spec, fixed in zip(specs[:3], TAIL_TASKS, strict=True):
@@ -695,6 +771,9 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
         "runtime_implementation_commit": (
             accounting.RUNTIME_IMPLEMENTATION_COMMIT
         ),
+        "base_adjudication_implementation_commit": (
+            R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
         "adjudication_implementation_commit": adjudication_commit,
         "terminal_authority_sha256": authority_result.authority_sha256,
         "r7f_authority_receipt_sha256": r7f_hashes,
@@ -708,7 +787,7 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
             plan, all_batch_metadata, **cohort_kwargs
         )
     except metadata.R7GMetadataError as exc:
-        _structural_stop(
+        _implementation_stop(
             exc.code,
             report,
             function="metadata.build_cohort_finalization_receipt",
@@ -776,7 +855,7 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
             cohort, **lock_kwargs
         )
     except metadata.R7GMetadataError as exc:
-        _structural_stop(
+        _implementation_stop(
             exc.code,
             report,
             function="metadata.build_post_reconstruction_lock_receipt",
@@ -808,8 +887,26 @@ def adjudicate_fixed_r7f_existing_jobs() -> dict[str, Any]:
 
 def guarded_main(arguments: list[str] | None = None) -> int:
     selected = list(sys.argv[1:] if arguments is None else arguments)
+    if selected == [PREFLIGHT_FLAG]:
+        try:
+            adjudication_commit, _state = _repository_authority()
+            _preflight_fixed_authorities(
+                adjudication_implementation_commit=adjudication_commit
+            )
+        except Exception as exc:
+            code = getattr(
+                exc, "code", "R8U_R7G_R1_AUTHORITY_PREFLIGHT_FAILED"
+            )
+            if not isinstance(code, str) or re.fullmatch(
+                r"[A-Z0-9_]+", code
+            ) is None:
+                code = "R8U_R7G_R1_AUTHORITY_PREFLIGHT_FAILED"
+            print(f"FAIL_R7G_R1_ALL_FIXED_AUTHORITY_INPUTS={code}")
+            return 78
+        print(PREFLIGHT_PASS)
+        return 0
     if selected != [ENTRYPOINT_FLAG]:
-        print(f"R8U_R7G_STATUS={STRUCTURAL_STOP}")
+        print(f"R8U_R7G_STATUS={IMPLEMENTATION_STOP}")
         print("R8U_R7G_ERROR_CODE=R8U_R7G_CLOSED_ARGUMENTS_INVALID")
         return 64
     try:
@@ -829,14 +926,14 @@ def guarded_main(arguments: list[str] | None = None) -> int:
         report = _initial_report("NOT_VALIDATED")
         report.update(
             {
-                "status": STRUCTURAL_STOP,
+                "status": IMPLEMENTATION_STOP,
                 "error_code": code,
                 "structural_function": "guarded_main",
                 "structural_predicate": code,
                 "structural_artifact": str(Path(__file__).resolve()),
             }
         )
-        print(f"R8U_R7G_STATUS={STRUCTURAL_STOP}")
+        print(f"R8U_R7G_STATUS={IMPLEMENTATION_STOP}")
         print(f"R8U_R7G_ERROR_CODE={code}")
         print(
             "R8U_R7G_REPORT_JSON="

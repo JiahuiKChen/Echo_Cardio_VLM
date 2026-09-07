@@ -9,6 +9,7 @@ only where their fixed scientific/attempt authority is unchanged.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
@@ -57,6 +58,27 @@ def _translate_r7c(exc: r7c.R7CEvidenceError) -> R7GEvidenceError:
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _require_tail_batch_producer_serialization(
+    value: Mapping[str, Any], payload: bytes
+) -> None:
+    """Enforce the compact serializer declared by the Batch-17--19 writer."""
+
+    if payload != core.canonical_json_bytes(value):
+        _fail("R8U_R7G_BATCH_RECEIPT_INVALID")
+
+
+def _require_original_cohort_producer_serialization(
+    value: Mapping[str, Any], payload: bytes
+) -> None:
+    """Enforce the indented serializer declared by the historical finalizer."""
+
+    expected = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    if payload != expected:
+        _fail("R8U_R7G_ORIGINAL_COHORT_RECEIPT_INVALID")
 
 
 def _read_json(
@@ -238,6 +260,8 @@ def _load_batch_metadata_impl(
     receipt, receipt_payload = _read_json(
         receipt_path, "R8U_R7G_BATCH_RECEIPT"
     )
+    if ordinal >= 16:
+        _require_tail_batch_producer_serialization(receipt, receipt_payload)
     try:
         finalizer._validate_current_receipt_v3(receipt)
     except Exception as exc:
@@ -684,6 +708,7 @@ def load_original_cohort_finalization_receipt(
         ORIGINAL_COHORT_RECEIPT_PATH,
         "R8U_R7G_ORIGINAL_COHORT_RECEIPT",
     )
+    _require_original_cohort_producer_serialization(value, payload)
     try:
         finalizer.validate_closed_final_summary(value)
     except Exception as exc:

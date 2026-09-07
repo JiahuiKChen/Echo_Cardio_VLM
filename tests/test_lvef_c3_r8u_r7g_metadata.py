@@ -180,6 +180,9 @@ def _authorities(plan_sha: str) -> dict:
         "runtime_implementation_commit": (
             metadata.R7F_RUNTIME_IMPLEMENTATION_COMMIT
         ),
+        "base_adjudication_implementation_commit": (
+            metadata.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
         "adjudication_implementation_commit": ADJUDICATION,
         "terminal_authority_sha256": _hash("terminal-authority"),
         "r7f_authority_receipt_sha256": _r7f_hashes(),
@@ -296,6 +299,10 @@ def test_missing_duplicate_and_literal_aggregate_mismatch_fail() -> None:
 
 def test_cohort_binds_all_r7f_and_accounting_authorities() -> None:
     plan, projections, authority, cohort = _cohort_fixture()
+    assert cohort["base_adjudication_implementation_commit"] == (
+        metadata.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+    )
+    assert cohort["adjudication_implementation_commit"] == ADJUDICATION
     assert cohort["continuation_array_job_id"] == "7480830"
     assert cohort["cohort_finalizer_job_id"] == "7480831"
     assert {
@@ -312,6 +319,35 @@ def test_cohort_binds_all_r7f_and_accounting_authorities() -> None:
         metadata.validate_cohort_finalization_receipt(
             cohort, plan, projections, **authority
         )
+
+
+def test_cohort_rejects_base_or_current_adjudication_contradictions() -> None:
+    plan, plan_sha, projections = _fixture()
+    authority = _authorities(plan_sha)
+    authority["base_adjudication_implementation_commit"] = "8" * 40
+    with mock.patch.object(metadata, "PLAN_SHA256", plan_sha):
+        try:
+            metadata.build_cohort_finalization_receipt(
+                plan, projections, **authority
+            )
+        except metadata.R7GMetadataError as exc:
+            assert exc.code == "R7G_FIXED_AUTHORITY_MISMATCH"
+        else:
+            raise AssertionError("wrong base adjudication commit accepted")
+
+    authority = _authorities(plan_sha)
+    authority["adjudication_implementation_commit"] = (
+        metadata.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+    )
+    with mock.patch.object(metadata, "PLAN_SHA256", plan_sha):
+        try:
+            metadata.build_cohort_finalization_receipt(
+                plan, projections, **authority
+            )
+        except metadata.R7GMetadataError as exc:
+            assert exc.code == "R7G_FIXED_AUTHORITY_MISMATCH"
+        else:
+            raise AssertionError("base/current adjudication conflation accepted")
 
 
 def test_r7f_hash_substitution_and_blocking_failure_fail() -> None:
@@ -377,6 +413,10 @@ def test_lock_publication_reopen_and_existing_reuse() -> None:
     }
     with mock.patch.object(metadata, "PLAN_SHA256", plan_sha):
         lock = metadata.build_post_reconstruction_lock_receipt(cohort, **kwargs)
+        assert lock["base_adjudication_implementation_commit"] == (
+            metadata.R7G_BASE_ADJUDICATION_IMPLEMENTATION_COMMIT
+        )
+        assert lock["adjudication_implementation_commit"] == ADJUDICATION
         assert lock["exact_335984_source_objects"] is True
         assert lock["exact_1216569133322_source_bytes"] is True
         assert lock["no_blocking_failure"] is True
@@ -398,6 +438,7 @@ def test_lock_publication_reopen_and_existing_reuse() -> None:
                 lock,
                 validation_kwargs={"cohort_receipt": cohort, **kwargs},
             ) == (digest, False)
+            assert path.read_bytes() == metadata.canonical_json_bytes(lock)
 
 
 def test_lock_reuse_requires_the_exact_canonical_r7g_cohort_hash() -> None:
