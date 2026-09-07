@@ -11,6 +11,7 @@ import ast
 import hashlib
 import inspect
 from pathlib import Path
+import subprocess
 import sys
 import traceback
 from typing import Iterable
@@ -270,7 +271,6 @@ def test_documented_task17_live_failure_call_path_is_exact() -> None:
 
 def test_live_r7_worker_source_is_pinned_to_the_starting_commit() -> None:
     payload = LEGACY_CONTROLLER.read_bytes()
-    assert hashlib.sha256(payload).hexdigest() == STARTING_CONTROLLER_SHA256
     source = payload.decode("utf-8", "strict")
     tree = ast.parse(source, filename=str(LEGACY_CONTROLLER))
     functions = _functions(tree)
@@ -280,6 +280,21 @@ def test_live_r7_worker_source_is_pinned_to_the_starting_commit() -> None:
 
     assert accounting.RUNTIME_IMPLEMENTATION_COMMIT == RUNTIME_COMMIT
     assert accounting.RUNTIME_CONTROLLER_SHA256 == STARTING_CONTROLLER_SHA256
+    historical = subprocess.run(
+        [
+            "/usr/bin/git", "show",
+            f"{RUNTIME_COMMIT}:scripts/lvef_c3_r8r_recovery_continuation.py",
+        ],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert historical.returncode == 0 and historical.stderr == b""
+    assert hashlib.sha256(historical.stdout).hexdigest() == (
+        STARTING_CONTROLLER_SHA256
+    )
 
 
 def test_r7c_public_entrypoint_and_main_runner_are_closed() -> None:

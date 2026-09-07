@@ -627,6 +627,42 @@ def test_r8u_r7_storage_policy_uses_numeric_effective_uid() -> None:
     _assert_refused(refused, no_capture)
 
 
+def test_r8u_r7d_context_probe_creates_no_runtime_or_cache_directories() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary).resolve()
+        runner, capture = _synthetic_runner(root)
+        completed = subprocess.run(
+            [str(runner)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            env={
+                "JOB_ID": "8123456",
+                "JOB_NAME": "lvef_c3_r8u_r7d_ctx_deadbeef",
+                "SGE_TASK_ID": "17",
+                "NSLOTS": "1",
+                "CUDA_VISIBLE_DEVICES": "gpu7",
+                "R8U_RUNNER_CAPTURE": str(capture),
+            },
+        )
+        assert completed.returncode == 0
+        assert completed.stdout == ""
+        assert completed.stderr == ""
+        assert not (root / "storage").exists()
+        observed = dict(
+            line.split("=", 1)
+            for line in capture.read_text(encoding="utf-8").splitlines()
+        )
+        assert observed["cuda"] == ""
+        assert observed["tmpdir"] == ""
+        assert observed["xdg"] == ""
+        assert observed["argv"].endswith(
+            "<--run-r8u-r7d-continuation-context-probe>"
+        )
+
+
 def test_runner_rejects_nonfixed_names_and_positional_arguments() -> None:
     for job_name in (
         "lvef_c3_r8u_rec_deadbee",

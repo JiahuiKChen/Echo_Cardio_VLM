@@ -19,6 +19,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import time
 from typing import Callable, Final, Mapping, NamedTuple, Sequence
 import xml.etree.ElementTree as ET
 
@@ -92,6 +93,28 @@ WORKER_DIAGNOSTIC_CLASSIFICATIONS: Final = frozenset(
         "SCHEDULER_ENV_LOGNAME_MISMATCH",
         "SCHEDULER_ENV_HOME_MISMATCH",
         "SCHEDULER_ENV_SHELL_MISMATCH",
+    }
+)
+R8U_R7D_QSTAT_MAXIMUM_OBSERVATIONS: Final = 3
+R8U_R7D_QSTAT_MAXIMUM_ELAPSED_SECONDS: Final = 15.0
+R8U_R7D_QSTAT_COMMAND_TIMEOUT_SECONDS: Final = 3.0
+R8U_R7D_QSTAT_RETRY_INTERVAL_SECONDS: Final = 2.0
+R8U_R7D_QSTAT_PASS_CLASSIFICATIONS: Final = frozenset(
+    {
+        "PASS_QSTAT_SELF_RECORD_MATCHED",
+        "PASS_QSTAT_SELF_RECORD_NOT_YET_VISIBLE",
+        "PASS_QSTAT_TRANSITIONAL_STATE",
+    }
+)
+R8U_R7D_QSTAT_BLOCKING_CLASSIFICATIONS: Final = frozenset(
+    {
+        "BLOCKED_QSTAT_SELF_JOB_ID_CONTRADICTION",
+        "BLOCKED_QSTAT_SELF_TASK_ID_CONTRADICTION",
+        "BLOCKED_QSTAT_SELF_OWNER_CONTRADICTION",
+        "BLOCKED_QSTAT_SELF_JOB_NAME_CONTRADICTION",
+        "BLOCKED_QSTAT_SELF_MULTIPLE_RECORDS",
+        "BLOCKED_QSTAT_SELF_OBSERVATION_FAILED",
+        "BLOCKED_QSTAT_SELF_XML_INVALID",
     }
 )
 SCIENCE_MARKERS: Final = {
@@ -311,6 +334,43 @@ class WorkerSchedulerContext(NamedTuple):
 
     environment: dict[str, str]
     diagnostics: WorkerSchedulerDiagnostics
+
+
+class R8UR7DQstatObservation(NamedTuple):
+    """One aggregate-safe observation of the current scheduler task."""
+
+    observation_ordinal: int
+    record_present: bool
+    unique: bool
+    job_id_match: bool | None
+    task_id_match: bool | None
+    owner_match: bool | None
+    full_job_name_match: bool | None
+    state_token: str | None
+
+
+class R8UR7DQstatDiagnostic(NamedTuple):
+    """Bounded qstat contradiction diagnostic, never a worker identity source."""
+
+    classification: str
+    observation_count: int
+    row_ever_visible: bool
+    job_id_equality: bool
+    task_id_equality: bool
+    owner_equality: bool
+    full_job_name_equality: bool
+    observed_scheduler_state_category: str
+    observations: tuple[R8UR7DQstatObservation, ...]
+
+
+class _R8UR7DQstatRecord(NamedTuple):
+    """Private full-XML scheduler record; never written to aggregate output."""
+
+    job_id: str
+    full_job_name: str
+    owner: str
+    state_token: str
+    tasks: str | None
 
 
 def _canonical_absolute_path(value: object) -> bool:
@@ -606,6 +666,456 @@ def build_worker_scheduler_context(
         classifications=tuple(classifications),
     )
     return WorkerSchedulerContext(environment=environment, diagnostics=diagnostics)
+
+
+def _r8u_r7d_parse_qstat_xml(payload: bytes) -> tuple[_R8UR7DQstatRecord, ...]:
+    """Parse only full qstat XML, retaining no data in public diagnostics."""
+
+    if (
+        not payload
+        or len(payload) > 4 * 1024 * 1024
+        or b"<!DOCTYPE" in payload.upper()
+        or b"<!ENTITY" in payload.upper()
+    ):
+        _fail("BLOCKED_QSTAT_SELF_XML_INVALID")
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise FullSchedulerError("BLOCKED_QSTAT_SELF_XML_INVALID") from exc
+
+    def local_name(element: ET.Element) -> str:
+        return element.tag.rsplit("}", 1)[-1]
+
+    direct_children = [local_name(element) for element in list(root)]
+    if (
+        local_name(root) != "job_info"
+        or direct_children.count("queue_info") != 1
+        or direct_children.count("job_info") != 1
+        or any(name not in {"queue_info", "job_info"} for name in direct_children)
+    ):
+        _fail("BLOCKED_QSTAT_SELF_XML_INVALID")
+
+    records: list[_R8UR7DQstatRecord] = []
+    for job in root.iter():
+        if local_name(job) != "job_list":
+            continue
+        fields: dict[str, list[str]] = {}
+        for child in list(job):
+            fields.setdefault(local_name(child), []).append(child.text or "")
+        if any(
+            len(fields.get(name, ())) != 1
+            for name in ("JB_job_number", "JB_name", "JB_owner", "state")
+        ) or len(fields.get("tasks", ())) > 1:
+            _fail("BLOCKED_QSTAT_SELF_XML_INVALID")
+        job_id = fields["JB_job_number"][0]
+        full_job_name = fields["JB_name"][0]
+        owner = fields["JB_owner"][0]
+        state_token = fields["state"][0]
+        tasks = fields.get("tasks", [None])[0]
+        if (
+            WORKER_JOB_ID_RE.fullmatch(job_id) is None
+            or not _safe_text(full_job_name)
+            or len(full_job_name) > 256
+            or SAFE_ACCOUNT_RE.fullmatch(owner) is None
+            or re.fullmatch(r"[A-Za-z]{1,8}", state_token) is None
+            or (
+                tasks is not None
+                and (
+                    len(tasks) > 256
+                    or "\x00" in tasks
+                    or "\n" in tasks
+                    or "\r" in tasks
+                )
+            )
+        ):
+            _fail("BLOCKED_QSTAT_SELF_XML_INVALID")
+        records.append(
+            _R8UR7DQstatRecord(
+                job_id=job_id,
+                full_job_name=full_job_name,
+                owner=owner,
+                state_token=state_token,
+                tasks=tasks,
+            )
+        )
+    return tuple(records)
+
+
+def _r8u_r7d_task_matches(
+    tasks: str | None, expected_task_id: str | None
+) -> bool:
+    """Return membership without confusing other array partitions as duplicates."""
+
+    if expected_task_id is None:
+        return tasks in {None, "", "undefined"}
+    if tasks in {None, "", "undefined"}:
+        return False
+    assert tasks is not None
+    number = r"[1-9][0-9]{0,9}"
+    segment_pattern = re.compile(
+        rf"(?P<first>{number})(?:-(?P<last>{number})(?::(?P<step>{number}))?)?"
+    )
+    expected = int(expected_task_id)
+    matched = False
+    for segment in tasks.split(","):
+        match = segment_pattern.fullmatch(segment)
+        if match is None:
+            _fail("BLOCKED_QSTAT_SELF_XML_INVALID")
+        first = int(match.group("first"))
+        last_text = match.group("last")
+        last = first if last_text is None else int(last_text)
+        step_text = match.group("step")
+        step = 1 if step_text is None else int(step_text)
+        if first > last:
+            _fail("BLOCKED_QSTAT_SELF_XML_INVALID")
+        if first <= expected <= last and (expected - first) % step == 0:
+            matched = True
+    return matched
+
+
+def _r8u_r7d_qstat_observation(
+    records: Sequence[_R8UR7DQstatRecord],
+    *,
+    expected_job_id: str,
+    expected_task_id: str | None,
+    expected_owner: str,
+    expected_full_job_name: str,
+    observation_ordinal: int,
+) -> tuple[R8UR7DQstatObservation, str | None]:
+    """Project one snapshot and block only on a concrete self contradiction."""
+
+    related = [
+        record
+        for record in records
+        if record.job_id == expected_job_id
+        or record.full_job_name == expected_full_job_name
+    ]
+    current_records = [
+        record
+        for record in related
+        if _r8u_r7d_task_matches(record.tasks, expected_task_id)
+    ]
+    if len(current_records) > 1:
+        return (
+            R8UR7DQstatObservation(
+                observation_ordinal=observation_ordinal,
+                record_present=True,
+                unique=False,
+                job_id_match=all(
+                    record.job_id == expected_job_id for record in current_records
+                ),
+                task_id_match=True,
+                owner_match=all(
+                    record.owner == expected_owner for record in current_records
+                ),
+                full_job_name_match=all(
+                    record.full_job_name == expected_full_job_name
+                    for record in current_records
+                ),
+                state_token=None,
+            ),
+            "BLOCKED_QSTAT_SELF_MULTIPLE_RECORDS",
+        )
+
+    # Evaluate fields that independently tie a row to this submission before
+    # treating a nonmatching task partition as temporary absence.  Otherwise
+    # an exact full name with the wrong job ID (or the inverse) can disappear
+    # behind the task-membership filter.  Exact ID/name/owner sibling rows are
+    # handled by the task logic below and remain nonduplicates.
+    field_contradictions = (
+        (
+            [
+                record
+                for record in related
+                if record.full_job_name == expected_full_job_name
+                and record.job_id != expected_job_id
+            ],
+            "BLOCKED_QSTAT_SELF_JOB_ID_CONTRADICTION",
+        ),
+        (
+            [
+                record
+                for record in related
+                if record.job_id == expected_job_id
+                and record.full_job_name != expected_full_job_name
+            ],
+            "BLOCKED_QSTAT_SELF_JOB_NAME_CONTRADICTION",
+        ),
+        (
+            [
+                record
+                for record in related
+                if record.job_id == expected_job_id
+                and record.full_job_name == expected_full_job_name
+                and record.owner != expected_owner
+            ],
+            "BLOCKED_QSTAT_SELF_OWNER_CONTRADICTION",
+        ),
+    )
+    for contradictory, classification in field_contradictions:
+        if not contradictory:
+            continue
+        record = contradictory[0]
+        unique = len(contradictory) == 1
+        return (
+            R8UR7DQstatObservation(
+                observation_ordinal=observation_ordinal,
+                record_present=True,
+                unique=unique,
+                job_id_match=all(
+                    item.job_id == expected_job_id for item in contradictory
+                ),
+                task_id_match=all(
+                    _r8u_r7d_task_matches(item.tasks, expected_task_id)
+                    for item in contradictory
+                ),
+                owner_match=all(
+                    item.owner == expected_owner for item in contradictory
+                ),
+                full_job_name_match=all(
+                    item.full_job_name == expected_full_job_name
+                    for item in contradictory
+                ),
+                state_token=record.state_token if unique else None,
+            ),
+            classification,
+        )
+    if not current_records:
+        # A running record for the exact array job but a different task is a
+        # concrete contradiction.  Pending rows for sibling partitions are
+        # not: those may remain visible while this task's row is in transit.
+        active_wrong_task = [
+            record
+            for record in related
+            if expected_task_id is not None
+            and record.job_id == expected_job_id
+            and record.full_job_name == expected_full_job_name
+            and record.owner == expected_owner
+            and record.state_token in {"r", "t", "Rr"}
+        ]
+        if expected_task_id is None:
+            active_wrong_task = [
+                record
+                for record in related
+                if record.job_id == expected_job_id
+                and record.full_job_name == expected_full_job_name
+                and record.owner == expected_owner
+                and record.tasks not in {None, "", "undefined"}
+            ]
+        if active_wrong_task:
+            record = active_wrong_task[0]
+            return (
+                R8UR7DQstatObservation(
+                    observation_ordinal=observation_ordinal,
+                    record_present=True,
+                    unique=len(active_wrong_task) == 1,
+                    job_id_match=True,
+                    task_id_match=False,
+                    owner_match=True,
+                    full_job_name_match=True,
+                    state_token=(
+                        record.state_token if len(active_wrong_task) == 1 else None
+                    ),
+                ),
+                "BLOCKED_QSTAT_SELF_TASK_ID_CONTRADICTION",
+            )
+        return (
+            R8UR7DQstatObservation(
+                observation_ordinal=observation_ordinal,
+                record_present=False,
+                unique=False,
+                job_id_match=None,
+                task_id_match=None,
+                owner_match=None,
+                full_job_name_match=None,
+                state_token=None,
+            ),
+            None,
+        )
+
+    record = current_records[0]
+    observation = R8UR7DQstatObservation(
+        observation_ordinal=observation_ordinal,
+        record_present=True,
+        unique=True,
+        job_id_match=record.job_id == expected_job_id,
+        task_id_match=True,
+        owner_match=record.owner == expected_owner,
+        full_job_name_match=record.full_job_name == expected_full_job_name,
+        state_token=record.state_token,
+    )
+    if not observation.job_id_match:
+        classification = "BLOCKED_QSTAT_SELF_JOB_ID_CONTRADICTION"
+    elif not observation.owner_match:
+        classification = "BLOCKED_QSTAT_SELF_OWNER_CONTRADICTION"
+    elif not observation.full_job_name_match:
+        classification = "BLOCKED_QSTAT_SELF_JOB_NAME_CONTRADICTION"
+    else:
+        classification = None
+    return observation, classification
+
+
+def _r8u_r7d_qstat_diagnostic(
+    classification: str,
+    observations: Sequence[R8UR7DQstatObservation],
+    state_category: str,
+) -> R8UR7DQstatDiagnostic:
+    if classification not in (
+        R8U_R7D_QSTAT_PASS_CLASSIFICATIONS
+        | R8U_R7D_QSTAT_BLOCKING_CLASSIFICATIONS
+    ):
+        _fail("BLOCKED_QSTAT_SELF_OBSERVATION_FAILED")
+    return R8UR7DQstatDiagnostic(
+        classification=classification,
+        observation_count=len(observations),
+        row_ever_visible=any(item.record_present for item in observations),
+        job_id_equality=not any(
+            item.job_id_match is False for item in observations
+        ),
+        task_id_equality=not any(
+            item.task_id_match is False for item in observations
+        ),
+        owner_equality=not any(item.owner_match is False for item in observations),
+        full_job_name_equality=not any(
+            item.full_job_name_match is False for item in observations
+        ),
+        observed_scheduler_state_category=state_category,
+        observations=tuple(observations),
+    )
+
+
+def _r8u_r7d_clock_value(clock: Callable[[], float]) -> float:
+    try:
+        value = float(clock())
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise FullSchedulerError("BLOCKED_QSTAT_SELF_OBSERVATION_FAILED") from exc
+    if (
+        value < 0
+        or value == float("inf")
+        or value == float("-inf")
+        or value != value
+    ):
+        _fail("BLOCKED_QSTAT_SELF_OBSERVATION_FAILED")
+    return value
+
+
+def diagnose_r8u_r7d_qstat_self(
+    *,
+    environment: Mapping[str, str],
+    expected_job_id: str,
+    expected_task_id: str | None,
+    expected_owner: str,
+    expected_full_job_name: str,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    clock: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> R8UR7DQstatDiagnostic:
+    """Use bounded full-XML qstat observations only as a contradiction detector.
+
+    Kernel identity and sealed submission authorities must be validated by the
+    caller before this diagnostic runs.  Absence and state alone never become
+    identity failures.  No raw job, owner, or name values leave this function.
+    """
+
+    if (
+        not isinstance(environment, Mapping)
+        or not isinstance(expected_job_id, str)
+        or WORKER_JOB_ID_RE.fullmatch(expected_job_id) is None
+        or not (
+            expected_task_id is None
+            or (
+                isinstance(expected_task_id, str)
+                and expected_task_id in {"17", "18", "19"}
+            )
+        )
+        or not isinstance(expected_owner, str)
+        or SAFE_ACCOUNT_RE.fullmatch(expected_owner) is None
+        or not isinstance(expected_full_job_name, str)
+        or WORKER_ROLE_RE.fullmatch(expected_full_job_name) is None
+        or environment.get("USER") != expected_owner
+    ):
+        _fail("BLOCKED_QSTAT_SELF_OBSERVATION_FAILED")
+
+    started = _r8u_r7d_clock_value(clock)
+    deadline = started + R8U_R7D_QSTAT_MAXIMUM_ELAPSED_SECONDS
+    observations: list[R8UR7DQstatObservation] = []
+
+    for ordinal in range(1, R8U_R7D_QSTAT_MAXIMUM_OBSERVATIONS + 1):
+        now = _r8u_r7d_clock_value(clock)
+        remaining = deadline - now
+        if remaining <= 0:
+            break
+        command = [str(QSTAT_PATH), "-xml", "-u", expected_owner]
+        try:
+            completed = runner(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                env=dict(environment),
+                timeout=min(R8U_R7D_QSTAT_COMMAND_TIMEOUT_SECONDS, remaining),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise FullSchedulerError("BLOCKED_QSTAT_SELF_OBSERVATION_FAILED") from exc
+        if (
+            completed.returncode != 0
+            or not isinstance(completed.stdout, bytes)
+            or not isinstance(completed.stderr, bytes)
+            or completed.stderr
+        ):
+            _fail("BLOCKED_QSTAT_SELF_OBSERVATION_FAILED")
+        records = _r8u_r7d_parse_qstat_xml(completed.stdout)
+        observation, blocking_classification = _r8u_r7d_qstat_observation(
+            records,
+            expected_job_id=expected_job_id,
+            expected_task_id=expected_task_id,
+            expected_owner=expected_owner,
+            expected_full_job_name=expected_full_job_name,
+            observation_ordinal=ordinal,
+        )
+        observations.append(observation)
+        if blocking_classification is not None:
+            state_category = (
+                "MULTIPLE_RECORDS"
+                if observation.state_token is None
+                else (
+                    "RUNNING_R"
+                    if observation.state_token == "r"
+                    else "TRANSITIONAL_NON_R"
+                )
+            )
+            return _r8u_r7d_qstat_diagnostic(
+                blocking_classification, observations, state_category
+            )
+        if observation.record_present:
+            assert observation.state_token is not None
+            if observation.state_token == "r":
+                classification = "PASS_QSTAT_SELF_RECORD_MATCHED"
+                state_category = "RUNNING_R"
+            else:
+                classification = "PASS_QSTAT_TRANSITIONAL_STATE"
+                state_category = "TRANSITIONAL_NON_R"
+            return _r8u_r7d_qstat_diagnostic(
+                classification, observations, state_category
+            )
+        if ordinal == R8U_R7D_QSTAT_MAXIMUM_OBSERVATIONS:
+            break
+        remaining = deadline - _r8u_r7d_clock_value(clock)
+        if remaining <= 0:
+            break
+        try:
+            sleeper(min(R8U_R7D_QSTAT_RETRY_INTERVAL_SECONDS, remaining))
+        except (OSError, ValueError, OverflowError) as exc:
+            raise FullSchedulerError(
+                "BLOCKED_QSTAT_SELF_OBSERVATION_FAILED"
+            ) from exc
+
+    if not observations:
+        _fail("BLOCKED_QSTAT_SELF_OBSERVATION_FAILED")
+    return _r8u_r7d_qstat_diagnostic(
+        "PASS_QSTAT_SELF_RECORD_NOT_YET_VISIBLE", observations, "NOT_OBSERVED"
+    )
 
 
 def validate_scheduler_tools() -> None:

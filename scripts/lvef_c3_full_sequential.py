@@ -441,6 +441,7 @@ class FullExecutionContext(Enum):
     R8U_R5_FIXED_CONTINUATION = "R8U_R5_FIXED_CONTINUATION"
     R8U_R6_FIXED_CONTINUATION = "R8U_R6_FIXED_CONTINUATION"
     R8U_R7_FIXED_CONTINUATION = "R8U_R7_FIXED_CONTINUATION"
+    R8U_R7D_FIXED_CONTINUATION = "R8U_R7D_FIXED_CONTINUATION"
 
 
 ORIGINAL_FULL_SUBMISSION = FullExecutionContext.ORIGINAL_FULL_SUBMISSION
@@ -451,6 +452,7 @@ R8U_R4_FIXED_CONTINUATION = FullExecutionContext.R8U_R4_FIXED_CONTINUATION
 R8U_R5_FIXED_CONTINUATION = FullExecutionContext.R8U_R5_FIXED_CONTINUATION
 R8U_R6_FIXED_CONTINUATION = FullExecutionContext.R8U_R6_FIXED_CONTINUATION
 R8U_R7_FIXED_CONTINUATION = FullExecutionContext.R8U_R7_FIXED_CONTINUATION
+R8U_R7D_FIXED_CONTINUATION = FullExecutionContext.R8U_R7D_FIXED_CONTINUATION
 # Compatibility name used by the fixed controller; it resolves only to the
 # fresh R2 continuation context and does not make the consumed R1 epoch live.
 R8U_FIXED_CONTINUATION = R8U_R2_FIXED_CONTINUATION
@@ -473,6 +475,7 @@ class FullDependencies:
         [], capacity.DynamicSuccessorCapacityCapture
     ] | None = None
     environment_validator: Callable[..., Mapping[str, Any]] | None = None
+    r8u_r7d_worker_submission_validator: Callable[..., Any] | None = None
     test_only_synthetic_full_scope: bool = False
     extraction_workers: int = 4
     echoprime_batch_size: int = 8
@@ -592,6 +595,9 @@ def resolve_dependencies(value: FullDependencies | None = None) -> FullDependenc
         environment_validator=(
             source.environment_validator
             or stages.validate_environment_authority_for_scientific_commit
+        ),
+        r8u_r7d_worker_submission_validator=(
+            source.r8u_r7d_worker_submission_validator
         ),
         test_only_synthetic_full_scope=source.test_only_synthetic_full_scope,
         extraction_workers=source.extraction_workers,
@@ -1500,6 +1506,28 @@ def _cache_retirement_authorization(
     return authorization_path
 
 
+def _validate_r8u_r7d_worker_submission(
+    dependency: FullDependencies,
+    *,
+    current_job_id: str,
+    role: str,
+) -> Any:
+    """Invoke only the fresh R7D validator, with an injectable test seam."""
+
+    validator = dependency.r8u_r7d_worker_submission_validator
+    if validator is None:
+        import lvef_c3_r8r_recovery_continuation as r8r
+
+        validator = getattr(
+            r8r,
+            "validate_r8u_r7d_continuation_worker_submission",
+            None,
+        )
+    if not callable(validator):
+        _fail("FULL_SEQUENTIAL_R8U_R7D_WORKER_VALIDATOR_UNAVAILABLE")
+    return validator(current_job_id=current_job_id, role=role)
+
+
 def run_batch_task(
     *,
     task_id: int | None = None,
@@ -1554,6 +1582,11 @@ def run_batch_task(
         and effective_task not in range(17, 20)
     ):
         _fail("FULL_SEQUENTIAL_R8U_R7_CONTINUATION_TASK_OUT_OF_SCOPE")
+    if (
+        dependency.execution_context is R8U_R7D_FIXED_CONTINUATION
+        and effective_task not in range(17, 20)
+    ):
+        _fail("FULL_SEQUENTIAL_R8U_R7D_CONTINUATION_TASK_OUT_OF_SCOPE")
 
     # This gate is deliberately first for tasks 2..N: no validation below may
     # construct a token provider, body transport, DICOM reader, or GPU object.
@@ -1618,6 +1651,12 @@ def run_batch_task(
             import lvef_c3_r8r_recovery_continuation as r8r
 
             r8r.validate_r8u_r7_frozen_partial_evidence()
+        elif dependency.execution_context is R8U_R7D_FIXED_CONTINUATION:
+            # R7 completed and retired Batch 16.  R7D is a fresh tail-only
+            # execution epoch, so it neither adopts the old partial cache nor
+            # invokes any live R7 continuation-worker validator.
+            if cache_inventory.active != 0:
+                _fail("FULL_SEQUENTIAL_R8U_R7D_EXTRACTION_CACHE_TOPOLOGY_INVALID")
         elif cache_inventory.active != 0:
             _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
 
@@ -1671,6 +1710,12 @@ def run_batch_task(
                 r8r.validate_r8u_r7_continuation_worker_submission(
                     current_job_id=str(os.environ.get("JOB_ID", "")),
                 )
+            elif dependency.execution_context is R8U_R7D_FIXED_CONTINUATION:
+                _validate_r8u_r7d_worker_submission(
+                    dependency,
+                    current_job_id=str(os.environ.get("JOB_ID", "")),
+                    role="array",
+                )
             else:
                 _wait_for_submission_receipt(
                     effective_run,
@@ -1694,6 +1739,7 @@ def run_batch_task(
                 R8U_R5_FIXED_CONTINUATION,
                 R8U_R6_FIXED_CONTINUATION,
                 R8U_R7_FIXED_CONTINUATION,
+                R8U_R7D_FIXED_CONTINUATION,
             }:
                 environment_arguments["runtime_validation_context"] = (
                     stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1839,6 +1885,7 @@ def run_batch_task(
             R8U_R5_FIXED_CONTINUATION,
             R8U_R6_FIXED_CONTINUATION,
             R8U_R7_FIXED_CONTINUATION,
+            R8U_R7D_FIXED_CONTINUATION,
         }:
             echoprime_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1907,6 +1954,7 @@ def run_batch_task(
             R8U_R5_FIXED_CONTINUATION,
             R8U_R6_FIXED_CONTINUATION,
             R8U_R7_FIXED_CONTINUATION,
+            R8U_R7D_FIXED_CONTINUATION,
         }:
             preservation_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1946,6 +1994,7 @@ def run_batch_task(
             R8U_R5_FIXED_CONTINUATION,
             R8U_R6_FIXED_CONTINUATION,
             R8U_R7_FIXED_CONTINUATION,
+            R8U_R7D_FIXED_CONTINUATION,
         }:
             retirement_arguments["scheduler_runner_path"] = (
                 SCRIPT_ROOT

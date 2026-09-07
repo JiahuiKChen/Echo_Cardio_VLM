@@ -236,6 +236,33 @@ R8U_R7_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS = (
     R8U_R6_IMPLEMENTATION_AUTHORITY_EPOCH_KEYS
     | frozenset({"r8u_npz_metadata_repair_commit"})
 )
+# R7D is a new tail-only execution epoch.  Batch 16 remains the immutable R7
+# result, R7C remains historical terminal-accounting evidence, and only
+# Batches 17--19 may carry the current R7D implementation epoch.
+R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT = (
+    "1be99c6436293a7cad576e9855ba4cd58a71e156"
+)
+R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT = (
+    "8fa3f93cabfb4065e012dca806051b97bbb2ca38"
+)
+R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256 = (
+    "63b002947814e92c616d0eb7f74ca334cba4e77cdc17f7ce2b55cfc51e090439"
+)
+R8U_R7D_CONSUMED_CONTINUATION_RECEIPT_SHA256 = (
+    "9ccc876aa4de905ba6a6a69129a21fc1cdb5f6a2d83cc91f7f49fefd8c33a000"
+)
+R8U_R7D_CONSUMED_TASK17_ACCOUNTING_RECEIPT_SHA256 = (
+    "2f5238300da9119f3de28deabbda999e822a0303708cdce450a235318c66143b"
+)
+R8U_R7D_CONSUMED_TASK18_ACCOUNTING_RECEIPT_SHA256 = (
+    "92603c68e2dffc43c54914e3586bf2c6edc97161b2bc0069f13d4ba4c9642013"
+)
+R8U_R7D_CONSUMED_TASK19_ACCOUNTING_RECEIPT_SHA256 = (
+    "30173264e794ecde2539c95fb3d8fbfd0e7571b41dd84442ea5f285d2b7d1832"
+)
+R8U_R7D_CONSUMED_FINALIZER_ACCOUNTING_RECEIPT_SHA256 = (
+    "5adc57d7282cdf73fc04fef58e50430d4be2c9dbad6e660c361ee6c3d41a6003"
+)
 R8U_FAILED_PARTIAL_METADATA_SHA256 = (
     "1dcc53e52a468773128348225943125c926bcab942ac7c69c37344684249f83e"
 )
@@ -331,6 +358,10 @@ R8U_PREFIX_RECEIPT_AUTHORITIES = {
         "9b140c5a053474152c3c1276c532048b4e824476369bb000a7d349e9098717af",
     ),
 }
+R8U_R7D_FINALIZED_PREFIX_RECEIPT_SHA256 = tuple(
+    R8U_PREFIX_RECEIPT_AUTHORITIES[f"c3_batch_{index:03d}"][1]
+    for index in range(15)
+) + (R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256,)
 R8U_FE3_GIT_TREE_SHA256 = {
     "controller_sha256": (
         "dda78b939391c778f276e9640a90a811987bf569ada9cf68e7d8c7ff37de2ae2"
@@ -369,6 +400,13 @@ R8U_FE3_IMPLEMENTATION_EPOCH = (
     R8U_FE3_GIT_TREE_SHA256["runner_sha256"],
     "882affb1ffd5d764d82d0ddd8449df46e2fd067e4152b79276838154ea7a1326",
     R8U_FE3_GIT_TREE_SHA256["retirement_sha256"],
+)
+R8U_R7_BATCH16_IMPLEMENTATION_EPOCH = (
+    "caf71e1ebdd5def78105a23363368ef64ee2775027b1c2a2bf05d78292ebe0ac",
+    "7cdbea83f56037bfcdc5cdbe82da6f937fa675724e713c732d291d38f7f37878",
+    "6878b3ca63d190d3aeaf98e851671a477fefc163fa24fefa004a5c38e69bcd9f",
+    "55e4137de8997b6cbf0718c1a82b1072de5997e561bd6af12543fa7b63569843",
+    "a299ae7d4d15586ee1639d7927a8bcc63361eec7f85f86bda9181c4cbe0f2a24",
 )
 R8U_CHAIN_ARTIFACT_SPECS = (
     (
@@ -3399,6 +3437,33 @@ class R8UR7ImplementationAuthority:
     continuation_submission_receipt_sha256: str
 
 
+@dataclass(frozen=True)
+class R8UR7DImplementationAuthority:
+    """Closed binding for the fresh R7D Tasks-17--19 execution epoch.
+
+    The first sixteen receipt hashes are fixed as an ordered tuple.  The old
+    R7A scheduler failure and R7C accounting records are bound only as
+    historical control-plane evidence; none is accepted as a batch receipt.
+    The controller validates each referenced restricted artifact before
+    constructing this value.
+    """
+
+    implementation_commit: str
+    prior_r7_runtime_commit: str
+    r7c_adjudication_commit: str
+    finalized_prefix_receipt_sha256: tuple[str, ...]
+    consumed_r7a_continuation_receipt_sha256: str
+    consumed_task17_accounting_receipt_sha256: str
+    consumed_task18_accounting_receipt_sha256: str
+    consumed_task19_accounting_receipt_sha256: str
+    consumed_finalizer_accounting_receipt_sha256: str
+    capacity_receipt_sha256: str
+    scheduler_account_authority_sha256: str
+    probe_terminal_receipt_sha256: str
+    continuation_claim_sha256: str
+    continuation_submission_receipt_sha256: str
+
+
 R8R_IMPLEMENTATION_EPOCH_KEYS = (
     "production_stage_wrapper_sha256",
     "batch_preservation_script_sha256",
@@ -3713,6 +3778,12 @@ R8U_FINAL_SUMMARY_KEYS = {
     "implementation_authority_epoch_count",
     "r8u_implementation_commit",
     "r8u_recovery_continuation_authority_sha256",
+}
+R8U_R7D_FINAL_SUMMARY_KEYS = {
+    "all_scientific_authority_bindings_identical",
+    "implementation_authority_epoch_count",
+    "r8u_r7d_implementation_commit",
+    "r8u_r7d_continuation_authority_sha256",
 }
 CANARY_FINAL_KEYS = {
     "schema_version",
@@ -6167,7 +6238,8 @@ def finalize_canary_preservation_receipt(
 def validate_closed_final_summary(value: Mapping[str, Any]) -> None:
     r8r_mode = set(value) == FINAL_KEYS | R8R_FINAL_SUMMARY_KEYS
     r8u_mode = set(value) == FINAL_KEYS | R8U_FINAL_SUMMARY_KEYS
-    mixed_epoch_mode = r8r_mode or r8u_mode
+    r8u_r7d_mode = set(value) == FINAL_KEYS | R8U_R7D_FINAL_SUMMARY_KEYS
+    mixed_epoch_mode = r8r_mode or r8u_mode or r8u_r7d_mode
     if set(value) != FINAL_KEYS and not mixed_epoch_mode:
         raise ProductionFinalizationError("FINAL_SUMMARY_SCHEMA_MISMATCH")
     scientific_scope_keys = {
@@ -6324,6 +6396,28 @@ def validate_closed_final_summary(value: Mapping[str, Any]) -> None:
                     str(
                         value.get(
                             "r8u_recovery_continuation_authority_sha256"
+                        )
+                    )
+                )
+                is None
+            )
+        )
+        or (
+            r8u_r7d_mode
+            and (
+                value.get("all_scientific_authority_bindings_identical")
+                is not True
+                or type(value.get("implementation_authority_epoch_count"))
+                is not int
+                or value.get("implementation_authority_epoch_count") != 4
+                or COMMIT_RE.fullmatch(
+                    str(value.get("r8u_r7d_implementation_commit"))
+                )
+                is None
+                or SHA256_RE.fullmatch(
+                    str(
+                        value.get(
+                            "r8u_r7d_continuation_authority_sha256"
                         )
                     )
                 )
@@ -7445,6 +7539,119 @@ def _validate_r8u_r7_repository_authority(
         ):
             raise ProductionFinalizationError(
                 "R8U_R7_FINALIZER_HISTORICAL_GIT_TREE_MISMATCH"
+            )
+
+
+def _validate_r8u_r7d_repository_authority(
+    implementation_commit: str,
+) -> None:
+    """Bind R7D to the sole repair commit after immutable R7C evidence."""
+
+    if (
+        not isinstance(implementation_commit, str)
+        or COMMIT_RE.fullmatch(implementation_commit) is None
+        or implementation_commit
+        in {
+            R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT,
+            R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        }
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+        )
+    repository = Path(__file__).resolve().parent.parent
+    if repository.is_symlink() or not repository.is_dir():
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+        )
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LC_ALL": "C",
+    }
+
+    def run_git(*arguments: str) -> subprocess.CompletedProcess[bytes]:
+        try:
+            return subprocess.run(
+                ["/usr/bin/git", "-C", str(repository), *arguments],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                env=environment,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ProductionFinalizationError(
+                "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+            ) from exc
+
+    exact_outputs = {
+        ("rev-parse", "HEAD"): f"{implementation_commit}\n".encode("ascii"),
+        (
+            "rev-parse",
+            "refs/remotes/origin/codex/lvef-multitask-revalidation",
+        ): f"{implementation_commit}\n".encode("ascii"),
+        ("branch", "--show-current"): b"codex/lvef-multitask-revalidation\n",
+        (
+            "rev-list", "--parents", "-n", "1", implementation_commit,
+        ): (
+            f"{implementation_commit} "
+            f"{R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list", "--parents", "-n", "1",
+            R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT} "
+            f"{R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT}\n"
+        ).encode("ascii"),
+        (
+            "rev-list", "--count",
+            f"{R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}.."
+            f"{implementation_commit}",
+        ): b"1\n",
+        (
+            "rev-list", "--count",
+            f"{R8R_SCIENTIFIC_GOVERNING_COMMIT}..{implementation_commit}",
+        ): b"12\n",
+    }
+    for arguments, expected_stdout in exact_outputs.items():
+        result = run_git(*arguments)
+        if (
+            result.returncode != 0
+            or result.stderr
+            or result.stdout != expected_stdout
+        ):
+            raise ProductionFinalizationError(
+                "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+            )
+    status = run_git("status", "--porcelain", "--untracked-files=no")
+    if status.returncode != 0 or status.stderr or status.stdout:
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+        )
+    commits = (
+        R8R_SCIENTIFIC_GOVERNING_COMMIT,
+        R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT,
+        R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        implementation_commit,
+    )
+    for commit in commits:
+        exists = run_git("cat-file", "-e", f"{commit}^{{commit}}")
+        if exists.returncode != 0 or exists.stdout or exists.stderr:
+            raise ProductionFinalizationError(
+                "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
+            )
+    for ancestor, descendant in zip(
+        commits, commits[1:], strict=True
+    ):
+        ancestry = run_git("merge-base", "--is-ancestor", ancestor, descendant)
+        if ancestry.returncode != 0 or ancestry.stdout or ancestry.stderr:
+            raise ProductionFinalizationError(
+                "R8U_R7D_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
             )
 
 
@@ -17547,6 +17754,176 @@ def _validate_r8u_r7_mixed_implementation_epochs(
     )
 
 
+def _validate_r8u_r7d_mixed_implementation_epochs(
+    receipts: Sequence[Mapping[str, Any]],
+    *,
+    receipt_hashes_by_batch: Mapping[str, str],
+    receipt_sizes_by_batch: Mapping[str, int],
+    receipt_paths_by_batch: Mapping[str, Path],
+    expected_governing_commit: str,
+    expected_attempt_id: str | None,
+    expected_runtime_authority: Mapping[str, Any] | None,
+    authority: R8UR7DImplementationAuthority,
+    plan: Mapping[str, Any] | None,
+) -> str:
+    """Accept only immutable Batches 1--16 plus fresh R7D Batches 17--19."""
+
+    del receipt_sizes_by_batch, receipt_paths_by_batch
+    if type(authority) is not R8UR7DImplementationAuthority:
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_AUTHORITY_INVALID"
+        )
+    hash_fields = tuple(
+        getattr(authority, field)
+        for field in authority.__dataclass_fields__
+        if field
+        not in {
+            "implementation_commit",
+            "prior_r7_runtime_commit",
+            "r7c_adjudication_commit",
+            "finalized_prefix_receipt_sha256",
+        }
+    )
+    if (
+        type(authority.implementation_commit) is not str
+        or COMMIT_RE.fullmatch(authority.implementation_commit) is None
+        or authority.implementation_commit
+        in {
+            R8R_SCIENTIFIC_GOVERNING_COMMIT,
+            R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT,
+            R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        }
+        or authority.prior_r7_runtime_commit
+        != R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT
+        or authority.r7c_adjudication_commit
+        != R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT
+        or type(authority.finalized_prefix_receipt_sha256) is not tuple
+        or authority.finalized_prefix_receipt_sha256
+        != R8U_R7D_FINALIZED_PREFIX_RECEIPT_SHA256
+        or authority.consumed_r7a_continuation_receipt_sha256
+        != R8U_R7D_CONSUMED_CONTINUATION_RECEIPT_SHA256
+        or authority.consumed_task17_accounting_receipt_sha256
+        != R8U_R7D_CONSUMED_TASK17_ACCOUNTING_RECEIPT_SHA256
+        or authority.consumed_task18_accounting_receipt_sha256
+        != R8U_R7D_CONSUMED_TASK18_ACCOUNTING_RECEIPT_SHA256
+        or authority.consumed_task19_accounting_receipt_sha256
+        != R8U_R7D_CONSUMED_TASK19_ACCOUNTING_RECEIPT_SHA256
+        or authority.consumed_finalizer_accounting_receipt_sha256
+        != R8U_R7D_CONSUMED_FINALIZER_ACCOUNTING_RECEIPT_SHA256
+        or any(
+            type(value) is not str or SHA256_RE.fullmatch(value) is None
+            for value in hash_fields
+        )
+        or len(set(hash_fields)) != len(hash_fields)
+        or authority.continuation_submission_receipt_sha256
+        == authority.consumed_r7a_continuation_receipt_sha256
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_AUTHORITY_INVALID"
+        )
+    if (
+        expected_governing_commit != R8R_SCIENTIFIC_GOVERNING_COMMIT
+        or expected_attempt_id != R8R_ATTEMPT_ID
+        or plan is None
+        or len(receipts) != len(EXPECTED_BATCH_IDS)
+        or tuple(str(item.get("batch_id")) for item in receipts)
+        != EXPECTED_BATCH_IDS
+        or any(
+            item.get("governing_commit")
+            != R8R_SCIENTIFIC_GOVERNING_COMMIT
+            or item.get("attempt_id") != R8R_ATTEMPT_ID
+            or item.get("batch_plan_sha256") != R8R_BATCH_PLAN_SHA256
+            for item in receipts
+        )
+        or any(
+            len({item[key] for item in receipts}) != 1
+            for key in R8R_SCIENTIFIC_AUTHORITY_KEYS
+        )
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        )
+    if expected_runtime_authority is None:
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        )
+    try:
+        runtime = core.validate_runtime_authority(expected_runtime_authority)
+    except core.OrchestrationError as exc:
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        ) from exc
+    first = receipts[0]
+    if (
+        runtime.get("git_commit") != R8R_SCIENTIFIC_GOVERNING_COMMIT
+        or runtime.get("batch_plan_sha256") != R8R_BATCH_PLAN_SHA256
+        or runtime.get("orchestration_contract_sha256")
+        != first["orchestration_contract_sha256"]
+        or runtime.get("checkpoint_sha256") != first["checkpoint_sha256"]
+        or runtime.get("environment_receipt_sha256")
+        != first["environment_receipt_sha256"]
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_SCIENTIFIC_AUTHORITY_MISMATCH"
+        )
+
+    observed_prefix = tuple(
+        receipt_hashes_by_batch.get(f"c3_batch_{index:03d}", "")
+        for index in range(16)
+    )
+    if observed_prefix != R8U_R7D_FINALIZED_PREFIX_RECEIPT_SHA256:
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_PREFIX_RECEIPT_MISMATCH"
+        )
+
+    original_epochs = {
+        _receipt_implementation_epoch(item) for item in receipts[:2]
+    }
+    historical_r8r_epochs = {
+        _receipt_implementation_epoch(item) for item in receipts[2:15]
+    }
+    r7_batch16_epochs = {
+        _receipt_implementation_epoch(item) for item in receipts[15:16]
+    }
+    current_r7d_epochs = {
+        _receipt_implementation_epoch(item) for item in receipts[16:]
+    }
+    try:
+        expected_current_epoch = _current_r8r_implementation_epoch()
+    except (OSError, ProductionFinalizationError) as exc:
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_STAGE_SCRIPT_AUTHORITY_MISMATCH"
+        ) from exc
+    if (
+        len(original_epochs) != 1
+        or historical_r8r_epochs != {R8U_FE3_IMPLEMENTATION_EPOCH}
+        or r7_batch16_epochs != {R8U_R7_BATCH16_IMPLEMENTATION_EPOCH}
+        or current_r7d_epochs != {expected_current_epoch}
+        or len(
+            {
+                next(iter(original_epochs), ()),
+                R8U_FE3_IMPLEMENTATION_EPOCH,
+                R8U_R7_BATCH16_IMPLEMENTATION_EPOCH,
+                expected_current_epoch,
+            }
+        )
+        != 4
+    ):
+        raise ProductionFinalizationError(
+            "R8U_R7D_FINALIZER_IMPLEMENTATION_EPOCH_MISMATCH"
+        )
+    _validate_r8u_r7d_repository_authority(authority.implementation_commit)
+    authority_payload = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_r8u_r7d_finalizer_authority_v1",
+        **{
+            field: getattr(authority, field)
+            for field in authority.__dataclass_fields__
+        },
+    }
+    return core.canonical_json_sha256(authority_payload)
+
+
 def _stage_authority_receipts(
     receipts: Sequence[Mapping[str, Any]],
     *,
@@ -17557,11 +17934,12 @@ def _stage_authority_receipts(
     r8u_r5_mode: bool = False,
     r8u_r6_mode: bool = False,
     r8u_r7_mode: bool = False,
+    r8u_r7d_mode: bool = False,
 ) -> Sequence[Mapping[str, Any]]:
     if sum(
         (
             r8r_mode, r8u_mode, r8u_r3_mode, r8u_r4_mode,
-            r8u_r5_mode, r8u_r6_mode, r8u_r7_mode,
+            r8u_r5_mode, r8u_r6_mode, r8u_r7_mode, r8u_r7d_mode,
         )
     ) > 1:
         raise ProductionFinalizationError(
@@ -17572,6 +17950,8 @@ def _stage_authority_receipts(
         or r8u_r5_mode or r8u_r6_mode or r8u_r7_mode
     ):
         return receipts[15:]
+    if r8u_r7d_mode:
+        return receipts[16:]
     if r8r_mode:
         return receipts[2:]
     return receipts
@@ -17594,6 +17974,7 @@ def finalize_receipts(
     r8u_r5_implementation_authority: R8UR5ImplementationAuthority | None = None,
     r8u_r6_implementation_authority: R8UR6ImplementationAuthority | None = None,
     r8u_r7_implementation_authority: R8UR7ImplementationAuthority | None = None,
+    r8u_r7d_implementation_authority: R8UR7DImplementationAuthority | None = None,
 ) -> dict[str, Any]:
     authority_mode_count = sum(
         value is not None
@@ -17605,6 +17986,7 @@ def finalize_receipts(
             r8u_r5_implementation_authority,
             r8u_r6_implementation_authority,
             r8u_r7_implementation_authority,
+            r8u_r7d_implementation_authority,
         )
     )
     if authority_mode_count > 1:
@@ -17633,6 +18015,7 @@ def finalize_receipts(
     r8u_r5_chain_authority_sha256: str | None = None
     r8u_r6_chain_authority_sha256: str | None = None
     r8u_r7_chain_authority_sha256: str | None = None
+    r8u_r7d_chain_authority_sha256: str | None = None
     for path in receipt_paths:
         receipt = load_json(path, "BATCH_RECEIPT")
         _validate_current_receipt_v3(receipt)
@@ -17740,11 +18123,7 @@ def finalize_receipts(
                 plan=plan,
             )
         )
-    else:
-        if r8u_r7_implementation_authority is None:
-            raise ProductionFinalizationError(
-                "R8U_R7_FINALIZER_AUTHORITY_INVALID"
-            )
+    elif r8u_r7_implementation_authority is not None:
         r8u_r7_chain_authority_sha256 = (
             _validate_r8u_r7_mixed_implementation_epochs(
                 receipts,
@@ -17755,6 +18134,24 @@ def finalize_receipts(
                 expected_attempt_id=expected_attempt_id,
                 expected_runtime_authority=expected_runtime_authority,
                 authority=r8u_r7_implementation_authority,
+                plan=plan,
+            )
+        )
+    else:
+        if r8u_r7d_implementation_authority is None:
+            raise ProductionFinalizationError(
+                "R8U_R7D_FINALIZER_AUTHORITY_INVALID"
+            )
+        r8u_r7d_chain_authority_sha256 = (
+            _validate_r8u_r7d_mixed_implementation_epochs(
+                receipts,
+                receipt_hashes_by_batch=receipt_hashes_by_batch,
+                receipt_sizes_by_batch=receipt_sizes_by_batch,
+                receipt_paths_by_batch=receipt_paths_by_batch,
+                expected_governing_commit=expected_governing_commit,
+                expected_attempt_id=expected_attempt_id,
+                expected_runtime_authority=expected_runtime_authority,
+                authority=r8u_r7d_implementation_authority,
                 plan=plan,
             )
         )
@@ -17810,6 +18207,7 @@ def finalize_receipts(
             r8u_r5_mode=r8u_r5_implementation_authority is not None,
             r8u_r6_mode=r8u_r6_implementation_authority is not None,
             r8u_r7_mode=r8u_r7_implementation_authority is not None,
+            r8u_r7d_mode=r8u_r7d_implementation_authority is not None,
         )
         if any(
             item["batch_preservation_script_sha256"]
@@ -18200,6 +18598,23 @@ def finalize_receipts(
                 ),
                 "r8r_recovery_continuation_authority_sha256": (
                     r8r_chain_authority_sha256
+                ),
+            }
+        )
+    elif r8u_r7d_implementation_authority is not None:
+        if r8u_r7d_chain_authority_sha256 is None:
+            raise ProductionFinalizationError(
+                "R8U_R7D_FINALIZER_CHAIN_BINDING_MISMATCH"
+            )
+        result.update(
+            {
+                "all_scientific_authority_bindings_identical": True,
+                "implementation_authority_epoch_count": 4,
+                "r8u_r7d_implementation_commit": (
+                    r8u_r7d_implementation_authority.implementation_commit
+                ),
+                "r8u_r7d_continuation_authority_sha256": (
+                    r8u_r7d_chain_authority_sha256
                 ),
             }
         )

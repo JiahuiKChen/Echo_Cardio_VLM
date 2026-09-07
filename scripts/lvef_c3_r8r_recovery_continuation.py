@@ -25,7 +25,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Final, Mapping, Sequence
+from typing import Any, Callable, Final, Mapping, NoReturn, Sequence
 import xml.etree.ElementTree as ET
 
 
@@ -41,6 +41,7 @@ import lvef_c3_full_sequential as sequential
 import lvef_c3_minimal_canary as minimal
 import lvef_c3_orchestration_core as core
 import lvef_c3_production_stages as stages
+import lvef_c3_r8u_r7d_capacity as r7d_capacity
 import preserve_lvef_c3_production_batch as preservation
 import retire_lvef_c3_extracted_cache_v2 as retirement
 import validate_lvef_c3_prior_batch_finalization as prior_gate
@@ -2333,6 +2334,81 @@ R8U_R7_CONTINUATION_WORKER_RECEIPT_KEYS: Final = (
     )
 )
 
+# Phase 1I-R8U-R7D is the one fixed continuation-worker identity repair.
+# The consumed R7A namespace remains immutable; all new controls and worker
+# evidence are confined to this fresh, no-clobber epoch.
+R8U_R7_PRIOR_FINALIZED_RUNTIME_COMMIT: Final = (
+    "1be99c6436293a7cad576e9855ba4cd58a71e156"
+)
+R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT: Final = (
+    "8fa3f93cabfb4065e012dca806051b97bbb2ca38"
+)
+R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256: Final = (
+    "63b002947814e92c616d0eb7f74ca334cba4e77cdc17f7ce2b55cfc51e090439"
+)
+R8U_R7D_PREFIX_FINAL_RECEIPT_SHA256: Final = tuple(
+    item[2] for item in R8U_PREFIX_RECEIPT_AUTHORITIES
+) + (R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256,)
+R8U_R7D_OLD_CONTINUATION_CLAIM_SHA256: Final = (
+    "5cd27c5203b37b49bee99b047c4c56168551cbabe2675a88616df50106bd1697"
+)
+R8U_R7D_OLD_CONTINUATION_RECEIPT_SHA256: Final = (
+    "9ccc876aa4de905ba6a6a69129a21fc1cdb5f6a2d83cc91f7f49fefd8c33a000"
+)
+R8U_R7D_OLD_ACCOUNTING_SHA256: Final = {
+    "task_17": "2f5238300da9119f3de28deabbda999e822a0303708cdce450a235318c66143b",
+    "task_18": "92603c68e2dffc43c54914e3586bf2c6edc97161b2bc0069f13d4ba4c9642013",
+    "task_19": "30173264e794ecde2539c95fb3d8fbfd0e7571b41dd84442ea5f285d2b7d1832",
+    "finalizer": "5adc57d7282cdf73fc04fef58e50430d4be2c9dbad6e660c361ee6c3d41a6003",
+}
+R8U_R7D_OLD_LOG_SHA256: Final = {
+    "task_17": "e1b9e06d1ba2ab125d2c02c7a0d86f6d8344baff55a57e1aa482666a2f058fb0",
+    "task_18": "812ad70eebe763a44047c670eae2a3863b712bf75061521680c3fcb3ff9dc7f7",
+    "task_19": "812ad70eebe763a44047c670eae2a3863b712bf75061521680c3fcb3ff9dc7f7",
+    "finalizer": "5eee68ca86adf394d48558ae04efbbe357394a3effdb97cb7011338bde33754b",
+}
+R8U_R7D_ROOT: Final = ATTEMPT_ROOT / "r8u_r7d_continuation_17_19"
+R8U_R7D_ACCOUNT_AUTHORITY_PATH: Final = (
+    R8U_R7D_ROOT / "scheduler_account_authority.restricted.json"
+)
+R8U_R7D_OLD_EVIDENCE_PATH: Final = (
+    R8U_R7D_ROOT / "consumed_r7a_evidence.restricted.json"
+)
+R8U_R7D_CAPACITY_PATH: Final = (
+    R8U_R7D_ROOT / "tasks17_19_capacity.restricted.json"
+)
+R8U_R7D_PROBE_ROOT: Final = R8U_R7D_ROOT / "context_probe"
+R8U_R7D_PROBE_SCHEDULER_ROOT: Final = R8U_R7D_PROBE_ROOT / "scheduler"
+R8U_R7D_PROBE_AUTHORITY_PATH: Final = (
+    R8U_R7D_PROBE_ROOT / "probe_authority.restricted.json"
+)
+R8U_R7D_PROBE_SUBMISSION_PATH: Final = (
+    R8U_R7D_PROBE_ROOT / "submission_receipt.restricted.json"
+)
+R8U_R7D_PROBE_WORKER_RECEIPT_PATH: Final = (
+    R8U_R7D_PROBE_ROOT / "worker_context_receipt.restricted.json"
+)
+R8U_R7D_PROBE_ACCOUNTING_PATH: Final = (
+    R8U_R7D_PROBE_ROOT / "accounting_receipt.restricted.json"
+)
+R8U_R7D_PROBE_TERMINAL_PATH: Final = (
+    R8U_R7D_PROBE_ROOT / "terminal_receipt.restricted.json"
+)
+R8U_R7D_CONTINUATION_SCHEDULER_ROOT: Final = R8U_R7D_ROOT / "scheduler"
+R8U_R7D_CONTINUATION_CLAIM_PATH: Final = (
+    R8U_R7D_ROOT / "continuation_claim.restricted.json"
+)
+R8U_R7D_CONTINUATION_SUBMISSION_PATH: Final = (
+    R8U_R7D_CONTINUATION_SCHEDULER_ROOT
+    / "submission_receipt.restricted.json"
+)
+R8U_R7D_PROBE_ROLE: Final = "R8U_R7D_CONTINUATION_CONTEXT_PROBE"
+R8U_R7D_ARRAY_ROLE: Final = "R8U_R7D_CONTINUATION_ARRAY"
+R8U_R7D_FINALIZER_ROLE: Final = "R8U_R7D_COHORT_FINALIZER"
+R8U_R7D_WORKER_ROLES: Final = (
+    R8U_R7D_PROBE_ROLE, R8U_R7D_ARRAY_ROLE, R8U_R7D_FINALIZER_ROLE,
+)
+
 
 @dataclass(frozen=True)
 class _R8UR3RenameResult:
@@ -2418,6 +2494,7 @@ class R8RControllerError(RuntimeError):
         stage: str | None = None,
         validation_substage: str | None = None,
         capacity_deficits: Mapping[str, int] | None = None,
+        probe_qacct: Mapping[str, int] | None = None,
     ):
         if SAFE_CODE_RE.fullmatch(code) is None:
             code = "R8R_UNEXPECTED_SANITIZED_FAILURE"
@@ -2452,6 +2529,19 @@ class R8RControllerError(RuntimeError):
             self.capacity_deficits = {}
         else:
             self.capacity_deficits = dict(capacity_deficits)
+        if (
+            probe_qacct is not None
+            and set(probe_qacct) == {"failed", "exit_status"}
+            and all(
+                not isinstance(value, bool)
+                and isinstance(value, int)
+                and value >= 0
+                for value in probe_qacct.values()
+            )
+        ):
+            self.probe_qacct = dict(probe_qacct)
+        else:
+            self.probe_qacct: dict[str, int] = {}
 
 
 def _fail(code: str, *, stage: str | None = None) -> None:
@@ -3108,6 +3198,58 @@ def _current_r8u_r7_implementation_commit() -> str:
     return current
 
 
+def _current_r8u_r7d_implementation_commit() -> str:
+    """Require the sole worker-identity repair child of frozen R7C."""
+
+    try:
+        current = sequential._current_commit()
+        parent_line = sequential._git(
+            "rev-list", "--parents", "-n", "1", current
+        )
+        relation = sequential._git(
+            "merge-base", "--is-ancestor",
+            R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT, current,
+        )
+        distance = sequential._git(
+            "rev-list", "--count",
+            f"{R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}..{current}",
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_R7D_IMPLEMENTATION_GIT_AUTHORITY_INVALID"
+        ) from exc
+    if (
+        COMMIT_RE.fullmatch(current) is None
+        or current == R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT
+        or parent_line
+        != f"{current} {R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}"
+        or relation
+        or distance != "1"
+    ):
+        _fail("R8U_R7D_IMPLEMENTATION_ANCESTRY_INVALID")
+    return current
+
+
+def _r8u_r7d_implementation_authority_epochs(
+    implementation_commit: str,
+) -> Mapping[str, str]:
+    if (
+        COMMIT_RE.fullmatch(implementation_commit) is None
+        or implementation_commit == R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT
+    ):
+        _fail("R8U_R7D_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
+    value = {
+        **dict(_r8u_r7_implementation_authority_epochs(
+            R8U_R7_PRIOR_FINALIZED_RUNTIME_COMMIT
+        )),
+        "r8u_r7c_adjudication_commit": (
+            R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT
+        ),
+        "r8u_r7d_worker_identity_repair_commit": implementation_commit,
+    }
+    return dict(sorted(value.items()))
+
+
 def _r8u_r7_implementation_authority_epochs(
     implementation_commit: str,
 ) -> Mapping[str, str]:
@@ -3150,32 +3292,37 @@ def _load_fixed_original_run(
     r8u_r5: bool = False,
     r8u_r6: bool = False,
     r8u_r7: bool = False,
+    r8u_r7d: bool = False,
 ) -> sequential.FullRun:
     if not isinstance(
         runtime_validation_context, stages.RuntimeAuthorityValidationContext
     ):
         _fail("R8R_RUNTIME_VALIDATION_CONTEXT_INVALID")
-    if sum((r8u, r8u_r3, r8u_r4, r8u_r5, r8u_r6, r8u_r7)) > 1:
+    if sum((r8u, r8u_r3, r8u_r4, r8u_r5, r8u_r6, r8u_r7, r8u_r7d)) > 1:
         _fail("R8R_RUNTIME_VALIDATION_CONTEXT_INVALID")
     implementation_commit = (
-        _current_r8u_r7_implementation_commit()
-        if r8u_r7
+        _current_r8u_r7d_implementation_commit()
+        if r8u_r7d
         else (
-            _current_r8u_r6_implementation_commit()
-            if r8u_r6
+            _current_r8u_r7_implementation_commit()
+            if r8u_r7
             else (
-                _current_r8u_r5_implementation_commit()
-                if r8u_r5
+                _current_r8u_r6_implementation_commit()
+                if r8u_r6
                 else (
-                    _current_r8u_r4_implementation_commit()
-                    if r8u_r4
+                    _current_r8u_r5_implementation_commit()
+                    if r8u_r5
                     else (
-                        _current_r8u_r3_implementation_commit()
-                        if r8u_r3
+                        _current_r8u_r4_implementation_commit()
+                        if r8u_r4
                         else (
-                            _current_r8u_implementation_commit()
-                            if r8u
-                            else _current_implementation_commit()
+                            _current_r8u_r3_implementation_commit()
+                            if r8u_r3
+                            else (
+                                _current_r8u_implementation_commit()
+                                if r8u
+                                else _current_implementation_commit()
+                            )
                         )
                     )
                 )
@@ -14512,6 +14659,7 @@ def _r8u_r5_build_worker_context(
 def _r8u_r5_process_projection(
     *, environment: Mapping[str, str], runner: Callable[..., Any],
     worker_self_marker: str | None,
+    additional_markers: Sequence[str] = (),
 ) -> Mapping[str, Any]:
     command = ["/bin/ps", "-axo", "pid=,uid=,command="]
     completed = runner(
@@ -14572,7 +14720,9 @@ def _r8u_r5_process_projection(
                 _fail("R8U_R5_WORKER_PROCESS_PROJECTION_INVALID")
             self_seen += 1
             continue
-        if any(marker in fields[2] for marker in markers):
+        if any(marker in fields[2] for marker in markers) or any(
+            marker in fields[2] for marker in additional_markers
+        ):
             matching += 1
     if matching != 0 or (worker_self_marker is not None and self_seen != 1):
         _fail("R8U_R5_WORKER_PROCESS_PROJECTION_INVALID")
@@ -25146,6 +25296,2148 @@ def run_r8u_r7_continuation_finalizer() -> Mapping[str, Any]:
     return summary
 
 
+# ---------------------------------------------------------------------------
+# R8U-R7D: diagnostic qstat identity repair and final Tasks 17--19
+# ---------------------------------------------------------------------------
+
+
+def _r8u_r7d_common(
+    *, artifact_type: str, status: str, implementation_commit: str,
+) -> dict[str, Any]:
+    """Return the closed common authority for the sole R7D epoch."""
+
+    if (
+        not isinstance(artifact_type, str)
+        or not isinstance(status, str)
+        or COMMIT_RE.fullmatch(implementation_commit) is None
+    ):
+        _fail("R8U_R7D_CONTROL_SCHEMA_INVALID")
+    return {
+        "schema_version": 1,
+        "artifact_type": artifact_type,
+        "status": status,
+        "original_scientific_commit": ORIGINAL_SCIENTIFIC_COMMIT,
+        "prior_finalized_runtime_commit": R8U_R7_PRIOR_FINALIZED_RUNTIME_COMMIT,
+        "r7c_adjudication_commit": R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        "implementation_commit": implementation_commit,
+        "implementation_authority_epochs": dict(
+            _r8u_r7d_implementation_authority_epochs(implementation_commit)
+        ),
+        "attempt_id": ORIGINAL_ATTEMPT_ID,
+        "batch_plan_sha256": ORIGINAL_PLAN_SHA256,
+    }
+
+
+def _r8u_r7d_account_authority(
+    *, implementation_commit: str, environment: Mapping[str, str],
+    qsub_environment_sha256: str,
+) -> Mapping[str, Any]:
+    """Seal the login account once for the probe and both later roles."""
+
+    try:
+        account = pwd.getpwuid(os.geteuid())
+        if Path(sys.executable) != scheduler.ECHOPRIME_PYTHON:
+            _fail("R8U_R7D_SCHEDULER_ACCOUNT_AUTHORITY_INVALID")
+        runner_sha = core.sha256_file(RUNNER_PATH)
+        python_sha = stages.resolved_python_executable_sha256(
+            scheduler.ECHOPRIME_PYTHON
+        )
+    except R8RControllerError:
+        raise
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_R7D_SCHEDULER_ACCOUNT_AUTHORITY_INVALID"
+        ) from exc
+    value = {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_scheduler_account_authority_v1",
+            status="AUTHORIZED_R8U_R7D_SCHEDULER_ACCOUNT",
+            implementation_commit=implementation_commit,
+        ),
+        "expected_effective_uid": int(os.geteuid()),
+        "expected_scheduler_username": str(account.pw_name),
+        "canonical_home": str(account.pw_dir),
+        "runner_sha256": runner_sha,
+        "python_sha256": python_sha,
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "sealed_qsub_environment": dict(sorted(environment.items())),
+        "authorized_worker_roles": list(R8U_R7D_WORKER_ROLES),
+    }
+    if (
+        environment.get("USER") != account.pw_name
+        or environment.get("LOGNAME") != account.pw_name
+        or environment.get("HOME") != account.pw_dir
+        or scheduler.qsub_environment_sha256(environment)
+        != qsub_environment_sha256
+    ):
+        _fail("R8U_R7D_SCHEDULER_ACCOUNT_AUTHORITY_INVALID")
+    return value
+
+
+def validate_r8u_r7d_scheduler_account_authority(
+    value: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    authority = value
+    if authority is None:
+        authority, _ = _load_private_json(R8U_R7D_ACCOUNT_AUTHORITY_PATH)
+    if not isinstance(authority, Mapping):
+        _fail("R8U_R7D_SCHEDULER_ACCOUNT_AUTHORITY_INVALID")
+    implementation_commit = str(authority.get("implementation_commit", ""))
+    expected_common = (
+        _r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_scheduler_account_authority_v1",
+            status="AUTHORIZED_R8U_R7D_SCHEDULER_ACCOUNT",
+            implementation_commit=implementation_commit,
+        )
+        if COMMIT_RE.fullmatch(implementation_commit) is not None
+        else {}
+    )
+    sealed = authority.get("sealed_qsub_environment")
+    expected_keys = set(expected_common) | {
+        "expected_effective_uid", "expected_scheduler_username",
+        "canonical_home", "runner_sha256", "python_sha256",
+        "qsub_environment_sha256", "sealed_qsub_environment",
+        "authorized_worker_roles",
+    }
+    if (
+        not expected_common
+        or set(authority) != expected_keys
+        or any(authority.get(key) != item for key, item in expected_common.items())
+        or isinstance(authority.get("expected_effective_uid"), bool)
+        or not isinstance(authority.get("expected_effective_uid"), int)
+        or int(authority.get("expected_effective_uid", -1)) < 0
+        or scheduler.SAFE_ACCOUNT_RE.fullmatch(
+            str(authority.get("expected_scheduler_username", ""))
+        ) is None
+        or not isinstance(authority.get("canonical_home"), str)
+        or not Path(str(authority.get("canonical_home"))).is_absolute()
+        or authority.get("authorized_worker_roles")
+        != list(R8U_R7D_WORKER_ROLES)
+        or any(
+            SHA_RE.fullmatch(str(authority.get(field, ""))) is None
+            for field in (
+                "runner_sha256", "python_sha256", "qsub_environment_sha256",
+            )
+        )
+        or not isinstance(sealed, Mapping)
+        or not sealed
+        or scheduler.qsub_environment_sha256(sealed)
+        != authority.get("qsub_environment_sha256")
+    ):
+        _fail("R8U_R7D_SCHEDULER_ACCOUNT_AUTHORITY_INVALID")
+    return authority
+
+
+def _r8u_r7d_require_account_owner() -> None:
+    try:
+        info = os.lstat(R8U_R7D_ACCOUNT_AUTHORITY_PATH)
+    except OSError as exc:
+        raise R8RControllerError(
+            "R8U_R7D_SCHEDULER_ACCOUNT_AUTHORITY_INVALID"
+        ) from exc
+    if info.st_uid != os.geteuid():
+        _fail("SCHEDULER_EFFECTIVE_UID_MISMATCH")
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) != 0o600
+    ):
+        _fail("R8U_R7D_SCHEDULER_ACCOUNT_AUTHORITY_INVALID")
+
+
+def _r8u_r7d_bounded_prefix(
+    run: sequential.FullRun,
+) -> tuple[str, ...]:
+    """Validate the sealed prefix once without repeated plan reconstruction."""
+
+    hashes: list[str] = []
+    selected_studies = 0
+    for index in range(16):
+        batch_id = f"c3_batch_{index:03d}"
+        paths = sequential._batch_paths(run, batch_id)
+        if index < 15:
+            _fixed_id, expected_bytes, expected_sha = (
+                R8U_PREFIX_RECEIPT_AUTHORITIES[index]
+            )
+            payload = _read_private_exact(
+                paths["final_receipt"],
+                size=expected_bytes,
+                digest=expected_sha,
+            )
+        else:
+            payload = _read_private(paths["final_receipt"])
+            expected_sha = R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256
+            if _sha256_bytes(payload) != expected_sha:
+                _fail("R8U_R7D_FINALIZED_PREFIX_INVALID")
+        receipt = _strict_json(payload)
+        try:
+            finalizer._validate_current_receipt_v3(receipt)
+            validated = sequential._validate_batch_finalization(
+                run=run, batch_id=batch_id
+            )
+            ledger = core.load_strict_json(paths["final_ledger"])
+            preserved = preservation.load_json(
+                paths["preservation"]
+                / "batch_preservation_receipt.restricted.json",
+                "R8U_R7D_PREFIX_PRESERVATION_RECEIPT",
+            )
+        except Exception as exc:
+            raise R8RControllerError(
+                "R8U_R7D_FINALIZED_PREFIX_INVALID"
+            ) from exc
+        if (
+            not _exact_typed_value_equal(receipt, validated)
+            or receipt.get("batch_id") != batch_id
+            or ledger.get("status") != "COMPLETE"
+            or not isinstance(ledger.get("batches"), Mapping)
+            or ledger["batches"].get(batch_id, {}).get("state") != "FINALIZED"
+            or preserved.get("status")
+            != "PASS_BATCH_CACHE_RETIREMENT_ELIGIBLE"
+        ):
+            _fail("R8U_R7D_FINALIZED_PREFIX_INVALID")
+        selected_studies += int(receipt.get("n_selected_studies", -1))
+        hashes.append(expected_sha)
+    if (
+        tuple(hashes) != R8U_R7D_PREFIX_FINAL_RECEIPT_SHA256
+        or selected_studies != 4_000
+    ):
+        _fail("R8U_R7D_FINALIZED_PREFIX_INVALID")
+    return tuple(hashes)
+
+
+def _r8u_r7d_validate_consumed_evidence() -> Mapping[str, Any]:
+    """Reopen the completed R7C receipts and fixed logs without any qacct."""
+
+    try:
+        import lvef_c3_r8u_r7c_accounting as accounting
+        import lvef_c3_r8u_r7c_terminal_logs as terminal_logs
+
+        results = accounting.preflight_fixed_accounting_receipts(
+            adjudication_implementation_commit=(
+                R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT
+            )
+        )
+    except Exception as exc:
+        raise R8RControllerError("R8U_R7D_OLD_EVIDENCE_INVALID") from exc
+    if set(results) != {"task_17", "task_18", "task_19", "finalizer"}:
+        _fail("R8U_R7D_OLD_EVIDENCE_INVALID")
+    expected_exit = {
+        "task_17": (0, 78, 3),
+        "task_18": (0, 78, 1813),
+        "task_19": (0, 78, 1788),
+        "finalizer": (0, 78, 5096),
+    }
+    expected_code = {
+        "task_17": "SCHEDULER_JOB_ROLE_MISMATCH",
+        "task_18": "PRIOR_FINAL_RECEIPT_NOT_REGULAR",
+        "task_19": "PRIOR_FINAL_RECEIPT_NOT_REGULAR",
+        "finalizer": "BATCH_RECEIPT_NOT_REGULAR",
+    }
+    account_hashes: dict[str, str] = {}
+    log_hashes: dict[str, str] = {}
+    evidence_bytes = evidence_files = 0
+    for key, result in results.items():
+        if (
+            result is None
+            or result.created is not False
+            or result.qacct_query_count != 0
+            or result.receipt_sha256 != R8U_R7D_OLD_ACCOUNTING_SHA256[key]
+        ):
+            _fail("R8U_R7D_OLD_EVIDENCE_INVALID")
+        receipt = result.receipt
+        failed, exit_status, wall = expected_exit[key]
+        if (
+            receipt.get("failed") != failed
+            or receipt.get("exit_status") != exit_status
+            or receipt.get("wall_seconds") != wall
+            or receipt.get("terminal_classification") != "FAIL"
+        ):
+            _fail("R8U_R7D_OLD_EVIDENCE_INVALID")
+        spec = (
+            accounting.FINALIZER_ACCOUNTING_SPEC
+            if key == "finalizer"
+            else accounting.TASK_ACCOUNTING_SPECS[int(key.rsplit("_", 1)[1])]
+        )
+        try:
+            payload, metadata = terminal_logs._read_fixed_regular(
+                terminal_logs.fixed_scheduler_log_path(spec)
+            )
+            blocked, _stage, passed = terminal_logs._fixed_markers(payload)
+        except Exception as exc:
+            raise R8RControllerError("R8U_R7D_OLD_EVIDENCE_INVALID") from exc
+        expected_marker = f"R8U_R7_STATUS=BLOCKED_{expected_code[key]}"
+        if (
+            blocked != expected_marker
+            or passed is not None
+            or _sha256_bytes(payload) != R8U_R7D_OLD_LOG_SHA256[key]
+        ):
+            _fail("R8U_R7D_OLD_EVIDENCE_INVALID")
+        account_hashes[key] = result.receipt_sha256
+        log_hashes[key] = _sha256_bytes(payload)
+        evidence_bytes += int(metadata.st_size)
+        evidence_files += 1
+        try:
+            account_info = os.lstat(spec.receipt_path)
+        except OSError as exc:
+            raise R8RControllerError("R8U_R7D_OLD_EVIDENCE_INVALID") from exc
+        evidence_bytes += int(account_info.st_size)
+        evidence_files += 1
+
+    fixed_controls = (
+        (R8U_R7_CONTINUATION_CLAIM_PATH, R8U_R7D_OLD_CONTINUATION_CLAIM_SHA256),
+        (
+            R8U_R7_CONTINUATION_SUBMISSION_PATH,
+            R8U_R7D_OLD_CONTINUATION_RECEIPT_SHA256,
+        ),
+    )
+    for path, expected_sha in fixed_controls:
+        payload = _read_private(path)
+        if _sha256_bytes(payload) != expected_sha:
+            _fail("R8U_R7D_OLD_EVIDENCE_INVALID")
+        evidence_bytes += len(payload)
+        evidence_files += 1
+    return {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_r8u_r7d_consumed_r7a_evidence_v1",
+        "status": "CONTROL_PLANE_WORKER_ROLE_VALIDATION_FAILURE",
+        "old_continuation_claim_sha256": R8U_R7D_OLD_CONTINUATION_CLAIM_SHA256,
+        "old_continuation_submission_receipt_sha256": (
+            R8U_R7D_OLD_CONTINUATION_RECEIPT_SHA256
+        ),
+        "accounting_receipt_sha256": dict(sorted(account_hashes.items())),
+        "scheduler_log_sha256": dict(sorted(log_hashes.items())),
+        "task17_failure_code": "BLOCKED_SCHEDULER_JOB_ROLE_MISMATCH",
+        "task18_failure_code": "BLOCKED_PRIOR_FINAL_RECEIPT_NOT_REGULAR",
+        "task19_failure_code": "BLOCKED_PRIOR_FINAL_RECEIPT_NOT_REGULAR",
+        "finalizer_failure_code": "BLOCKED_BATCH_RECEIPT_NOT_REGULAR",
+        "scientific_stage_reached": False,
+        "partial_scientific_artifact_bytes": 0,
+        "partial_scientific_artifact_files": 0,
+        "preserved_old_evidence_bytes": evidence_bytes,
+        "preserved_old_evidence_files": evidence_files,
+        "qacct_queries": 0,
+    }
+
+
+def _r8u_r7d_require_tail_pristine(run: sequential.FullRun) -> None:
+    expected_absent: list[Path] = []
+    for index in range(16, 19):
+        batch_id = f"c3_batch_{index:03d}"
+        paths = sequential._batch_paths(run, batch_id)
+        expected_absent.extend((
+            paths["raw_batch"], paths["batch_root"],
+            paths["extraction_batch_root"],
+            run.attempt_root / "cache_retirement_authorizations"
+            / f"{batch_id}.authorization.json",
+        ))
+    output_root = run.attempt_root / "cohort_finalization"
+    expected_absent.append(output_root / "full_c3_finalization.aggregate_safe.json")
+    if any(os.path.lexists(path) for path in expected_absent):
+        _fail("R8U_R7D_OLD_SCIENTIFIC_ARTIFACT_CONTRADICTION")
+    try:
+        _r8u_validate_pristine_exclusion_paths(
+            frozenset({PurePosixPath("cohort_finalization")})
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_R7D_OLD_SCIENTIFIC_ARTIFACT_CONTRADICTION"
+        ) from exc
+
+
+def _r8u_r7d_process_quiescence(
+    *, environment: Mapping[str, str], runner: Callable[..., Any],
+) -> Mapping[str, Any]:
+    projection = _r8u_r5_process_projection(
+        environment=environment,
+        runner=runner,
+        worker_self_marker=Path(__file__).name,
+        additional_markers=(
+            "--submit-r8u-r7d-continuation-context-probe",
+            "--run-r8u-r7d-continuation-context-probe",
+            "--adjudicate-r8u-r7d-continuation-context-probe",
+            "--submit-r8u-r7d-continuation-17-19",
+            "--run-r8u-r7d-continuation-17-19-array-task",
+            "--run-r8u-r7d-continuation-finalizer",
+        ),
+    )
+    return {
+        "status": "PASS_ZERO_R8U_R7D_RELEVANT_PROCESSES",
+        "matching_processes": projection["matching_processes"],
+        "process_snapshot_count": projection["process_snapshot_count"],
+        "ps_argv_sha256": projection["ps_argv_sha256"],
+        "ps_stdout_sha256": projection["ps_stdout_sha256"],
+    }
+
+
+def _r8u_r7d_login_qstat_snapshot(
+    *, environment: Mapping[str, str], runner: Callable[..., Any],
+    expected: Mapping[str, str] | None = None,
+) -> Mapping[str, Any]:
+    """Capture one full-XML owner snapshot; never consume display names."""
+
+    command = [str(scheduler.QSTAT_PATH), "-xml", "-u", environment["USER"]]
+    try:
+        completed = runner(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False, env=dict(environment), timeout=15,
+        )
+        payload = bytes(completed.stdout)
+    except Exception as exc:
+        raise R8RControllerError("R8U_R7D_QSTAT_SNAPSHOT_INVALID") from exc
+    if (
+        completed.returncode != 0 or completed.stderr
+        or len(payload) > 4 * 1024 * 1024
+        or b"<!DOCTYPE" in payload.upper() or b"<!ENTITY" in payload.upper()
+    ):
+        _fail("R8U_R7D_QSTAT_SNAPSHOT_INVALID")
+    try:
+        parsed_records = scheduler._r8u_r7d_parse_qstat_xml(payload)
+    except scheduler.FullSchedulerError as exc:
+        raise R8RControllerError("R8U_R7D_QSTAT_SNAPSHOT_INVALID") from exc
+    records = [
+        {
+            "JB_job_number": record.job_id,
+            "JB_name": record.full_job_name,
+            "JB_owner": record.owner,
+            "state": record.state_token,
+        }
+        for record in parsed_records
+    ]
+    relevant_name = re.compile(
+        r"(?:lvef_c3_(?:full_(?:seq|fin)|r8r_(?:rec|seq|fin)|"
+        r"r8u_(?:rec|seq|fin)|r8u_r[3-7]_(?:ctx|loc|res|rec|seq|fin)|"
+        r"r8u_r7d_(?:ctx|seq|fin))_[0-9a-f]{8}|"
+        r"c3_(?:dl1|dlr|ext|emb|pre|ret|fin)_[0-9a-f]{12})"
+    )
+    relevant = [row for row in records if relevant_name.fullmatch(row["JB_name"])]
+    if expected is None:
+        if relevant:
+            _fail("R8U_R7D_COMPETING_ACTIVE_JOB")
+        target_projection: dict[str, Any] = {
+            "expected_job_count": 0, "job_id_matches": True,
+            "job_name_matches": True, "owner_matches": True,
+            "target_rows_visible": 0,
+        }
+    else:
+        if set(expected) != {"array", "finalizer"}:
+            _fail("R8U_R7D_QSTAT_SNAPSHOT_INVALID")
+        target_rows = [
+            row for row in relevant
+            if row["JB_job_number"] in set(expected.values())
+            or row["JB_name"] in {
+                _r8u_r7d_array_job_name(_current_r8u_r7d_implementation_commit()),
+                _r8u_r7d_finalizer_job_name(_current_r8u_r7d_implementation_commit()),
+            }
+        ]
+        expected_pairs = {
+            (expected["array"], _r8u_r7d_array_job_name(
+                _current_r8u_r7d_implementation_commit()
+            )),
+            (expected["finalizer"], _r8u_r7d_finalizer_job_name(
+                _current_r8u_r7d_implementation_commit()
+            )),
+        }
+        if any(
+            (row["JB_job_number"], row["JB_name"]) not in expected_pairs
+            or row["JB_owner"] != environment["USER"]
+            for row in target_rows
+        ) or len(target_rows) != len(relevant):
+            _fail("R8U_R7D_QSTAT_CONCRETE_CONTRADICTION")
+        target_projection = {
+            "expected_job_count": 2,
+            "job_id_matches": True,
+            "job_name_matches": True,
+            "owner_matches": True,
+            "target_rows_visible": len(target_rows),
+        }
+    return {
+        "status": "PASS_R8U_R7D_FULL_XML_QSTAT_SNAPSHOT",
+        **target_projection,
+        "qstat_snapshot_count": 1,
+        "qstat_argv_sha256": _sha256_bytes(_canonical_bytes({"argv": command})),
+        "qstat_stdout_sha256": _sha256_bytes(payload),
+        "truncated_display_name_used": False,
+    }
+
+
+def _r8u_r7d_probe_job_name(implementation_commit: str) -> str:
+    return f"lvef_c3_r8u_r7d_ctx_{implementation_commit[:8]}"
+
+
+def _r8u_r7d_array_job_name(implementation_commit: str) -> str:
+    return f"lvef_c3_r8u_r7d_seq_{implementation_commit[:8]}"
+
+
+def _r8u_r7d_finalizer_job_name(implementation_commit: str) -> str:
+    return f"lvef_c3_r8u_r7d_fin_{implementation_commit[:8]}"
+
+
+def _r8u_r7d_probe_command(implementation_commit: str) -> list[str]:
+    return [
+        str(scheduler.QSUB_PATH), "-clear", "-terse", "-r", "n",
+        "-P", "mimicecho", "-N", _r8u_r7d_probe_job_name(implementation_commit),
+        "-j", "y", "-o", str(R8U_R7D_PROBE_SCHEDULER_ROOT),
+        "-t", "17", "-tc", "1", "-l", "h_rt=00:10:00",
+        "-pe", "omp", "1", "-l", "mem_per_core=1G", str(RUNNER_PATH),
+    ]
+
+
+def _r8u_r7d_array_command(implementation_commit: str) -> list[str]:
+    return [
+        str(scheduler.QSUB_PATH), "-clear", "-terse", "-r", "n",
+        "-P", "mimicecho", "-N", _r8u_r7d_array_job_name(implementation_commit),
+        "-j", "y", "-o", str(R8U_R7D_CONTINUATION_SCHEDULER_ROOT),
+        "-t", "17-19", "-tc", "1", "-l", "h_rt=48:00:00",
+        "-l", "gpus=1", "-l", "gpu_c=8.0", "-l", "gpu_memory=48G",
+        "-pe", "omp", "4", "-l", "mem_per_core=16G", str(RUNNER_PATH),
+    ]
+
+
+def _r8u_r7d_finalizer_command(
+    implementation_commit: str, array_job_id: str,
+) -> list[str]:
+    if JOB_RE.fullmatch(array_job_id) is None:
+        _fail("R8U_R7D_CONTINUATION_JOB_ID_INVALID")
+    return [
+        str(scheduler.QSUB_PATH), "-clear", "-terse", "-r", "n",
+        "-P", "mimicecho", "-N",
+        _r8u_r7d_finalizer_job_name(implementation_commit),
+        "-j", "y", "-o", str(R8U_R7D_CONTINUATION_SCHEDULER_ROOT),
+        "-hold_jid", array_job_id, "-l", "h_rt=12:00:00",
+        "-pe", "omp", "4", "-l", "mem_per_core=8G", str(RUNNER_PATH),
+    ]
+
+
+def _parse_r8u_r7d_probe_qsub_stdout(payload: bytes) -> str:
+    match = re.fullmatch(
+        rb"([1-9][0-9]{0,19})(?:[.](?:17|17-17:1))?\n?", payload
+    )
+    if match is None:
+        _fail("R8U_R7D_PROBE_QSUB_OUTPUT_INVALID")
+    return match.group(1).decode("ascii")
+
+
+def _r8u_r7d_probe_authority(
+    *, run: sequential.FullRun, implementation_commit: str,
+    prefix_receipts: Sequence[str], qsub_environment_sha256: str,
+) -> Mapping[str, Any]:
+    value = {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_context_probe_authority_v1",
+            status="AUTHORIZED_CPU_ONLY_CONTINUATION_CONTEXT_PROBE",
+            implementation_commit=implementation_commit,
+        ),
+        "scheduler_account_authority_sha256": core.sha256_file(
+            R8U_R7D_ACCOUNT_AUTHORITY_PATH
+        ),
+        "consumed_r7a_evidence_sha256": core.sha256_file(
+            R8U_R7D_OLD_EVIDENCE_PATH
+        ),
+        "capacity_authority_sha256": core.sha256_file(R8U_R7D_CAPACITY_PATH),
+        "prefix_final_receipt_sha256": list(prefix_receipts),
+        "runtime_authority_sha256": core.canonical_json_sha256(
+            run.runtime_authority
+        ),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "script_authority": _script_authority(),
+        "worker_role": R8U_R7D_PROBE_ROLE,
+        "array_task_id": 17,
+        "array_task_count": 1,
+        "array_max_concurrency": 1,
+        "cpu_slots": 1,
+        "wall_seconds_maximum": 600,
+        "gpu_requested": False,
+        "cloud_requests_authorized": 0,
+        "dicom_body_reads_authorized": 0,
+        "npz_body_reads_authorized": 0,
+        "extraction_executions_authorized": 0,
+        "echoprime_executions_authorized": 0,
+        "embedding_generations_authorized": 0,
+        "preservation_executions_authorized": 0,
+        "finalization_executions_authorized": 0,
+        "scientific_artifact_writes_authorized": 0,
+    }
+    if tuple(prefix_receipts) != R8U_R7D_PREFIX_FINAL_RECEIPT_SHA256:
+        _fail("R8U_R7D_PROBE_AUTHORITY_INVALID")
+    return value
+
+
+def _r8u_r7d_probe_submission(
+    *, implementation_commit: str, probe_job_id: str,
+    qsub_environment_sha256: str,
+) -> Mapping[str, Any]:
+    if JOB_RE.fullmatch(probe_job_id) is None:
+        _fail("R8U_R7D_PROBE_SUBMISSION_INVALID")
+    command = _r8u_r7d_probe_command(implementation_commit)
+    return {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_context_probe_submission_v1",
+            status="PASS_EXACT_ONE_CPU_ARRAY_CONTEXT_PROBE_QSUB",
+            implementation_commit=implementation_commit,
+        ),
+        "scheduler_account_authority_sha256": core.sha256_file(
+            R8U_R7D_ACCOUNT_AUTHORITY_PATH
+        ),
+        "probe_authority_sha256": core.sha256_file(R8U_R7D_PROBE_AUTHORITY_PATH),
+        "capacity_authority_sha256": core.sha256_file(R8U_R7D_CAPACITY_PATH),
+        "probe_job_id": probe_job_id,
+        "probe_job_name": _r8u_r7d_probe_job_name(implementation_commit),
+        "worker_role": R8U_R7D_PROBE_ROLE,
+        "probe_qsub_argv_sha256": _sha256_bytes(
+            _canonical_bytes({"argv": command})
+        ),
+        "probe_qsub_evidence": dict(
+            _qsub_evidence_authority(R8U_R7D_PROBE_SCHEDULER_ROOT, "probe")
+        ),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "array_task_id": 17,
+        "array_task_count": 1,
+        "array_max_concurrency": 1,
+        "scheduler_submission_count": 1,
+        "scheduler_submission_maximum": 3,
+        "scientific_execution_authorized": False,
+        "cloud_requests": 0,
+        "dicom_body_reads": 0,
+        "npz_body_reads": 0,
+        "gpu_executions": 0,
+    }
+
+
+def _r8u_r7d_validate_capacity(
+    run: sequential.FullRun, evidence: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    value, _ = _load_private_json(R8U_R7D_CAPACITY_PATH)
+    try:
+        validated = r7d_capacity.validate_fixed_r8u_r7d_tasks17_19_capacity(
+            run.plan,
+            value,
+            r7d_runtime_commit=_current_r8u_r7d_implementation_commit(),
+            preserved_old_evidence_bytes=int(
+                evidence["preserved_old_evidence_bytes"]
+            ),
+            preserved_old_evidence_files=int(
+                evidence["preserved_old_evidence_files"]
+            ),
+            confirmed_partial_artifact_bytes=int(
+                evidence["partial_scientific_artifact_bytes"]
+            ),
+            confirmed_partial_artifact_files=int(
+                evidence["partial_scientific_artifact_files"]
+            ),
+        )
+    except Exception as exc:
+        raise R8RControllerError("R8U_R7D_CAPACITY_INVALID") from exc
+    if validated.get("status") != r7d_capacity.R8U_R7D_CAPACITY_STATUS_PASS:
+        _r8u_r7d_fail_capacity_insufficient(validated)
+    return validated
+
+
+def _r8u_r7d_fail_capacity_insufficient(value: Mapping[str, Any]) -> NoReturn:
+    """Surface each validated fixed-capacity deficit at the CLI boundary."""
+
+    field_map = {
+        "quota_deficit_bytes": "quota_reserve_deficit_bytes",
+        "physical_deficit_bytes": "physical_reserve_deficit_bytes",
+        "file_slot_deficit": "file_slot_deficit",
+    }
+    deficits: dict[str, int] = {}
+    for output_field, receipt_field in field_map.items():
+        field_value = value.get(receipt_field)
+        if (
+            isinstance(field_value, bool)
+            or not isinstance(field_value, int)
+            or field_value < 0
+        ):
+            _fail("R8U_R7D_CAPACITY_INVALID")
+        deficits[output_field] = field_value
+    raise R8RControllerError(
+        "R8U_R7D_CAPACITY_INSUFFICIENT",
+        capacity_deficits=deficits,
+    )
+
+
+def submit_r8u_r7d_continuation_context_probe(
+    *, qsub_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    qstat_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    process_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    capacity_runner: Callable[..., Any] | None = None,
+) -> Mapping[str, Any]:
+    """Run the single capacity observation and submit the sole CPU probe."""
+
+    scheduler.validate_scheduler_tools()
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    environment, _ = scheduler.build_qsub_environment()
+    environment_sha = scheduler.qsub_environment_sha256(environment)
+    if os.path.lexists(R8U_R7D_ROOT):
+        _fail("R8U_R7D_OUTPUT_COLLISION")
+    run = _load_fixed_original_run(
+        scheduler_job_identity="R8U_R7D_CONTEXT_PROBE_SUBMITTER",
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r7d=True,
+    )
+    _validate_original_controls()
+    prefix = _r8u_r7d_bounded_prefix(run)
+    evidence = _r8u_r7d_validate_consumed_evidence()
+    _r8u_r7d_require_tail_pristine(run)
+    qstat_before = _r8u_r7d_login_qstat_snapshot(
+        environment=environment, runner=qstat_runner
+    )
+    process_before = _r8u_r7d_process_quiescence(
+        environment=environment, runner=process_runner
+    )
+    try:
+        capacity_value = (
+            r7d_capacity.capture_and_validate_fixed_r8u_r7d_tasks17_19_capacity(
+                run.plan,
+                r7d_runtime_commit=implementation_commit,
+                preserved_old_evidence_bytes=int(
+                    evidence["preserved_old_evidence_bytes"]
+                ),
+                preserved_old_evidence_files=int(
+                    evidence["preserved_old_evidence_files"]
+                ),
+                confirmed_partial_artifact_bytes=0,
+                confirmed_partial_artifact_files=0,
+                process_runner=capacity_runner,
+            )
+        )
+    except Exception as exc:
+        raise R8RControllerError("R8U_R7D_CAPACITY_INVALID") from exc
+
+    _create_private_directory_no_clobber(R8U_R7D_ROOT)
+    _create_private_directory_no_clobber(R8U_R7D_PROBE_ROOT)
+    _create_private_directory_no_clobber(R8U_R7D_PROBE_SCHEDULER_ROOT)
+    account = _r8u_r7d_account_authority(
+        implementation_commit=implementation_commit,
+        environment=environment,
+        qsub_environment_sha256=environment_sha,
+    )
+    _write_private_json(R8U_R7D_ACCOUNT_AUTHORITY_PATH, account)
+    _write_private_json(R8U_R7D_OLD_EVIDENCE_PATH, evidence)
+    _write_private_json(R8U_R7D_CAPACITY_PATH, capacity_value)
+    if (
+        capacity_value.get("status")
+        != r7d_capacity.R8U_R7D_CAPACITY_STATUS_PASS
+    ):
+        _r8u_r7d_fail_capacity_insufficient(capacity_value)
+    authority = _r8u_r7d_probe_authority(
+        run=run,
+        implementation_commit=implementation_commit,
+        prefix_receipts=prefix,
+        qsub_environment_sha256=environment_sha,
+    )
+    # Bind the exact pre-effect observations without creating another claim.
+    authority = {
+        **dict(authority),
+        "preprobe_qstat_projection_sha256": core.canonical_json_sha256(
+            qstat_before
+        ),
+        "preprobe_process_projection_sha256": core.canonical_json_sha256(
+            process_before
+        ),
+    }
+    _write_private_json(R8U_R7D_PROBE_AUTHORITY_PATH, authority)
+    probe_job_id = scheduler._capture_qsub(
+        "probe",
+        _r8u_r7d_probe_command(implementation_commit),
+        root=R8U_R7D_PROBE_SCHEDULER_ROOT,
+        environment=environment,
+        runner=qsub_runner,
+        parser=_parse_r8u_r7d_probe_qsub_stdout,
+    )
+    submission = _r8u_r7d_probe_submission(
+        implementation_commit=implementation_commit,
+        probe_job_id=probe_job_id,
+        qsub_environment_sha256=environment_sha,
+    )
+    _write_private_json(R8U_R7D_PROBE_SUBMISSION_PATH, submission)
+    return {
+        "status": "R7D_CONTINUATION_CONTEXT_PROBE_SUBMITTED",
+        "probe_job_id": probe_job_id,
+        "capacity_status": capacity_value["status"],
+        "qsub_exit": 0,
+        "new_qsub_submissions": 1,
+    }
+
+
+def _r8u_r7d_load_consumed_evidence() -> Mapping[str, Any]:
+    observed, _ = _load_private_json(R8U_R7D_OLD_EVIDENCE_PATH)
+    expected = _r8u_r7d_validate_consumed_evidence()
+    if not _exact_typed_value_equal(observed, expected):
+        _fail("R8U_R7D_OLD_EVIDENCE_INVALID")
+    return observed
+
+
+def _r8u_r7d_validate_probe_chain(
+    *, run: sequential.FullRun, account: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    evidence = _r8u_r7d_load_consumed_evidence()
+    _r8u_r7d_validate_capacity(run, evidence)
+    prefix = _r8u_r7d_bounded_prefix(run)
+    authority, _ = _load_private_json(R8U_R7D_PROBE_AUTHORITY_PATH)
+    expected_authority = _r8u_r7d_probe_authority(
+        run=run,
+        implementation_commit=implementation_commit,
+        prefix_receipts=prefix,
+        qsub_environment_sha256=str(account["qsub_environment_sha256"]),
+    )
+    extra_keys = {
+        "preprobe_qstat_projection_sha256",
+        "preprobe_process_projection_sha256",
+    }
+    if (
+        set(authority) != set(expected_authority) | extra_keys
+        or any(authority.get(key) != item for key, item in expected_authority.items())
+        or any(
+            SHA_RE.fullmatch(str(authority.get(key, ""))) is None
+            for key in extra_keys
+        )
+    ):
+        _fail("R8U_R7D_PROBE_AUTHORITY_INVALID")
+    _wait_for_r8u_r5_control(R8U_R7D_PROBE_SUBMISSION_PATH)
+    submission, _ = _load_private_json(R8U_R7D_PROBE_SUBMISSION_PATH)
+    expected_submission = _r8u_r7d_probe_submission(
+        implementation_commit=implementation_commit,
+        probe_job_id=str(submission.get("probe_job_id", "")),
+        qsub_environment_sha256=str(account["qsub_environment_sha256"]),
+    )
+    if not _exact_typed_value_equal(submission, expected_submission):
+        _fail("R8U_R7D_PROBE_SUBMISSION_INVALID")
+    return submission
+
+
+def _r8u_r7d_worker_receipt_path(
+    *, expected_role: str, expected_task_id: str | None,
+) -> Path:
+    if expected_role == R8U_R7D_PROBE_ROLE and expected_task_id == "17":
+        return R8U_R7D_PROBE_WORKER_RECEIPT_PATH
+    if (
+        expected_role == R8U_R7D_ARRAY_ROLE
+        and expected_task_id in {"17", "18", "19"}
+    ):
+        return R8U_R7D_ROOT / (
+            f"array_task_{expected_task_id}_worker_context.restricted.json"
+        )
+    if expected_role == R8U_R7D_FINALIZER_ROLE and expected_task_id is None:
+        return R8U_R7D_ROOT / "finalizer_worker_context.restricted.json"
+    _fail("R8U_R7D_WORKER_ROLE_INVALID")
+
+
+def _r8u_r7d_worker_receipt(
+    *, expected_role: str, context: scheduler.WorkerSchedulerContext,
+    diagnostic: scheduler.R8UR7DQstatDiagnostic,
+    account_sha256: str, authority_sha256: str,
+    submission_sha256: str,
+) -> Mapping[str, Any]:
+    observations = [item._asdict() for item in diagnostic.observations]
+    value = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_r8u_r7d_worker_context_receipt_v1",
+        "job_role": expected_role,
+        "job_id_match": context.diagnostics.job_id_match,
+        "task_id_match": context.diagnostics.task_context_match,
+        "effective_uid_match": context.diagnostics.effective_uid_match,
+        "worker_role_match": context.diagnostics.job_role_match,
+        "runner_match": context.diagnostics.runner_sha256_match,
+        "python_match": context.diagnostics.python_sha256_match,
+        "implementation_commit_match": (
+            context.diagnostics.implementation_commit_match
+        ),
+        "scheduler_account_authority_match": True,
+        "claim_or_probe_authority_match": True,
+        "submission_receipt_match": True,
+        "qsub_environment_match": (
+            context.diagnostics.qsub_environment_sha256_match
+        ),
+        "unique_fixed_batch_assignment": True,
+        "account_authority_sha256": account_sha256,
+        "claim_or_probe_authority_sha256": authority_sha256,
+        "submission_receipt_sha256": submission_sha256,
+        "qstat_observation_count": diagnostic.observation_count,
+        "qstat_row_ever_visible": diagnostic.row_ever_visible,
+        "qstat_job_id_equality": diagnostic.job_id_equality,
+        "qstat_task_id_equality": diagnostic.task_id_equality,
+        "qstat_owner_equality": diagnostic.owner_equality,
+        "qstat_full_job_name_equality": diagnostic.full_job_name_equality,
+        "observed_scheduler_state_category": (
+            diagnostic.observed_scheduler_state_category
+        ),
+        "qstat_observations": observations,
+        "final_closed_classification": diagnostic.classification,
+        "controlling_worker_identity_pass": True,
+        "truncated_display_name_used": False,
+    }
+    return value
+
+
+def _r8u_r7d_validate_existing_worker_receipt(
+    value: Mapping[str, Any], *, expected_role: str,
+    account_sha256: str, authority_sha256: str, submission_sha256: str,
+) -> Mapping[str, Any]:
+    boolean_true = {
+        "job_id_match", "task_id_match", "effective_uid_match",
+        "worker_role_match", "runner_match", "python_match",
+        "implementation_commit_match", "scheduler_account_authority_match",
+        "claim_or_probe_authority_match", "submission_receipt_match",
+        "qsub_environment_match", "unique_fixed_batch_assignment",
+        "controlling_worker_identity_pass",
+    }
+    qstat_equality_fields = {
+        "qstat_job_id_equality", "qstat_task_id_equality",
+        "qstat_owner_equality", "qstat_full_job_name_equality",
+    }
+    expected_keys = {
+        "schema_version", "artifact_type", "job_role", *boolean_true,
+        *qstat_equality_fields, "account_authority_sha256",
+        "claim_or_probe_authority_sha256", "submission_receipt_sha256",
+        "qstat_observation_count", "qstat_row_ever_visible",
+        "observed_scheduler_state_category", "qstat_observations",
+        "final_closed_classification", "truncated_display_name_used",
+    }
+    observation_keys = {
+        "observation_ordinal", "record_present", "unique", "job_id_match",
+        "task_id_match", "owner_match", "full_job_name_match", "state_token",
+    }
+    observations = value.get("qstat_observations")
+    observation_count = value.get("qstat_observation_count")
+    observations_valid = (
+        isinstance(observations, list)
+        and isinstance(observation_count, int)
+        and not isinstance(observation_count, bool)
+        and 1 <= observation_count <= scheduler.R8U_R7D_QSTAT_MAXIMUM_OBSERVATIONS
+        and observation_count == len(observations)
+    )
+    if observations_valid:
+        for ordinal, observation in enumerate(observations, start=1):
+            if not isinstance(observation, Mapping) or set(observation) != observation_keys:
+                observations_valid = False
+                break
+            record_present = observation.get("record_present")
+            unique = observation.get("unique")
+            equality = tuple(
+                observation.get(field)
+                for field in (
+                    "job_id_match", "task_id_match", "owner_match",
+                    "full_job_name_match",
+                )
+            )
+            state_token = observation.get("state_token")
+            if (
+                type(observation.get("observation_ordinal")) is not int
+                or observation.get("observation_ordinal") != ordinal
+                or not isinstance(record_present, bool)
+                or not isinstance(unique, bool)
+                or (
+                    record_present
+                    and (
+                        unique is not True
+                        or equality != (True, True, True, True)
+                        or not isinstance(state_token, str)
+                        or re.fullmatch(r"[A-Za-z]{1,8}", state_token) is None
+                    )
+                )
+                or (
+                    not record_present
+                    and (
+                        unique is not False
+                        or equality != (None, None, None, None)
+                        or state_token is not None
+                    )
+                )
+            ):
+                observations_valid = False
+                break
+    classification = value.get("final_closed_classification")
+    state_category = value.get("observed_scheduler_state_category")
+    row_ever_visible = value.get("qstat_row_ever_visible")
+    classification_projection = {
+        "PASS_QSTAT_SELF_RECORD_MATCHED": (True, "RUNNING_R", "r"),
+        "PASS_QSTAT_TRANSITIONAL_STATE": (True, "TRANSITIONAL_NON_R", None),
+        "PASS_QSTAT_SELF_RECORD_NOT_YET_VISIBLE": (False, "NOT_OBSERVED", None),
+    }
+    projection = classification_projection.get(classification)
+    if observations_valid:
+        assert isinstance(observations, list)
+        observed_visibility = any(
+            observation["record_present"] for observation in observations
+        )
+        final_observation = observations[-1]
+        classification_consistent = (
+            projection is not None
+            and row_ever_visible is projection[0]
+            and state_category == projection[1]
+            and (
+                (classification == "PASS_QSTAT_SELF_RECORD_MATCHED"
+                 and final_observation["state_token"] == projection[2])
+                or (
+                    classification == "PASS_QSTAT_TRANSITIONAL_STATE"
+                    and final_observation["record_present"] is True
+                    and final_observation["state_token"] != "r"
+                )
+                or (
+                    classification == "PASS_QSTAT_SELF_RECORD_NOT_YET_VISIBLE"
+                    and all(
+                        observation["record_present"] is False
+                        for observation in observations
+                    )
+                )
+            )
+            and row_ever_visible is observed_visibility
+        )
+    else:
+        classification_consistent = False
+    if (
+        set(value) != expected_keys
+        or type(value.get("schema_version")) is not int
+        or value.get("schema_version") != 1
+        or value.get("artifact_type")
+        != "lvef_c3_r8u_r7d_worker_context_receipt_v1"
+        or value.get("job_role") != expected_role
+        or any(value.get(field) is not True for field in boolean_true)
+        or any(value.get(field) is not True for field in qstat_equality_fields)
+        or value.get("truncated_display_name_used") is not False
+        or value.get("account_authority_sha256") != account_sha256
+        or value.get("claim_or_probe_authority_sha256") != authority_sha256
+        or value.get("submission_receipt_sha256") != submission_sha256
+        or any(
+            not isinstance(item, str) or SHA_RE.fullmatch(item) is None
+            for item in (account_sha256, authority_sha256, submission_sha256)
+        )
+        or classification not in scheduler.R8U_R7D_QSTAT_PASS_CLASSIFICATIONS
+        or not observations_valid
+        or not classification_consistent
+    ):
+        _fail("R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID")
+    return value
+
+
+def _r8u_r7d_blocked_worker_receipt_code(
+    value: Mapping[str, Any], *, expected_role: str,
+    account_sha256: str, authority_sha256: str, submission_sha256: str,
+) -> str | None:
+    """Validate and return a persisted concrete qstat contradiction."""
+
+    classification = value.get("final_closed_classification")
+    observable_codes = {
+        "BLOCKED_QSTAT_SELF_JOB_ID_CONTRADICTION": "job_id_match",
+        "BLOCKED_QSTAT_SELF_TASK_ID_CONTRADICTION": "task_id_match",
+        "BLOCKED_QSTAT_SELF_OWNER_CONTRADICTION": "owner_match",
+        "BLOCKED_QSTAT_SELF_JOB_NAME_CONTRADICTION": "full_job_name_match",
+    }
+    if classification not in set(observable_codes) | {
+        "BLOCKED_QSTAT_SELF_MULTIPLE_RECORDS"
+    }:
+        return None
+    controlling_true = {
+        "job_id_match", "task_id_match", "effective_uid_match",
+        "worker_role_match", "runner_match", "python_match",
+        "implementation_commit_match", "scheduler_account_authority_match",
+        "claim_or_probe_authority_match", "submission_receipt_match",
+        "qsub_environment_match", "unique_fixed_batch_assignment",
+        "controlling_worker_identity_pass",
+    }
+    qstat_equality_fields = {
+        "qstat_job_id_equality", "qstat_task_id_equality",
+        "qstat_owner_equality", "qstat_full_job_name_equality",
+    }
+    expected_keys = {
+        "schema_version", "artifact_type", "job_role", *controlling_true,
+        *qstat_equality_fields, "account_authority_sha256",
+        "claim_or_probe_authority_sha256", "submission_receipt_sha256",
+        "qstat_observation_count", "qstat_row_ever_visible",
+        "observed_scheduler_state_category", "qstat_observations",
+        "final_closed_classification", "truncated_display_name_used",
+    }
+    observation_keys = {
+        "observation_ordinal", "record_present", "unique", "job_id_match",
+        "task_id_match", "owner_match", "full_job_name_match", "state_token",
+    }
+    raw_observations = value.get("qstat_observations")
+    if (
+        set(value) != expected_keys
+        or value.get("schema_version") != 1
+        or value.get("artifact_type")
+        != "lvef_c3_r8u_r7d_worker_context_receipt_v1"
+        or value.get("job_role") != expected_role
+        or any(value.get(field) is not True for field in controlling_true)
+        or value.get("truncated_display_name_used") is not False
+        or value.get("account_authority_sha256") != account_sha256
+        or value.get("claim_or_probe_authority_sha256") != authority_sha256
+        or value.get("submission_receipt_sha256") != submission_sha256
+        or not isinstance(raw_observations, list)
+        or not 1 <= len(raw_observations) <= (
+            scheduler.R8U_R7D_QSTAT_MAXIMUM_OBSERVATIONS
+        )
+        or value.get("qstat_observation_count") != len(raw_observations)
+    ):
+        _fail("R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID")
+    observations: list[scheduler.R8UR7DQstatObservation] = []
+    for ordinal, raw in enumerate(raw_observations, start=1):
+        if not isinstance(raw, Mapping) or set(raw) != observation_keys:
+            _fail("R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID")
+        try:
+            observation = scheduler.R8UR7DQstatObservation(**dict(raw))
+        except (TypeError, ValueError) as exc:
+            raise R8RControllerError(
+                "R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID"
+            ) from exc
+        equality = (
+            observation.job_id_match, observation.task_id_match,
+            observation.owner_match, observation.full_job_name_match,
+        )
+        if (
+            type(observation.observation_ordinal) is not int
+            or observation.observation_ordinal != ordinal
+            or not isinstance(observation.record_present, bool)
+            or not isinstance(observation.unique, bool)
+            or (
+                observation.record_present
+                and (
+                    any(not isinstance(item, bool) for item in equality)
+                    or (
+                        observation.unique
+                        and (
+                            not isinstance(observation.state_token, str)
+                            or re.fullmatch(
+                                r"[A-Za-z]{1,8}", observation.state_token
+                            )
+                            is None
+                        )
+                    )
+                    or (
+                        not observation.unique
+                        and observation.state_token is not None
+                    )
+                )
+            )
+            or (
+                not observation.record_present
+                and (
+                    observation.unique is not False
+                    or equality != (None, None, None, None)
+                    or observation.state_token is not None
+                )
+            )
+        ):
+            _fail("R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID")
+        observations.append(observation)
+    final_observation = observations[-1]
+    expected_state_category = (
+        "MULTIPLE_RECORDS"
+        if final_observation.state_token is None
+        else (
+            "RUNNING_R"
+            if final_observation.state_token == "r"
+            else "TRANSITIONAL_NON_R"
+        )
+    )
+    diagnostic = scheduler._r8u_r7d_qstat_diagnostic(
+        str(classification), observations, expected_state_category
+    )
+    summary_matches = (
+        value.get("qstat_row_ever_visible") is diagnostic.row_ever_visible
+        and value.get("qstat_job_id_equality") is diagnostic.job_id_equality
+        and value.get("qstat_task_id_equality") is diagnostic.task_id_equality
+        and value.get("qstat_owner_equality") is diagnostic.owner_equality
+        and value.get("qstat_full_job_name_equality")
+        is diagnostic.full_job_name_equality
+        and value.get("observed_scheduler_state_category")
+        == expected_state_category
+    )
+    if classification == "BLOCKED_QSTAT_SELF_MULTIPLE_RECORDS":
+        contradiction_present = any(not item.unique for item in observations)
+    else:
+        contradiction_field = observable_codes[str(classification)]
+        contradiction_present = any(
+            getattr(item, contradiction_field) is False for item in observations
+        )
+    if not summary_matches or not contradiction_present:
+        _fail("R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID")
+    return str(classification)
+
+
+def validate_r8u_r7d_continuation_worker_submission(
+    *, current_job_id: str, role: str,
+    qstat_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> Mapping[str, Any]:
+    """Validate sealed identity first; use qstat only for contradictions."""
+
+    if JOB_RE.fullmatch(current_job_id) is None:
+        _fail("SCHEDULER_JOB_ID_BINDING_MISMATCH")
+    _r8u_r7d_require_account_owner()
+    account = validate_r8u_r7d_scheduler_account_authority()
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    run = _load_fixed_original_run(
+        scheduler_job_identity=current_job_id,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r7d=True,
+    )
+    _validate_original_controls()
+    task_text = str(os.environ.get("SGE_TASK_ID", "undefined"))
+    probe_submission: Mapping[str, Any] | None = None
+    continuation_submission: Mapping[str, Any] | None = None
+    if role == "probe":
+        probe_submission = _r8u_r7d_validate_probe_chain(run=run, account=account)
+        expected_job_id = str(probe_submission.get("probe_job_id", ""))
+        expected_task_id: str | None = "17"
+        expected_role = R8U_R7D_PROBE_ROLE
+        expected_job_name = _r8u_r7d_probe_job_name(implementation_commit)
+        authority_path = R8U_R7D_PROBE_AUTHORITY_PATH
+        submission_path = R8U_R7D_PROBE_SUBMISSION_PATH
+    else:
+        continuation_submission = _r8u_r7d_validate_continuation_chain(
+            run=run, account=account
+        )
+        array_job_id = str(continuation_submission.get("array_job_id", ""))
+        finalizer_job_id = str(
+            continuation_submission.get("finalizer_job_id", "")
+        )
+        if current_job_id == array_job_id:
+            expected_job_id = array_job_id
+            expected_task_id = task_text
+            expected_role = R8U_R7D_ARRAY_ROLE
+            expected_job_name = _r8u_r7d_array_job_name(implementation_commit)
+        elif current_job_id == finalizer_job_id:
+            expected_job_id = finalizer_job_id
+            expected_task_id = None
+            expected_role = R8U_R7D_FINALIZER_ROLE
+            expected_job_name = _r8u_r7d_finalizer_job_name(implementation_commit)
+        else:
+            _fail("SCHEDULER_JOB_ID_BINDING_MISMATCH")
+        authority_path = R8U_R7D_CONTINUATION_CLAIM_PATH
+        submission_path = R8U_R7D_CONTINUATION_SUBMISSION_PATH
+
+    role_projection = {
+        "probe": R8U_R7D_PROBE_ROLE,
+        "array": R8U_R7D_ARRAY_ROLE,
+        "finalizer": R8U_R7D_FINALIZER_ROLE,
+    }
+    observed_role = role_projection.get(role, role)
+    if not isinstance(observed_role, str):
+        _fail("SCHEDULER_JOB_ROLE_MISMATCH")
+    try:
+        observed_runner_sha = core.sha256_file(RUNNER_PATH)
+        if Path(sys.executable) != scheduler.ECHOPRIME_PYTHON:
+            _fail("SCHEDULER_PYTHON_AUTHORITY_MISMATCH")
+        observed_python_sha = stages.resolved_python_executable_sha256(
+            scheduler.ECHOPRIME_PYTHON
+        )
+        context = scheduler.build_worker_scheduler_context(
+            expected_effective_uid=int(account["expected_effective_uid"]),
+            expected_scheduler_username=str(
+                account["expected_scheduler_username"]
+            ),
+            canonical_home=str(account["canonical_home"]),
+            expected_job_id=expected_job_id,
+            expected_job_role=expected_role,
+            observed_job_role=observed_role,
+            expected_qsub_environment_sha256=str(
+                account["qsub_environment_sha256"]
+            ),
+            sealed_qsub_environment=dict(account["sealed_qsub_environment"]),
+            expected_implementation_commit=implementation_commit,
+            observed_implementation_commit=_current_r8u_r7d_implementation_commit(),
+            expected_runner_sha256=str(account["runner_sha256"]),
+            observed_runner_sha256=observed_runner_sha,
+            expected_python_sha256=str(account["python_sha256"]),
+            observed_python_sha256=observed_python_sha,
+            source_environment=os.environ,
+            expected_task_id=expected_task_id,
+        )
+    except R8RControllerError:
+        raise
+    except scheduler.FullSchedulerError as exc:
+        raise R8RControllerError(exc.code) from exc
+    except Exception as exc:
+        raise R8RControllerError("SCHEDULER_WORKER_CONTEXT_INVALID") from exc
+
+    account_sha = core.sha256_file(R8U_R7D_ACCOUNT_AUTHORITY_PATH)
+    authority_sha = core.sha256_file(authority_path)
+    submission_sha = core.sha256_file(submission_path)
+    receipt_path = _r8u_r7d_worker_receipt_path(
+        expected_role=expected_role, expected_task_id=expected_task_id
+    )
+    if os.path.lexists(receipt_path):
+        existing, _ = _load_private_json(receipt_path)
+        return _r8u_r7d_validate_existing_worker_receipt(
+            existing,
+            expected_role=expected_role,
+            account_sha256=account_sha,
+            authority_sha256=authority_sha,
+            submission_sha256=submission_sha,
+        )
+    try:
+        qstat = scheduler.diagnose_r8u_r7d_qstat_self(
+            environment=context.environment,
+            expected_job_id=expected_job_id,
+            expected_task_id=expected_task_id,
+            expected_owner=str(account["expected_scheduler_username"]),
+            expected_full_job_name=expected_job_name,
+            runner=qstat_runner,
+        )
+    except scheduler.FullSchedulerError as exc:
+        raise R8RControllerError(exc.code) from exc
+    receipt = _r8u_r7d_worker_receipt(
+        expected_role=expected_role,
+        context=context,
+        diagnostic=qstat,
+        account_sha256=account_sha,
+        authority_sha256=authority_sha,
+        submission_sha256=submission_sha,
+    )
+    _write_private_json(receipt_path, receipt)
+    if qstat.classification in scheduler.R8U_R7D_QSTAT_BLOCKING_CLASSIFICATIONS:
+        _fail(qstat.classification)
+    return receipt
+
+
+def run_r8u_r7d_continuation_context_probe() -> Mapping[str, Any]:
+    job_id = str(os.environ.get("JOB_ID", ""))
+    if (
+        JOB_RE.fullmatch(job_id) is None
+        or str(os.environ.get("SGE_TASK_ID", "")) != "17"
+        or str(os.environ.get("CUDA_VISIBLE_DEVICES", "")) != ""
+    ):
+        _fail("R8U_R7D_PROBE_CONTEXT_INVALID")
+    receipt = validate_r8u_r7d_continuation_worker_submission(
+        current_job_id=job_id, role="probe"
+    )
+    return {
+        "status": "PASS_R7D_CONTINUATION_WORKER_CONTEXT_PROBE",
+        "qstat_classification": receipt["final_closed_classification"],
+        "controlling_worker_identity": "PASS",
+        "cloud_requests": 0,
+        "dicom_body_reads": 0,
+        "npz_body_reads": 0,
+        "gpu_executions": 0,
+        "extraction_executions": 0,
+        "embedding_generations": 0,
+        "preservation_executions": 0,
+        "finalization_executions": 0,
+        "scientific_artifact_writes": 0,
+    }
+
+
+def _r8u_r7d_probe_qacct_once(
+    *, probe_job_id: str, environment: Mapping[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> Mapping[str, Any] | None:
+    import lvef_c3_r8u_r7c_accounting as accounting
+
+    _validate_qacct_tool()
+    command = [str(QACCT_PATH), "-j", probe_job_id, "-t", "17"]
+    try:
+        completed = runner(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, check=False, env=dict(environment), timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise R8RControllerError("R8U_R7D_PROBE_ACCOUNTING_UNAVAILABLE") from exc
+    if completed.returncode != 0:
+        return None
+    if completed.stderr or len(completed.stdout) > 4 * 1024 * 1024:
+        _fail("R8U_R7D_PROBE_ACCOUNTING_INVALID")
+    try:
+        records = accounting.parse_qacct_records(bytes(completed.stdout))
+        if len(records) != 1:
+            return None
+        record = accounting.normalize_qacct_record(records[0])
+        failed = accounting._parse_failed(record["failed"])
+        exit_status = accounting._parse_nonnegative_integer(record["exit_status"])
+        wall_seconds = accounting._parse_wall_seconds(record["ru_wallclock"])
+        submission_time = accounting._parse_qacct_time(record["qsub_time"])
+        start_time = accounting._parse_qacct_time(record["start_time"])
+        end_time = accounting._parse_qacct_time(record["end_time"])
+    except Exception as exc:
+        raise R8RControllerError("R8U_R7D_PROBE_ACCOUNTING_INVALID") from exc
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    account = validate_r8u_r7d_scheduler_account_authority()
+    return {
+        "fixed_qacct_argv": command,
+        "fixed_qacct_argv_sha256": core.canonical_json_sha256({"argv": command}),
+        "normalized_qacct_record": record,
+        "normalized_qacct_record_sha256": (
+            accounting.normalized_qacct_record_sha256(record)
+        ),
+        "failed": failed,
+        "exit_status": exit_status,
+        "wall_seconds": wall_seconds,
+        "job_id_match": record.get("jobnumber") == probe_job_id,
+        "task_id_match": record.get("taskid") == "17",
+        "job_name_match": record.get("jobname")
+        == _r8u_r7d_probe_job_name(implementation_commit),
+        "owner_match": record.get("owner")
+        == account.get("expected_scheduler_username"),
+        "chronology_valid": submission_time <= start_time <= end_time,
+    }
+
+
+def _r8u_r7d_probe_accounting_failure_code(
+    projection: Mapping[str, Any],
+) -> str | None:
+    """Return one exact, deterministic failure code for terminal qacct."""
+
+    for field, code in (
+        ("job_id_match", "R8U_R7D_PROBE_QACCT_JOB_ID_MISMATCH"),
+        ("task_id_match", "R8U_R7D_PROBE_QACCT_TASK_ID_MISMATCH"),
+        ("job_name_match", "R8U_R7D_PROBE_QACCT_JOB_NAME_MISMATCH"),
+        ("owner_match", "R8U_R7D_PROBE_QACCT_OWNER_MISMATCH"),
+        ("chronology_valid", "R8U_R7D_PROBE_QACCT_CHRONOLOGY_INVALID"),
+    ):
+        if projection.get(field) is not True:
+            return code
+    failed = projection.get("failed")
+    exit_status = projection.get("exit_status")
+    wall_seconds = projection.get("wall_seconds")
+    if isinstance(failed, bool) or not isinstance(failed, int) or failed < 0:
+        return "R8U_R7D_PROBE_ACCOUNTING_INVALID"
+    if (
+        isinstance(exit_status, bool)
+        or not isinstance(exit_status, int)
+        or exit_status < 0
+    ):
+        return "R8U_R7D_PROBE_ACCOUNTING_INVALID"
+    if (
+        isinstance(wall_seconds, bool)
+        or not isinstance(wall_seconds, int)
+        or wall_seconds < 0
+    ):
+        return "R8U_R7D_PROBE_ACCOUNTING_INVALID"
+    if failed != 0:
+        return "R8U_R7D_PROBE_QACCT_FAILED_NONZERO"
+    if exit_status != 0:
+        return "R8U_R7D_PROBE_QACCT_EXIT_STATUS_NONZERO"
+    if wall_seconds > 600:
+        return "R8U_R7D_PROBE_QACCT_WALLCLOCK_EXCEEDED"
+    return None
+
+
+def _r8u_r7d_seal_probe_accounting_failure(
+    *, probe_job_id: str, accounting_projection: Mapping[str, Any],
+    query_count: int, failure_code: str,
+    worker_receipt_sha256: str | None = None,
+) -> NoReturn:
+    """Seal exact terminal qacct values before returning probe failure."""
+
+    failed = int(accounting_projection["failed"])
+    exit_status = int(accounting_projection["exit_status"])
+    if (
+        worker_receipt_sha256 is not None
+        and SHA_RE.fullmatch(worker_receipt_sha256) is None
+    ):
+        _fail("R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID")
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    accounting_receipt = {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_context_probe_accounting_v1",
+            status="FAIL_R7D_PROBE_QACCT",
+            implementation_commit=implementation_commit,
+        ),
+        "probe_submission_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_SUBMISSION_PATH
+        ),
+        "probe_job_id": probe_job_id,
+        "worker_context_receipt_sha256": worker_receipt_sha256,
+        "accounting_projection": dict(accounting_projection),
+        "qacct_query_count": query_count,
+        "failure_code": failure_code,
+        "failed": failed,
+        "exit_status": exit_status,
+    }
+    _write_private_json(R8U_R7D_PROBE_ACCOUNTING_PATH, accounting_receipt)
+    terminal = {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_context_probe_terminal_v1",
+            status="FAIL_R7D_CONTINUATION_WORKER_CONTEXT_PROBE",
+            implementation_commit=implementation_commit,
+        ),
+        "probe_submission_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_SUBMISSION_PATH
+        ),
+        "probe_job_id": probe_job_id,
+        "worker_context_receipt_sha256": worker_receipt_sha256,
+        "accounting_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_ACCOUNTING_PATH
+        ),
+        "failure_code": failure_code,
+        "failed": failed,
+        "exit_status": exit_status,
+        "task_id": 17,
+        "scientific_artifacts_created": 0,
+        "cloud_requests": 0,
+        "dicom_body_reads": 0,
+        "npz_body_reads": 0,
+        "gpu_executions": 0,
+    }
+    _write_private_json(R8U_R7D_PROBE_TERMINAL_PATH, terminal)
+    raise R8RControllerError(
+        failure_code,
+        probe_qacct={"failed": failed, "exit_status": exit_status},
+    )
+
+
+def _r8u_r7d_read_probe_log(
+    *, probe_job_id: str, probe_job_name: str,
+) -> tuple[bytes, str]:
+    path = R8U_R7D_PROBE_SCHEDULER_ROOT / (
+        f"{probe_job_name}.o{probe_job_id}.17"
+    )
+    _wait_for_r8u_r5_control(path, timeout_seconds=30.0)
+    try:
+        before = os.lstat(path)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            block = os.read(descriptor, min(remaining, 64 * 1024))
+            if not block:
+                _fail("R8U_R7D_PROBE_LOG_INVALID")
+            chunks.append(block)
+            remaining -= len(block)
+        after = os.fstat(descriptor)
+        os.close(descriptor)
+    except R8RControllerError:
+        raise
+    except OSError as exc:
+        raise R8RControllerError("R8U_R7D_PROBE_LOG_INVALID") from exc
+    payload = b"".join(chunks)
+    identity = lambda item: (
+        item.st_dev, item.st_ino, item.st_mode, item.st_uid, item.st_gid,
+        item.st_nlink, item.st_size, item.st_mtime_ns, item.st_ctime_ns,
+    )
+    marker = b"R8U_R7D_STATUS=PASS_R7D_CONTINUATION_WORKER_CONTEXT_PROBE\n"
+    if (
+        identity(before) != identity(opened) or identity(opened) != identity(after)
+        or not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.geteuid()
+        or opened.st_nlink != 1 or stat.S_IMODE(opened.st_mode) & 0o022
+        or payload.count(marker) != 1 or b"BLOCKED_" in payload
+    ):
+        _fail("R8U_R7D_PROBE_LOG_INVALID")
+    return payload, _sha256_bytes(payload)
+
+
+def adjudicate_r8u_r7d_continuation_context_probe(
+    *, qacct_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    timeout_seconds: float = 900.0,
+    sleeper: Callable[[float], None] = time.sleep,
+    monotonic_clock: Callable[[], float] = time.monotonic,
+) -> Mapping[str, Any]:
+    """Boundedly wait for the sole probe, then seal qacct and terminal PASS."""
+
+    if any(os.path.lexists(path) for path in (
+        R8U_R7D_PROBE_ACCOUNTING_PATH, R8U_R7D_PROBE_TERMINAL_PATH,
+    )):
+        _fail("R8U_R7D_PROBE_ACCOUNTING_COLLISION")
+    environment, _ = scheduler.build_qsub_environment()
+    account = validate_r8u_r7d_scheduler_account_authority()
+    run = _load_fixed_original_run(
+        scheduler_job_identity="R8U_R7D_PROBE_ADJUDICATOR",
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r7d=True,
+    )
+    submission = _r8u_r7d_validate_probe_chain(run=run, account=account)
+    if scheduler.qsub_environment_sha256(environment) != account.get(
+        "qsub_environment_sha256"
+    ):
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    probe_job_id = str(submission["probe_job_id"])
+    deadline = monotonic_clock() + timeout_seconds
+    accounting_projection: Mapping[str, Any] | None = None
+    query_count = 0
+    while accounting_projection is None:
+        accounting_projection = _r8u_r7d_probe_qacct_once(
+            probe_job_id=probe_job_id,
+            environment=environment,
+            runner=qacct_runner,
+        )
+        query_count += 1
+        if accounting_projection is not None:
+            break
+        if monotonic_clock() >= deadline:
+            _fail("R8U_R7D_PROBE_ACCOUNTING_TIMEOUT")
+        sleeper(15.0)
+    accounting_failure = _r8u_r7d_probe_accounting_failure_code(
+        accounting_projection
+    )
+    worker_receipt: Mapping[str, Any] | None = None
+    try:
+        _wait_for_r8u_r5_control(
+            R8U_R7D_PROBE_WORKER_RECEIPT_PATH, timeout_seconds=30.0
+        )
+        worker_receipt, _ = _load_private_json(
+            R8U_R7D_PROBE_WORKER_RECEIPT_PATH
+        )
+    except R8RControllerError:
+        if accounting_failure is None:
+            raise
+    account_sha = core.sha256_file(R8U_R7D_ACCOUNT_AUTHORITY_PATH)
+    authority_sha = core.sha256_file(R8U_R7D_PROBE_AUTHORITY_PATH)
+    submission_sha = core.sha256_file(R8U_R7D_PROBE_SUBMISSION_PATH)
+    worker_receipt_sha = (
+        core.sha256_file(R8U_R7D_PROBE_WORKER_RECEIPT_PATH)
+        if worker_receipt is not None
+        else None
+    )
+    if worker_receipt is not None:
+        blocked_worker_code = _r8u_r7d_blocked_worker_receipt_code(
+            worker_receipt,
+            expected_role=R8U_R7D_PROBE_ROLE,
+            account_sha256=account_sha,
+            authority_sha256=authority_sha,
+            submission_sha256=submission_sha,
+        )
+        if blocked_worker_code is not None:
+            _r8u_r7d_seal_probe_accounting_failure(
+                probe_job_id=probe_job_id,
+                accounting_projection=accounting_projection,
+                query_count=query_count,
+                failure_code=blocked_worker_code,
+                worker_receipt_sha256=worker_receipt_sha,
+            )
+    if accounting_failure is not None:
+        _r8u_r7d_seal_probe_accounting_failure(
+            probe_job_id=probe_job_id,
+            accounting_projection=accounting_projection,
+            query_count=query_count,
+            failure_code=accounting_failure,
+            worker_receipt_sha256=worker_receipt_sha,
+        )
+    if worker_receipt is None:
+        _fail("R8U_R7D_WORKER_CONTEXT_RECEIPT_INVALID")
+    _r8u_r7d_validate_existing_worker_receipt(
+        worker_receipt,
+        expected_role=R8U_R7D_PROBE_ROLE,
+        account_sha256=account_sha,
+        authority_sha256=authority_sha,
+        submission_sha256=submission_sha,
+    )
+    _payload, log_sha = _r8u_r7d_read_probe_log(
+        probe_job_id=probe_job_id,
+        probe_job_name=str(submission["probe_job_name"]),
+    )
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    accounting_receipt = {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_context_probe_accounting_v1",
+            status="PASS_R7D_PROBE_QACCT_FAILED_0_EXIT_0",
+            implementation_commit=implementation_commit,
+        ),
+        "probe_submission_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_SUBMISSION_PATH
+        ),
+        "worker_context_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_WORKER_RECEIPT_PATH
+        ),
+        "scheduler_log_sha256": log_sha,
+        "accounting_projection": dict(accounting_projection),
+        "qacct_query_count": query_count,
+    }
+    _write_private_json(R8U_R7D_PROBE_ACCOUNTING_PATH, accounting_receipt)
+    terminal = {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_context_probe_terminal_v1",
+            status="PASS_R7D_CONTINUATION_WORKER_CONTEXT_PROBE",
+            implementation_commit=implementation_commit,
+        ),
+        "probe_submission_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_SUBMISSION_PATH
+        ),
+        "worker_context_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_WORKER_RECEIPT_PATH
+        ),
+        "accounting_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_ACCOUNTING_PATH
+        ),
+        "qstat_classification": worker_receipt["final_closed_classification"],
+        "controlling_worker_identity": "PASS",
+        "failed": 0,
+        "exit_status": 0,
+        "task_id": 17,
+        "scientific_artifacts_created": 0,
+        "cloud_requests": 0,
+        "dicom_body_reads": 0,
+        "npz_body_reads": 0,
+        "gpu_executions": 0,
+    }
+    _write_private_json(R8U_R7D_PROBE_TERMINAL_PATH, terminal)
+    return terminal
+
+
+def _r8u_r7d_validate_probe_terminal() -> Mapping[str, Any]:
+    value, _ = _load_private_json(R8U_R7D_PROBE_TERMINAL_PATH)
+    expected_common = _r8u_r7d_common(
+        artifact_type="lvef_c3_r8u_r7d_context_probe_terminal_v1",
+        status="PASS_R7D_CONTINUATION_WORKER_CONTEXT_PROBE",
+        implementation_commit=_current_r8u_r7d_implementation_commit(),
+    )
+    if (
+        any(value.get(key) != item for key, item in expected_common.items())
+        or value.get("probe_submission_receipt_sha256")
+        != core.sha256_file(R8U_R7D_PROBE_SUBMISSION_PATH)
+        or value.get("worker_context_receipt_sha256")
+        != core.sha256_file(R8U_R7D_PROBE_WORKER_RECEIPT_PATH)
+        or value.get("accounting_receipt_sha256")
+        != core.sha256_file(R8U_R7D_PROBE_ACCOUNTING_PATH)
+        or value.get("qstat_classification")
+        not in scheduler.R8U_R7D_QSTAT_PASS_CLASSIFICATIONS
+        or value.get("controlling_worker_identity") != "PASS"
+        or value.get("failed") != 0 or value.get("exit_status") != 0
+        or value.get("task_id") != 17
+        or any(value.get(field) != 0 for field in (
+            "scientific_artifacts_created", "cloud_requests",
+            "dicom_body_reads", "npz_body_reads", "gpu_executions",
+        ))
+    ):
+        _fail("R8U_R7D_PROBE_TERMINAL_INVALID")
+    return value
+
+
+def _r8u_r7d_continuation_claim(
+    *, run: sequential.FullRun, implementation_commit: str,
+    prefix_receipts: Sequence[str], qsub_environment_sha256: str,
+) -> Mapping[str, Any]:
+    if tuple(prefix_receipts) != R8U_R7D_PREFIX_FINAL_RECEIPT_SHA256:
+        _fail("R8U_R7D_CONTINUATION_CLAIM_INVALID")
+    return {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_fixed_continuation_claim_v1",
+            status="AUTHORIZED_FRESH_R7D_CONTINUATION_17_19",
+            implementation_commit=implementation_commit,
+        ),
+        "prefix_final_receipt_sha256": list(prefix_receipts),
+        "batch16_final_receipt_sha256": R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256,
+        "consumed_continuation_claim_sha256": (
+            R8U_R7D_OLD_CONTINUATION_CLAIM_SHA256
+        ),
+        "consumed_continuation_receipt_sha256": (
+            R8U_R7D_OLD_CONTINUATION_RECEIPT_SHA256
+        ),
+        "consumed_accounting_receipt_sha256": dict(
+            sorted(R8U_R7D_OLD_ACCOUNTING_SHA256.items())
+        ),
+        "consumed_r7a_evidence_sha256": core.sha256_file(
+            R8U_R7D_OLD_EVIDENCE_PATH
+        ),
+        "capacity_authority_sha256": core.sha256_file(R8U_R7D_CAPACITY_PATH),
+        "scheduler_account_authority_sha256": core.sha256_file(
+            R8U_R7D_ACCOUNT_AUTHORITY_PATH
+        ),
+        "probe_terminal_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_TERMINAL_PATH
+        ),
+        "runtime_authority_sha256": core.canonical_json_sha256(
+            run.runtime_authority
+        ),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "script_authority": _script_authority(),
+        "continuation_task_range": "17-19",
+        "continuation_task_ids": [17, 18, 19],
+        "continuation_task_count": 3,
+        "continuation_max_concurrency": 1,
+        "terminal_batch_id": "c3_batch_018",
+        "terminal_batch_studies": 30,
+        "held_finalizer_count": 1,
+        "total_new_qsub_maximum": 3,
+        "automatic_retry_authorized": False,
+        "whole_stage_retry_authorized": False,
+        "fourth_submission_reachable": False,
+        "batches_1_16_mutation_authorized": False,
+        "consumed_r7a_receipt_scientific_success": False,
+        "cloud_requests_by_submitter": 0,
+        "dicom_body_reads_by_submitter": 0,
+        "npz_body_reads_by_submitter": 0,
+        "gpu_executions_by_submitter": 0,
+        "model_fitting_authorized": False,
+        "prediction_authorized": False,
+        "confirmatory_performance_access_authorized": False,
+    }
+
+
+def _r8u_r7d_continuation_submission(
+    *, implementation_commit: str, array_job_id: str,
+    finalizer_job_id: str, qsub_environment_sha256: str,
+    continuation_claim_sha256: str,
+    initial_qstat_projection: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    snapshot_status = initial_qstat_projection.get("status")
+    snapshot_pass = (
+        snapshot_status == "PASS_R8U_R7D_FULL_XML_QSTAT_SNAPSHOT"
+        and initial_qstat_projection.get("qstat_snapshot_count") == 1
+        and initial_qstat_projection.get("truncated_display_name_used") is False
+    )
+    snapshot_blocked = (
+        snapshot_status == "BLOCKED_R8U_R7D_POST_SUBMISSION_QSTAT"
+        and SAFE_CODE_RE.fullmatch(
+            str(initial_qstat_projection.get("failure_code", ""))
+        )
+        is not None
+        and initial_qstat_projection.get("array_job_id") == array_job_id
+        and initial_qstat_projection.get("finalizer_job_id") == finalizer_job_id
+        and initial_qstat_projection.get("qstat_snapshot_attempt_count") == 1
+        and initial_qstat_projection.get("truncated_display_name_used") is False
+    )
+    if (
+        JOB_RE.fullmatch(array_job_id) is None
+        or JOB_RE.fullmatch(finalizer_job_id) is None
+        or array_job_id == finalizer_job_id
+        or SHA_RE.fullmatch(continuation_claim_sha256) is None
+        or not (snapshot_pass or snapshot_blocked)
+    ):
+        _fail("R8U_R7D_CONTINUATION_SUBMISSION_INVALID")
+    submission_status = (
+        "PASS_EXACT_R7D_ARRAY_17_19_AND_HELD_FINALIZER"
+        if snapshot_pass
+        else "BLOCKED_POST_SUBMISSION_QSTAT_DIAGNOSTIC"
+    )
+    return {
+        **_r8u_r7d_common(
+            artifact_type="lvef_c3_r8u_r7d_fixed_continuation_submission_v1",
+            status=submission_status,
+            implementation_commit=implementation_commit,
+        ),
+        "scheduler_account_authority_sha256": core.sha256_file(
+            R8U_R7D_ACCOUNT_AUTHORITY_PATH
+        ),
+        "capacity_authority_sha256": core.sha256_file(R8U_R7D_CAPACITY_PATH),
+        "probe_terminal_receipt_sha256": core.sha256_file(
+            R8U_R7D_PROBE_TERMINAL_PATH
+        ),
+        "continuation_claim_sha256": continuation_claim_sha256,
+        "array_job_id": array_job_id,
+        "array_job_name": _r8u_r7d_array_job_name(implementation_commit),
+        "array_worker_role": R8U_R7D_ARRAY_ROLE,
+        "finalizer_job_id": finalizer_job_id,
+        "finalizer_job_name": _r8u_r7d_finalizer_job_name(implementation_commit),
+        "finalizer_worker_role": R8U_R7D_FINALIZER_ROLE,
+        "array_qsub_argv_sha256": _sha256_bytes(_canonical_bytes({
+            "argv": _r8u_r7d_array_command(implementation_commit)
+        })),
+        "finalizer_qsub_argv_sha256": _sha256_bytes(_canonical_bytes({
+            "argv": _r8u_r7d_finalizer_command(
+                implementation_commit, array_job_id
+            )
+        })),
+        "array_qsub_evidence": dict(_qsub_evidence_authority(
+            R8U_R7D_CONTINUATION_SCHEDULER_ROOT, "array"
+        )),
+        "finalizer_qsub_evidence": dict(_qsub_evidence_authority(
+            R8U_R7D_CONTINUATION_SCHEDULER_ROOT, "finalizer"
+        )),
+        "qsub_environment_sha256": qsub_environment_sha256,
+        "initial_full_xml_qstat_projection": dict(initial_qstat_projection),
+        "failure_code": (
+            None if snapshot_pass else initial_qstat_projection["failure_code"]
+        ),
+        "array_task_range": "17-19",
+        "array_task_ids": [17, 18, 19],
+        "array_task_count": 3,
+        "array_max_concurrency": 1,
+        "finalizer_held_on_array": True,
+        "scheduler_submission_count": 2,
+        "total_new_qsub_submissions": 3,
+        "scheduler_submission_maximum": 3,
+        "whole_stage_retry_authorized": False,
+        "fourth_submission_reachable": False,
+        "cloud_requests": 0,
+        "dicom_body_reads_by_submitter": 0,
+        "npz_body_reads_by_submitter": 0,
+        "gpu_executions_by_submitter": 0,
+        "model_fitting_count": 0,
+        "prediction_generation_count": 0,
+        "confirmatory_performance_access_count": 0,
+    }
+
+
+def _r8u_r7d_validate_continuation_chain(
+    *, run: sequential.FullRun, account: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    _r8u_r7d_validate_probe_chain(run=run, account=account)
+    _r8u_r7d_validate_probe_terminal()
+    claim, _ = _load_private_json(R8U_R7D_CONTINUATION_CLAIM_PATH)
+    expected_claim = _r8u_r7d_continuation_claim(
+        run=run,
+        implementation_commit=implementation_commit,
+        prefix_receipts=R8U_R7D_PREFIX_FINAL_RECEIPT_SHA256,
+        qsub_environment_sha256=str(account["qsub_environment_sha256"]),
+    )
+    if not _exact_typed_value_equal(claim, expected_claim):
+        _fail("R8U_R7D_CONTINUATION_CLAIM_INVALID")
+    _wait_for_r8u_r5_control(R8U_R7D_CONTINUATION_SUBMISSION_PATH)
+    submission, _ = _load_private_json(R8U_R7D_CONTINUATION_SUBMISSION_PATH)
+    initial = submission.get("initial_full_xml_qstat_projection")
+    if not isinstance(initial, Mapping):
+        _fail("R8U_R7D_CONTINUATION_SUBMISSION_INVALID")
+    expected_submission = _r8u_r7d_continuation_submission(
+        implementation_commit=implementation_commit,
+        array_job_id=str(submission.get("array_job_id", "")),
+        finalizer_job_id=str(submission.get("finalizer_job_id", "")),
+        qsub_environment_sha256=str(account["qsub_environment_sha256"]),
+        continuation_claim_sha256=core.sha256_file(
+            R8U_R7D_CONTINUATION_CLAIM_PATH
+        ),
+        initial_qstat_projection=initial,
+    )
+    if not _exact_typed_value_equal(submission, expected_submission):
+        _fail("R8U_R7D_CONTINUATION_SUBMISSION_INVALID")
+    if initial.get("status") != "PASS_R8U_R7D_FULL_XML_QSTAT_SNAPSHOT":
+        failure_code = str(initial.get("failure_code", ""))
+        if SAFE_CODE_RE.fullmatch(failure_code) is None:
+            _fail("R8U_R7D_CONTINUATION_SUBMISSION_INVALID")
+        _fail(failure_code)
+    return submission
+
+
+def submit_r8u_r7d_continuation_17_19(
+    *, qsub_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    qstat_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    process_runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> Mapping[str, Any]:
+    """Submit the sole fresh array and sole held finalizer after probe PASS."""
+
+    scheduler.validate_scheduler_tools()
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    environment, _ = scheduler.build_qsub_environment()
+    account = validate_r8u_r7d_scheduler_account_authority()
+    if scheduler.qsub_environment_sha256(environment) != account.get(
+        "qsub_environment_sha256"
+    ):
+        _fail("SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH")
+    run = _load_fixed_original_run(
+        scheduler_job_identity="R8U_R7D_CONTINUATION_SUBMITTER",
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r7d=True,
+    )
+    _r8u_r7d_validate_probe_chain(run=run, account=account)
+    _r8u_r7d_validate_probe_terminal()
+    _r8u_r7d_require_tail_pristine(run)
+    if any(os.path.lexists(path) for path in (
+        R8U_R7D_CONTINUATION_CLAIM_PATH,
+        R8U_R7D_CONTINUATION_SCHEDULER_ROOT,
+    )):
+        _fail("R8U_R7D_CONTINUATION_OUTPUT_COLLISION")
+    _r8u_r7d_login_qstat_snapshot(
+        environment=environment, runner=qstat_runner
+    )
+    _r8u_r7d_process_quiescence(
+        environment=environment, runner=process_runner
+    )
+    _create_private_directory_no_clobber(R8U_R7D_CONTINUATION_SCHEDULER_ROOT)
+    claim = _r8u_r7d_continuation_claim(
+        run=run,
+        implementation_commit=implementation_commit,
+        prefix_receipts=R8U_R7D_PREFIX_FINAL_RECEIPT_SHA256,
+        qsub_environment_sha256=str(account["qsub_environment_sha256"]),
+    )
+    claim_sha = _write_private_json(R8U_R7D_CONTINUATION_CLAIM_PATH, claim)
+    array_job_id = scheduler._capture_qsub(
+        "array",
+        _r8u_r7d_array_command(implementation_commit),
+        root=R8U_R7D_CONTINUATION_SCHEDULER_ROOT,
+        environment=environment,
+        runner=qsub_runner,
+        parser=_parse_r8u_array_qsub_stdout,
+    )
+    finalizer_job_id = scheduler._capture_qsub(
+        "finalizer",
+        _r8u_r7d_finalizer_command(implementation_commit, array_job_id),
+        root=R8U_R7D_CONTINUATION_SCHEDULER_ROOT,
+        environment=environment,
+        runner=qsub_runner,
+    )
+    qstat_failure: R8RControllerError | None = None
+    try:
+        initial_qstat = _r8u_r7d_login_qstat_snapshot(
+            environment=environment,
+            runner=qstat_runner,
+            expected={"array": array_job_id, "finalizer": finalizer_job_id},
+        )
+    except R8RControllerError as exc:
+        qstat_failure = exc
+        initial_qstat = {
+            "status": "BLOCKED_R8U_R7D_POST_SUBMISSION_QSTAT",
+            "failure_code": exc.code,
+            "array_job_id": array_job_id,
+            "finalizer_job_id": finalizer_job_id,
+            "qstat_snapshot_attempt_count": 1,
+            "truncated_display_name_used": False,
+        }
+    submission = _r8u_r7d_continuation_submission(
+        implementation_commit=implementation_commit,
+        array_job_id=array_job_id,
+        finalizer_job_id=finalizer_job_id,
+        qsub_environment_sha256=str(account["qsub_environment_sha256"]),
+        continuation_claim_sha256=claim_sha,
+        initial_qstat_projection=initial_qstat,
+    )
+    receipt_sha = _write_private_json(
+        R8U_R7D_CONTINUATION_SUBMISSION_PATH, submission
+    )
+    persisted_submission, _ = _load_private_json(
+        R8U_R7D_CONTINUATION_SUBMISSION_PATH
+    )
+    if not _exact_typed_value_equal(persisted_submission, submission):
+        _fail("R8U_R7D_CONTINUATION_SUBMISSION_READBACK_INVALID")
+    if qstat_failure is not None:
+        raise qstat_failure
+    _r8u_r7d_validate_continuation_chain(run=run, account=account)
+    return {
+        "status": "FINAL_TASKS_17_19_AND_FINALIZER_RESUBMITTED",
+        "array_job_id": array_job_id,
+        "finalizer_job_id": finalizer_job_id,
+        "continuation_receipt_sha256": receipt_sha,
+        "task_range": "17-19",
+        "array_max_concurrency": 1,
+        "new_qsub_submissions": 2,
+        "total_new_qsub_submissions": 3,
+        "initial_qstat_projection": initial_qstat,
+    }
+
+
+def run_r8u_r7d_continuation_array_task() -> Mapping[str, Any]:
+    job_id = str(os.environ.get("JOB_ID", ""))
+    task_text = str(os.environ.get("SGE_TASK_ID", ""))
+    if (
+        JOB_RE.fullmatch(job_id) is None
+        or task_text not in {"17", "18", "19"}
+        or str(os.environ.get("CUDA_VISIBLE_DEVICES", "")) == ""
+    ):
+        _fail("R8U_R7D_CONTINUATION_ARRAY_CONTEXT_INVALID")
+    run = _load_fixed_original_run(
+        scheduler_job_identity=job_id,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r7d=True,
+    )
+    dependencies = sequential.FullDependencies(
+        execution_context=sequential.R8U_R7D_FIXED_CONTINUATION
+    )
+    value = sequential.run_batch_task(
+        task_id=int(task_text), run=run, dependencies=dependencies
+    )
+    if value.get("status") != "PASS_BATCH_FINALIZED":
+        _fail("R8U_R7D_CONTINUATION_BATCH_NOT_FINALIZED")
+    return value
+
+
+def run_r8u_r7d_continuation_finalizer() -> Mapping[str, Any]:
+    job_id = str(os.environ.get("JOB_ID", ""))
+    task_text = str(os.environ.get("SGE_TASK_ID", "undefined"))
+    if (
+        JOB_RE.fullmatch(job_id) is None
+        or task_text not in {"", "undefined"}
+        or str(os.environ.get("CUDA_VISIBLE_DEVICES", "")) != ""
+    ):
+        _fail("R8U_R7D_CONTINUATION_FINALIZER_CONTEXT_INVALID")
+    validate_r8u_r7d_continuation_worker_submission(
+        current_job_id=job_id, role="finalizer"
+    )
+    run = _load_fixed_original_run(
+        scheduler_job_identity=job_id,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+        r8u_r7d=True,
+    )
+    implementation_commit = _current_r8u_r7d_implementation_commit()
+    receipts = [
+        sequential._batch_paths(run, f"c3_batch_{index:03d}")["final_receipt"]
+        for index in range(run.requirements.batch_count)
+    ]
+    output_root = run.attempt_root / "cohort_finalization"
+    try:
+        _r8u_validate_pristine_exclusion_paths(
+            frozenset({PurePosixPath("cohort_finalization")})
+        )
+    except Exception as exc:
+        raise R8RControllerError(
+            "R8U_R7D_COHORT_OUTPUT_NOT_PRISTINE"
+        ) from exc
+    _ensure_private_directory(output_root)
+    authority = finalizer.R8UR7DImplementationAuthority(
+        implementation_commit=implementation_commit,
+        prior_r7_runtime_commit=R8U_R7_PRIOR_FINALIZED_RUNTIME_COMMIT,
+        r7c_adjudication_commit=R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        finalized_prefix_receipt_sha256=R8U_R7D_PREFIX_FINAL_RECEIPT_SHA256,
+        consumed_r7a_continuation_receipt_sha256=(
+            R8U_R7D_OLD_CONTINUATION_RECEIPT_SHA256
+        ),
+        consumed_task17_accounting_receipt_sha256=(
+            R8U_R7D_OLD_ACCOUNTING_SHA256["task_17"]
+        ),
+        consumed_task18_accounting_receipt_sha256=(
+            R8U_R7D_OLD_ACCOUNTING_SHA256["task_18"]
+        ),
+        consumed_task19_accounting_receipt_sha256=(
+            R8U_R7D_OLD_ACCOUNTING_SHA256["task_19"]
+        ),
+        consumed_finalizer_accounting_receipt_sha256=(
+            R8U_R7D_OLD_ACCOUNTING_SHA256["finalizer"]
+        ),
+        capacity_receipt_sha256=core.sha256_file(R8U_R7D_CAPACITY_PATH),
+        scheduler_account_authority_sha256=core.sha256_file(
+            R8U_R7D_ACCOUNT_AUTHORITY_PATH
+        ),
+        probe_terminal_receipt_sha256=core.sha256_file(
+            R8U_R7D_PROBE_TERMINAL_PATH
+        ),
+        continuation_claim_sha256=core.sha256_file(
+            R8U_R7D_CONTINUATION_CLAIM_PATH
+        ),
+        continuation_submission_receipt_sha256=core.sha256_file(
+            R8U_R7D_CONTINUATION_SUBMISSION_PATH
+        ),
+    )
+    summary = finalizer.finalize_receipts(
+        receipts,
+        expected_governing_commit=ORIGINAL_SCIENTIFIC_COMMIT,
+        expected_attempt_id=ORIGINAL_ATTEMPT_ID,
+        plan=run.plan,
+        requirements=run.requirements,
+        production_root=run.production_root,
+        contract=run.contract,
+        contract_path=run.contract_path,
+        environment_receipt=run.authority.environment_receipt,
+        cache_retirement_authorization_root=(
+            run.attempt_root / "cache_retirement_authorizations"
+        ),
+        canonical_output_root=output_root,
+        expected_runtime_authority=run.runtime_authority,
+        expected_no_cine_studies=int(
+            run.launch_authority["expected_no_cine_studies"]
+        ),
+        r8u_r7d_implementation_authority=authority,
+    )
+    if (
+        summary.get("status") != "PASS_PRODUCTION_C3_FINALIZED"
+        or summary.get("production_batches") != 19
+        or summary.get("selected_studies") != 4_530
+        or summary.get("selected_subjects") != 4_530
+        or summary.get("verified_source_objects") != 335_984
+        or summary.get("selected_source_bytes") != 1_216_569_133_322
+        or summary.get("pooled_imaging_eligible_studies") != 4_525
+        or summary.get("no_cine_studies") != 5
+        or summary.get("new_no_cine_studies") != 0
+        or summary.get("all_scientific_authority_bindings_identical") is not True
+        or summary.get("implementation_authority_epoch_count") != 4
+        or summary.get("r8u_r7d_implementation_commit") != implementation_commit
+        or SHA_RE.fullmatch(str(
+            summary.get("r8u_r7d_continuation_authority_sha256", "")
+        )) is None
+        or summary.get("model_fitting_count") != 0
+        or summary.get("endpoint_prediction_count") != 0
+        or summary.get("confirmatory_performance_access_count") != 0
+    ):
+        _fail("R8U_R7D_CONTINUATION_FINALIZATION_INVALID")
+    finalizer.write_json_atomic(
+        output_root / "full_c3_finalization.aggregate_safe.json", summary
+    )
+    return summary
+
+
+
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
@@ -25308,6 +27600,32 @@ def _r8u_r7_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _r8u_r7d_parser() -> argparse.ArgumentParser:
+    """Closed parser for the one R7D probe and final continuation."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument(
+        "--submit-r8u-r7d-continuation-context-probe", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r7d-continuation-context-probe", action="store_true"
+    )
+    modes.add_argument(
+        "--adjudicate-r8u-r7d-continuation-context-probe", action="store_true"
+    )
+    modes.add_argument(
+        "--submit-r8u-r7d-continuation-17-19", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r7d-continuation-17-19-array-task", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r7d-continuation-finalizer", action="store_true"
+    )
+    return parser
+
+
 def guarded_main(argv: Sequence[str] | None = None) -> int:
     mode_prefix = "R8R"
     try:
@@ -25354,6 +27672,68 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             "--run-r8u-r7-continuation-17-19-array-task",
             "--run-r8u-r7-continuation-finalizer",
         }
+        r8u_r7d_options = {
+            "--submit-r8u-r7d-continuation-context-probe",
+            "--run-r8u-r7d-continuation-context-probe",
+            "--adjudicate-r8u-r7d-continuation-context-probe",
+            "--submit-r8u-r7d-continuation-17-19",
+            "--run-r8u-r7d-continuation-17-19-array-task",
+            "--run-r8u-r7d-continuation-finalizer",
+        }
+        if any(argument in r8u_r7d_options for argument in arguments):
+            mode_prefix = "R8U_R7D"
+            r7d_args = _r8u_r7d_parser().parse_args(arguments)
+            if r7d_args.submit_r8u_r7d_continuation_context_probe:
+                value = submit_r8u_r7d_continuation_context_probe()
+                print(f"R8U_R7D_STATUS={value['status']}")
+                print(f"R8U_R7D_PROBE_JOB_ID={value['probe_job_id']}")
+                print("R8U_R7D_PROBE_QSUB_EXIT=0")
+                print(f"R8U_R7D_CAPACITY_STATUS={value['capacity_status']}")
+                print("R8U_R7D_NEW_QSUB_SUBMISSIONS=1")
+            elif r7d_args.run_r8u_r7d_continuation_context_probe:
+                value = run_r8u_r7d_continuation_context_probe()
+                print(f"R8U_R7D_STATUS={value['status']}")
+                print(
+                    "R8U_R7D_QSTAT_CLASSIFICATION="
+                    f"{value['qstat_classification']}"
+                )
+                print("R8U_R7D_CONTROLLING_WORKER_IDENTITY=PASS")
+                print("R8U_R7D_NEW_CLOUD_REQUESTS=0")
+                print("R8U_R7D_NEW_DICOM_BODY_READS=0")
+                print("R8U_R7D_NEW_NPZ_BODY_READS=0")
+                print("R8U_R7D_NEW_GPU_EXECUTIONS=0")
+            elif r7d_args.adjudicate_r8u_r7d_continuation_context_probe:
+                value = adjudicate_r8u_r7d_continuation_context_probe()
+                print(f"R8U_R7D_STATUS={value['status']}")
+                print("R8U_R7D_PROBE_QACCT_FAILED=0")
+                print("R8U_R7D_PROBE_QACCT_EXIT_STATUS=0")
+                print(
+                    "R8U_R7D_QSTAT_CLASSIFICATION="
+                    f"{value['qstat_classification']}"
+                )
+            elif r7d_args.submit_r8u_r7d_continuation_17_19:
+                value = submit_r8u_r7d_continuation_17_19()
+                print(f"R8U_R7D_STATUS={value['status']}")
+                print(f"R8U_R7D_ARRAY_JOB_ID={value['array_job_id']}")
+                print(f"R8U_R7D_FINALIZER_JOB_ID={value['finalizer_job_id']}")
+                print(
+                    "R8U_R7D_CONTINUATION_RECEIPT_SHA256="
+                    f"{value['continuation_receipt_sha256']}"
+                )
+                print("R8U_R7D_CONTINUATION_TASK_RANGE=17-19")
+                print("R8U_R7D_CONTINUATION_MAX_CONCURRENCY=1")
+                print("R8U_R7D_NEW_QSUB_SUBMISSIONS=2")
+                print("R8U_R7D_TOTAL_NEW_QSUB_SUBMISSIONS=3")
+            elif r7d_args.run_r8u_r7d_continuation_17_19_array_task:
+                value = run_r8u_r7d_continuation_array_task()
+                print(
+                    "R8U_R7D_CONTINUATION_BATCH_STATUS="
+                    f"{value['status']}"
+                )
+            else:
+                run_r8u_r7d_continuation_finalizer()
+                print("R8U_R7D_STATUS=PASS_R8U_R7D_FIXED_CONTINUATION_FINALIZED")
+            return 0
         if any(argument in r8u_r7_options for argument in arguments):
             mode_prefix = "R8U_R7"
             r7_args = _r8u_r7_parser().parse_args(arguments)
@@ -25736,7 +28116,10 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             print("FULL_C3_R8U_COHORT_FINALIZER=PASS")
         return 0
     except R8RControllerError as exc:
-        print(f"{mode_prefix}_STATUS=BLOCKED_{exc.code}")
+        rendered_code = (
+            exc.code if exc.code.startswith("BLOCKED_") else f"BLOCKED_{exc.code}"
+        )
+        print(f"{mode_prefix}_STATUS={rendered_code}")
         if exc.stage is not None:
             print(f"{mode_prefix}_FAILED_STAGE={exc.stage}")
         if exc.validation_substage is not None:
@@ -25747,16 +28130,32 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
         if mode_prefix.startswith("R8U"):
             print("R8U_BATCH16_CLOUD_REQUESTS=0")
             print("R8U_BATCH16_DOWNLOAD_RERUNS=0")
+            capacity_label_prefix = (
+                "R8U_R7D" if mode_prefix == "R8U_R7D" else "R8U"
+            )
             for field, label in (
-                ("quota_deficit_bytes", "R8U_CAPACITY_QUOTA_DEFICIT_BYTES"),
+                (
+                    "quota_deficit_bytes",
+                    f"{capacity_label_prefix}_CAPACITY_QUOTA_DEFICIT_BYTES",
+                ),
                 (
                     "physical_deficit_bytes",
-                    "R8U_CAPACITY_PHYSICAL_DEFICIT_BYTES",
+                    f"{capacity_label_prefix}_CAPACITY_PHYSICAL_DEFICIT_BYTES",
                 ),
-                ("file_slot_deficit", "R8U_CAPACITY_FILE_SLOT_DEFICIT"),
+                (
+                    "file_slot_deficit",
+                    f"{capacity_label_prefix}_CAPACITY_FILE_SLOT_DEFICIT",
+                ),
             ):
                 if field in exc.capacity_deficits:
                     print(f"{label}={exc.capacity_deficits[field]}")
+            if mode_prefix == "R8U_R7D":
+                for field, label in (
+                    ("failed", "R8U_R7D_PROBE_QACCT_FAILED"),
+                    ("exit_status", "R8U_R7D_PROBE_QACCT_EXIT_STATUS"),
+                ):
+                    if field in exc.probe_qacct:
+                        print(f"{label}={exc.probe_qacct[field]}")
         else:
             print("R8R_NEW_CLOUD_REQUESTS=0")
             print("R8R_NEW_DICOM_BODY_READS=0")

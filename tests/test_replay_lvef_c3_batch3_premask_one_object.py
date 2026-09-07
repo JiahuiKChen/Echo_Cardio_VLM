@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -1753,12 +1754,30 @@ def test_immutable_science_replay_and_r5_scheduler_hashes_are_bound() -> None:
     # submitter/worker split.
     expected = {
         "lvef_reconstruction_smoke.py": "23aaddbf1f108e52fc11c1ad1a2c325b1d3e038e4f86a6e9b648851964f77121",
-        "lvef_c3_full_scheduler.py": "2aa6d5b469c7537670e47de9c2b224fb6ddfd9ed46e7e0f6f00cd7eebdf40233",
         "replay_lvef_c3_failed_extraction_one_object.py": "0f60cbc7889d97a0bb6bfd6a9c651e36b121e3b1b4b8b2708f1b6de23dc55587",
     }
     for basename, expected_sha256 in expected.items():
         payload = (ROOT / "scripts" / basename).read_bytes()
         assert hashlib.sha256(payload).hexdigest() == expected_sha256
+    # Later additive scheduler epochs must not rewrite the R5 blob that this
+    # historical replay consumed; bind that committed blob rather than the
+    # necessarily extended current scheduler.
+    completed = subprocess.run(
+        [
+            "/usr/bin/git", "show",
+            "7b7c3657e110b53a6e6112567410243377437db4:"
+            "scripts/lvef_c3_full_scheduler.py",
+        ],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert completed.returncode == 0 and completed.stderr == b""
+    assert hashlib.sha256(completed.stdout).hexdigest() == (
+        "2aa6d5b469c7537670e47de9c2b224fb6ddfd9ed46e7e0f6f00cd7eebdf40233"
+    )
 
 
 def test_strict_json_rejects_duplicate_keys() -> None:

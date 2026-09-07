@@ -342,15 +342,34 @@ def test_observer_does_not_need_live_worker_sge_variables() -> None:
     }
 
 
-def test_live_worker_validator_remains_untouched_and_fail_closed() -> None:
-    controller = ROOT / "scripts/lvef_c3_r8r_recovery_continuation.py"
-    runner = ROOT / "scripts/scc_run_lvef_c3_r8r_recovery_continuation.sh"
-    assert hashlib.sha256(controller.read_bytes()).hexdigest() == (
-        accounting.RUNTIME_CONTROLLER_SHA256
-    )
-    assert hashlib.sha256(runner.read_bytes()).hexdigest() == (
-        accounting.RUNTIME_RUNNER_SHA256
-    )
+def test_consumed_live_worker_authority_remains_historically_pinned() -> None:
+    # Later additive epochs may extend the shared controller/runner.  R7C binds
+    # the exact blobs actually executed by consumed R7 through their immutable
+    # runtime commit rather than falsely requiring the current whole file to
+    # retain the historical hash.
+    for path, expected in (
+        (
+            "scripts/lvef_c3_r8r_recovery_continuation.py",
+            accounting.RUNTIME_CONTROLLER_SHA256,
+        ),
+        (
+            "scripts/scc_run_lvef_c3_r8r_recovery_continuation.sh",
+            accounting.RUNTIME_RUNNER_SHA256,
+        ),
+    ):
+        completed = subprocess.run(
+            [
+                "/usr/bin/git", "show",
+                f"{accounting.RUNTIME_IMPLEMENTATION_COMMIT}:{path}",
+            ],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert completed.returncode == 0 and completed.stderr == b""
+        assert hashlib.sha256(completed.stdout).hexdigest() == expected
     source = inspect.getsource(accounting)
     assert "validate_r8u_r7_continuation_worker_submission(" not in source
     assert "build_worker_scheduler_context(" not in source
