@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import fields, replace
 import inspect
 from pathlib import Path
+import subprocess
 import sys
 import traceback
 from typing import Any
@@ -216,6 +217,60 @@ def test_r7d_finalizer_api_and_authority_are_additive() -> None:
         "continuation_claim_sha256",
         "continuation_submission_receipt_sha256",
     } < names
+
+
+def test_r7e_repository_authority_is_the_sole_child_of_fixed_r7d() -> None:
+    implementation_commit = "f" * 40
+    fixed_r7d = finalizer.R8U_R7D_WORKER_IDENTITY_IMPLEMENTATION_COMMIT
+    exact = {
+        ("rev-parse", "HEAD"): f"{implementation_commit}\n".encode(),
+        (
+            "rev-parse",
+            "refs/remotes/origin/codex/lvef-multitask-revalidation",
+        ): f"{implementation_commit}\n".encode(),
+        ("branch", "--show-current"): (
+            b"codex/lvef-multitask-revalidation\n"
+        ),
+        ("rev-list", "--parents", "-n", "1", implementation_commit): (
+            f"{implementation_commit} {fixed_r7d}\n".encode()
+        ),
+        ("rev-list", "--parents", "-n", "1", fixed_r7d): (
+            f"{fixed_r7d} "
+            f"{finalizer.R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}\n"
+        ).encode(),
+        (
+            "rev-list", "--parents", "-n", "1",
+            finalizer.R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        ): (
+            f"{finalizer.R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT} "
+            f"{finalizer.R8U_R7_RUNTIME_IMPLEMENTATION_COMMIT}\n"
+        ).encode(),
+        (
+            "rev-list", "--count",
+            f"{finalizer.R8U_R7C_ADJUDICATION_IMPLEMENTATION_COMMIT}.."
+            f"{implementation_commit}",
+        ): b"2\n",
+        (
+            "rev-list", "--count",
+            f"{finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT}.."
+            f"{implementation_commit}",
+        ): b"13\n",
+    }
+
+    def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        arguments = tuple(argv[3:])
+        if arguments in exact:
+            return subprocess.CompletedProcess(argv, 0, exact[arguments], b"")
+        if arguments[:2] in {("cat-file", "-e"), ("merge-base", "--is-ancestor")}:
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        if arguments == ("status", "--porcelain", "--untracked-files=no"):
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        raise AssertionError(arguments)
+
+    with mock.patch.object(finalizer.subprocess, "run", side_effect=run):
+        finalizer._validate_r8u_r7d_repository_authority(
+            implementation_commit
+        )
 
 
 def test_r7d_finalizer_accepts_only_two_plus_thirteen_plus_one_plus_three() -> None:

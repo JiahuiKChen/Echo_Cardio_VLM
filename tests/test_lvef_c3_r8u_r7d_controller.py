@@ -413,6 +413,13 @@ def test_post_qsub_qstat_failure_still_seals_blocked_submission() -> None:
             return_value=COMMIT,
         ),
         mock.patch.object(
+            controller,
+            "_current_r8u_r7d_execution_implementation_commit",
+            side_effect=AssertionError(
+                "legacy R7D submit used dynamic R7E execution authority"
+            ),
+        ),
+        mock.patch.object(
             controller.scheduler,
             "build_qsub_environment",
             return_value=({"SEALED": "environment"}, {}),

@@ -6,7 +6,15 @@ keeping the R7D schema and arithmetic in a separate implementation epoch.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+from typing import Any, Callable, Mapping, Sequence
+
+import capture_lvef_c3_post_reallocation_capacity as _frozen_capacity
 
 from capture_lvef_c3_post_reallocation_capacity import (
     COMMIT_RE,
@@ -755,3 +763,2334 @@ def capture_and_validate_fixed_r8u_r7d_tasks17_19_capacity(
         confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
         confirmed_partial_artifact_files=confirmed_partial_artifact_files,
     )
+
+
+# R7E is an additive observation/persistence epoch.  In particular, none of
+# the R7D functions above call this code, and their historical behavior stays
+# unchanged.  The R7E receipt records enough bounded metadata to distinguish
+# command, parser, authority, and arithmetic failures without putting any raw
+# quota or filesystem output in the aggregate artifact.
+R8U_R7E_CAPACITY_ARTIFACT_TYPE = (
+    "lvef_c3_r8u_r7e_tasks17_19_capacity_observation_v1"
+)
+R8U_R7E_CAPACITY_STATUS_PASS = (
+    "PASS_R8U_R7E_TASKS_17_19_REMAINING_CAPACITY"
+)
+R8U_R7E_CAPACITY_STATUS_DEFICIT = (
+    "BLOCKED_R8U_R7E_QUANTIFIED_CAPACITY_DEFICIT"
+)
+R8U_R7E_CAPACITY_STATUS_OBSERVATION_PREFIX = (
+    "BLOCKED_R8U_R7E_CAPACITY_OBSERVATION_"
+)
+R8U_R7E_COMMAND_DIAGNOSTIC_KEYS = frozenset(
+    {
+        "logical_role",
+        "command_type",
+        "command_ordinal",
+        "registry_ordinal",
+        "invocation_attempted",
+        "exit_status",
+        "exit_class",
+        "capture_present",
+        "capture_regular_file",
+        "stdout_size_bytes",
+        "stdout_sha256",
+        "stdout_capture_regular_file",
+        "stderr_size_bytes",
+        "stderr_sha256",
+        "stderr_capture_regular_file",
+        "raw_capture_sha256",
+        "parser_result",
+        "failure_predicate",
+        "source_error_code",
+    }
+)
+R8U_R7E_FAILURE_DIAGNOSTIC_KEYS = frozenset(
+    {
+        "failure_code",
+        "failure_stage",
+        "failure_field",
+        "failure_predicate",
+        "command_type",
+        "command_ordinal",
+        "registry_ordinal",
+        "command_exit_status",
+        "command_exit_class",
+        "capture_present",
+        "capture_regular_file",
+        "parser_result",
+        "expected_value_category",
+        "observed_value_category",
+        "validation_class",
+        "source_error_code",
+        "raw_capture_sha256",
+        "failure_before_capacity_arithmetic",
+    }
+)
+R8U_R7E_CAPACITY_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "original_attempt_id",
+        "original_plan_sha256",
+        "original_scientific_governing_commit",
+        "r7e_runtime_commit",
+        "preserved_old_control_evidence_bytes_baseline",
+        "preserved_old_control_evidence_files_baseline",
+        "confirmed_partial_artifact_bytes_baseline",
+        "confirmed_partial_artifact_files_baseline",
+        "capacity_observation_count",
+        "native_quota_file_captures",
+        "pquota_command_captures",
+        "findmnt_command_captures",
+        "df_command_captures",
+        "du_command_captures",
+        "pquota_command_invocation_attempts",
+        "findmnt_command_invocation_attempts",
+        "df_command_invocation_attempts",
+        "du_command_invocation_attempts",
+        "raw_capture_file_count",
+        "raw_capture_root_owner_private",
+        "command_diagnostics",
+        "native_quota_size_bytes",
+        "native_quota_sha256",
+        "failure_diagnostic",
+        "arithmetic_evaluated",
+        "valid_numerical_deficit_calculated",
+        "capacity_projection",
+    }
+)
+_R8U_R7E_COMMAND_ROLES = (
+    ("pquota", "PQUOTA", 1, 1),
+    ("research_findmnt", "FINDMNT", 1, 2),
+    ("backed_findmnt", "FINDMNT", 2, 3),
+    ("research_df", "DF", 1, 4),
+    ("backed_df", "DF", 2, 5),
+)
+_R8U_R7E_MAXIMUM_COMMAND_STREAM_BYTES = 2_000_000
+
+
+class R8UR7ECapacityObservationError(PostReallocationCapacityError):
+    """One field-specific R7E failure, optionally carrying a sealed receipt."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        diagnostic: Mapping[str, Any],
+        receipt: Mapping[str, Any] | None = None,
+        receipt_sha256: str | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.diagnostic = dict(diagnostic)
+        self.receipt = None if receipt is None else dict(receipt)
+        self.receipt_sha256 = receipt_sha256
+
+
+def _r8u_r7e_canonical(value: Any) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _r8u_r7e_sha(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _r8u_r7e_is_sha(value: Any) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _r8u_r7e_private_directory(path: Path) -> os.stat_result:
+    if (
+        not isinstance(path, Path)
+        or not path.is_absolute()
+        or Path(os.path.abspath(path)) != path
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_DIRECTORY_INVALID"
+        )
+    _frozen_capacity._no_symlink_ancestors(
+        path / ".r8u_r7e_nofollow_probe",
+        "R8U_R7E_PRIVATE_DIRECTORY",
+    )
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_DIRECTORY_INVALID"
+        ) from exc
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) not in {0o700, 0o2700}
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_DIRECTORY_INVALID"
+        )
+    return metadata
+
+
+def _r8u_r7e_prepare_raw_capture_root(path: Path) -> os.stat_result:
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise PostReallocationCapacityError(
+            "R8U_R7E_RAW_CAPTURE_ROOT_INVALID"
+        )
+    if not os.path.lexists(path):
+        _r8u_r7e_private_directory(path.parent)
+        try:
+            os.mkdir(path, 0o700)
+        except OSError as exc:
+            raise PostReallocationCapacityError(
+                "R8U_R7E_RAW_CAPTURE_ROOT_CREATE_FAILED"
+            ) from exc
+    try:
+        metadata = _r8u_r7e_private_directory(path)
+        entries = list(os.scandir(path))
+    except PostReallocationCapacityError:
+        raise
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_RAW_CAPTURE_ROOT_INVALID"
+        ) from exc
+    if entries:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_RAW_CAPTURE_ROOT_NOT_EMPTY"
+        )
+    return metadata
+
+
+def _r8u_r7e_write_new_private_bytes(path: Path, payload: bytes) -> str:
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_OUTPUT_PATH_INVALID"
+        )
+    parent = _r8u_r7e_private_directory(path.parent)
+    if os.path.lexists(path):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_OUTPUT_COLLISION"
+        )
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags, 0o600)
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("short private output write")
+            offset += written
+        os.fsync(descriptor)
+        metadata = os.fstat(descriptor)
+    except Exception as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+            descriptor = -1
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_OUTPUT_WRITE_FAILED"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    after = os.lstat(path)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+        or metadata.st_size != len(payload)
+        or (metadata.st_dev, metadata.st_ino, metadata.st_size)
+        != (after.st_dev, after.st_ino, after.st_size)
+        or after.st_dev != parent.st_dev
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_OUTPUT_INVARIANT_FAILED"
+        )
+    verify = _frozen_capacity._read_regular(
+        path,
+        private=True,
+        maximum=max(len(payload), 1),
+    ) if payload else b""
+    if verify != payload:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_PRIVATE_OUTPUT_READBACK_MISMATCH"
+        )
+    return _r8u_r7e_sha(payload)
+
+
+def write_r8u_r7e_capacity_receipt_no_clobber(
+    path: Path,
+    value: Mapping[str, Any],
+) -> str:
+    """Publish one canonical owner-private mode-0600 receipt, no-clobber."""
+
+    if not isinstance(value, Mapping):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    return _r8u_r7e_write_new_private_bytes(
+        path,
+        _r8u_r7e_canonical(dict(value)),
+    )
+
+
+def _r8u_r7e_preflight_receipt_no_clobber(path: Path) -> None:
+    """Reject a receipt collision before consuming the live observation."""
+
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_RECEIPT_PATH_INVALID"
+        )
+    _r8u_r7e_private_directory(path.parent)
+    if os.path.lexists(path):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_RECEIPT_COLLISION"
+        )
+
+
+def _r8u_r7e_failure_code(reason: str) -> str:
+    if (
+        type(reason) is not str
+        or not reason
+        or any(
+            character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+            for character in reason
+        )
+    ):
+        reason = "INTERNAL_REASON_INVALID"
+    return R8U_R7E_CAPACITY_STATUS_OBSERVATION_PREFIX + reason
+
+
+def _r8u_r7e_failure_diagnostic(
+    reason: str,
+    *,
+    failure_stage: str,
+    failure_field: str,
+    failure_predicate: str,
+    command_type: str = "NONE",
+    command_ordinal: int | None = None,
+    registry_ordinal: int | None = None,
+    command_exit_status: int | None = None,
+    capture_present: bool = False,
+    capture_regular_file: bool | None = None,
+    parser_result: str = "NOT_EVALUATED",
+    expected_value_category: str = "TRUSTED_FIXED_AUTHORITY",
+    observed_value_category: str = "INVALID_OR_UNAVAILABLE",
+    validation_class: str = "R8UR7ECapacityObservationError",
+    source_error_code: str | None = None,
+    raw_capture_sha256: str | None = None,
+    failure_before_capacity_arithmetic: bool = True,
+) -> dict[str, Any]:
+    code = _r8u_r7e_failure_code(reason)
+    return {
+        "failure_code": code,
+        "failure_stage": failure_stage,
+        "failure_field": failure_field,
+        "failure_predicate": failure_predicate,
+        "command_type": command_type,
+        "command_ordinal": command_ordinal,
+        "registry_ordinal": registry_ordinal,
+        "command_exit_status": command_exit_status,
+        "command_exit_class": (
+            "NOT_AVAILABLE"
+            if command_exit_status is None
+            else "ZERO" if command_exit_status == 0 else "NONZERO"
+        ),
+        "capture_present": capture_present,
+        "capture_regular_file": capture_regular_file,
+        "parser_result": parser_result,
+        "expected_value_category": expected_value_category,
+        "observed_value_category": observed_value_category,
+        "validation_class": validation_class,
+        "source_error_code": source_error_code,
+        "raw_capture_sha256": raw_capture_sha256,
+        "failure_before_capacity_arithmetic": (
+            failure_before_capacity_arithmetic
+        ),
+    }
+
+
+def _r8u_r7e_static_authority(
+    plan: Mapping[str, Any],
+    *,
+    r7e_runtime_commit: str,
+    preserved_old_evidence_bytes: int,
+    preserved_old_evidence_files: int,
+    confirmed_partial_artifact_bytes: int,
+    confirmed_partial_artifact_files: int,
+) -> tuple[str, dict[str, int]]:
+    runtime_commit = _fixed_r8u_r7d_runtime_commit(r7e_runtime_commit)
+    _derive_fixed_r8u_r7d_tasks17_19_demands(plan)
+    baselines = _fixed_r8u_r7d_baselines(
+        preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+        preserved_old_evidence_files=preserved_old_evidence_files,
+        confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+        confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+    )
+    return runtime_commit, baselines
+
+
+def _r8u_r7e_receipt_base(
+    *,
+    runtime_commit: str,
+    baselines: Mapping[str, int],
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "artifact_type": R8U_R7E_CAPACITY_ARTIFACT_TYPE,
+        "status": "",
+        "original_attempt_id": R8U_ORIGINAL_ATTEMPT_ID,
+        "original_plan_sha256": (
+            _frozen_capacity.R8U_ORIGINAL_PLAN_SHA256
+        ),
+        "original_scientific_governing_commit": (
+            R8U_ORIGINAL_SCIENTIFIC_COMMIT
+        ),
+        "r7e_runtime_commit": runtime_commit,
+        **dict(baselines),
+        "capacity_observation_count": 0,
+        "native_quota_file_captures": 0,
+        "pquota_command_captures": 0,
+        "findmnt_command_captures": 0,
+        "df_command_captures": 0,
+        "du_command_captures": 0,
+        "pquota_command_invocation_attempts": 0,
+        "findmnt_command_invocation_attempts": 0,
+        "df_command_invocation_attempts": 0,
+        "du_command_invocation_attempts": 0,
+        "raw_capture_file_count": 0,
+        "raw_capture_root_owner_private": False,
+        "command_diagnostics": [],
+        "native_quota_size_bytes": None,
+        "native_quota_sha256": None,
+        "failure_diagnostic": None,
+        "arithmetic_evaluated": False,
+        "valid_numerical_deficit_calculated": False,
+        "capacity_projection": None,
+    }
+
+
+def _r8u_r7e_static_receipt_authority(
+    plan: Mapping[str, Any],
+    *,
+    r7e_runtime_commit: Any,
+    preserved_old_evidence_bytes: Any,
+    preserved_old_evidence_files: Any,
+    confirmed_partial_artifact_bytes: Any,
+    confirmed_partial_artifact_files: Any,
+) -> tuple[
+    dict[str, Any],
+    str | None,
+    dict[str, int] | None,
+    dict[str, Any] | None,
+]:
+    """Classify static authority before any live observation is consumed."""
+
+    baseline_inputs = (
+        (
+            "preserved_old_control_evidence_bytes_baseline",
+            preserved_old_evidence_bytes,
+        ),
+        (
+            "preserved_old_control_evidence_files_baseline",
+            preserved_old_evidence_files,
+        ),
+        (
+            "confirmed_partial_artifact_bytes_baseline",
+            confirmed_partial_artifact_bytes,
+        ),
+        (
+            "confirmed_partial_artifact_files_baseline",
+            confirmed_partial_artifact_files,
+        ),
+    )
+    safe_baselines = {
+        field: value if type(value) is int and value >= 0 else 0
+        for field, value in baseline_inputs
+    }
+    recorded_runtime = (
+        r7e_runtime_commit
+        if type(r7e_runtime_commit) is str
+        else "INVALID_RUNTIME_COMMIT_TYPE"
+    )
+    receipt = _r8u_r7e_receipt_base(
+        runtime_commit=recorded_runtime,
+        baselines=safe_baselines,
+    )
+    try:
+        runtime_commit = _fixed_r8u_r7d_runtime_commit(
+            r7e_runtime_commit
+        )
+    except PostReallocationCapacityError as exc:
+        return receipt, None, None, _r8u_r7e_failure_diagnostic(
+            "RUNTIME_COMMIT_INVALID",
+            failure_stage="STATIC",
+            failure_field="r7e_runtime_commit",
+            failure_predicate="RUNTIME_COMMIT_INVALID",
+            expected_value_category="DISTINCT_FULL_GIT_COMMIT",
+            observed_value_category=(
+                "NONSTRING" if type(r7e_runtime_commit) is not str
+                else "INVALID_OR_FORBIDDEN_COMMIT"
+            ),
+            validation_class=type(exc).__name__,
+            source_error_code=exc.code,
+        )
+    try:
+        _derive_fixed_r8u_r7d_tasks17_19_demands(plan)
+    except (PostReallocationCapacityError, TypeError, KeyError, ValueError) as exc:
+        return receipt, None, None, _r8u_r7e_failure_diagnostic(
+            "PLAN_SCOPE_MISMATCH",
+            failure_stage="STATIC",
+            failure_field="plan.tasks17_19_scope",
+            failure_predicate="PLAN_SCOPE_MISMATCH",
+            expected_value_category="FIXED_ORIGINAL_TASKS_17_19_PLAN",
+            observed_value_category="PLAN_SCOPE_REJECTED",
+            validation_class=type(exc).__name__,
+            source_error_code=str(
+                getattr(exc, "code", type(exc).__name__)
+            ),
+        )
+    for field, value in baseline_inputs:
+        if type(value) is not int or value < 0:
+            return receipt, None, None, _r8u_r7e_failure_diagnostic(
+                "BASELINE_AUTHORITY_INVALID",
+                failure_stage="STATIC",
+                failure_field=field,
+                failure_predicate="NONNEGATIVE_INTEGER_REQUIRED",
+                expected_value_category="NONNEGATIVE_INTEGER",
+                observed_value_category=(
+                    "NONINTEGER" if type(value) is not int else "NEGATIVE_INTEGER"
+                ),
+                validation_class="PostReallocationCapacityError",
+                source_error_code="R8U_R7D_BASELINE_AUTHORITY_INVALID",
+            )
+    baselines = _fixed_r8u_r7d_baselines(
+        preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+        preserved_old_evidence_files=preserved_old_evidence_files,
+        confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+        confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+    )
+    return receipt, runtime_commit, baselines, None
+
+
+def _r8u_r7e_apply_failure(
+    receipt: dict[str, Any],
+    diagnostic: Mapping[str, Any],
+) -> R8UR7ECapacityObservationError:
+    value = dict(diagnostic)
+    receipt["status"] = value["failure_code"]
+    receipt["failure_diagnostic"] = value
+    receipt["arithmetic_evaluated"] = not bool(
+        value["failure_before_capacity_arithmetic"]
+    )
+    receipt["valid_numerical_deficit_calculated"] = False
+    receipt["capacity_projection"] = None
+    return R8UR7ECapacityObservationError(
+        str(value["failure_code"]),
+        diagnostic=value,
+        receipt=receipt,
+    )
+
+
+def _r8u_r7e_command_diagnostic(
+    *,
+    role: str,
+    command_type: str,
+    command_ordinal: int,
+    registry_ordinal: int,
+) -> dict[str, Any]:
+    return {
+        "logical_role": role,
+        "command_type": command_type,
+        "command_ordinal": command_ordinal,
+        "registry_ordinal": registry_ordinal,
+        "invocation_attempted": False,
+        "exit_status": None,
+        "exit_class": "NOT_AVAILABLE",
+        "capture_present": False,
+        "capture_regular_file": False,
+        "stdout_size_bytes": None,
+        "stdout_sha256": None,
+        "stdout_capture_regular_file": False,
+        "stderr_size_bytes": None,
+        "stderr_sha256": None,
+        "stderr_capture_regular_file": False,
+        "raw_capture_sha256": None,
+        "parser_result": "NOT_EVALUATED",
+        "failure_predicate": None,
+        "source_error_code": None,
+    }
+
+
+def _r8u_r7e_capture_commands(
+    authority: Any,
+    raw_capture_root: Path,
+    *,
+    process_runner: Callable[..., Any] | None,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, bytes],
+    dict[str, Any] | None,
+]:
+    runner = process_runner or subprocess.run
+    outputs: dict[str, bytes] = {}
+    diagnostics: list[dict[str, Any]] = []
+    first_failure: dict[str, Any] | None = None
+    specifications = tuple(_frozen_capacity.CAPACITY_COMMAND_SPECS)
+    if tuple(item.logical_role for item in specifications) != tuple(
+        item[0] for item in _R8U_R7E_COMMAND_ROLES
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_COMMAND_REGISTRY_INVALID"
+        )
+
+    for specification, role_authority in zip(
+        specifications,
+        _R8U_R7E_COMMAND_ROLES,
+        strict=True,
+    ):
+        role, command_type, command_ordinal, registry_ordinal = role_authority
+        diagnostic = _r8u_r7e_command_diagnostic(
+            role=role,
+            command_type=command_type,
+            command_ordinal=command_ordinal,
+            registry_ordinal=registry_ordinal,
+        )
+        try:
+            argv = _frozen_capacity._current_canary_command_argv(
+                specification,
+                authority,
+            )
+            executable = Path(argv[0])
+            before = os.stat(executable, follow_symlinks=False)
+        except (PostReallocationCapacityError, OSError) as exc:
+            reason = f"{role.upper()}_COMMAND_AUTHORITY_INVALID"
+            predicate = "COMMAND_AUTHORITY_INVALID"
+            diagnostic["failure_predicate"] = predicate
+            diagnostic["source_error_code"] = str(
+                getattr(exc, "code", type(exc).__name__)
+            )
+            diagnostics.append(diagnostic)
+            if first_failure is None:
+                first_failure = _r8u_r7e_failure_diagnostic(
+                    reason,
+                    failure_stage="COMMAND",
+                    failure_field=f"{role}.executable_authority",
+                    failure_predicate=predicate,
+                    command_type=command_type,
+                    command_ordinal=command_ordinal,
+                    registry_ordinal=registry_ordinal,
+                    capture_regular_file=False,
+                    expected_value_category="STABLE_FIXED_EXECUTABLE_AUTHORITY",
+                    observed_value_category="AUTHORITY_UNAVAILABLE",
+                    validation_class=type(exc).__name__,
+                    source_error_code=str(
+                        getattr(exc, "code", type(exc).__name__)
+                    ),
+                )
+            continue
+        result: Any = None
+        runner_failed = False
+        diagnostic["invocation_attempted"] = True
+        try:
+            result = runner(
+                list(argv),
+                capture_output=True,
+                env={
+                    "PATH": "/usr/local/bin:/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                },
+                check=False,
+            )
+        except Exception as exc:
+            runner_failed = True
+            diagnostic["source_error_code"] = type(exc).__name__
+        try:
+            after = os.stat(executable, follow_symlinks=False)
+            executable_unchanged = (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) == (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            )
+        except OSError:
+            executable_unchanged = False
+
+        reason: str | None = None
+        predicate: str | None = None
+        if runner_failed:
+            reason = f"{role.upper()}_COMMAND_CAPTURE_MISSING"
+            predicate = "COMMAND_CAPTURE_MISSING"
+        else:
+            returncode = getattr(result, "returncode", None)
+            stdout = getattr(result, "stdout", None)
+            stderr = getattr(result, "stderr", None)
+            if (
+                type(returncode) is not int
+                or type(stdout) is not bytes
+                or type(stderr) is not bytes
+            ):
+                reason = f"{role.upper()}_COMMAND_CAPTURE_MISSING"
+                predicate = "COMMAND_CAPTURE_MISSING"
+                diagnostic["source_error_code"] = (
+                    "PROCESS_RESULT_SCHEMA_INVALID"
+                )
+            else:
+                diagnostic["exit_status"] = returncode
+                diagnostic["exit_class"] = (
+                    "ZERO" if returncode == 0 else "NONZERO"
+                )
+                diagnostic["capture_present"] = True
+                diagnostic["stdout_size_bytes"] = len(stdout)
+                diagnostic["stdout_sha256"] = _r8u_r7e_sha(stdout)
+                diagnostic["stderr_size_bytes"] = len(stderr)
+                diagnostic["stderr_sha256"] = _r8u_r7e_sha(stderr)
+                diagnostic["raw_capture_sha256"] = _r8u_r7e_sha(
+                    _r8u_r7e_canonical(
+                        {
+                            "stdout_size_bytes": len(stdout),
+                            "stdout_sha256": diagnostic["stdout_sha256"],
+                            "stderr_size_bytes": len(stderr),
+                            "stderr_sha256": diagnostic["stderr_sha256"],
+                        }
+                    )
+                )
+                if (
+                    len(stdout) > _R8U_R7E_MAXIMUM_COMMAND_STREAM_BYTES
+                    or len(stderr) > _R8U_R7E_MAXIMUM_COMMAND_STREAM_BYTES
+                ):
+                    reason = f"{role.upper()}_COMMAND_OUTPUT_OVERSIZED"
+                    predicate = "COMMAND_OUTPUT_OVERSIZED"
+                    diagnostic["source_error_code"] = (
+                        "COMMAND_OUTPUT_OVERSIZED"
+                    )
+                else:
+                    stdout_path = raw_capture_root / (
+                        f"{registry_ordinal:02d}_{role}.stdout.bin"
+                    )
+                    stderr_path = raw_capture_root / (
+                        f"{registry_ordinal:02d}_{role}.stderr.bin"
+                    )
+                    try:
+                        stdout_digest = _r8u_r7e_write_new_private_bytes(
+                            stdout_path,
+                            stdout,
+                        )
+                        diagnostic["stdout_capture_regular_file"] = (
+                            stdout_digest == diagnostic["stdout_sha256"]
+                        )
+                    except PostReallocationCapacityError as exc:
+                        diagnostic["source_error_code"] = exc.code
+                    try:
+                        stderr_digest = _r8u_r7e_write_new_private_bytes(
+                            stderr_path,
+                            stderr,
+                        )
+                        diagnostic["stderr_capture_regular_file"] = (
+                            stderr_digest == diagnostic["stderr_sha256"]
+                        )
+                    except PostReallocationCapacityError as exc:
+                        if diagnostic["source_error_code"] is None:
+                            diagnostic["source_error_code"] = exc.code
+                    diagnostic["capture_regular_file"] = (
+                        diagnostic["stdout_capture_regular_file"] is True
+                        and diagnostic["stderr_capture_regular_file"] is True
+                    )
+                    if diagnostic["capture_regular_file"] is not True:
+                        reason = (
+                            f"{role.upper()}_COMMAND_CAPTURE_NOT_REGULAR"
+                        )
+                        predicate = "COMMAND_CAPTURE_NOT_REGULAR"
+                    elif not executable_unchanged:
+                        reason = f"{role.upper()}_COMMAND_AUTHORITY_CHANGED"
+                        predicate = "COMMAND_AUTHORITY_CHANGED"
+                        diagnostic["source_error_code"] = (
+                            "TOOL_CHANGED_DURING_CAPTURE"
+                        )
+                    elif returncode != 0:
+                        reason = f"{role.upper()}_COMMAND_EXIT_NONZERO"
+                        predicate = "COMMAND_EXIT_NONZERO"
+                        diagnostic["source_error_code"] = (
+                            "COMMAND_NONZERO_EXIT"
+                        )
+                    elif stderr:
+                        reason = f"{role.upper()}_COMMAND_STDERR_PRESENT"
+                        predicate = "COMMAND_STDERR_PRESENT"
+                        diagnostic["source_error_code"] = (
+                            "COMMAND_STDERR_PRESENT"
+                        )
+                    else:
+                        try:
+                            stdout.decode("utf-8")
+                            stderr.decode("utf-8")
+                        except UnicodeDecodeError:
+                            reason = (
+                                f"{role.upper()}_COMMAND_OUTPUT_NOT_UTF8"
+                            )
+                            predicate = "COMMAND_OUTPUT_NOT_UTF8"
+                            diagnostic["source_error_code"] = (
+                                "COMMAND_OUTPUT_NOT_UTF8"
+                            )
+                        else:
+                            outputs[role] = stdout
+        diagnostic["failure_predicate"] = predicate
+        diagnostics.append(diagnostic)
+        if first_failure is None and reason is not None:
+            first_failure = _r8u_r7e_failure_diagnostic(
+                reason,
+                failure_stage="COMMAND",
+                failure_field=f"{role}.capture",
+                failure_predicate=str(predicate),
+                command_type=command_type,
+                command_ordinal=command_ordinal,
+                registry_ordinal=registry_ordinal,
+                command_exit_status=diagnostic["exit_status"],
+                capture_present=bool(diagnostic["capture_present"]),
+                capture_regular_file=bool(
+                    diagnostic["capture_regular_file"]
+                ),
+                expected_value_category=(
+                    "ZERO_EXIT_EMPTY_STDERR_BOUNDED_UTF8_REGULAR_CAPTURE"
+                ),
+                observed_value_category=str(predicate),
+                source_error_code=diagnostic["source_error_code"],
+                raw_capture_sha256=diagnostic["raw_capture_sha256"],
+            )
+    return diagnostics, outputs, first_failure
+
+
+def _r8u_r7e_parser_failure(
+    receipt: dict[str, Any],
+    diagnostics: list[dict[str, Any]],
+    *,
+    role: str,
+    predicate: str,
+    source_error: Exception,
+) -> R8UR7ECapacityObservationError:
+    role_index = {
+        item[0]: index for index, item in enumerate(_R8U_R7E_COMMAND_ROLES)
+    }[role]
+    role_authority = _R8U_R7E_COMMAND_ROLES[role_index]
+    diagnostic = diagnostics[role_index]
+    diagnostic["parser_result"] = "FAIL"
+    diagnostic["failure_predicate"] = predicate
+    source_code = getattr(source_error, "code", type(source_error).__name__)
+    diagnostic["source_error_code"] = str(source_code)
+    if predicate == "PQUOTA_DISPLAY_CONTRADICTION":
+        reason = predicate
+    elif predicate in {
+        "PQUOTA_PARSE_FAILURE",
+        "FINDMNT_PARSE_FAILURE",
+        "DF_PARSE_FAILURE",
+    }:
+        reason = f"{role.upper()}_PARSE_FAILURE"
+    else:
+        reason = f"{role.upper()}_{predicate}"
+    return _r8u_r7e_apply_failure(
+        receipt,
+        _r8u_r7e_failure_diagnostic(
+            reason,
+            failure_stage="PARSER",
+            failure_field=f"{role}.parsed_output",
+            failure_predicate=predicate,
+            command_type=role_authority[1],
+            command_ordinal=role_authority[2],
+            registry_ordinal=role_authority[3],
+            command_exit_status=diagnostic["exit_status"],
+            capture_present=bool(diagnostic["capture_present"]),
+            capture_regular_file=bool(
+                diagnostic["capture_regular_file"]
+            ),
+            parser_result="FAIL",
+            expected_value_category="STRICT_CANONICAL_PARSED_VALUE",
+            observed_value_category="PARSER_REJECTED",
+            validation_class=type(source_error).__name__,
+            source_error_code=str(source_code),
+            raw_capture_sha256=diagnostic["raw_capture_sha256"],
+        ),
+    )
+
+
+def capture_fixed_r8u_r7e_tasks17_19_capacity(
+    plan: Mapping[str, Any],
+    *,
+    r7e_runtime_commit: str,
+    raw_capture_root: Path,
+    preserved_old_evidence_bytes: int = 0,
+    preserved_old_evidence_files: int = 0,
+    confirmed_partial_artifact_bytes: int = 0,
+    confirmed_partial_artifact_files: int = 0,
+    authority: Any = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Perform one exact pquota1/findmnt2/df2/du0 R7E observation."""
+
+    receipt, runtime_commit, baselines, static_failure = (
+        _r8u_r7e_static_receipt_authority(
+        plan,
+        r7e_runtime_commit=r7e_runtime_commit,
+        preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+        preserved_old_evidence_files=preserved_old_evidence_files,
+        confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+        confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+        )
+    )
+    if static_failure is not None:
+        raise _r8u_r7e_apply_failure(receipt, static_failure)
+    if runtime_commit is None or baselines is None:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_STATIC_AUTHORITY_INTERNAL_INVALID"
+        )
+    try:
+        _r8u_r7e_prepare_raw_capture_root(raw_capture_root)
+        receipt["raw_capture_root_owner_private"] = True
+    except PostReallocationCapacityError as exc:
+        raise _r8u_r7e_apply_failure(
+            receipt,
+            _r8u_r7e_failure_diagnostic(
+                "RAW_CAPTURE_ROOT_AUTHORITY_MISMATCH",
+                failure_stage="RAW_CAPTURE_ROOT",
+                failure_field="raw_capture_root",
+                failure_predicate="PRIVATE_EMPTY_DIRECTORY_REQUIRED",
+                source_error_code=exc.code,
+            ),
+        ) from exc
+    try:
+        production = (
+            _frozen_capacity._validate_current_canary_headroom_authority(
+                authority
+            )
+        )
+    except PostReallocationCapacityError as exc:
+        raise _r8u_r7e_apply_failure(
+            receipt,
+            _r8u_r7e_failure_diagnostic(
+                "CAPACITY_AUTHORITY_MISMATCH",
+                failure_stage="CAPACITY_AUTHORITY",
+                failure_field="capacity_authority",
+                failure_predicate="FIXED_PATH_AUTHORITY_REQUIRED",
+                source_error_code=exc.code,
+            ),
+        ) from exc
+
+    diagnostics, outputs, command_failure = _r8u_r7e_capture_commands(
+        authority,
+        raw_capture_root,
+        process_runner=process_runner,
+    )
+    receipt.update(
+        {
+            "capacity_observation_count": 1,
+            "pquota_command_captures": sum(
+                item["command_type"] == "PQUOTA"
+                and item["capture_present"] is True
+                for item in diagnostics
+            ),
+            "findmnt_command_captures": sum(
+                item["command_type"] == "FINDMNT"
+                and item["capture_present"] is True
+                for item in diagnostics
+            ),
+            "df_command_captures": sum(
+                item["command_type"] == "DF"
+                and item["capture_present"] is True
+                for item in diagnostics
+            ),
+            "du_command_captures": 0,
+            "pquota_command_invocation_attempts": sum(
+                item["command_type"] == "PQUOTA"
+                and item["invocation_attempted"] is True
+                for item in diagnostics
+            ),
+            "findmnt_command_invocation_attempts": sum(
+                item["command_type"] == "FINDMNT"
+                and item["invocation_attempted"] is True
+                for item in diagnostics
+            ),
+            "df_command_invocation_attempts": sum(
+                item["command_type"] == "DF"
+                and item["invocation_attempted"] is True
+                for item in diagnostics
+            ),
+            "du_command_invocation_attempts": 0,
+            "raw_capture_file_count": sum(
+                int(item["stdout_capture_regular_file"])
+                + int(item["stderr_capture_regular_file"])
+                for item in diagnostics
+            ),
+            "command_diagnostics": diagnostics,
+        }
+    )
+    if command_failure is not None:
+        raise _r8u_r7e_apply_failure(receipt, command_failure)
+
+    try:
+        native_payload = _frozen_capacity._read_regular(
+            authority.native_quota_path,
+            maximum=64_000_000,
+        )
+        receipt["native_quota_file_captures"] = 1
+        receipt["native_quota_size_bytes"] = len(native_payload)
+        receipt["native_quota_sha256"] = _r8u_r7e_sha(native_payload)
+        native = _frozen_capacity._parse_native_quota_rows(native_payload)
+        if (
+            int(native["research"]["quota_kib"])
+            < EXPECTED_RESEARCH_QUOTA_KIB
+            or int(native["research"]["file_quota"])
+            < EXPECTED_RESEARCH_FILE_QUOTA
+            or int(native["backed"]["quota_kib"])
+            != _frozen_capacity.EXPECTED_BACKED_QUOTA_KIB
+            or int(native["backed"]["file_quota"])
+            != _frozen_capacity.EXPECTED_BACKED_FILE_QUOTA
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_NATIVE_QUOTA_ALLOCATION_AUTHORITY_MISMATCH"
+            )
+    except PostReallocationCapacityError as exc:
+        native_read_error = receipt["native_quota_file_captures"] == 0
+        numeric_error = exc.code in {
+            "NATIVE_QUOTA_INTEGER_INVALID",
+            "NATIVE_QUOTA_USAGE_INVALID",
+            "NATIVE_QUOTA_USAGE_EXCEEDS_ALLOCATION",
+        }
+        raise _r8u_r7e_apply_failure(
+            receipt,
+            _r8u_r7e_failure_diagnostic(
+                (
+                    "NUMERIC_VALUE_INVALID"
+                    if numeric_error
+                    else "QUOTA_AUTHORITY_MISMATCH"
+                ),
+                failure_stage=(
+                    "NATIVE_QUOTA_READ"
+                    if native_read_error
+                    else "NATIVE_QUOTA"
+                ),
+                failure_field=(
+                    "native_quota_file.capture"
+                    if native_read_error
+                    else (
+                        "native_quota_file.numeric_values"
+                        if numeric_error
+                        else "native_quota_file.allocation_authority"
+                    )
+                ),
+                failure_predicate=(
+                    "QUOTA_AUTHORITY_READ_FAILED"
+                    if native_read_error
+                    else (
+                        "NUMERIC_VALUE_INVALID"
+                        if numeric_error
+                        else "QUOTA_AUTHORITY_MISMATCH"
+                    )
+                ),
+                expected_value_category=(
+                    "BOUNDED_REGULAR_NATIVE_QUOTA_AUTHORITY"
+                    if native_read_error
+                    else (
+                        "NONNEGATIVE_BOUNDED_INTEGER_QUOTA_VALUES"
+                        if numeric_error
+                        else "STRICT_NATIVE_QUOTA_ROWS_AND_ALLOCATIONS"
+                    )
+                ),
+                validation_class=type(exc).__name__,
+                source_error_code=exc.code,
+            ),
+        ) from exc
+
+    def decoded(role: str) -> str:
+        return outputs[role].decode("utf-8")
+
+    try:
+        display = _frozen_capacity._parse_pquota(
+            decoded("pquota"),
+            native,
+            command_available=True,
+        )
+        if display.get("status") != DISPLAY_CROSSCHECK_PASS:
+            raise PostReallocationCapacityError(
+                (
+                    "PQUOTA_DISPLAY_CONTRADICTION"
+                    if display.get("status")
+                    == _frozen_capacity.DISPLAY_CROSSCHECK_FAIL
+                    else "PQUOTA_DISPLAY_NOT_EXACT_PASS"
+                )
+            )
+        diagnostics[0]["parser_result"] = "PASS"
+    except (PostReallocationCapacityError, KeyError, UnicodeError) as exc:
+        predicate = (
+            "PQUOTA_DISPLAY_CONTRADICTION"
+            if getattr(exc, "code", "")
+            == "PQUOTA_DISPLAY_CONTRADICTION"
+            else "PQUOTA_PARSE_FAILURE"
+        )
+        raise _r8u_r7e_parser_failure(
+            receipt,
+            diagnostics,
+            role="pquota",
+            predicate=predicate,
+            source_error=exc,
+        ) from exc
+
+    mounts: dict[str, Mapping[str, Any]] = {}
+    for role, target_role in (
+        ("research_findmnt", "research"),
+        ("backed_findmnt", "backed"),
+    ):
+        try:
+            mounts[target_role] = _frozen_capacity._parse_findmnt(
+                decoded(role),
+                getattr(authority, f"{target_role}_path"),
+            )
+            diagnostic_index = 1 if role == "research_findmnt" else 2
+            diagnostics[diagnostic_index]["parser_result"] = "PASS"
+        except (PostReallocationCapacityError, KeyError, UnicodeError) as exc:
+            predicate = (
+                "MOUNT_RESOLUTION_AMBIGUOUS"
+                if getattr(exc, "code", "")
+                == "FINDMNT_ROW_COUNT_INVALID"
+                else "FINDMNT_PARSE_FAILURE"
+            )
+            raise _r8u_r7e_parser_failure(
+                receipt,
+                diagnostics,
+                role=role,
+                predicate=predicate,
+                source_error=exc,
+            ) from exc
+
+    try:
+        paths = {
+            "research": _frozen_capacity._path_identity(
+                authority.research_path
+            ),
+            "backed": _frozen_capacity._path_identity(authority.backed_path),
+        }
+        if production:
+            _frozen_capacity._validate_pquota_restricted_mount_reconciliation(
+                native=native,
+                paths=paths,
+                mounts=mounts,
+            )
+        elif any(
+            paths[role]["is_symlink"] is not False
+            or mounts[role]["bind"] is not False
+            or mounts[role]["fsroot"] != "/"
+            or native[role]["native_name_sha256"]
+            != _r8u_r7e_sha(
+                _frozen_capacity.EXPECTED_NATIVE_ROWS[role].encode()
+            )
+            for role in ("research", "backed")
+        ):
+            raise PostReallocationCapacityError(
+                "NONPRODUCTION_MOUNT_RECONCILIATION_FAILED"
+            )
+    except (PostReallocationCapacityError, KeyError, OSError) as exc:
+        raise _r8u_r7e_apply_failure(
+            receipt,
+            _r8u_r7e_failure_diagnostic(
+                "MOUNT_AUTHORITY_MISMATCH",
+                failure_stage="MOUNT",
+                failure_field="restricted_mount_reconciliation",
+                failure_predicate="MOUNT_AUTHORITY_MISMATCH",
+                expected_value_category=(
+                    "NATIVE_FILESET_TO_NONBIND_RESTRICTED_MOUNT"
+                ),
+                validation_class=type(exc).__name__,
+                source_error_code=str(
+                    getattr(exc, "code", type(exc).__name__)
+                ),
+            ),
+        ) from exc
+
+    dfs: dict[str, Mapping[str, int]] = {}
+    for role, target_role, diagnostic_index in (
+        ("research_df", "research", 3),
+        ("backed_df", "backed", 4),
+    ):
+        try:
+            dfs[target_role] = _frozen_capacity._parse_df(
+                decoded(role),
+                mounts[target_role],
+            )
+            diagnostics[diagnostic_index]["parser_result"] = "PASS"
+        except (PostReallocationCapacityError, KeyError, UnicodeError) as exc:
+            source_code = str(
+                getattr(exc, "code", type(exc).__name__)
+            )
+            if source_code == "DF_BYTES_DO_NOT_RECONCILE":
+                predicate = "FILESYSTEM_ARITHMETIC_INVALID"
+            elif source_code == "DF_BYTES_INVALID":
+                predicate = "NUMERIC_VALUE_INVALID"
+            else:
+                predicate = "DF_PARSE_FAILURE"
+            raise _r8u_r7e_parser_failure(
+                receipt,
+                diagnostics,
+                role=role,
+                predicate=predicate,
+                source_error=exc,
+            ) from exc
+
+    snapshot = {
+        "native": native,
+        "dfs": dfs,
+        "native_capacity_snapshot_captures": 1,
+        "native_quota_file_captures": 1,
+        "capacity_command_captures": 5,
+        "pquota_command_captures": 1,
+        "findmnt_command_captures": 2,
+        "df_command_captures": 2,
+        "pquota_display_crosscheck": DISPLAY_CROSSCHECK_PASS,
+    }
+    try:
+        projection = build_fixed_r8u_r7d_tasks17_19_capacity(
+            plan,
+            snapshot,
+            r7d_runtime_commit=runtime_commit,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=(
+                confirmed_partial_artifact_bytes
+            ),
+            confirmed_partial_artifact_files=(
+                confirmed_partial_artifact_files
+            ),
+        )
+        projection = validate_fixed_r8u_r7d_tasks17_19_capacity(
+            plan,
+            projection,
+            r7d_runtime_commit=runtime_commit,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=(
+                confirmed_partial_artifact_bytes
+            ),
+            confirmed_partial_artifact_files=(
+                confirmed_partial_artifact_files
+            ),
+        )
+    except PostReallocationCapacityError as exc:
+        raise _r8u_r7e_apply_failure(
+            receipt,
+            _r8u_r7e_failure_diagnostic(
+                "CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                failure_stage="ARITHMETIC",
+                failure_field="capacity_projection",
+                failure_predicate="CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                expected_value_category="EXACT_R7D_INTEGER_REPLAY",
+                observed_value_category="ARITHMETIC_REPLAY_REJECTED",
+                validation_class=type(exc).__name__,
+                source_error_code=exc.code,
+                failure_before_capacity_arithmetic=False,
+            ),
+        ) from exc
+
+    receipt["capacity_projection"] = projection
+    receipt["arithmetic_evaluated"] = True
+    if projection["status"] == R8U_R7D_CAPACITY_STATUS_PASS:
+        receipt["status"] = R8U_R7E_CAPACITY_STATUS_PASS
+        receipt["valid_numerical_deficit_calculated"] = False
+    elif projection["status"] == R8U_R7D_CAPACITY_STATUS_BLOCKED:
+        receipt["status"] = R8U_R7E_CAPACITY_STATUS_DEFICIT
+        receipt["valid_numerical_deficit_calculated"] = True
+    else:
+        raise _r8u_r7e_apply_failure(
+            receipt,
+            _r8u_r7e_failure_diagnostic(
+                "CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                failure_stage="ARITHMETIC",
+                failure_field="capacity_projection.status",
+                failure_predicate="CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                source_error_code="R8U_R7D_CAPACITY_STATUS_INVALID",
+                failure_before_capacity_arithmetic=False,
+            ),
+        )
+    if set(receipt) != R8U_R7E_CAPACITY_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    return receipt
+
+
+def _r8u_r7e_validate_command_diagnostics(
+    value: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) not in {0, 5}:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_COMMAND_DIAGNOSTIC_SCHEMA_INVALID"
+        )
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if (
+            not isinstance(item, Mapping)
+            or set(item) != R8U_R7E_COMMAND_DIAGNOSTIC_KEYS
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_COMMAND_DIAGNOSTIC_SCHEMA_INVALID"
+            )
+        role, command_type, command_ordinal, registry_ordinal = (
+            _R8U_R7E_COMMAND_ROLES[index]
+        )
+        exit_status = item["exit_status"]
+        integer_or_none = (
+            exit_status is None or type(exit_status) is int
+        )
+        stream_fields_valid = all(
+            (
+                item[f"{stream}_size_bytes"] is None
+                and item[f"{stream}_sha256"] is None
+            )
+            or (
+                type(item[f"{stream}_size_bytes"]) is int
+                and item[f"{stream}_size_bytes"] >= 0
+                and _r8u_r7e_is_sha(item[f"{stream}_sha256"])
+            )
+            for stream in ("stdout", "stderr")
+        )
+        if (
+            item["logical_role"] != role
+            or item["command_type"] != command_type
+            or item["command_ordinal"] != command_ordinal
+            or item["registry_ordinal"] != registry_ordinal
+            or type(item["invocation_attempted"]) is not bool
+            or not integer_or_none
+            or item["exit_class"]
+            != (
+                "NOT_AVAILABLE"
+                if exit_status is None
+                else "ZERO" if exit_status == 0 else "NONZERO"
+            )
+            or type(item["capture_present"]) is not bool
+            or type(item["capture_regular_file"]) is not bool
+            or type(item["stdout_capture_regular_file"]) is not bool
+            or type(item["stderr_capture_regular_file"]) is not bool
+            or not stream_fields_valid
+            or (
+                item["raw_capture_sha256"] is not None
+                and not _r8u_r7e_is_sha(item["raw_capture_sha256"])
+            )
+            or item["parser_result"]
+            not in {"NOT_EVALUATED", "PASS", "FAIL"}
+            or (
+                item["failure_predicate"] is not None
+                and type(item["failure_predicate"]) is not str
+            )
+            or (
+                item["source_error_code"] is not None
+                and type(item["source_error_code"]) is not str
+            )
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_COMMAND_DIAGNOSTIC_SCHEMA_INVALID"
+            )
+        if item["capture_present"]:
+            expected_capture_sha = _r8u_r7e_sha(
+                _r8u_r7e_canonical(
+                    {
+                        "stdout_size_bytes": item["stdout_size_bytes"],
+                        "stdout_sha256": item["stdout_sha256"],
+                        "stderr_size_bytes": item["stderr_size_bytes"],
+                        "stderr_sha256": item["stderr_sha256"],
+                    }
+                )
+            )
+            if item["raw_capture_sha256"] != expected_capture_sha:
+                raise PostReallocationCapacityError(
+                    "R8U_R7E_COMMAND_DIAGNOSTIC_DIGEST_INVALID"
+                )
+        elif any(
+            item[field] is not None
+            for field in (
+                "stdout_size_bytes",
+                "stdout_sha256",
+                "stderr_size_bytes",
+                "stderr_sha256",
+                "raw_capture_sha256",
+            )
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_COMMAND_DIAGNOSTIC_CAPTURE_INVALID"
+            )
+        if (
+            item["capture_regular_file"]
+            is not (
+                item["stdout_capture_regular_file"] is True
+                and item["stderr_capture_regular_file"] is True
+            )
+            or (
+                not item["invocation_attempted"]
+                and (
+                    item["exit_status"] is not None
+                    or item["capture_present"] is not False
+                    or item["stdout_capture_regular_file"] is not False
+                    or item["stderr_capture_regular_file"] is not False
+                    or item["parser_result"] != "NOT_EVALUATED"
+                )
+            )
+            or (
+                item["capture_present"]
+                and item["invocation_attempted"] is not True
+            )
+            or (
+                (
+                    item["stdout_capture_regular_file"] is True
+                    or item["stderr_capture_regular_file"] is True
+                )
+                and item["capture_present"] is not True
+            )
+            or (
+                item["parser_result"] in {"PASS", "FAIL"}
+                and item["capture_regular_file"] is not True
+            )
+            or (
+                item["parser_result"] == "PASS"
+                and item["failure_predicate"] is not None
+            )
+            or (
+                item["failure_predicate"] is None
+                and item["source_error_code"] is not None
+            )
+            or (
+                item["failure_predicate"] is not None
+                and not item["source_error_code"]
+            )
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_COMMAND_DIAGNOSTIC_CAPTURE_INVALID"
+            )
+        result.append(dict(item))
+    return result
+
+
+def _r8u_r7e_validate_raw_capture_files(
+    raw_capture_root: Path | None,
+    diagnostics: Sequence[Mapping[str, Any]],
+    *,
+    failure_stage: str | None,
+) -> None:
+    """Optionally bind aggregate stream hashes to private raw files."""
+
+    if raw_capture_root is None:
+        return
+    if not diagnostics and not os.path.lexists(raw_capture_root):
+        return
+    if failure_stage == "RAW_CAPTURE_ROOT":
+        return
+    root_metadata = _r8u_r7e_private_directory(raw_capture_root)
+    allowed_names = {
+        f"{item['registry_ordinal']:02d}_{item['logical_role']}.{stream}.bin"
+        for item in diagnostics
+        for stream in ("stdout", "stderr")
+    }
+    required_names = {
+        f"{item['registry_ordinal']:02d}_{item['logical_role']}.{stream}.bin"
+        for item in diagnostics
+        for stream in ("stdout", "stderr")
+        if item[f"{stream}_capture_regular_file"] is True
+    }
+    try:
+        entries = {entry.name: entry for entry in os.scandir(raw_capture_root)}
+    except OSError as exc:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_RAW_CAPTURE_REPLAY_INVALID"
+        ) from exc
+    if (
+        not set(entries).issubset(allowed_names)
+        or set(entries) != required_names
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_RAW_CAPTURE_REPLAY_INVALID"
+        )
+    for item in diagnostics:
+        for stream in ("stdout", "stderr"):
+            name = (
+                f"{item['registry_ordinal']:02d}_"
+                f"{item['logical_role']}.{stream}.bin"
+            )
+            required = item[f"{stream}_capture_regular_file"] is True
+            if not required:
+                continue
+            if name not in entries:
+                raise PostReallocationCapacityError(
+                    "R8U_R7E_RAW_CAPTURE_REPLAY_MISSING"
+                )
+            path = raw_capture_root / name
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = -1
+            try:
+                descriptor = os.open(path, flags)
+                metadata = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o600
+                    or metadata.st_nlink != 1
+                    or metadata.st_dev != root_metadata.st_dev
+                    or metadata.st_size != item[f"{stream}_size_bytes"]
+                ):
+                    raise PostReallocationCapacityError(
+                        "R8U_R7E_RAW_CAPTURE_REPLAY_INVARIANT_INVALID"
+                    )
+                payload = b""
+                maximum = _R8U_R7E_MAXIMUM_COMMAND_STREAM_BYTES
+                while len(payload) <= maximum:
+                    block = os.read(
+                        descriptor,
+                        min(1_048_576, maximum + 1 - len(payload)),
+                    )
+                    if not block:
+                        break
+                    payload += block
+                after = os.fstat(descriptor)
+            except PostReallocationCapacityError:
+                raise
+            except OSError as exc:
+                raise PostReallocationCapacityError(
+                    "R8U_R7E_RAW_CAPTURE_REPLAY_INVALID"
+                ) from exc
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            if (
+                len(payload) != metadata.st_size
+                or _r8u_r7e_sha(payload) != item[f"{stream}_sha256"]
+                or (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                )
+                != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                )
+            ):
+                raise PostReallocationCapacityError(
+                    "R8U_R7E_RAW_CAPTURE_REPLAY_DIGEST_INVALID"
+                )
+            if (
+                stream == "stdout"
+                and item["failure_predicate"]
+                == "COMMAND_OUTPUT_NOT_UTF8"
+            ):
+                try:
+                    payload.decode("utf-8")
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    raise PostReallocationCapacityError(
+                        "R8U_R7E_RAW_CAPTURE_REPLAY_UTF8_INVALID"
+                    )
+
+
+def _r8u_r7e_validate_failure_diagnostic(value: Any) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != R8U_R7E_FAILURE_DIAGNOSTIC_KEYS
+        or type(value["failure_code"]) is not str
+        or not value["failure_code"].startswith(
+            R8U_R7E_CAPACITY_STATUS_OBSERVATION_PREFIX
+        )
+        or any(
+            type(value[field]) is not str
+            for field in (
+                "failure_stage",
+                "failure_field",
+                "failure_predicate",
+                "command_type",
+                "command_exit_class",
+                "parser_result",
+                "expected_value_category",
+                "observed_value_category",
+                "validation_class",
+            )
+        )
+        or value["failure_stage"] not in {
+            "STATIC",
+            "RAW_CAPTURE_ROOT",
+            "CAPACITY_AUTHORITY",
+        "COMMAND",
+            "NATIVE_QUOTA_READ",
+            "NATIVE_QUOTA",
+            "PARSER",
+            "MOUNT",
+            "ARITHMETIC",
+        }
+        or value["command_type"] not in {"PQUOTA", "FINDMNT", "DF", "NONE"}
+        or value["command_exit_class"]
+        not in {"ZERO", "NONZERO", "NOT_AVAILABLE"}
+        or value["parser_result"]
+        not in {"NOT_EVALUATED", "PASS", "FAIL"}
+        or (
+            value["command_ordinal"] is not None
+            and type(value["command_ordinal"]) is not int
+        )
+        or (
+            value["registry_ordinal"] is not None
+            and type(value["registry_ordinal"]) is not int
+        )
+        or (
+            value["command_exit_status"] is not None
+            and type(value["command_exit_status"]) is not int
+        )
+        or type(value["capture_present"]) is not bool
+        or value["capture_regular_file"] is not None
+        and type(value["capture_regular_file"]) is not bool
+        or value["source_error_code"] is not None
+        and type(value["source_error_code"]) is not str
+        or value["raw_capture_sha256"] is not None
+        and not _r8u_r7e_is_sha(value["raw_capture_sha256"])
+        or type(value["failure_before_capacity_arithmetic"]) is not bool
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_FAILURE_DIAGNOSTIC_SCHEMA_INVALID"
+        )
+    exit_status = value["command_exit_status"]
+    if value["command_exit_class"] != (
+        "NOT_AVAILABLE"
+        if exit_status is None
+        else "ZERO" if exit_status == 0 else "NONZERO"
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_FAILURE_DIAGNOSTIC_SCHEMA_INVALID"
+        )
+    return dict(value)
+
+
+def validate_fixed_r8u_r7e_tasks17_19_capacity(
+    plan: Mapping[str, Any],
+    value: Mapping[str, Any],
+    *,
+    r7e_runtime_commit: Any,
+    preserved_old_evidence_bytes: int = 0,
+    preserved_old_evidence_files: int = 0,
+    confirmed_partial_artifact_bytes: int = 0,
+    confirmed_partial_artifact_files: int = 0,
+    raw_capture_root: Path | None = None,
+) -> dict[str, Any]:
+    """Purely validate/replay a closed R7E success, deficit, or failure."""
+
+    if not isinstance(value, Mapping) or set(value) != R8U_R7E_CAPACITY_KEYS:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    static_receipt, runtime_commit, baselines, static_failure = (
+        _r8u_r7e_static_receipt_authority(
+            plan,
+            r7e_runtime_commit=r7e_runtime_commit,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=(
+                confirmed_partial_artifact_bytes
+            ),
+            confirmed_partial_artifact_files=(
+                confirmed_partial_artifact_files
+            ),
+        )
+    )
+    if static_failure is not None:
+        expected_exception = _r8u_r7e_apply_failure(
+            static_receipt,
+            static_failure,
+        )
+        expected = expected_exception.receipt
+        if (
+            expected is None
+            or _r8u_r7e_canonical(dict(value))
+            != _r8u_r7e_canonical(expected)
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_STATIC_FAILURE_RECEIPT_INVALID"
+            )
+        return dict(value)
+    if runtime_commit is None or baselines is None:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_STATIC_AUTHORITY_INTERNAL_INVALID"
+        )
+    integer_fields = {
+        "schema_version",
+        "preserved_old_control_evidence_bytes_baseline",
+        "preserved_old_control_evidence_files_baseline",
+        "confirmed_partial_artifact_bytes_baseline",
+        "confirmed_partial_artifact_files_baseline",
+        "capacity_observation_count",
+        "native_quota_file_captures",
+        "pquota_command_captures",
+        "findmnt_command_captures",
+        "df_command_captures",
+        "du_command_captures",
+        "pquota_command_invocation_attempts",
+        "findmnt_command_invocation_attempts",
+        "df_command_invocation_attempts",
+        "du_command_invocation_attempts",
+        "raw_capture_file_count",
+    }
+    if (
+        any(type(value[field]) is not int for field in integer_fields)
+        or any(int(value[field]) < 0 for field in integer_fields)
+        or type(value["raw_capture_root_owner_private"]) is not bool
+        or type(value["arithmetic_evaluated"]) is not bool
+        or type(value["valid_numerical_deficit_calculated"]) is not bool
+        or value["native_quota_size_bytes"] is not None
+        and type(value["native_quota_size_bytes"]) is not int
+        or value["native_quota_sha256"] is not None
+        and not _r8u_r7e_is_sha(value["native_quota_sha256"])
+        or type(value["status"]) is not str
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_RECEIPT_SCHEMA_INVALID"
+        )
+    if (
+        value["schema_version"] != 1
+        or value["artifact_type"] != R8U_R7E_CAPACITY_ARTIFACT_TYPE
+        or value["original_attempt_id"] != R8U_ORIGINAL_ATTEMPT_ID
+        or value["original_plan_sha256"]
+        != _frozen_capacity.R8U_ORIGINAL_PLAN_SHA256
+        or value["original_scientific_governing_commit"]
+        != R8U_ORIGINAL_SCIENTIFIC_COMMIT
+        or value["r7e_runtime_commit"] != runtime_commit
+        or any(value[field] != expected for field, expected in baselines.items())
+        or value["du_command_captures"] != 0
+        or value["du_command_invocation_attempts"] != 0
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_RECEIPT_AUTHORITY_INVALID"
+        )
+    diagnostics = _r8u_r7e_validate_command_diagnostics(
+        value["command_diagnostics"]
+    )
+    expected_counts = {
+        "capacity_observation_count": 1 if diagnostics else 0,
+        "pquota_command_captures": sum(
+            item["command_type"] == "PQUOTA"
+            and item["capture_present"] is True
+            for item in diagnostics
+        ),
+        "findmnt_command_captures": sum(
+            item["command_type"] == "FINDMNT"
+            and item["capture_present"] is True
+            for item in diagnostics
+        ),
+        "df_command_captures": sum(
+            item["command_type"] == "DF"
+            and item["capture_present"] is True
+            for item in diagnostics
+        ),
+        "pquota_command_invocation_attempts": sum(
+            item["command_type"] == "PQUOTA"
+            and item["invocation_attempted"] is True
+            for item in diagnostics
+        ),
+        "findmnt_command_invocation_attempts": sum(
+            item["command_type"] == "FINDMNT"
+            and item["invocation_attempted"] is True
+            for item in diagnostics
+        ),
+        "df_command_invocation_attempts": sum(
+            item["command_type"] == "DF"
+            and item["invocation_attempted"] is True
+            for item in diagnostics
+        ),
+        "raw_capture_file_count": sum(
+            int(item["stdout_capture_regular_file"])
+            + int(item["stderr_capture_regular_file"])
+            for item in diagnostics
+        ),
+    }
+    if any(value[field] != expected for field, expected in expected_counts.items()):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPTURE_COUNTER_MISMATCH"
+        )
+    if (
+        value["native_quota_file_captures"] not in {0, 1}
+        or (
+            value["native_quota_file_captures"] == 0
+            and (
+                value["native_quota_size_bytes"] is not None
+                or value["native_quota_sha256"] is not None
+            )
+        )
+        or (
+            value["native_quota_file_captures"] == 1
+            and (
+                type(value["native_quota_size_bytes"]) is not int
+                or value["native_quota_size_bytes"] <= 0
+                or not _r8u_r7e_is_sha(value["native_quota_sha256"])
+            )
+        )
+        or (
+            bool(diagnostics)
+            and value["raw_capture_root_owner_private"] is not True
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPTURE_COUNTER_MISMATCH"
+        )
+    status = value["status"]
+    if status.startswith(R8U_R7E_CAPACITY_STATUS_OBSERVATION_PREFIX):
+        failure = _r8u_r7e_validate_failure_diagnostic(
+            value["failure_diagnostic"]
+        )
+        if (
+            failure["failure_code"] != status
+            or value["capacity_projection"] is not None
+            or value["valid_numerical_deficit_calculated"] is not False
+            or value["arithmetic_evaluated"]
+            is failure["failure_before_capacity_arithmetic"]
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_FAILURE_RECEIPT_INVARIANT_INVALID"
+            )
+        failed_diagnostics = [
+            item for item in diagnostics
+            if item["failure_predicate"] is not None
+        ]
+        stage = failure["failure_stage"]
+        expected_native_capture = (
+            1
+            if stage in {"NATIVE_QUOTA", "PARSER", "MOUNT", "ARITHMETIC"}
+            else 0
+        )
+        if value["native_quota_file_captures"] != expected_native_capture:
+            raise PostReallocationCapacityError(
+                "R8U_R7E_FAILURE_RECEIPT_STAGE_INVALID"
+            )
+        if stage in {
+            "NATIVE_QUOTA_READ",
+            "NATIVE_QUOTA",
+            "PARSER",
+            "MOUNT",
+            "ARITHMETIC",
+        } and any(
+            item["invocation_attempted"] is not True
+            or item["capture_present"] is not True
+            or item["capture_regular_file"] is not True
+            or item["exit_status"] != 0
+            for item in diagnostics
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_FAILURE_RECEIPT_STAGE_INVALID"
+            )
+        parser_states = [item["parser_result"] for item in diagnostics]
+        if (
+            stage in {"COMMAND", "NATIVE_QUOTA_READ", "NATIVE_QUOTA"}
+            and parser_states != ["NOT_EVALUATED"] * 5
+        ):
+            raise PostReallocationCapacityError(
+                "R8U_R7E_FAILURE_RECEIPT_STAGE_INVALID"
+            )
+        if stage == "MOUNT" and parser_states != [
+            "PASS", "PASS", "PASS", "NOT_EVALUATED", "NOT_EVALUATED"
+        ]:
+            raise PostReallocationCapacityError(
+                "R8U_R7E_FAILURE_RECEIPT_STAGE_INVALID"
+            )
+        if stage == "ARITHMETIC" and parser_states != ["PASS"] * 5:
+            raise PostReallocationCapacityError(
+                "R8U_R7E_FAILURE_RECEIPT_STAGE_INVALID"
+            )
+        if failure["command_type"] == "NONE":
+            noncommand_reasons = {
+                (
+                    "raw_capture_root",
+                    "PRIVATE_EMPTY_DIRECTORY_REQUIRED",
+                ): (
+                    "RAW_CAPTURE_ROOT_AUTHORITY_MISMATCH",
+                    "RAW_CAPTURE_ROOT",
+                    "TRUSTED_FIXED_AUTHORITY",
+                    "INVALID_OR_UNAVAILABLE",
+                ),
+                (
+                    "capacity_authority",
+                    "FIXED_PATH_AUTHORITY_REQUIRED",
+                ): (
+                    "CAPACITY_AUTHORITY_MISMATCH",
+                    "CAPACITY_AUTHORITY",
+                    "TRUSTED_FIXED_AUTHORITY",
+                    "INVALID_OR_UNAVAILABLE",
+                ),
+                (
+                    "native_quota_file.capture",
+                    "QUOTA_AUTHORITY_READ_FAILED",
+                ): (
+                    "QUOTA_AUTHORITY_MISMATCH",
+                    "NATIVE_QUOTA_READ",
+                    "BOUNDED_REGULAR_NATIVE_QUOTA_AUTHORITY",
+                    "INVALID_OR_UNAVAILABLE",
+                ),
+                (
+                    "native_quota_file.numeric_values",
+                    "NUMERIC_VALUE_INVALID",
+                ): (
+                    "NUMERIC_VALUE_INVALID",
+                    "NATIVE_QUOTA",
+                    "NONNEGATIVE_BOUNDED_INTEGER_QUOTA_VALUES",
+                    "INVALID_OR_UNAVAILABLE",
+                ),
+                (
+                    "native_quota_file.allocation_authority",
+                    "QUOTA_AUTHORITY_MISMATCH",
+                ): (
+                    "QUOTA_AUTHORITY_MISMATCH",
+                    "NATIVE_QUOTA",
+                    "STRICT_NATIVE_QUOTA_ROWS_AND_ALLOCATIONS",
+                    "INVALID_OR_UNAVAILABLE",
+                ),
+                (
+                    "restricted_mount_reconciliation",
+                    "MOUNT_AUTHORITY_MISMATCH",
+                ): (
+                    "MOUNT_AUTHORITY_MISMATCH",
+                    "MOUNT",
+                    "NATIVE_FILESET_TO_NONBIND_RESTRICTED_MOUNT",
+                    "INVALID_OR_UNAVAILABLE",
+                ),
+                (
+                    "capacity_projection",
+                    "CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                ): (
+                    "CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                    "ARITHMETIC",
+                    "EXACT_R7D_INTEGER_REPLAY",
+                    "ARITHMETIC_REPLAY_REJECTED",
+                ),
+                (
+                    "capacity_projection.status",
+                    "CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                ): (
+                    "CAPACITY_ARITHMETIC_INVARIANT_FAILURE",
+                    "ARITHMETIC",
+                    "TRUSTED_FIXED_AUTHORITY",
+                    "INVALID_OR_UNAVAILABLE",
+                ),
+            }
+            expected_noncommand = noncommand_reasons.get(
+                (
+                    failure["failure_field"],
+                    failure["failure_predicate"],
+                )
+            )
+            expected_reason = (
+                None if expected_noncommand is None else expected_noncommand[0]
+            )
+            expected_stage = (
+                None if expected_noncommand is None else expected_noncommand[1]
+            )
+            expected_value_category = (
+                None if expected_noncommand is None else expected_noncommand[2]
+            )
+            observed_value_category = (
+                None if expected_noncommand is None else expected_noncommand[3]
+            )
+            numeric_source_codes = {
+                "NATIVE_QUOTA_INTEGER_INVALID",
+                "NATIVE_QUOTA_USAGE_INVALID",
+                "NATIVE_QUOTA_USAGE_EXCEEDS_ALLOCATION",
+            }
+            if (
+                expected_reason is None
+                or status != _r8u_r7e_failure_code(expected_reason)
+                or stage != expected_stage
+                or failure["expected_value_category"]
+                != expected_value_category
+                or failure["observed_value_category"]
+                != observed_value_category
+                or failure["command_ordinal"] is not None
+                or failure["registry_ordinal"] is not None
+                or failure["command_exit_status"] is not None
+                or failure["command_exit_class"] != "NOT_AVAILABLE"
+                or failure["raw_capture_sha256"] is not None
+                or failed_diagnostics
+                or not failure["source_error_code"]
+                or (
+                    expected_reason == "NUMERIC_VALUE_INVALID"
+                    and failure["source_error_code"]
+                    not in numeric_source_codes
+                )
+                or (
+                    expected_reason == "QUOTA_AUTHORITY_MISMATCH"
+                    and failure["source_error_code"] in numeric_source_codes
+                )
+            ):
+                raise PostReallocationCapacityError(
+                    "R8U_R7E_FAILURE_RECEIPT_FIRST_PREDICATE_INVALID"
+                )
+        else:
+            if not failed_diagnostics or stage not in {"COMMAND", "PARSER"}:
+                raise PostReallocationCapacityError(
+                    "R8U_R7E_FAILURE_RECEIPT_FIRST_PREDICATE_INVALID"
+                )
+            first = failed_diagnostics[0]
+            if first["parser_result"] == "FAIL":
+                failure_index = diagnostics.index(first)
+                if parser_states != (
+                    ["PASS"] * failure_index
+                    + ["FAIL"]
+                    + ["NOT_EVALUATED"] * (4 - failure_index)
+                ):
+                    raise PostReallocationCapacityError(
+                        "R8U_R7E_FAILURE_RECEIPT_STAGE_INVALID"
+                    )
+                if first["failure_predicate"] == (
+                    "PQUOTA_DISPLAY_CONTRADICTION"
+                ):
+                    expected_reason = "PQUOTA_DISPLAY_CONTRADICTION"
+                elif first["failure_predicate"] in {
+                        "PQUOTA_PARSE_FAILURE",
+                        "FINDMNT_PARSE_FAILURE",
+                        "DF_PARSE_FAILURE",
+                }:
+                    expected_reason = (
+                        f"{first['logical_role'].upper()}_PARSE_FAILURE"
+                    )
+                else:
+                    expected_reason = (
+                        f"{first['logical_role'].upper()}_"
+                        f"{first['failure_predicate']}"
+                    )
+                expected_field = (
+                    f"{first['logical_role']}.parsed_output"
+                )
+                parser_source_codes = {
+                    "PQUOTA_PARSE_FAILURE": {
+                        "PQUOTA_DISPLAY_NOT_EXACT_PASS",
+                    },
+                    "PQUOTA_DISPLAY_CONTRADICTION": {
+                        "PQUOTA_DISPLAY_CONTRADICTION",
+                    },
+                    "FINDMNT_PARSE_FAILURE": {
+                        "FINDMNT_JSON_INVALID",
+                        "FINDMNT_SCHEMA_INVALID",
+                        "FINDMNT_ROW_SCHEMA_INVALID",
+                        "FINDMNT_PATH_NOT_ON_TARGET",
+                    },
+                    "MOUNT_RESOLUTION_AMBIGUOUS": {
+                        "FINDMNT_ROW_COUNT_INVALID",
+                    },
+                    "DF_PARSE_FAILURE": {
+                        "DF_ROW_COUNT_INVALID",
+                        "DF_MOUNT_IDENTITY_MISMATCH",
+                    },
+                    "NUMERIC_VALUE_INVALID": {"DF_BYTES_INVALID"},
+                    "FILESYSTEM_ARITHMETIC_INVALID": {
+                        "DF_BYTES_DO_NOT_RECONCILE",
+                    },
+                }
+                allowed_sources = parser_source_codes.get(
+                    str(first["failure_predicate"])
+                )
+                if (
+                    allowed_sources is None
+                    or first["source_error_code"] not in allowed_sources
+                    or failure["expected_value_category"]
+                    != "STRICT_CANONICAL_PARSED_VALUE"
+                    or failure["observed_value_category"]
+                    != "PARSER_REJECTED"
+                ):
+                    raise PostReallocationCapacityError(
+                        "R8U_R7E_FAILURE_RECEIPT_SEMANTIC_INVALID"
+                    )
+            else:
+                expected_reason = (
+                    f"{first['logical_role'].upper()}_"
+                    f"{first['failure_predicate']}"
+                )
+                expected_field = (
+                    f"{first['logical_role']}.executable_authority"
+                    if first["failure_predicate"]
+                    == "COMMAND_AUTHORITY_INVALID"
+                    else f"{first['logical_role']}.capture"
+                )
+                standardized_command_sources = {
+                    "COMMAND_CAPTURE_NOT_REGULAR": {
+                        "R8U_R7E_PRIVATE_OUTPUT_PATH_INVALID",
+                        "R8U_R7E_PRIVATE_DIRECTORY_INVALID",
+                        "R8U_R7E_PRIVATE_OUTPUT_COLLISION",
+                        "R8U_R7E_PRIVATE_OUTPUT_WRITE_FAILED",
+                        "R8U_R7E_PRIVATE_OUTPUT_INVARIANT_FAILED",
+                        "R8U_R7E_PRIVATE_OUTPUT_READBACK_MISMATCH",
+                    },
+                    "COMMAND_AUTHORITY_CHANGED": {
+                        "TOOL_CHANGED_DURING_CAPTURE"
+                    },
+                    "COMMAND_EXIT_NONZERO": {"COMMAND_NONZERO_EXIT"},
+                    "COMMAND_STDERR_PRESENT": {"COMMAND_STDERR_PRESENT"},
+                    "COMMAND_OUTPUT_OVERSIZED": {
+                        "COMMAND_OUTPUT_OVERSIZED"
+                    },
+                    "COMMAND_OUTPUT_NOT_UTF8": {
+                        "COMMAND_OUTPUT_NOT_UTF8"
+                    },
+                }
+                predicate_sources = standardized_command_sources.get(
+                    str(first["failure_predicate"])
+                )
+                command_authority_failure = (
+                    first["failure_predicate"]
+                    == "COMMAND_AUTHORITY_INVALID"
+                )
+                if (
+                    not command_authority_failure
+                    and first["failure_predicate"]
+                    != "COMMAND_CAPTURE_MISSING"
+                    and predicate_sources is None
+                ) or (
+                    predicate_sources is not None
+                    and first["source_error_code"] not in predicate_sources
+                ) or (
+                    failure["expected_value_category"]
+                    != (
+                        "STABLE_FIXED_EXECUTABLE_AUTHORITY"
+                        if command_authority_failure
+                        else (
+                            "ZERO_EXIT_EMPTY_STDERR_BOUNDED_UTF8_"
+                            "REGULAR_CAPTURE"
+                        )
+                    )
+                ) or failure["observed_value_category"] != (
+                    "AUTHORITY_UNAVAILABLE"
+                    if command_authority_failure
+                    else str(first["failure_predicate"])
+                ):
+                    raise PostReallocationCapacityError(
+                        "R8U_R7E_FAILURE_RECEIPT_SEMANTIC_INVALID"
+                    )
+                predicate = first["failure_predicate"]
+                predicate_fields_valid = {
+                    "COMMAND_AUTHORITY_INVALID": (
+                        first["invocation_attempted"] is False
+                        and first["capture_present"] is False
+                    ),
+                    "COMMAND_CAPTURE_MISSING": (
+                        first["invocation_attempted"] is True
+                        and first["capture_present"] is False
+                    ),
+                    "COMMAND_CAPTURE_NOT_REGULAR": (
+                        first["capture_present"] is True
+                        and first["capture_regular_file"] is False
+                    ),
+                    "COMMAND_AUTHORITY_CHANGED": (
+                        first["capture_regular_file"] is True
+                    ),
+                    "COMMAND_EXIT_NONZERO": (
+                        first["capture_regular_file"] is True
+                        and type(first["exit_status"]) is int
+                        and first["exit_status"] != 0
+                    ),
+                    "COMMAND_STDERR_PRESENT": (
+                        first["capture_regular_file"] is True
+                        and first["exit_status"] == 0
+                        and type(first["stderr_size_bytes"]) is int
+                        and first["stderr_size_bytes"] > 0
+                    ),
+                    "COMMAND_OUTPUT_OVERSIZED": (
+                        first["capture_present"] is True
+                        and (
+                            int(first["stdout_size_bytes"] or 0)
+                            > _R8U_R7E_MAXIMUM_COMMAND_STREAM_BYTES
+                            or int(first["stderr_size_bytes"] or 0)
+                            > _R8U_R7E_MAXIMUM_COMMAND_STREAM_BYTES
+                        )
+                    ),
+                    "COMMAND_OUTPUT_NOT_UTF8": (
+                        first["capture_regular_file"] is True
+                        and first["exit_status"] == 0
+                        and first["stderr_size_bytes"] == 0
+                    ),
+                }.get(str(predicate), False)
+                if not predicate_fields_valid:
+                    raise PostReallocationCapacityError(
+                        "R8U_R7E_FAILURE_RECEIPT_PREDICATE_INVALID"
+                    )
+            expected_code = _r8u_r7e_failure_code(expected_reason)
+            if (
+                status != expected_code
+                or stage
+                != ("PARSER" if first["parser_result"] == "FAIL" else "COMMAND")
+                or failure["failure_field"] != expected_field
+                or failure["failure_predicate"]
+                != first["failure_predicate"]
+                or failure["command_type"] != first["command_type"]
+                or failure["command_ordinal"]
+                != first["command_ordinal"]
+                or failure["registry_ordinal"]
+                != first["registry_ordinal"]
+                or failure["command_exit_status"]
+                != first["exit_status"]
+                or failure["command_exit_class"] != first["exit_class"]
+                or failure["capture_present"]
+                is not first["capture_present"]
+                or failure["capture_regular_file"]
+                is not first["capture_regular_file"]
+                or failure["parser_result"]
+                != first["parser_result"]
+                or failure["raw_capture_sha256"]
+                != first["raw_capture_sha256"]
+                or failure["source_error_code"]
+                != first["source_error_code"]
+            ):
+                raise PostReallocationCapacityError(
+                    "R8U_R7E_FAILURE_RECEIPT_FIRST_PREDICATE_INVALID"
+                )
+        _r8u_r7e_validate_raw_capture_files(
+            raw_capture_root,
+            diagnostics,
+            failure_stage=failure["failure_stage"],
+        )
+        return dict(value)
+    if status not in {
+        R8U_R7E_CAPACITY_STATUS_PASS,
+        R8U_R7E_CAPACITY_STATUS_DEFICIT,
+    }:
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_STATUS_INVALID"
+        )
+    if (
+        value["failure_diagnostic"] is not None
+        or value["arithmetic_evaluated"] is not True
+        or value["capacity_observation_count"] != 1
+        or value["native_quota_file_captures"] != 1
+        or value["pquota_command_captures"] != 1
+        or value["findmnt_command_captures"] != 2
+        or value["df_command_captures"] != 2
+        or value["du_command_captures"] != 0
+        or value["pquota_command_invocation_attempts"] != 1
+        or value["findmnt_command_invocation_attempts"] != 2
+        or value["df_command_invocation_attempts"] != 2
+        or value["du_command_invocation_attempts"] != 0
+        or value["raw_capture_root_owner_private"] is not True
+        or value["raw_capture_file_count"] != 10
+        or type(value["native_quota_size_bytes"]) is not int
+        or value["native_quota_size_bytes"] <= 0
+        or not _r8u_r7e_is_sha(value["native_quota_sha256"])
+        or any(
+            item["exit_status"] != 0
+            or item["capture_present"] is not True
+            or item["capture_regular_file"] is not True
+            or item["parser_result"] != "PASS"
+            or item["failure_predicate"] is not None
+            for item in diagnostics
+        )
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_OBSERVATION_INVARIANT_INVALID"
+        )
+    _r8u_r7e_validate_raw_capture_files(
+        raw_capture_root,
+        diagnostics,
+        failure_stage=None,
+    )
+    projection = validate_fixed_r8u_r7d_tasks17_19_capacity(
+        plan,
+        value["capacity_projection"],
+        r7d_runtime_commit=runtime_commit,
+        preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+        preserved_old_evidence_files=preserved_old_evidence_files,
+        confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+        confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+    )
+    expected_status = (
+        R8U_R7E_CAPACITY_STATUS_PASS
+        if projection["status"] == R8U_R7D_CAPACITY_STATUS_PASS
+        else R8U_R7E_CAPACITY_STATUS_DEFICIT
+    )
+    expected_valid_deficit = expected_status == R8U_R7E_CAPACITY_STATUS_DEFICIT
+    if (
+        status != expected_status
+        or value["valid_numerical_deficit_calculated"]
+        is not expected_valid_deficit
+    ):
+        raise PostReallocationCapacityError(
+            "R8U_R7E_CAPACITY_ARITHMETIC_INVALID"
+        )
+    return dict(value)
+
+
+def capture_validate_and_seal_fixed_r8u_r7e_tasks17_19_capacity(
+    plan: Mapping[str, Any],
+    *,
+    r7e_runtime_commit: str,
+    receipt_path: Path,
+    raw_capture_root: Path,
+    preserved_old_evidence_bytes: int = 0,
+    preserved_old_evidence_files: int = 0,
+    confirmed_partial_artifact_bytes: int = 0,
+    confirmed_partial_artifact_files: int = 0,
+    authority: Any = DEFAULT_CURRENT_CANARY_HEADROOM_AUTHORITY,
+    process_runner: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Capture, pure-replay, and seal R7E; seal known failures before raise."""
+
+    _r8u_r7e_preflight_receipt_no_clobber(receipt_path)
+    try:
+        value = capture_fixed_r8u_r7e_tasks17_19_capacity(
+            plan,
+            r7e_runtime_commit=r7e_runtime_commit,
+            raw_capture_root=raw_capture_root,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=(
+                confirmed_partial_artifact_bytes
+            ),
+            confirmed_partial_artifact_files=(
+                confirmed_partial_artifact_files
+            ),
+            authority=authority,
+            process_runner=process_runner,
+        )
+    except R8UR7ECapacityObservationError as exc:
+        if exc.receipt is None:
+            raise
+        validated = validate_fixed_r8u_r7e_tasks17_19_capacity(
+            plan,
+            exc.receipt,
+            r7e_runtime_commit=r7e_runtime_commit,
+            preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+            preserved_old_evidence_files=preserved_old_evidence_files,
+            confirmed_partial_artifact_bytes=(
+                confirmed_partial_artifact_bytes
+            ),
+            confirmed_partial_artifact_files=(
+                confirmed_partial_artifact_files
+            ),
+            raw_capture_root=raw_capture_root,
+        )
+        receipt_sha256 = write_r8u_r7e_capacity_receipt_no_clobber(
+            receipt_path,
+            validated,
+        )
+        exc.receipt = validated
+        exc.receipt_sha256 = receipt_sha256
+        raise
+    validated = validate_fixed_r8u_r7e_tasks17_19_capacity(
+        plan,
+        value,
+        r7e_runtime_commit=r7e_runtime_commit,
+        preserved_old_evidence_bytes=preserved_old_evidence_bytes,
+        preserved_old_evidence_files=preserved_old_evidence_files,
+        confirmed_partial_artifact_bytes=confirmed_partial_artifact_bytes,
+        confirmed_partial_artifact_files=confirmed_partial_artifact_files,
+        raw_capture_root=raw_capture_root,
+    )
+    write_r8u_r7e_capacity_receipt_no_clobber(receipt_path, validated)
+    return validated
