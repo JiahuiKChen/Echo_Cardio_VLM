@@ -29811,6 +29811,85 @@ def _r8u_r7f_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _r8u_r7h_parser() -> argparse.ArgumentParser:
+    """Closed parser for the repaired R7H final-tail execution epoch."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--capture-r8u-r7h-capacity", action="store_true")
+    modes.add_argument(
+        "--submit-r8u-r7h-continuation-context-probe", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r7h-continuation-context-probe", action="store_true"
+    )
+    modes.add_argument(
+        "--adjudicate-r8u-r7h-continuation-context-probe", action="store_true"
+    )
+    modes.add_argument(
+        "--submit-r8u-r7h-continuation-17-19", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r7h-continuation-17-19-array-task", action="store_true"
+    )
+    modes.add_argument(
+        "--run-r8u-r7h-continuation-finalizer", action="store_true"
+    )
+    return parser
+
+
+def _validate_r8u_r7h_cli_result(
+    value: Any,
+    *,
+    expected_status: str,
+    exact_fields: Mapping[str, Any] | None = None,
+    job_id_fields: Sequence[str] = (),
+    sha256_fields: Sequence[str] = (),
+) -> Mapping[str, Any]:
+    """Keep the R7H CLI from rendering PASS for an unproved return value."""
+
+    if (
+        not isinstance(value, Mapping)
+        or value.get("status") != expected_status
+        or any(
+            not _exact_typed_value_equal(value.get(field), expected)
+            for field, expected in (exact_fields or {}).items()
+        )
+        or any(
+            not isinstance(value.get(field), str)
+            or JOB_RE.fullmatch(value[field]) is None
+            for field in job_id_fields
+        )
+        or any(
+            not isinstance(value.get(field), str)
+            or SHA_RE.fullmatch(value[field]) is None
+            for field in sha256_fields
+        )
+    ):
+        _fail("R8U_R7H_CLI_RESULT_INVALID")
+    return value
+
+
+def _emit_r8u_r7h_zero_effect_markers(arguments: Sequence[str]) -> None:
+    """Render only zero-effect claims that are true for control/probe modes."""
+
+    zero_effect_modes = {
+        "--capture-r8u-r7h-capacity",
+        "--submit-r8u-r7h-continuation-context-probe",
+        "--run-r8u-r7h-continuation-context-probe",
+        "--adjudicate-r8u-r7h-continuation-context-probe",
+    }
+    if not any(argument in zero_effect_modes for argument in arguments):
+        return
+    print("R8U_R7H_NEW_CLOUD_REQUESTS=0")
+    print("R8U_R7H_NEW_DICOM_BODY_READS=0")
+    print("R8U_R7H_NEW_NPZ_BODY_READS=0")
+    print("R8U_R7H_NEW_GPU_EXECUTIONS=0")
+    print("R8U_R7H_NEW_MODEL_FITTING=0")
+    print("R8U_R7H_NEW_PREDICTION_GENERATION=0")
+    print("R8U_R7H_CONFIRMATORY_PERFORMANCE_ACCESSED=NO")
+
+
 def guarded_main(argv: Sequence[str] | None = None) -> int:
     mode_prefix = "R8R"
     try:
@@ -29875,6 +29954,221 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             "--adjudicate-r8u-r7f-continuation-context-probe",
             "--submit-r8u-r7f-continuation-17-19",
         }
+        r8u_r7h_options = {
+            "--capture-r8u-r7h-capacity",
+            "--submit-r8u-r7h-continuation-context-probe",
+            "--run-r8u-r7h-continuation-context-probe",
+            "--adjudicate-r8u-r7h-continuation-context-probe",
+            "--submit-r8u-r7h-continuation-17-19",
+            "--run-r8u-r7h-continuation-17-19-array-task",
+            "--run-r8u-r7h-continuation-finalizer",
+        }
+        if any(argument in r8u_r7h_options for argument in arguments):
+            mode_prefix = "R8U_R7H"
+            r7h_args = _r8u_r7h_parser().parse_args(arguments)
+            import lvef_c3_r8u_r7h_continuation as r7h
+
+            if r7h_args.capture_r8u_r7h_capacity:
+                value = _validate_r8u_r7h_cli_result(
+                    r7h.capture_r8u_r7h_capacity(),
+                    expected_status=r7h.CAPACITY_PASS,
+                    exact_fields={
+                        "capacity_observation_count": 1,
+                        "qsub_submissions": 0,
+                        "scientific_body_reads": 0,
+                        "cloud_requests": 0,
+                        "dicom_body_reads": 0,
+                        "npz_body_reads": 0,
+                        "gpu_executions": 0,
+                    },
+                )
+                if (
+                    type(value.get("capacity_margin_bytes")) is not int
+                    or value["capacity_margin_bytes"] < 0
+                ):
+                    _fail("R8U_R7H_CLI_RESULT_INVALID")
+                print(f"R8U_R7H_STATUS={value['status']}")
+                print(
+                    "R8U_R7H_CAPACITY_MARGIN_BYTES="
+                    f"{value['capacity_margin_bytes']}"
+                )
+                print("R8U_R7H_FRESH_CAPACITY_OBSERVATIONS=1")
+            elif r7h_args.submit_r8u_r7h_continuation_context_probe:
+                value = _validate_r8u_r7h_cli_result(
+                    r7h.submit_r8u_r7h_continuation_topology_probe(),
+                    expected_status=(
+                        "R7H_TOPOLOGY_PROBE_SUBMITTED_AWAITING_TERMINAL"
+                    ),
+                    exact_fields={
+                        "qsub_exit": 0,
+                        "new_qsub_submissions": 1,
+                        "total_new_qsub_submissions": 1,
+                        "scientific_execution_authorized": False,
+                    },
+                    job_id_fields=("probe_job_id",),
+                )
+                print(f"R8U_R7H_STATUS={value['status']}")
+                print(f"R8U_R7H_PROBE_JOB_ID={value['probe_job_id']}")
+                print("R8U_R7H_PROBE_QSUB_EXIT=0")
+                print("R8U_R7H_NEW_QSUB_SUBMISSIONS=1")
+            elif r7h_args.run_r8u_r7h_continuation_context_probe:
+                value = _validate_r8u_r7h_cli_result(
+                    r7h.run_r8u_r7h_continuation_context_probe(),
+                    expected_status=r7h.PROBE_PASS,
+                    exact_fields={
+                        "controlling_worker_identity": "PASS",
+                        "fixed_partial": "PASS",
+                        "other_active_caches": 0,
+                        "unknown_caches": 0,
+                        "cloud_requests": 0,
+                        "dicom_body_reads": 0,
+                        "npz_body_reads": 0,
+                        "gpu_executions": 0,
+                        "scientific_stage_executions": 0,
+                    },
+                )
+                print(f"R8U_R7H_STATUS={value['status']}")
+                print(
+                    "R8U_R7H_CONTROLLING_WORKER_IDENTITY="
+                    f"{value['controlling_worker_identity']}"
+                )
+                print(f"R8U_R7H_FIXED_PARTIAL={value['fixed_partial']}")
+                print(
+                    "R8U_R7H_OTHER_ACTIVE_CACHES="
+                    f"{value['other_active_caches']}"
+                )
+                print(
+                    "R8U_R7H_UNKNOWN_CACHES="
+                    f"{value['unknown_caches']}"
+                )
+                print(
+                    "R8U_R7H_NEW_CLOUD_REQUESTS="
+                    f"{value['cloud_requests']}"
+                )
+                print(
+                    "R8U_R7H_NEW_DICOM_BODY_READS="
+                    f"{value['dicom_body_reads']}"
+                )
+                print(
+                    "R8U_R7H_NEW_NPZ_BODY_READS="
+                    f"{value['npz_body_reads']}"
+                )
+                print(
+                    "R8U_R7H_NEW_GPU_EXECUTIONS="
+                    f"{value['gpu_executions']}"
+                )
+            elif r7h_args.adjudicate_r8u_r7h_continuation_context_probe:
+                value = _validate_r8u_r7h_cli_result(
+                    r7h.adjudicate_r8u_r7h_continuation_topology_probe(),
+                    expected_status=r7h.PROBE_PASS,
+                    exact_fields={
+                        "failed": 0,
+                        "exit_status": 0,
+                        "task_id": 17,
+                        "controlling_worker_identity": "PASS",
+                        "fixed_partial": "PASS",
+                        "other_active_caches": 0,
+                        "unknown_caches": 0,
+                        "scientific_artifacts_created": 0,
+                        "cloud_requests": 0,
+                        "dicom_body_reads": 0,
+                        "npz_body_reads": 0,
+                        "gpu_executions": 0,
+                        "scientific_stage_executions": 0,
+                    },
+                )
+                print(f"R8U_R7H_STATUS={value['status']}")
+                print(
+                    "R8U_R7H_PROBE_QACCT_FAILED="
+                    f"{value['failed']}"
+                )
+                print(
+                    "R8U_R7H_PROBE_QACCT_EXIT_STATUS="
+                    f"{value['exit_status']}"
+                )
+                print(
+                    "R8U_R7H_CONTROLLING_WORKER_IDENTITY="
+                    f"{value['controlling_worker_identity']}"
+                )
+                print(f"R8U_R7H_FIXED_PARTIAL={value['fixed_partial']}")
+            elif r7h_args.submit_r8u_r7h_continuation_17_19:
+                value = _validate_r8u_r7h_cli_result(
+                    r7h.submit_r8u_r7h_continuation_17_19(),
+                    expected_status=r7h.SUBMISSION_PASS,
+                    exact_fields={
+                        "task_range": "17-19",
+                        "array_max_concurrency": 1,
+                        "new_qsub_submissions": 2,
+                        "total_new_qsub_submissions": 3,
+                    },
+                    job_id_fields=("array_job_id", "finalizer_job_id"),
+                    sha256_fields=(
+                        "continuation_claim_sha256",
+                        "array_submission_receipt_sha256",
+                        "finalizer_submission_receipt_sha256",
+                        "continuation_receipt_sha256",
+                    ),
+                )
+                print(f"R8U_R7H_STATUS={value['status']}")
+                print(f"R8U_R7H_ARRAY_JOB_ID={value['array_job_id']}")
+                print(f"R8U_R7H_FINALIZER_JOB_ID={value['finalizer_job_id']}")
+                print(
+                    "R8U_R7H_CONTINUATION_CLAIM_SHA256="
+                    f"{value['continuation_claim_sha256']}"
+                )
+                print(
+                    "R8U_R7H_ARRAY_SUBMISSION_RECEIPT_SHA256="
+                    f"{value['array_submission_receipt_sha256']}"
+                )
+                print(
+                    "R8U_R7H_FINALIZER_SUBMISSION_RECEIPT_SHA256="
+                    f"{value['finalizer_submission_receipt_sha256']}"
+                )
+                print(
+                    "R8U_R7H_CONTINUATION_RECEIPT_SHA256="
+                    f"{value['continuation_receipt_sha256']}"
+                )
+                print(
+                    "R8U_R7H_CONTINUATION_TASK_RANGE="
+                    f"{value['task_range']}"
+                )
+                print(
+                    "R8U_R7H_CONTINUATION_MAX_CONCURRENCY="
+                    f"{value['array_max_concurrency']}"
+                )
+                print(
+                    "R8U_R7H_NEW_QSUB_SUBMISSIONS="
+                    f"{value['new_qsub_submissions']}"
+                )
+                print(
+                    "R8U_R7H_TOTAL_NEW_QSUB_SUBMISSIONS="
+                    f"{value['total_new_qsub_submissions']}"
+                )
+            elif r7h_args.run_r8u_r7h_continuation_17_19_array_task:
+                value = _validate_r8u_r7h_cli_result(
+                    r7h.run_r8u_r7h_continuation_array_task(),
+                    expected_status="PASS_BATCH_FINALIZED",
+                )
+                print(
+                    "R8U_R7H_CONTINUATION_BATCH_STATUS="
+                    f"{value['status']}"
+                )
+            else:
+                value = _validate_r8u_r7h_cli_result(
+                    r7h.run_r8u_r7h_continuation_finalizer(),
+                    expected_status="PASS_PRODUCTION_C3_FINALIZED",
+                    exact_fields={
+                        "production_batches": 19,
+                        "selected_studies": 4_530,
+                        "all_scientific_authority_bindings_identical": True,
+                        "implementation_authority_epoch_count": 4,
+                        "model_fitting_count": 0,
+                        "endpoint_prediction_count": 0,
+                        "confirmatory_performance_access_count": 0,
+                    },
+                )
+                print(f"R8U_R7H_STATUS={r7h.FINALIZER_PASS}")
+            return 0
         if any(argument in r8u_r7f_options for argument in arguments):
             mode_prefix = "R8U_R7F"
             r7f_args = _r8u_r7f_parser().parse_args(arguments)
@@ -30433,7 +30727,7 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             print("R8U_BATCH16_DOWNLOAD_RERUNS=0")
             capacity_label_prefix = (
                 mode_prefix
-                if mode_prefix in {"R8U_R7D", "R8U_R7E", "R8U_R7F"}
+                if mode_prefix in {"R8U_R7D", "R8U_R7E", "R8U_R7F", "R8U_R7H"}
                 else "R8U"
             )
             for field, label in (
@@ -30452,7 +30746,7 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             ):
                 if field in exc.capacity_deficits:
                     print(f"{label}={exc.capacity_deficits[field]}")
-            if mode_prefix in {"R8U_R7D", "R8U_R7E", "R8U_R7F"}:
+            if mode_prefix in {"R8U_R7D", "R8U_R7E", "R8U_R7F", "R8U_R7H"}:
                 for field, label in (
                     ("failed", f"{mode_prefix}_PROBE_QACCT_FAILED"),
                     (
@@ -30462,6 +30756,8 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
                 ):
                     if field in exc.probe_qacct:
                         print(f"{label}={exc.probe_qacct[field]}")
+            if mode_prefix == "R8U_R7H":
+                _emit_r8u_r7h_zero_effect_markers(arguments)
         else:
             print("R8R_NEW_CLOUD_REQUESTS=0")
             print("R8R_NEW_DICOM_BODY_READS=0")
@@ -30477,10 +30773,13 @@ def guarded_main(argv: Sequence[str] | None = None) -> int:
             if isinstance(code, str) and SAFE_CODE_RE.fullmatch(code)
             else f"{mode_prefix}_UNEXPECTED_SANITIZED_FAILURE"
         )
-        print(f"{mode_prefix}_STATUS=BLOCKED_{safe}")
+        rendered_code = safe if safe.startswith("BLOCKED_") else f"BLOCKED_{safe}"
+        print(f"{mode_prefix}_STATUS={rendered_code}")
         if mode_prefix.startswith("R8U"):
             print("R8U_BATCH16_CLOUD_REQUESTS=0")
             print("R8U_BATCH16_DOWNLOAD_RERUNS=0")
+            if mode_prefix == "R8U_R7H":
+                _emit_r8u_r7h_zero_effect_markers(arguments)
         else:
             print("R8R_NEW_CLOUD_REQUESTS=0")
             print("R8R_NEW_DICOM_BODY_READS=0")

@@ -70,6 +70,56 @@ GENERIC_PRIVATE_FILE_MAXIMUM_BYTES = 16_000_000
 SUBMISSION_RECEIPT_MAXIMUM_BYTES = 4 * 1024 * 1024
 QSUB_ENVIRONMENT_SHA256_NAME = "LVEF_C3_QSUB_ENVIRONMENT_SHA256"
 TERMINAL_PARTIAL_MAXIMUM_ENTRIES = 50_000
+R8U_R7H_SCIENTIFIC_ATTEMPT_ID = (
+    "lvef_c3_full_904d0ab65f003c1e_e1cdb674"
+)
+R8U_R7H_SCIENTIFIC_COMMIT = "e1cdb674ada23bbc9f3a1ff77c33927bd324d3ed"
+R8U_R7H_PLAN_SHA256 = (
+    "904d0ab65f003c1eb68adeee8c0b1dd786ec7a9ef4bb496b646b22cc7a540247"
+)
+R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID = "c3_batch_015"
+R8U_R7H_HISTORICAL_PARTIAL_TASK_ID = 16
+R8U_R7H_HISTORICAL_FAILURE_JOB_ID = "7292691"
+R8U_R7H_HISTORICAL_FAILURE_CLASS = "SGE_FAILED_19 / ESSTATE_NO_EXITSTATUS"
+R8U_R7H_FAILED_PARTIAL_FILES = 4_757
+R8U_R7H_FAILED_PARTIAL_DIRECTORIES = 259
+R8U_R7H_FAILED_PARTIAL_BYTES = 8_583_119_701
+R8U_R7H_FAILED_PARTIAL_METADATA_SHA256 = (
+    "1dcc53e52a468773128348225943125c926bcab942ac7c69c37344684249f83e"
+)
+R8U_R7H_TOPOLOGY_PASS = (
+    "PASS_R7H_SEALED_SAME_ATTEMPT_PARTIAL_EXCLUDED_FROM_ACTIVE_TOPOLOGY"
+)
+R8U_R7H_FIXED_CACHE_TOPOLOGY_KEYS = frozenset(
+    {
+        "active_finalized_extraction_caches",
+        "batch16_failed_partial_cache_retained",
+        "batch16_failed_partial_cache_outside_active_topology",
+        "batch16_failed_partial_cache_adopted",
+        "batch16_failed_partial_cache_deleted",
+        "batch16_failed_partial_cache_overwritten",
+        "batch16_failed_partial_seal_sha256",
+        "batch16_failed_partial_metadata_projection_sha256",
+    }
+)
+R8U_R7H_SEALED_HISTORY_KEYS = R8U_R7H_FIXED_CACHE_TOPOLOGY_KEYS | frozenset(
+    {
+        "scientific_attempt_id",
+        "scientific_commit",
+        "batch_plan_sha256",
+        "batch_id",
+        "original_task_id",
+        "historical_failure_job_id",
+        "historical_failure_class",
+        "failed_partial_files",
+        "failed_partial_directories",
+        "failed_partial_bytes",
+        "closed_failure_authority",
+        "partial_outputs_modified",
+        "partial_outputs_renamed",
+        "npz_body_reads",
+    }
+)
 FROZEN_FULL_PLAN_PROJECTED_PEAK_BYTES = 1_611_642_076_332
 FROZEN_FULL_PLAN_ORIGINAL_CURRENT_USAGE_BYTES = 152_275_355_648
 SUCCESSOR_INCREMENT_BYTES = 1_459_366_720_684
@@ -416,6 +466,39 @@ class ExtractionCacheInventory:
 
 
 @dataclass(frozen=True)
+class R8UR7HExtractionCacheTopology:
+    """Aggregate-safe classification for the one fixed R7H tail epoch."""
+
+    status: str
+    cache_bearing_attempt_roots: int
+    current_attempt_cache_bearing_roots: int
+    canonical_clips_roots: int
+    partial_roots: int
+    sealed_cross_attempt_terminal_failed_caches: int
+    sealed_current_attempt_batch16_failed_partials: int
+    unsealed_current_attempt_caches: int
+    active_scientific_caches: int
+    other_active_scientific_caches: int
+    finalized_but_unretired_caches: int
+    unknown_cache_like_roots: int
+    unknown_or_unsealed_caches: int
+    symlink_entries: int
+    nonregular_entries: int
+    symlink_or_nonregular_entries: int
+    owner_mismatches: int
+    unsafe_mode_entries: int
+    owner_or_mode_anomalies: int
+    active_job_references: int
+    active_process_references: int
+    historical_partial_adoptable: bool
+    historical_partial_mutable: bool
+    historical_partial_outside_finalized_active_topology: bool
+    npz_body_reads: int
+    paths_emitted: bool
+    identifiers_emitted: bool
+
+
+@dataclass(frozen=True)
 class CapacityAdmission:
     capture: capacity.DynamicSuccessorCapacityCapture
     evidence_role: str
@@ -442,6 +525,7 @@ class FullExecutionContext(Enum):
     R8U_R6_FIXED_CONTINUATION = "R8U_R6_FIXED_CONTINUATION"
     R8U_R7_FIXED_CONTINUATION = "R8U_R7_FIXED_CONTINUATION"
     R8U_R7D_FIXED_CONTINUATION = "R8U_R7D_FIXED_CONTINUATION"
+    R8U_R7H_FIXED_CONTINUATION = "R8U_R7H_FIXED_CONTINUATION"
 
 
 ORIGINAL_FULL_SUBMISSION = FullExecutionContext.ORIGINAL_FULL_SUBMISSION
@@ -453,6 +537,7 @@ R8U_R5_FIXED_CONTINUATION = FullExecutionContext.R8U_R5_FIXED_CONTINUATION
 R8U_R6_FIXED_CONTINUATION = FullExecutionContext.R8U_R6_FIXED_CONTINUATION
 R8U_R7_FIXED_CONTINUATION = FullExecutionContext.R8U_R7_FIXED_CONTINUATION
 R8U_R7D_FIXED_CONTINUATION = FullExecutionContext.R8U_R7D_FIXED_CONTINUATION
+R8U_R7H_FIXED_CONTINUATION = FullExecutionContext.R8U_R7H_FIXED_CONTINUATION
 # Compatibility name used by the fixed controller; it resolves only to the
 # fresh R2 continuation context and does not make the consumed R1 epoch live.
 R8U_FIXED_CONTINUATION = R8U_R2_FIXED_CONTINUATION
@@ -476,6 +561,10 @@ class FullDependencies:
     ] | None = None
     environment_validator: Callable[..., Mapping[str, Any]] | None = None
     r8u_r7d_worker_submission_validator: Callable[..., Any] | None = None
+    r8u_r7h_worker_submission_validator: Callable[..., Any] | None = None
+    r8u_r7h_sealed_history_validator: Callable[[], Mapping[str, Any]] | None = None
+    r8u_r7h_active_job_references: int = 0
+    r8u_r7h_active_process_references: int = 0
     test_only_synthetic_full_scope: bool = False
     extraction_workers: int = 4
     echoprime_batch_size: int = 8
@@ -571,6 +660,12 @@ def resolve_dependencies(value: FullDependencies | None = None) -> FullDependenc
         or source.extraction_workers < 1
         or isinstance(source.echoprime_batch_size, bool)
         or source.echoprime_batch_size < 1
+        or isinstance(source.r8u_r7h_active_job_references, bool)
+        or not isinstance(source.r8u_r7h_active_job_references, int)
+        or source.r8u_r7h_active_job_references < 0
+        or isinstance(source.r8u_r7h_active_process_references, bool)
+        or not isinstance(source.r8u_r7h_active_process_references, int)
+        or source.r8u_r7h_active_process_references < 0
         or not isinstance(source.execution_context, FullExecutionContext)
     ):
         _fail("FULL_SEQUENTIAL_DEPENDENCY_CONFIGURATION_INVALID")
@@ -598,6 +693,18 @@ def resolve_dependencies(value: FullDependencies | None = None) -> FullDependenc
         ),
         r8u_r7d_worker_submission_validator=(
             source.r8u_r7d_worker_submission_validator
+        ),
+        r8u_r7h_worker_submission_validator=(
+            source.r8u_r7h_worker_submission_validator
+        ),
+        r8u_r7h_sealed_history_validator=(
+            source.r8u_r7h_sealed_history_validator
+        ),
+        r8u_r7h_active_job_references=(
+            source.r8u_r7h_active_job_references
+        ),
+        r8u_r7h_active_process_references=(
+            source.r8u_r7h_active_process_references
         ),
         test_only_synthetic_full_scope=source.test_only_synthetic_full_scope,
         extraction_workers=source.extraction_workers,
@@ -1528,6 +1635,28 @@ def _validate_r8u_r7d_worker_submission(
     return validator(current_job_id=current_job_id, role=role)
 
 
+def _validate_r8u_r7h_worker_submission(
+    dependency: FullDependencies,
+    *,
+    current_job_id: str,
+    role: str,
+) -> Any:
+    """Invoke only the fresh R7H validator, with an injectable test seam."""
+
+    validator = dependency.r8u_r7h_worker_submission_validator
+    if validator is None:
+        import lvef_c3_r8u_r7h_continuation as r7h
+
+        validator = getattr(
+            r7h,
+            "validate_r8u_r7h_continuation_worker_submission",
+            None,
+        )
+    if not callable(validator):
+        _fail("FULL_SEQUENTIAL_R8U_R7H_WORKER_VALIDATOR_UNAVAILABLE")
+    return validator(current_job_id=current_job_id, role=role)
+
+
 def run_batch_task(
     *,
     task_id: int | None = None,
@@ -1587,6 +1716,11 @@ def run_batch_task(
         and effective_task not in range(17, 20)
     ):
         _fail("FULL_SEQUENTIAL_R8U_R7D_CONTINUATION_TASK_OUT_OF_SCOPE")
+    if (
+        dependency.execution_context is R8U_R7H_FIXED_CONTINUATION
+        and effective_task not in range(17, 20)
+    ):
+        _fail("FULL_SEQUENTIAL_R8U_R7H_CONTINUATION_TASK_OUT_OF_SCOPE")
 
     # This gate is deliberately first for tasks 2..N: no validation below may
     # construct a token provider, body transport, DICOM reader, or GPU object.
@@ -1608,10 +1742,32 @@ def run_batch_task(
     # have retired its extracted clips.  Recheck the physical topology before
     # any token or body boundary so an unexpected second cache fails closed.
     with _stage_boundary("PREBODY_AUTHORITY"):
-        cache_inventory = _extraction_cache_inventory(
-            effective_run.production_root,
-            current_attempt_id=effective_run.attempt_id,
-        )
+        if dependency.execution_context is R8U_R7H_FIXED_CONTINUATION:
+            if (
+                effective_run.attempt_id != R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+                or effective_run.plan_sha256 != R8U_R7H_PLAN_SHA256
+                or effective_run.authority.governing_commit
+                != R8U_R7H_SCIENTIFIC_COMMIT
+            ):
+                _fail("R7H_BATCH16_PARTIAL_ROLE_INVALID")
+            validate_r8u_r7h_extraction_cache_topology(
+                effective_run.production_root,
+                current_attempt_id=effective_run.attempt_id,
+                sealed_history_validator=(
+                    dependency.r8u_r7h_sealed_history_validator
+                ),
+                active_job_references=(
+                    dependency.r8u_r7h_active_job_references
+                ),
+                active_process_references=(
+                    dependency.r8u_r7h_active_process_references
+                ),
+            )
+        else:
+            cache_inventory = _extraction_cache_inventory(
+                effective_run.production_root,
+                current_attempt_id=effective_run.attempt_id,
+            )
         if dependency.execution_context is R8U_R2_FIXED_CONTINUATION:
             # The one Task-16 scheduler-failure partial is immutable evidence,
             # not a resumable cache.  The fixed R8U controller revalidates its
@@ -1657,6 +1813,11 @@ def run_batch_task(
             # invokes any live R7 continuation-worker validator.
             if cache_inventory.active != 0:
                 _fail("FULL_SEQUENTIAL_R8U_R7D_EXTRACTION_CACHE_TOPOLOGY_INVALID")
+        elif dependency.execution_context is R8U_R7H_FIXED_CONTINUATION:
+            # The dedicated classifier above has already excluded exactly the
+            # externally sealed historical Batch-16 root and rejected every
+            # other cache-bearing role.
+            pass
         elif cache_inventory.active != 0:
             _fail("FULL_SEQUENTIAL_ACTIVE_EXTRACTION_CACHE_PRESENT")
 
@@ -1716,6 +1877,12 @@ def run_batch_task(
                     current_job_id=str(os.environ.get("JOB_ID", "")),
                     role="array",
                 )
+            elif dependency.execution_context is R8U_R7H_FIXED_CONTINUATION:
+                _validate_r8u_r7h_worker_submission(
+                    dependency,
+                    current_job_id=str(os.environ.get("JOB_ID", "")),
+                    role="array",
+                )
             else:
                 _wait_for_submission_receipt(
                     effective_run,
@@ -1740,6 +1907,7 @@ def run_batch_task(
                 R8U_R6_FIXED_CONTINUATION,
                 R8U_R7_FIXED_CONTINUATION,
                 R8U_R7D_FIXED_CONTINUATION,
+                R8U_R7H_FIXED_CONTINUATION,
             }:
                 environment_arguments["runtime_validation_context"] = (
                     stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1886,6 +2054,7 @@ def run_batch_task(
             R8U_R6_FIXED_CONTINUATION,
             R8U_R7_FIXED_CONTINUATION,
             R8U_R7D_FIXED_CONTINUATION,
+            R8U_R7H_FIXED_CONTINUATION,
         }:
             echoprime_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1955,6 +2124,7 @@ def run_batch_task(
             R8U_R6_FIXED_CONTINUATION,
             R8U_R7_FIXED_CONTINUATION,
             R8U_R7D_FIXED_CONTINUATION,
+            R8U_R7H_FIXED_CONTINUATION,
         }:
             preservation_arguments["runtime_validation_context"] = (
                 stages.SEALED_SCHEDULER_RUNTIME_REPLAY
@@ -1995,6 +2165,7 @@ def run_batch_task(
             R8U_R6_FIXED_CONTINUATION,
             R8U_R7_FIXED_CONTINUATION,
             R8U_R7D_FIXED_CONTINUATION,
+            R8U_R7H_FIXED_CONTINUATION,
         }:
             retirement_arguments["scheduler_runner_path"] = (
                 SCRIPT_ROOT
@@ -2394,6 +2565,639 @@ def _extraction_cache_inventory(
                 active += 1
     return ExtractionCacheInventory(
         active=active, preserved_terminal_failed=preserved
+    )
+
+
+def _r8u_r7h_fixed_sealed_history() -> dict[str, Any]:
+    """Load the HEAD-independent, pinned R7C/R7G historical authority."""
+
+    import lvef_c3_r8u_r7g_evidence as r7g_evidence
+
+    value = r7g_evidence.fixed_cache_topology()
+    if not isinstance(value, Mapping) or set(value) != (
+        R8U_R7H_FIXED_CACHE_TOPOLOGY_KEYS
+    ):
+        _fail("R7H_BATCH16_PARTIAL_SEAL_INVALID")
+    # fixed_cache_topology() has already replayed the immutable external seal,
+    # including these exact role and observation fields.  Add them explicitly
+    # so an injected synthetic validator must satisfy the same closed schema.
+    return {
+        **dict(value),
+        "scientific_attempt_id": R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+        "scientific_commit": R8U_R7H_SCIENTIFIC_COMMIT,
+        "batch_plan_sha256": R8U_R7H_PLAN_SHA256,
+        "batch_id": R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID,
+        "original_task_id": R8U_R7H_HISTORICAL_PARTIAL_TASK_ID,
+        "historical_failure_job_id": R8U_R7H_HISTORICAL_FAILURE_JOB_ID,
+        "historical_failure_class": R8U_R7H_HISTORICAL_FAILURE_CLASS,
+        "failed_partial_files": R8U_R7H_FAILED_PARTIAL_FILES,
+        "failed_partial_directories": R8U_R7H_FAILED_PARTIAL_DIRECTORIES,
+        "failed_partial_bytes": R8U_R7H_FAILED_PARTIAL_BYTES,
+        "closed_failure_authority": True,
+        "partial_outputs_modified": False,
+        "partial_outputs_renamed": False,
+        "npz_body_reads": 0,
+    }
+
+
+def _r8u_r7h_observe_partial_metadata(
+    partial: Path,
+    *,
+    attempt_root: Path,
+    shared_entry_counter: list[int] | None = None,
+) -> dict[str, Any]:
+    """Project one bounded partial using lstat only; never open an NPZ body."""
+
+    entry_counter = [0] if shared_entry_counter is None else shared_entry_counter
+    if (
+        type(entry_counter) is not list
+        or len(entry_counter) != 1
+        or type(entry_counter[0]) is not int
+        or entry_counter[0] < 0
+    ):
+        _fail("R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR")
+
+    rows: list[list[Any]] = []
+    file_count = 0
+    directory_count = 0
+    total_bytes = 0
+    symlink_entries = 0
+    nonregular_entries = 0
+    owner_mismatches = 0
+    unsafe_mode_entries = 0
+    inspected: dict[Path, tuple[os.stat_result | None, str]] = {}
+
+    def inspect_path(path: Path, expected_kind: str) -> os.stat_result | None:
+        nonlocal symlink_entries
+        nonlocal nonregular_entries
+        nonlocal owner_mismatches
+        nonlocal unsafe_mode_entries
+        cached = inspected.get(path)
+        if cached is not None:
+            return cached[0]
+        try:
+            before = os.lstat(path)
+            after = os.lstat(path)
+        except OSError:
+            nonregular_entries += 1
+            inspected[path] = (None, expected_kind)
+            return None
+        identity = lambda item: (
+            item.st_mode,
+            item.st_uid,
+            item.st_gid,
+            item.st_dev,
+            item.st_ino,
+            item.st_nlink,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+        )
+        if identity(before) != identity(after):
+            nonregular_entries += 1
+            inspected[path] = (None, expected_kind)
+            return None
+        if stat.S_ISLNK(before.st_mode):
+            symlink_entries += 1
+            inspected[path] = (None, expected_kind)
+            return None
+        expected_type = stat.S_ISDIR if expected_kind == "D" else stat.S_ISREG
+        if not expected_type(before.st_mode):
+            nonregular_entries += 1
+        if before.st_uid != os.geteuid():
+            owner_mismatches += 1
+        mode = stat.S_IMODE(before.st_mode)
+        if expected_kind == "D":
+            if mode not in {0o700, 0o2700}:
+                unsafe_mode_entries += 1
+        elif mode != 0o600:
+            unsafe_mode_entries += 1
+        if expected_kind == "F" and before.st_nlink != 1:
+            nonregular_entries += 1
+        inspected[path] = (before, expected_kind)
+        return before
+
+    pending_directories = [partial]
+    while pending_directories:
+        current = pending_directories.pop()
+        if entry_counter[0] >= TERMINAL_PARTIAL_MAXIMUM_ENTRIES:
+            nonregular_entries += 1
+            break
+        entry_counter[0] += 1
+        directories: list[str] = []
+        filenames: list[str] = []
+        scan_complete = True
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    if entry_counter[0] >= TERMINAL_PARTIAL_MAXIMUM_ENTRIES:
+                        nonregular_entries += 1
+                        scan_complete = False
+                        break
+                    entry_counter[0] += 1
+                    try:
+                        entry_item = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        nonregular_entries += 1
+                        scan_complete = False
+                        break
+                    if stat.S_ISDIR(entry_item.st_mode):
+                        directories.append(entry.name)
+                    else:
+                        filenames.append(entry.name)
+        except OSError:
+            nonregular_entries += 1
+            break
+        if not scan_complete:
+            break
+        directories.sort()
+        filenames.sort()
+        current_item = inspect_path(current, "D")
+        if current_item is not None and stat.S_ISDIR(current_item.st_mode):
+            rows.append(
+                [
+                    current.relative_to(attempt_root).as_posix(),
+                    "D",
+                    stat.S_IMODE(current_item.st_mode),
+                    current_item.st_uid,
+                    current_item.st_gid,
+                    current_item.st_nlink,
+                    current_item.st_size,
+                    current_item.st_mtime_ns,
+                    current_item.st_ctime_ns,
+                ]
+            )
+            directory_count += 1
+        child_directories: list[Path] = []
+        for name in directories:
+            path = current / name
+            item = inspect_path(path, "D")
+            if item is not None and stat.S_ISDIR(item.st_mode):
+                child_directories.append(path)
+        for name in filenames:
+            path = current / name
+            item = inspect_path(path, "F")
+            if item is None or not stat.S_ISREG(item.st_mode):
+                continue
+            rows.append(
+                [
+                    path.relative_to(attempt_root).as_posix(),
+                    "F",
+                    stat.S_IMODE(item.st_mode),
+                    item.st_uid,
+                    item.st_gid,
+                    item.st_nlink,
+                    item.st_size,
+                    item.st_mtime_ns,
+                    item.st_ctime_ns,
+                ]
+            )
+            file_count += 1
+            total_bytes += int(item.st_size)
+        pending_directories.extend(reversed(child_directories))
+    payload = b"".join(
+        json.dumps(row, separators=(",", ":"), ensure_ascii=True).encode()
+        + b"\n"
+        for row in sorted(rows)
+    )
+    return {
+        "file_count": file_count,
+        "directory_count": directory_count,
+        "total_bytes": total_bytes,
+        "metadata_projection_sha256": hashlib.sha256(payload).hexdigest(),
+        "symlink_entries": symlink_entries,
+        "nonregular_entries": nonregular_entries,
+        "owner_mismatches": owner_mismatches,
+        "unsafe_mode_entries": unsafe_mode_entries,
+        "npz_body_reads": 0,
+    }
+
+
+def validate_r8u_r7h_extraction_cache_topology(
+    production_root: Path,
+    *,
+    current_attempt_id: str,
+    sealed_history_validator: Callable[[], Mapping[str, Any]] | None = None,
+    active_job_references: int = 0,
+    active_process_references: int = 0,
+) -> R8UR7HExtractionCacheTopology:
+    """Classify only the exact R7H historical partial outside live topology."""
+
+    if (
+        current_attempt_id != R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        or ATTEMPT_RE.fullmatch(current_attempt_id) is None
+        or not isinstance(production_root, Path)
+        or not production_root.is_absolute()
+        or isinstance(active_job_references, bool)
+        or not isinstance(active_job_references, int)
+        or active_job_references < 0
+        or isinstance(active_process_references, bool)
+        or not isinstance(active_process_references, int)
+        or active_process_references < 0
+    ):
+        _fail("R7H_BATCH16_PARTIAL_ROLE_INVALID")
+    if active_job_references:
+        _fail("R7H_EXTRACTION_CACHE_ACTIVE_JOB_REFERENCE")
+    if active_process_references:
+        _fail("R7H_EXTRACTION_CACHE_ACTIVE_PROCESS_REFERENCE")
+
+    attempts_root = production_root / "attempts"
+    expected_attempt_root = attempts_root / current_attempt_id
+    expected_partial = (
+        expected_attempt_root
+        / "extracted_cache"
+        / R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID
+        / "dicom_extraction.partial"
+    )
+    counts = {
+        "cache_bearing_attempt_roots": 0,
+        "current_attempt_cache_bearing_roots": 0,
+        "canonical_clips_roots": 0,
+        "partial_roots": 0,
+        "sealed_cross": 0,
+        "unsealed_current": 0,
+        "active": 0,
+        "finalized": 0,
+        "unknown": 0,
+        "symlinks": 0,
+        "nonregular": 0,
+        "owner_mismatches": 0,
+        "unsafe_modes": 0,
+    }
+    observed_topology_paths: set[Path] = set()
+    sealed_cross_roots: set[Path] = set()
+    unsealed_current_roots: set[Path] = set()
+    active_scientific_roots: set[Path] = set()
+    finalized_roots: set[Path] = set()
+    unknown_cache_roots: set[Path] = set()
+    outer_entries_seen = 0
+    partial_content_entries_seen = [0]
+
+    def bounded_outer_entries(
+        path: Path,
+    ) -> list[tuple[Path, os.stat_result]]:
+        """Lazily bound all attempt/cache entries before sorting them."""
+
+        nonlocal outer_entries_seen
+        entries: list[tuple[Path, os.stat_result]] = []
+        try:
+            with os.scandir(path) as iterator:
+                for entry in iterator:
+                    outer_entries_seen += 1
+                    if outer_entries_seen > TERMINAL_PARTIAL_MAXIMUM_ENTRIES:
+                        _fail("R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR")
+                    item = entry.stat(follow_symlinks=False)
+                    entries.append((path / entry.name, item))
+        except OSError as exc:
+            raise FullSequentialError(
+                "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+            ) from exc
+        return sorted(entries, key=lambda value: value[0].name)
+
+    def observe_directory(path: Path) -> bool:
+        if path in observed_topology_paths:
+            try:
+                item = os.lstat(path)
+            except OSError:
+                return False
+            return stat.S_ISDIR(item.st_mode) and not stat.S_ISLNK(item.st_mode)
+        observed_topology_paths.add(path)
+        try:
+            item = os.lstat(path)
+        except OSError:
+            counts["nonregular"] += 1
+            return False
+        if stat.S_ISLNK(item.st_mode):
+            counts["symlinks"] += 1
+            return False
+        if not stat.S_ISDIR(item.st_mode):
+            counts["nonregular"] += 1
+            return False
+        if item.st_uid != os.geteuid():
+            counts["owner_mismatches"] += 1
+        mode = stat.S_IMODE(item.st_mode)
+        if mode not in {0o700, 0o2700}:
+            counts["unsafe_modes"] += 1
+        return True
+
+    def merge_security(observation: Mapping[str, Any]) -> None:
+        counts["symlinks"] += int(observation["symlink_entries"])
+        counts["nonregular"] += int(observation["nonregular_entries"])
+        counts["owner_mismatches"] += int(observation["owner_mismatches"])
+        counts["unsafe_modes"] += int(observation["unsafe_mode_entries"])
+
+    def observe_unknown_entry(path: Path) -> None:
+        try:
+            item = os.lstat(path)
+        except OSError:
+            counts["nonregular"] += 1
+            return
+        if stat.S_ISLNK(item.st_mode):
+            counts["symlinks"] += 1
+        elif stat.S_ISDIR(item.st_mode):
+            observe_directory(path)
+        elif not stat.S_ISREG(item.st_mode) or item.st_nlink != 1:
+            counts["nonregular"] += 1
+        else:
+            if item.st_uid != os.geteuid():
+                counts["owner_mismatches"] += 1
+            if stat.S_IMODE(item.st_mode) != 0o600:
+                counts["unsafe_modes"] += 1
+
+    expected_partial_present = False
+    expected_partial_directory = False
+    if os.path.lexists(attempts_root):
+        attempt_entries = (
+            bounded_outer_entries(attempts_root)
+            if observe_directory(attempts_root)
+            else []
+        )
+        for attempt, attempt_item in attempt_entries:
+            if stat.S_ISLNK(attempt_item.st_mode):
+                counts["symlinks"] += 1
+                unknown_cache_roots.add(attempt)
+                continue
+            if not stat.S_ISDIR(attempt_item.st_mode):
+                counts["nonregular"] += 1
+                unknown_cache_roots.add(attempt)
+                continue
+            cache_root = attempt / "extracted_cache"
+            if not os.path.lexists(cache_root):
+                continue
+            if not observe_directory(cache_root):
+                counts["cache_bearing_attempt_roots"] += 1
+                if attempt.name == current_attempt_id:
+                    counts["current_attempt_cache_bearing_roots"] += 1
+                unknown_cache_roots.add(cache_root)
+                continue
+            batches = bounded_outer_entries(cache_root)
+            attempt_bears_cache = False
+            for batch, batch_item in batches:
+                if stat.S_ISLNK(batch_item.st_mode) or not stat.S_ISDIR(
+                    batch_item.st_mode
+                ):
+                    observe_directory(batch)
+                    unknown_cache_roots.add(batch)
+                    attempt_bears_cache = True
+                    continue
+                valid_attempt = ATTEMPT_RE.fullmatch(attempt.name) is not None
+                valid_batch = re.fullmatch(
+                    r"c3_batch_(?:00[0-9]|01[0-8])", batch.name
+                ) is not None
+                extraction_parent = batch / "dicom_extraction"
+                clips = extraction_parent / "clips"
+                partial = batch / "dicom_extraction.partial"
+                clips_present = os.path.lexists(clips)
+                partial_present = os.path.lexists(partial)
+                batch_children = bounded_outer_entries(batch)
+                other_children = [
+                    child
+                    for child, _item in batch_children
+                    if child.name
+                    not in {
+                        "dicom_extraction",
+                        "dicom_extraction.partial",
+                    }
+                ]
+                extraction_parent_present = os.path.lexists(extraction_parent)
+                if not (
+                    clips_present
+                    or partial_present
+                    or extraction_parent_present
+                    or other_children
+                    or not valid_batch
+                ):
+                    continue
+                attempt_bears_cache = True
+                observe_directory(batch)
+                if other_children:
+                    unknown_cache_roots.add(batch)
+                    for child in other_children:
+                        observe_unknown_entry(child)
+                if extraction_parent_present:
+                    parent_is_directory = observe_directory(extraction_parent)
+                    if not clips_present and parent_is_directory:
+                        unknown_cache_roots.add(batch)
+                        merge_security(
+                            _r8u_r7h_observe_partial_metadata(
+                                extraction_parent,
+                                attempt_root=attempt,
+                                shared_entry_counter=(
+                                    partial_content_entries_seen
+                                ),
+                            )
+                        )
+                if clips_present:
+                    counts["canonical_clips_roots"] += 1
+                    finalized_roots.add(batch)
+                    observe_directory(clips)
+                if partial_present:
+                    counts["partial_roots"] += 1
+                    is_expected = partial == expected_partial
+                    if is_expected:
+                        expected_partial_present = True
+                        expected_partial_directory = observe_directory(partial)
+                    else:
+                        partial_is_directory = observe_directory(partial)
+                        if partial_is_directory:
+                            merge_security(
+                                _r8u_r7h_observe_partial_metadata(
+                                    partial,
+                                    attempt_root=attempt,
+                                    shared_entry_counter=(
+                                        partial_content_entries_seen
+                                    ),
+                                )
+                            )
+                        if (
+                            valid_attempt
+                            and valid_batch
+                            and not clips_present
+                            and attempt.name != current_attempt_id
+                            and partial_is_directory
+                            and _closed_terminal_failure_summary(partial)
+                        ):
+                            sealed_cross_roots.add(batch)
+                        elif valid_attempt and valid_batch and not clips_present:
+                            is_fresh_tail_role = batch.name in {
+                                "c3_batch_016",
+                                "c3_batch_017",
+                                "c3_batch_018",
+                            }
+                            if attempt.name != current_attempt_id or (
+                                not is_fresh_tail_role
+                                or os.path.lexists(partial / "failure.summary.json")
+                            ):
+                                # A second same-attempt historical-looking
+                                # partial, or any unsealed foreign partial, has
+                                # no external R7H role authority.  It is unknown
+                                # and cannot be treated as live work or granted
+                                # the Batch-16 exception.
+                                unknown_cache_roots.add(batch)
+                                if attempt.name == current_attempt_id:
+                                    unsealed_current_roots.add(batch)
+                            else:
+                                active_scientific_roots.add(batch)
+                                if attempt.name == current_attempt_id:
+                                    unsealed_current_roots.add(batch)
+                        else:
+                            unknown_cache_roots.add(batch)
+                    if clips_present:
+                        unknown_cache_roots.add(batch)
+                if not valid_attempt or not valid_batch:
+                    unknown_cache_roots.add(batch)
+            if attempt_bears_cache:
+                counts["cache_bearing_attempt_roots"] += 1
+                observe_directory(attempt)
+                if attempt.name == current_attempt_id:
+                    counts["current_attempt_cache_bearing_roots"] += 1
+
+    counts["sealed_cross"] = len(sealed_cross_roots)
+    counts["unsealed_current"] = len(unsealed_current_roots)
+    counts["active"] = len(active_scientific_roots)
+    counts["finalized"] = len(finalized_roots)
+    counts["unknown"] = len(unknown_cache_roots)
+
+    if expected_partial_directory:
+        observation = _r8u_r7h_observe_partial_metadata(
+            expected_partial,
+            attempt_root=expected_attempt_root,
+            shared_entry_counter=partial_content_entries_seen,
+        )
+        merge_security(observation)
+    else:
+        observation = {
+            "file_count": 0,
+            "directory_count": 0,
+            "total_bytes": 0,
+            "metadata_projection_sha256": "",
+            "npz_body_reads": 0,
+        }
+    if counts["symlinks"] or counts["nonregular"]:
+        _fail("R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR")
+    if counts["owner_mismatches"] or counts["unsafe_modes"]:
+        _fail("R7H_EXTRACTION_CACHE_OWNER_OR_MODE_INVALID")
+    if not expected_partial_present:
+        _fail("R7H_EXPECTED_BATCH16_PARTIAL_MISSING")
+    if (
+        observation.get("file_count") != R8U_R7H_FAILED_PARTIAL_FILES
+        or observation.get("directory_count")
+        != R8U_R7H_FAILED_PARTIAL_DIRECTORIES
+        or observation.get("total_bytes") != R8U_R7H_FAILED_PARTIAL_BYTES
+        or observation.get("metadata_projection_sha256")
+        != R8U_R7H_FAILED_PARTIAL_METADATA_SHA256
+        or observation.get("npz_body_reads") != 0
+    ):
+        _fail("R7H_BATCH16_PARTIAL_SEAL_INVALID")
+    if counts["finalized"]:
+        _fail("R7H_FINALIZED_EXTRACTION_CACHE_PRESENT")
+
+    validator = sealed_history_validator or _r8u_r7h_fixed_sealed_history
+    try:
+        authority = validator()
+    except Exception as exc:
+        raise FullSequentialError("R7H_BATCH16_PARTIAL_SEAL_INVALID") from exc
+    if not isinstance(authority, Mapping) or set(authority) != (
+        R8U_R7H_SEALED_HISTORY_KEYS
+    ):
+        _fail("R7H_BATCH16_PARTIAL_SEAL_INVALID")
+    integer_bindings = {
+        "failed_partial_files": R8U_R7H_FAILED_PARTIAL_FILES,
+        "failed_partial_directories": R8U_R7H_FAILED_PARTIAL_DIRECTORIES,
+        "failed_partial_bytes": R8U_R7H_FAILED_PARTIAL_BYTES,
+        "npz_body_reads": 0,
+    }
+    if (
+        any(
+            isinstance(authority.get(key), bool)
+            or authority.get(key) != expected
+            for key, expected in integer_bindings.items()
+        )
+        or authority.get("closed_failure_authority") is not True
+        or authority.get("batch16_failed_partial_metadata_projection_sha256")
+        != R8U_R7H_FAILED_PARTIAL_METADATA_SHA256
+        or authority.get("batch16_failed_partial_metadata_projection_sha256")
+        != observation["metadata_projection_sha256"]
+        or SHA_RE.fullmatch(
+            str(authority.get("batch16_failed_partial_seal_sha256"))
+        )
+        is None
+    ):
+        _fail("R7H_BATCH16_PARTIAL_SEAL_INVALID")
+    active_finalized = authority.get("active_finalized_extraction_caches")
+    if isinstance(active_finalized, bool) or not isinstance(
+        active_finalized, int
+    ):
+        _fail("R7H_BATCH16_PARTIAL_SEAL_INVALID")
+    if active_finalized != 0:
+        _fail("R7H_FINALIZED_EXTRACTION_CACHE_PRESENT")
+    if (
+        authority.get("batch16_failed_partial_cache_outside_active_topology")
+        is not True
+    ):
+        _fail("R7H_BATCH16_PARTIAL_STILL_ACTIVE")
+    if (
+        authority.get("scientific_attempt_id") != R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        or authority.get("scientific_commit") != R8U_R7H_SCIENTIFIC_COMMIT
+        or authority.get("batch_plan_sha256") != R8U_R7H_PLAN_SHA256
+        or authority.get("batch_id") != R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID
+        or authority.get("original_task_id")
+        != R8U_R7H_HISTORICAL_PARTIAL_TASK_ID
+        or authority.get("historical_failure_job_id")
+        != R8U_R7H_HISTORICAL_FAILURE_JOB_ID
+        or authority.get("historical_failure_class")
+        != R8U_R7H_HISTORICAL_FAILURE_CLASS
+        or authority.get("batch16_failed_partial_cache_retained") is not True
+        or authority.get("batch16_failed_partial_cache_adopted") is not False
+        or authority.get("batch16_failed_partial_cache_deleted") is not False
+        or authority.get("batch16_failed_partial_cache_overwritten") is not False
+        or authority.get("partial_outputs_modified") is not False
+        or authority.get("partial_outputs_renamed") is not False
+    ):
+        _fail("R7H_BATCH16_PARTIAL_ROLE_INVALID")
+    if counts["active"] > 1:
+        _fail("R7H_MULTIPLE_ACTIVE_EXTRACTION_CACHES")
+    if counts["active"] == 1:
+        _fail("R7H_UNEXPECTED_ACTIVE_EXTRACTION_CACHE")
+    if counts["unknown"]:
+        _fail("R7H_UNKNOWN_EXTRACTION_CACHE_PRESENT")
+
+    return R8UR7HExtractionCacheTopology(
+        status=R8U_R7H_TOPOLOGY_PASS,
+        cache_bearing_attempt_roots=counts["cache_bearing_attempt_roots"],
+        current_attempt_cache_bearing_roots=(
+            counts["current_attempt_cache_bearing_roots"]
+        ),
+        canonical_clips_roots=counts["canonical_clips_roots"],
+        partial_roots=counts["partial_roots"],
+        sealed_cross_attempt_terminal_failed_caches=counts["sealed_cross"],
+        sealed_current_attempt_batch16_failed_partials=1,
+        unsealed_current_attempt_caches=counts["unsealed_current"],
+        active_scientific_caches=counts["active"],
+        other_active_scientific_caches=counts["active"],
+        finalized_but_unretired_caches=counts["finalized"],
+        unknown_cache_like_roots=counts["unknown"],
+        unknown_or_unsealed_caches=(
+            len(unknown_cache_roots | unsealed_current_roots)
+        ),
+        symlink_entries=counts["symlinks"],
+        nonregular_entries=counts["nonregular"],
+        symlink_or_nonregular_entries=(
+            counts["symlinks"] + counts["nonregular"]
+        ),
+        owner_mismatches=counts["owner_mismatches"],
+        unsafe_mode_entries=counts["unsafe_modes"],
+        owner_or_mode_anomalies=(
+            counts["owner_mismatches"] + counts["unsafe_modes"]
+        ),
+        active_job_references=active_job_references,
+        active_process_references=active_process_references,
+        historical_partial_adoptable=False,
+        historical_partial_mutable=False,
+        historical_partial_outside_finalized_active_topology=True,
+        npz_body_reads=0,
+        paths_emitted=False,
+        identifiers_emitted=False,
     )
 
 

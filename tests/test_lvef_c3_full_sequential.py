@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -684,6 +685,971 @@ def _write_terminal_dicom_failure(partial: Path) -> None:
         encoding="utf-8",
     )
     os.chmod(summary, 0o600)
+
+
+def _r7h_expected_partial_fixture(root: Path) -> tuple[Path, Mapping[str, Any]]:
+    attempt = root / "attempts" / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+    batch = (
+        attempt
+        / "extracted_cache"
+        / sequential.R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID
+    )
+    partial = batch / "dicom_extraction.partial"
+    clips = partial / "clips"
+    clips.mkdir(mode=0o700, parents=True)
+    for path in (
+        root / "attempts",
+        attempt,
+        attempt / "extracted_cache",
+        batch,
+        partial,
+        clips,
+    ):
+        os.chmod(path, 0o700)
+    item = clips / "synthetic.npz"
+    item.write_bytes(b"x")
+    os.chmod(item, 0o600)
+    observation = sequential._r8u_r7h_observe_partial_metadata(
+        partial, attempt_root=attempt
+    )
+    return partial, observation
+
+
+def _r7h_small_observation_constants(
+    observation: Mapping[str, Any],
+) -> Any:
+    return mock.patch.multiple(
+        sequential,
+        R8U_R7H_FAILED_PARTIAL_FILES=observation["file_count"],
+        R8U_R7H_FAILED_PARTIAL_DIRECTORIES=observation["directory_count"],
+        R8U_R7H_FAILED_PARTIAL_BYTES=observation["total_bytes"],
+        R8U_R7H_FAILED_PARTIAL_METADATA_SHA256=(
+            observation["metadata_projection_sha256"]
+        ),
+    )
+
+
+class _SyntheticScandir:
+    def __init__(self, iterator: Any):
+        self.iterator = iterator
+
+    def __enter__(self) -> Any:
+        return self.iterator
+
+    def __exit__(self, *_args: Any) -> bool:
+        return False
+
+
+def _r7h_sealed_history(**changes: Any) -> dict[str, Any]:
+    value = {
+        "active_finalized_extraction_caches": 0,
+        "batch16_failed_partial_cache_retained": True,
+        "batch16_failed_partial_cache_outside_active_topology": True,
+        "batch16_failed_partial_cache_adopted": False,
+        "batch16_failed_partial_cache_deleted": False,
+        "batch16_failed_partial_cache_overwritten": False,
+        "batch16_failed_partial_seal_sha256": "a" * 64,
+        "batch16_failed_partial_metadata_projection_sha256": (
+            sequential.R8U_R7H_FAILED_PARTIAL_METADATA_SHA256
+        ),
+        "scientific_attempt_id": sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+        "scientific_commit": sequential.R8U_R7H_SCIENTIFIC_COMMIT,
+        "batch_plan_sha256": sequential.R8U_R7H_PLAN_SHA256,
+        "batch_id": sequential.R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID,
+        "original_task_id": sequential.R8U_R7H_HISTORICAL_PARTIAL_TASK_ID,
+        "historical_failure_job_id": (
+            sequential.R8U_R7H_HISTORICAL_FAILURE_JOB_ID
+        ),
+        "historical_failure_class": (
+            sequential.R8U_R7H_HISTORICAL_FAILURE_CLASS
+        ),
+        "failed_partial_files": sequential.R8U_R7H_FAILED_PARTIAL_FILES,
+        "failed_partial_directories": (
+            sequential.R8U_R7H_FAILED_PARTIAL_DIRECTORIES
+        ),
+        "failed_partial_bytes": sequential.R8U_R7H_FAILED_PARTIAL_BYTES,
+        "closed_failure_authority": True,
+        "partial_outputs_modified": False,
+        "partial_outputs_renamed": False,
+        "npz_body_reads": 0,
+    }
+    value.update(changes)
+    return value
+
+
+def _validate_small_r7h_topology(
+    root: Path, observation: Mapping[str, Any], **kwargs: Any
+) -> sequential.R8UR7HExtractionCacheTopology:
+    with _r7h_small_observation_constants(observation):
+        return sequential.validate_r8u_r7h_extraction_cache_topology(
+            root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+            **kwargs,
+        )
+
+
+def test_r7h_exact_same_attempt_partial_is_external_sealed_history(
+    tmp_path: Path,
+) -> None:
+    partial, observation = _r7h_expected_partial_fixture(tmp_path)
+    with mock.patch.object(
+        sequential,
+        "_closed_terminal_failure_summary",
+        side_effect=AssertionError("expected R7H root used an in-tree summary"),
+    ):
+        topology = _validate_small_r7h_topology(tmp_path, observation)
+    assert topology.status == (
+        "PASS_R7H_SEALED_SAME_ATTEMPT_PARTIAL_EXCLUDED_FROM_ACTIVE_TOPOLOGY"
+    )
+    assert topology.sealed_current_attempt_batch16_failed_partials == 1
+    assert topology.cache_bearing_attempt_roots == 1
+    assert topology.current_attempt_cache_bearing_roots == 1
+    assert topology.partial_roots == 1
+    assert topology.active_scientific_caches == 0
+    assert topology.finalized_but_unretired_caches == 0
+    assert topology.unknown_cache_like_roots == 0
+    assert topology.active_job_references == 0
+    assert topology.active_process_references == 0
+    assert topology.symlink_entries == 0
+    assert topology.nonregular_entries == 0
+    assert topology.owner_mismatches == 0
+    assert topology.unsafe_mode_entries == 0
+    assert topology.historical_partial_adoptable is False
+    assert topology.historical_partial_mutable is False
+    assert topology.historical_partial_outside_finalized_active_topology is True
+    assert topology.npz_body_reads == 0
+    assert topology.paths_emitted is False
+    assert topology.identifiers_emitted is False
+    assert not (partial / "failure.summary.json").exists()
+
+
+def test_r7h_default_history_uses_head_independent_r7g_chain() -> None:
+    source = inspect.getsource(sequential._r8u_r7h_fixed_sealed_history)
+    assert "lvef_c3_r8u_r7g_evidence" in source
+    assert "fixed_cache_topology()" in source
+    assert "validate_r8u_r7_frozen_partial_evidence" not in source
+
+
+def test_r7h_missing_or_changed_exact_partial_seal_fails_closed(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing"
+    missing.mkdir(mode=0o700)
+    with pytest.raises(sequential.FullSequentialError) as caught:
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            missing,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_EXPECTED_BATCH16_PARTIAL_MISSING"
+
+    root = tmp_path / "changed"
+    root.mkdir(mode=0o700)
+    _partial, observation = _r7h_expected_partial_fixture(root)
+    mutations = (
+        {"R8U_R7H_FAILED_PARTIAL_FILES": observation["file_count"] + 1},
+        {
+            "R8U_R7H_FAILED_PARTIAL_DIRECTORIES": (
+                observation["directory_count"] + 1
+            )
+        },
+        {"R8U_R7H_FAILED_PARTIAL_BYTES": observation["total_bytes"] + 1},
+        {"R8U_R7H_FAILED_PARTIAL_METADATA_SHA256": "b" * 64},
+    )
+    for mutation in mutations:
+        baseline = {
+            "R8U_R7H_FAILED_PARTIAL_FILES": observation["file_count"],
+            "R8U_R7H_FAILED_PARTIAL_DIRECTORIES": observation["directory_count"],
+            "R8U_R7H_FAILED_PARTIAL_BYTES": observation["total_bytes"],
+            "R8U_R7H_FAILED_PARTIAL_METADATA_SHA256": (
+                observation["metadata_projection_sha256"]
+            ),
+        }
+        baseline.update(mutation)
+        with (
+            mock.patch.multiple(sequential, **baseline),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential.validate_r8u_r7h_extraction_cache_topology(
+                root,
+                current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+                sealed_history_validator=lambda: _r7h_sealed_history(),
+            )
+        assert caught.value.code == "R7H_BATCH16_PARTIAL_SEAL_INVALID"
+
+
+def test_r7h_external_seal_and_role_fields_are_fail_specific(
+    tmp_path: Path,
+) -> None:
+    _partial, observation = _r7h_expected_partial_fixture(tmp_path)
+    cases = (
+        ({"closed_failure_authority": False}, "R7H_BATCH16_PARTIAL_SEAL_INVALID"),
+        (
+            {"batch16_failed_partial_metadata_projection_sha256": "b" * 64},
+            "R7H_BATCH16_PARTIAL_SEAL_INVALID",
+        ),
+        (
+            {"batch16_failed_partial_cache_outside_active_topology": False},
+            "R7H_BATCH16_PARTIAL_STILL_ACTIVE",
+        ),
+        (
+            {"batch16_failed_partial_cache_adopted": True},
+            "R7H_BATCH16_PARTIAL_ROLE_INVALID",
+        ),
+        (
+            {"partial_outputs_modified": True},
+            "R7H_BATCH16_PARTIAL_ROLE_INVALID",
+        ),
+        (
+            {"scientific_attempt_id": "lvef_c3_full_" + "2" * 16 + "_bbbbbbbb"},
+            "R7H_BATCH16_PARTIAL_ROLE_INVALID",
+        ),
+        (
+            {"active_finalized_extraction_caches": 1},
+            "R7H_FINALIZED_EXTRACTION_CACHE_PRESENT",
+        ),
+    )
+    for changes, expected in cases:
+        with (
+            _r7h_small_observation_constants(observation),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential.validate_r8u_r7h_extraction_cache_topology(
+                tmp_path,
+                current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+                sealed_history_validator=lambda changes=changes: (
+                    _r7h_sealed_history(**changes)
+                ),
+            )
+        assert caught.value.code == expected
+
+    with pytest.raises(sequential.FullSequentialError) as caught:
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            tmp_path,
+            current_attempt_id="lvef_c3_full_" + "2" * 16 + "_bbbbbbbb",
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_BATCH16_PARTIAL_ROLE_INVALID"
+
+
+def test_r7h_one_or_multiple_additional_active_caches_fail_distinctly(
+    tmp_path: Path,
+) -> None:
+    _partial, observation = _r7h_expected_partial_fixture(tmp_path)
+    cache_root = (
+        tmp_path
+        / "attempts"
+        / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        / "extracted_cache"
+    )
+    for ordinal, expected in (
+        (16, "R7H_UNEXPECTED_ACTIVE_EXTRACTION_CACHE"),
+        (17, "R7H_MULTIPLE_ACTIVE_EXTRACTION_CACHES"),
+    ):
+        batch = cache_root / f"c3_batch_{ordinal:03d}"
+        active = batch / "dicom_extraction.partial"
+        active.mkdir(mode=0o700, parents=True)
+        os.chmod(batch, 0o700)
+        os.chmod(active, 0o700)
+        with (
+            _r7h_small_observation_constants(observation),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential.validate_r8u_r7h_extraction_cache_topology(
+                tmp_path,
+                current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+                sealed_history_validator=lambda: _r7h_sealed_history(),
+            )
+        assert caught.value.code == expected
+
+
+def test_r7h_unknown_and_finalized_unretired_caches_fail_distinctly(
+    tmp_path: Path,
+) -> None:
+    unknown_root = tmp_path / "unknown"
+    unknown_root.mkdir(mode=0o700)
+    _partial, observation = _r7h_expected_partial_fixture(unknown_root)
+    cache_root = (
+        unknown_root
+        / "attempts"
+        / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        / "extracted_cache"
+    )
+    unknown = cache_root / "unexpected_batch" / "dicom_extraction.partial"
+    unknown.mkdir(mode=0o700, parents=True)
+    os.chmod(unknown.parent, 0o700)
+    with (
+        _r7h_small_observation_constants(observation),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            unknown_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_UNKNOWN_EXTRACTION_CACHE_PRESENT"
+
+    bounded_root = tmp_path / "bounded_walk"
+    bounded_root.mkdir(mode=0o700)
+    bounded_partial, bounded_observation = _r7h_expected_partial_fixture(
+        bounded_root
+    )
+    attempt_root = bounded_partial.parents[2]
+    canonical_rows = []
+    for path, kind in (
+        (bounded_partial, "D"),
+        (bounded_partial / "clips", "D"),
+        (bounded_partial / "clips" / "synthetic.npz", "F"),
+    ):
+        item = os.lstat(path)
+        canonical_rows.append(
+            [
+                path.relative_to(attempt_root).as_posix(),
+                kind,
+                stat.S_IMODE(item.st_mode),
+                item.st_uid,
+                item.st_gid,
+                item.st_nlink,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            ]
+        )
+    canonical_payload = b"".join(
+        json.dumps(row, separators=(",", ":"), ensure_ascii=True).encode()
+        + b"\n"
+        for row in sorted(canonical_rows)
+    )
+    assert bounded_observation["metadata_projection_sha256"] == (
+        hashlib.sha256(canonical_payload).hexdigest()
+    )
+
+    real_scandir = sequential.os.scandir
+    directory_item = os.lstat(bounded_partial / "clips")
+    over_limit_stat = mock.Mock(
+        side_effect=AssertionError("over-limit R7H partial entry was stat-ed")
+    )
+
+    def oversized_entries():
+        for name in ("clips", "extra_1"):
+            yield SimpleNamespace(
+                name=name,
+                stat=lambda *, follow_symlinks: directory_item,
+            )
+        yield SimpleNamespace(name="over-limit", stat=over_limit_stat)
+        raise AssertionError("R7H partial scan was materialized past its cap")
+
+    def bounded_scandir(path: Path) -> Any:
+        if Path(path) == bounded_partial:
+            return _SyntheticScandir(oversized_entries())
+        return real_scandir(path)
+
+    with (
+        _r7h_small_observation_constants(bounded_observation),
+        mock.patch.object(
+            sequential, "TERMINAL_PARTIAL_MAXIMUM_ENTRIES", 3
+        ),
+        mock.patch.object(
+            sequential.os, "scandir", side_effect=bounded_scandir
+        ),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            bounded_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+    over_limit_stat.assert_not_called()
+
+    for failure_kind in ("iteration", "stat"):
+        stat_failure = mock.Mock(
+            side_effect=OSError("synthetic R7H partial stat failure")
+        )
+
+        def failed_entries():
+            if failure_kind == "iteration":
+                raise OSError("synthetic R7H partial iteration failure")
+            yield SimpleNamespace(name="unreadable", stat=stat_failure)
+
+        def failed_scandir(path: Path) -> Any:
+            if Path(path) == bounded_partial:
+                return _SyntheticScandir(failed_entries())
+            return real_scandir(path)
+
+        with (
+            _r7h_small_observation_constants(bounded_observation),
+            mock.patch.object(
+                sequential.os, "scandir", side_effect=failed_scandir
+            ),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential.validate_r8u_r7h_extraction_cache_topology(
+                bounded_root,
+                current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+                sealed_history_validator=lambda: _r7h_sealed_history(),
+            )
+        assert caught.value.code == (
+            "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+        )
+        if failure_kind == "stat":
+            stat_failure.assert_called_once_with(follow_symlinks=False)
+
+    finalized_root = tmp_path / "finalized"
+    finalized_root.mkdir(mode=0o700)
+    _partial, observation = _r7h_expected_partial_fixture(finalized_root)
+    canonical = (
+        finalized_root
+        / "attempts"
+        / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        / "extracted_cache"
+        / sequential.R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID
+        / "dicom_extraction"
+        / "clips"
+    )
+    canonical.mkdir(mode=0o700, parents=True)
+    os.chmod(canonical.parent, 0o700)
+    os.chmod(canonical, 0o700)
+    with (
+        _r7h_small_observation_constants(observation),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            finalized_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_FINALIZED_EXTRACTION_CACHE_PRESENT"
+
+
+def test_r7h_outer_topology_budget_is_lazy_and_globally_shared(
+    tmp_path: Path,
+) -> None:
+    lazy_root = tmp_path / "lazy"
+    lazy_root.mkdir(mode=0o700)
+    _partial, observation = _r7h_expected_partial_fixture(lazy_root)
+    attempts_root = lazy_root / "attempts"
+    attempt = attempts_root / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+    real_scandir = sequential.os.scandir
+    real_lstat = sequential.os.lstat
+    over_limit_stat = mock.Mock(
+        side_effect=AssertionError("over-limit R7H entry was stat-ed")
+    )
+
+    def guarded_entries():
+        yield SimpleNamespace(
+            name=attempt.name,
+            stat=lambda *, follow_symlinks: real_lstat(attempt),
+        )
+        yield SimpleNamespace(name="over-limit", stat=over_limit_stat)
+        raise AssertionError("R7H outer scan was materialized past its cap")
+
+    def guarded_scandir(path: Path) -> Any:
+        if Path(path) == attempts_root:
+            return _SyntheticScandir(guarded_entries())
+        return real_scandir(path)
+
+    with (
+        _r7h_small_observation_constants(observation),
+        mock.patch.object(sequential, "TERMINAL_PARTIAL_MAXIMUM_ENTRIES", 1),
+        mock.patch.object(
+            sequential,
+            "_r8u_r7h_observe_partial_metadata",
+            return_value=observation,
+        ) as metadata_observer,
+        mock.patch.object(
+            sequential.os, "scandir", side_effect=guarded_scandir
+        ),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            lazy_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+    over_limit_stat.assert_not_called()
+    metadata_observer.assert_not_called()
+
+    for name, maximum_entries in (("cache", 1), ("batch", 2)):
+        case_root = tmp_path / name
+        case_root.mkdir(mode=0o700)
+        _partial, case_observation = _r7h_expected_partial_fixture(case_root)
+        with (
+            _r7h_small_observation_constants(case_observation),
+            mock.patch.object(
+                sequential,
+                "TERMINAL_PARTIAL_MAXIMUM_ENTRIES",
+                maximum_entries,
+            ),
+            mock.patch.object(
+                sequential,
+                "_r8u_r7h_observe_partial_metadata",
+                return_value=case_observation,
+            ) as metadata_observer,
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential.validate_r8u_r7h_extraction_cache_topology(
+                case_root,
+                current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+                sealed_history_validator=lambda: _r7h_sealed_history(),
+            )
+        assert caught.value.code == (
+            "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+        )
+        metadata_observer.assert_not_called()
+
+
+def test_r7h_outer_topology_iteration_and_stat_errors_fail_closed(
+    tmp_path: Path,
+) -> None:
+    real_scandir = sequential.os.scandir
+    real_lstat = sequential.os.lstat
+
+    iteration_root = tmp_path / "iteration_error"
+    iteration_root.mkdir(mode=0o700)
+    _partial, iteration_observation = _r7h_expected_partial_fixture(
+        iteration_root
+    )
+    attempts_root = iteration_root / "attempts"
+    attempt = attempts_root / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+
+    def iteration_entries():
+        yield SimpleNamespace(
+            name=attempt.name,
+            stat=lambda *, follow_symlinks: real_lstat(attempt),
+        )
+        raise OSError("synthetic R7H iteration failure")
+
+    def iteration_scandir(path: Path) -> Any:
+        if Path(path) == attempts_root:
+            return _SyntheticScandir(iteration_entries())
+        return real_scandir(path)
+
+    with (
+        _r7h_small_observation_constants(iteration_observation),
+        mock.patch.object(
+            sequential.os, "scandir", side_effect=iteration_scandir
+        ),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            iteration_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+
+    stat_root = tmp_path / "stat_error"
+    stat_root.mkdir(mode=0o700)
+    _partial, stat_observation = _r7h_expected_partial_fixture(stat_root)
+    cache_root = (
+        stat_root
+        / "attempts"
+        / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        / "extracted_cache"
+    )
+    batch = cache_root / sequential.R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID
+    stat_failure = mock.Mock(side_effect=OSError("synthetic R7H stat failure"))
+
+    def stat_scandir(path: Path) -> Any:
+        if Path(path) == cache_root:
+            return _SyntheticScandir(
+                iter((SimpleNamespace(name=batch.name, stat=stat_failure),))
+            )
+        return real_scandir(path)
+
+    with (
+        _r7h_small_observation_constants(stat_observation),
+        mock.patch.object(sequential.os, "scandir", side_effect=stat_scandir),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            stat_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+    stat_failure.assert_called_once_with(follow_symlinks=False)
+
+
+def test_r7h_partial_content_budget_is_shared_across_observations(
+    tmp_path: Path,
+) -> None:
+    partial, _observation = _r7h_expected_partial_fixture(tmp_path)
+    shared_counter = [0]
+    with mock.patch.object(
+        sequential, "TERMINAL_PARTIAL_MAXIMUM_ENTRIES", 4
+    ):
+        first = sequential._r8u_r7h_observe_partial_metadata(
+            partial,
+            attempt_root=partial.parents[3],
+            shared_entry_counter=shared_counter,
+        )
+        assert first["nonregular_entries"] == 0
+        assert shared_counter == [4]
+        second = sequential._r8u_r7h_observe_partial_metadata(
+            partial,
+            attempt_root=partial.parents[3],
+            shared_entry_counter=shared_counter,
+        )
+    assert second["nonregular_entries"] == 1
+    assert shared_counter == [4]
+
+
+def test_r7h_unbound_same_attempt_failure_summary_is_unknown(
+    tmp_path: Path,
+) -> None:
+    _partial, observation = _r7h_expected_partial_fixture(tmp_path)
+    cache_root = (
+        tmp_path
+        / "attempts"
+        / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        / "extracted_cache"
+    )
+    batch = cache_root / "c3_batch_016"
+    unbound = batch / "dicom_extraction.partial"
+    _write_terminal_dicom_failure(unbound)
+    os.chmod(batch, 0o700)
+    with (
+        _r7h_small_observation_constants(observation),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            tmp_path,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+    )
+    assert caught.value.code == "R7H_UNKNOWN_EXTRACTION_CACHE_PRESENT"
+
+    earlier_root = tmp_path / "earlier_role"
+    earlier_root.mkdir(mode=0o700)
+    _partial, observation = _r7h_expected_partial_fixture(earlier_root)
+    batch = (
+        earlier_root
+        / "attempts"
+        / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        / "extracted_cache"
+        / "c3_batch_014"
+    )
+    unknown = batch / "dicom_extraction.partial"
+    unknown.mkdir(mode=0o700, parents=True)
+    os.chmod(batch, 0o700)
+    with (
+        _r7h_small_observation_constants(observation),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            earlier_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_UNKNOWN_EXTRACTION_CACHE_PRESENT"
+
+
+def test_r7h_reference_and_filesystem_anomalies_have_exact_codes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "base"
+    root.mkdir(mode=0o700)
+    _partial, observation = _r7h_expected_partial_fixture(root)
+    for arguments, expected in (
+        ({"active_job_references": 1}, "R7H_EXTRACTION_CACHE_ACTIVE_JOB_REFERENCE"),
+        (
+            {"active_process_references": 1},
+            "R7H_EXTRACTION_CACHE_ACTIVE_PROCESS_REFERENCE",
+        ),
+    ):
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            _validate_small_r7h_topology(root, observation, **arguments)
+        assert caught.value.code == expected
+
+    for role in ("symlink", "nonregular", "mode"):
+        case_root = tmp_path / role
+        case_root.mkdir(mode=0o700)
+        _partial, case_observation = _r7h_expected_partial_fixture(case_root)
+        batch = (
+            case_root
+            / "attempts"
+            / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+            / "extracted_cache"
+            / "c3_batch_016"
+        )
+        batch.mkdir(mode=0o700)
+        path = batch / "dicom_extraction.partial"
+        if role == "symlink":
+            path.symlink_to(_partial)
+            expected = "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+        elif role == "nonregular":
+            path.write_text("not a directory\n", encoding="utf-8")
+            os.chmod(path, 0o600)
+            expected = "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+        else:
+            path.mkdir(mode=0o700)
+            os.chmod(path, 0o750)
+            expected = "R7H_EXTRACTION_CACHE_OWNER_OR_MODE_INVALID"
+        with (
+            _r7h_small_observation_constants(case_observation),
+            pytest.raises(sequential.FullSequentialError) as caught,
+        ):
+            sequential.validate_r8u_r7h_extraction_cache_topology(
+                case_root,
+                current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+                sealed_history_validator=lambda: _r7h_sealed_history(),
+            )
+        assert caught.value.code == expected
+
+    for role in ("cache_symlink", "cache_nonregular", "cache_mode"):
+        case_root = tmp_path / role
+        case_root.mkdir(mode=0o700)
+        attempt = (
+            case_root
+            / "attempts"
+            / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        )
+        attempt.mkdir(mode=0o700, parents=True)
+        os.chmod(case_root / "attempts", 0o700)
+        os.chmod(attempt, 0o700)
+        cache_root = attempt / "extracted_cache"
+        if role == "cache_symlink":
+            target = case_root / "external_cache"
+            target.mkdir(mode=0o700)
+            cache_root.symlink_to(target)
+            expected = "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+        elif role == "cache_nonregular":
+            cache_root.write_text("not a directory\n", encoding="utf-8")
+            os.chmod(cache_root, 0o600)
+            expected = "R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR"
+        else:
+            cache_root.mkdir(mode=0o700)
+            os.chmod(cache_root, 0o750)
+            expected = "R7H_EXTRACTION_CACHE_OWNER_OR_MODE_INVALID"
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            sequential.validate_r8u_r7h_extraction_cache_topology(
+                case_root,
+                current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+                sealed_history_validator=lambda: _r7h_sealed_history(),
+            )
+        assert caught.value.code == expected
+
+    attempts_mode_root = tmp_path / "attempts_mode"
+    attempts_mode_root.mkdir(mode=0o700)
+    _partial, attempts_observation = _r7h_expected_partial_fixture(
+        attempts_mode_root
+    )
+    os.chmod(attempts_mode_root / "attempts", 0o777)
+    with (
+        _r7h_small_observation_constants(attempts_observation),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            attempts_mode_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_EXTRACTION_CACHE_OWNER_OR_MODE_INVALID"
+
+    hidden_root = tmp_path / "hidden_cache"
+    hidden_root.mkdir(mode=0o700)
+    _partial, hidden_observation = _r7h_expected_partial_fixture(hidden_root)
+    hidden = (
+        hidden_root
+        / "attempts"
+        / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        / "extracted_cache"
+        / ".DS_Store"
+        / "dicom_extraction.partial"
+    )
+    hidden.mkdir(mode=0o700, parents=True)
+    os.chmod(hidden.parent, 0o700)
+    with (
+        _r7h_small_observation_constants(hidden_observation),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            hidden_root,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_UNKNOWN_EXTRACTION_CACHE_PRESENT"
+
+
+def test_r7h_cross_attempt_closed_failure_behavior_is_preserved(
+    tmp_path: Path,
+) -> None:
+    _partial, observation = _r7h_expected_partial_fixture(tmp_path)
+    prior = "lvef_c3_full_2222222222222222_bbbbbbbb"
+    prior_batch = tmp_path / "attempts" / prior / "extracted_cache" / "c3_batch_001"
+    historical = prior_batch / "dicom_extraction.partial"
+    _write_terminal_dicom_failure(historical)
+    for path in (
+        tmp_path / "attempts" / prior,
+        tmp_path / "attempts" / prior / "extracted_cache",
+        prior_batch,
+        historical,
+    ):
+        os.chmod(path, 0o700)
+    topology = _validate_small_r7h_topology(tmp_path, observation)
+    assert topology.sealed_cross_attempt_terminal_failed_caches == 1
+    assert topology.cache_bearing_attempt_roots == 2
+    assert topology.active_scientific_caches == 0
+
+    unsealed = (
+        tmp_path
+        / "attempts"
+        / prior
+        / "extracted_cache"
+        / "c3_batch_002"
+        / "dicom_extraction.partial"
+    )
+    unsealed.mkdir(mode=0o700, parents=True)
+    os.chmod(unsealed.parent, 0o700)
+    with (
+        _r7h_small_observation_constants(observation),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.validate_r8u_r7h_extraction_cache_topology(
+            tmp_path,
+            current_attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+            sealed_history_validator=lambda: _r7h_sealed_history(),
+        )
+    assert caught.value.code == "R7H_UNKNOWN_EXTRACTION_CACHE_PRESENT"
+
+
+def _r7h_tail_run(
+    root: Path,
+) -> sequential.FullRun:
+    plan, requirements = two_batch_plan()
+    tail_plan = {
+        **plan,
+        "batches": [
+            {"ordinal": ordinal, "batch_id": f"c3_batch_{ordinal:03d}"}
+            for ordinal in range(19)
+        ],
+    }
+    run = _scoped_run(root, tail_plan, requirements)
+    return replace(
+        run,
+        authority=SimpleNamespace(
+            governing_commit=sequential.R8U_R7H_SCIENTIFIC_COMMIT
+        ),
+        plan_sha256=sequential.R8U_R7H_PLAN_SHA256,
+        attempt_id=sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID,
+        attempt_root=(
+            root / "attempts" / sequential.R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        ),
+    )
+
+
+def test_r7h_context_is_tail_only_and_topology_precedes_science(
+    tmp_path: Path,
+) -> None:
+    assert sequential.R8U_R7H_FIXED_CONTINUATION is (
+        sequential.FullExecutionContext.R8U_R7H_FIXED_CONTINUATION
+    )
+    assert sequential.R8U_R7H_FIXED_CONTINUATION is not (
+        sequential.R8U_R7D_FIXED_CONTINUATION
+    )
+    run = _r7h_tail_run(tmp_path)
+    dependencies = sequential.FullDependencies(
+        execution_context=sequential.R8U_R7H_FIXED_CONTINUATION
+    )
+    with pytest.raises(sequential.FullSequentialError) as caught:
+        sequential.run_batch_task(task_id=16, run=run, dependencies=dependencies)
+    assert caught.value.code == (
+        "FULL_SEQUENTIAL_R8U_R7H_CONTINUATION_TASK_OUT_OF_SCOPE"
+    )
+
+    calls: list[str] = []
+
+    def topology(*_args: Any, **_kwargs: Any) -> None:
+        calls.append("topology")
+        raise sequential.FullSequentialError("R7H_EXPECTED_BATCH16_PARTIAL_MISSING")
+
+    def forbidden(name: str):
+        def operation(*_args: Any, **_kwargs: Any) -> Any:
+            calls.append(name)
+            raise AssertionError(f"{name} crossed the R7H topology gate")
+
+        return operation
+
+    dependencies = sequential.FullDependencies(
+        prior_batch_validator=lambda **_kwargs: calls.append("prior"),
+        environment_validator=forbidden("environment"),
+        download=forbidden("download"),
+        dicom=forbidden("dicom"),
+        echoprime=forbidden("echoprime"),
+        preserve=forbidden("preserve"),
+        execution_context=sequential.R8U_R7H_FIXED_CONTINUATION,
+    )
+    with (
+        mock.patch.object(
+            sequential, "validate_r8u_r7h_extraction_cache_topology", topology
+        ),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.run_batch_task(task_id=17, run=run, dependencies=dependencies)
+    assert caught.value.code == "R7H_EXPECTED_BATCH16_PARTIAL_MISSING"
+    assert caught.value.stage == "PREBODY_AUTHORITY"
+    assert calls == ["prior", "topology"]
+
+
+def test_r7h_worker_submission_uses_only_the_injected_fresh_validator(
+    tmp_path: Path,
+) -> None:
+    run = _r7h_tail_run(tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    def validator(*, current_job_id: str, role: str) -> None:
+        calls.append((current_job_id, role))
+        raise sequential.FullSequentialError("R7H_SYNTHETIC_WORKER_STOP")
+
+    dependencies = sequential.FullDependencies(
+        prior_batch_validator=lambda **_kwargs: None,
+        r8u_r7h_worker_submission_validator=validator,
+        execution_context=sequential.R8U_R7H_FIXED_CONTINUATION,
+    )
+    with (
+        mock.patch.object(
+            sequential,
+            "validate_r8u_r7h_extraction_cache_topology",
+            return_value=mock.sentinel.topology,
+        ),
+        mock.patch.dict(os.environ, {"JOB_ID": "7480999"}, clear=False),
+        pytest.raises(sequential.FullSequentialError) as caught,
+    ):
+        sequential.run_batch_task(task_id=17, run=run, dependencies=dependencies)
+    assert caught.value.code == "R7H_SYNTHETIC_WORKER_STOP"
+    assert caught.value.stage == "SUBMISSION_AUTHORITY"
+    assert calls == [("7480999", "array")]
+
+
+def test_r7h_dependency_light_classifier_and_context_matrix() -> None:
+    """Keep every mandatory R7H classifier case live in the SCC test runner."""
+
+    fixture_cases = (
+        test_r7h_exact_same_attempt_partial_is_external_sealed_history,
+        test_r7h_missing_or_changed_exact_partial_seal_fails_closed,
+        test_r7h_external_seal_and_role_fields_are_fail_specific,
+        test_r7h_one_or_multiple_additional_active_caches_fail_distinctly,
+        test_r7h_unknown_and_finalized_unretired_caches_fail_distinctly,
+        test_r7h_outer_topology_budget_is_lazy_and_globally_shared,
+        test_r7h_outer_topology_iteration_and_stat_errors_fail_closed,
+        test_r7h_partial_content_budget_is_shared_across_observations,
+        test_r7h_unbound_same_attempt_failure_summary_is_unknown,
+        test_r7h_reference_and_filesystem_anomalies_have_exact_codes,
+        test_r7h_cross_attempt_closed_failure_behavior_is_preserved,
+        test_r7h_context_is_tail_only_and_topology_precedes_science,
+        test_r7h_worker_submission_uses_only_the_injected_fresh_validator,
+    )
+    test_r7h_default_history_uses_head_independent_r7g_chain()
+    with tempfile.TemporaryDirectory() as directory:
+        base = Path(directory).resolve()
+        for index, case in enumerate(fixture_cases):
+            case_root = base / f"case_{index:02d}"
+            case_root.mkdir(mode=0o700)
+            case(case_root)
 
 
 def test_foreign_closed_failure_cache_is_preserved_but_never_current_or_final() -> None:

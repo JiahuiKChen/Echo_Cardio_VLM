@@ -13,14 +13,14 @@ JOB_STORAGE_BASE=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/scheduler_
 
 [[ $# -eq 0 ]] || exit 64
 [[ "${JOB_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || exit 78
-[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin)|r8u_r4_(res|seq|fin)|r8u_r5_(ctx|res|seq|fin)|r8u_r6_(loc|res|seq|fin)|r8u_r7_(rec|seq|fin)|r8u_r7d_(ctx|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
+[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin)|r8u_r4_(res|seq|fin)|r8u_r5_(ctx|res|seq|fin)|r8u_r6_(loc|res|seq|fin)|r8u_r7_(rec|seq|fin)|r8u_r7d_(ctx|seq|fin)|r8u_r7h_(ctx|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
 [[ -f "$COMMON" && ! -L "$COMMON" ]] || exit 78
 # shellcheck disable=SC1090 -- fixed authority-worktree helper path.
 source "$COMMON"
 
-# R8U-R5/R6/R7 compute dispatch must not depend on an NSS username lookup before
+# R8U-R5/R6/R7/R7H compute dispatch must not depend on an NSS username lookup before
 # the Python worker establishes its sealed/kernel scheduler context.
-# Historical runners retain their fixed name-based helper; R5 through R7 use the
+# Historical runners retain their fixed name-based helper; R5 through R7H use the
 # numeric effective UID exposed by the kernel through Bash's read-only EUID.
 r8u_r5_require_private_projectnb_directory() {
   local candidate="$1"
@@ -36,7 +36,7 @@ r8u_r5_require_private_projectnb_directory() {
 require_job_private_projectnb_directory() {
   if [[ "$JOB_FAMILY" == r8u_r5 ]]; then
     r8u_r5_require_private_projectnb_directory "$1"
-  elif [[ "$JOB_FAMILY" == r8u_r6 || "$JOB_FAMILY" == r8u_r7 || "$JOB_FAMILY" == r8u_r7d ]]; then
+  elif [[ "$JOB_FAMILY" == r8u_r6 || "$JOB_FAMILY" == r8u_r7 || "$JOB_FAMILY" == r8u_r7d || "$JOB_FAMILY" == r8u_r7h ]]; then
     r8u_r5_require_private_projectnb_directory "$1"
   else
     lvef_c3_require_private_projectnb_directory "$1"
@@ -270,10 +270,37 @@ case "$JOB_NAME" in
     MODE=--run-r8u-r7d-continuation-finalizer
     PYCACHE_ROLE=lvef_c3_r8u_r7d
     ;;
+  lvef_c3_r8u_r7h_ctx_*)
+    [[ "${SGE_TASK_ID:-}" == "17" ]] || exit 78
+    [[ "${NSLOTS:-}" == "1" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u_r7h
+    ROLE=r8u_r7h_context_probe
+    MODE=--run-r8u-r7h-continuation-context-probe
+    PYCACHE_ROLE=lvef_c3_r8u_r7h
+    ;;
+  lvef_c3_r8u_r7h_seq_*)
+    [[ "${SGE_TASK_ID:-}" =~ ^1[7-9]$ ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] || exit 78
+    JOB_FAMILY=r8u_r7h
+    ROLE="r8u_r7h_array_task_${SGE_TASK_ID}"
+    MODE=--run-r8u-r7h-continuation-17-19-array-task
+    PYCACHE_ROLE=lvef_c3_r8u_r7h
+    ;;
+  lvef_c3_r8u_r7h_fin_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u_r7h
+    ROLE=r8u_r7h_finalizer
+    MODE=--run-r8u-r7h-continuation-finalizer
+    PYCACHE_ROLE=lvef_c3_r8u_r7h
+    ;;
   *) exit 78 ;;
 esac
 
-if [[ "$ROLE" != r8u_r7d_context_probe ]]; then
+if [[ "$ROLE" != r8u_r7d_context_probe && "$ROLE" != r8u_r7h_context_probe ]]; then
   JOB_STORAGE_PARENT="$JOB_STORAGE_BASE/${JOB_FAMILY}_job_$JOB_ID"
   JOB_STORAGE_ROOT="$JOB_STORAGE_PARENT/$ROLE"
   for storage_directory in \
