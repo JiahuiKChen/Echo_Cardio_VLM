@@ -47,7 +47,10 @@ def _approved_bindings() -> tuple[str, str]:
         session = minimal._project_legacy_session_environment(
             required_names=minimal.LEGACY_SESSION_REQUIRED_NAMES
         ).values
-        names = frozenset(audit.EXPECTED_ENV.values())
+        names = frozenset({
+            audit.EXPECTED_ENV["account"],
+            audit.EXPECTED_ENV["billing_project"],
+        })
         value = minimal._parse_literal_environment(
             Path(session["PREFLIGHT_ENV"]), required_names=names
         )

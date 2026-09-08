@@ -26,6 +26,48 @@ PROJECT = "synthetic-private-project"
 TOKEN = "synthetic-token-never-printed"
 
 
+@contextlib.contextmanager
+def _private_approved_preflight(*, account=ACCOUNT, project=PROJECT, extra=""):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        preflight = root / "preflight.env"
+        lines = ['LVEF_C3_EXPECTED_GCP_PROJECT_DISPLAY_NAME="Synthetic Approved Research Project"']
+        if account is not None:
+            lines.append(f"LVEF_C3_EXPECTED_GCP_ACCOUNT={account}")
+        if project is not None:
+            lines.append(f"LVEF_C3_GCP_BILLING_PROJECT={project}")
+        preflight.write_text("\n".join(lines) + "\n" + extra, encoding="utf-8")
+        preflight.chmod(0o600)
+        session = root / "session.env"
+        session.write_text("\n".join(
+            f"{name}={preflight if name == 'PREFLIGHT_ENV' else '/synthetic/authority'}"
+            for name in sorted(adc.minimal.LEGACY_SESSION_REQUIRED_NAMES)
+        ) + "\n", encoding="utf-8")
+        session.chmod(0o600)
+        with mock.patch.object(adc.minimal, "SESSION_AUTHORITY_PATH", session):
+            yield preflight
+
+
+def test_approved_adc_bindings_ignore_quoted_unused_project_display_name() -> None:
+    with _private_approved_preflight() as preflight, mock.patch.object(
+        adc.minimal, "_parse_literal_environment", wraps=adc.minimal._parse_literal_environment
+    ) as parse:
+        assert adc._approved_bindings() == (ACCOUNT, PROJECT)
+        parse.assert_called_once_with(preflight, required_names=frozenset({
+            "LVEF_C3_EXPECTED_GCP_ACCOUNT", "LVEF_C3_GCP_BILLING_PROJECT",
+        }))
+
+
+def test_approved_adc_bindings_keep_account_and_project_validation_strict() -> None:
+    for change in (
+        {"account": None}, {"project": None}, {"account": "invalid-account"},
+        {"project": "Invalid-Project"}, {"account": f'"{ACCOUNT}"'},
+        {"extra": f"LVEF_C3_GCP_BILLING_PROJECT={PROJECT}\n"},
+    ):
+        with _private_approved_preflight(**change):
+            _raises("ADC_APPROVED_AUTHORITY_INVALID", adc._approved_bindings)
+
+
 def _raises(code, operation):
     try:
         operation()
