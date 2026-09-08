@@ -4579,6 +4579,28 @@ def test_stage_boundary_maps_only_closed_safe_codes() -> None:
     assert "/restricted/" not in str(caught.value)
 
 
+def test_stage_boundary_preserves_typed_download_code_without_emitting_exception_details() -> None:
+    with pytest.raises(sequential.FullSequentialError) as caught:
+        with sequential._stage_boundary("DOWNLOAD"):
+            raise core.OrchestrationError(
+                "DOWNLOAD_FAILED_NONRETRYABLE_OR_EXHAUSTED"
+            )
+    assert caught.value.code == "DOWNLOAD_FAILED_NONRETRYABLE_OR_EXHAUSTED"
+    assert caught.value.stage == "DOWNLOAD"
+
+    for failure in (
+        core.OrchestrationError("/restricted/private/credential-material"),
+        core.OrchestrationError("ADC_TOKEN_ACQUISITION_FAILED", "private-detail"),
+        ValueError("ADC_TOKEN_ACQUISITION_FAILED"),
+    ):
+        with pytest.raises(sequential.FullSequentialError) as caught:
+            with sequential._stage_boundary("DOWNLOAD"):
+                raise failure
+        assert caught.value.code == "UNEXPECTED_SANITIZED_STAGE_FAILURE"
+        assert caught.value.stage == "DOWNLOAD"
+        assert "private" not in str(caught.value)
+
+
 def test_full_run_requires_plan_at_the_fixed_attempt_path(tmp_path: Path) -> None:
     run, _, _ = _claimed_run_fixture(tmp_path)
     wrong = replace(

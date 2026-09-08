@@ -34,7 +34,7 @@
       },
       "entrypoint": {
         "path": "scripts/lvef_c3_orchestration_core.py",
-        "sha256": "72d226e37d132151ce7c604814abdf28365765aed830e9c1c44055ae8cc0783b",
+        "sha256": "59e9a934829c877f963125ed326599db159cb589fec775f846da71aad1d41211",
         "callable": "execute_exact_batch_download"
       },
       "required_predecessor_receipts": [],
@@ -163,7 +163,7 @@
       },
       "entrypoint": {
         "path": "scripts/finalize_lvef_c3_production.py",
-        "sha256": "02aaddebc3d2c28f85c81bcf344449453c02011473335aab6bcc65507f8f093e",
+        "sha256": "0ca610ec936d00adb84772b66d8d1892ec0a631feb681f88ba83d25d341a4715",
         "callable": "finalize_canary_preservation_receipt"
       },
       "required_predecessor_receipts": [

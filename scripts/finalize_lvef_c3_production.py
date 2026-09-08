@@ -18270,6 +18270,7 @@ def _validate_r8u_r7h_mixed_implementation_epochs(
     expected_runtime_authority: Mapping[str, Any] | None,
     authority: R8UR7HImplementationAuthority,
     plan: Mapping[str, Any] | None,
+    auth_successor_binding: Path | None = None,
 ) -> str:
     """Accept only fixed Batches 1--16 plus three fresh R7H receipts."""
 
@@ -18445,7 +18446,13 @@ def _validate_r8u_r7h_mixed_implementation_epochs(
         raise ProductionFinalizationError(
             "R8U_R7H_FINALIZER_IMPLEMENTATION_EPOCH_MISMATCH"
         )
-    _validate_r8u_r7h_repository_authority(authority.implementation_commit)
+    if auth_successor_binding is None:
+        _validate_r8u_r7h_repository_authority(authority.implementation_commit)
+    else:
+        # The zero-payload authentication successor has fresh dispatch and
+        # finalizer authority.  Its original failed authority remains immutable.
+        from lvef_c3_r8u_r7h_auth_successor import validate_finalizer_successor_binding
+        validate_finalizer_successor_binding(authority, binding_path=auth_successor_binding, receipts=receipts)
     authority_payload = {
         "schema_version": 1,
         "artifact_type": "lvef_c3_r8u_r7h_finalizer_authority_v1",
@@ -18511,7 +18518,10 @@ def finalize_receipts(
     r8u_r7_implementation_authority: R8UR7ImplementationAuthority | None = None,
     r8u_r7d_implementation_authority: R8UR7DImplementationAuthority | None = None,
     r8u_r7h_implementation_authority: R8UR7HImplementationAuthority | None = None,
+    r8u_r7h_auth_successor_binding: Path | None = None,
 ) -> dict[str, Any]:
+    if r8u_r7h_auth_successor_binding is not None and r8u_r7h_implementation_authority is None:
+        raise ProductionFinalizationError("R7HA_FINALIZER_SUCCESSOR_AUTHORITY_REQUIRED")
     authority_mode_count = sum(
         value is not None
         for value in (
@@ -18705,6 +18715,7 @@ def finalize_receipts(
                 expected_runtime_authority=expected_runtime_authority,
                 authority=r8u_r7h_implementation_authority,
                 plan=plan,
+                auth_successor_binding=r8u_r7h_auth_successor_binding,
             )
         )
     receipt_set_hash = hashlib.sha256(

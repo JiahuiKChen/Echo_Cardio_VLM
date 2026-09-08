@@ -93,6 +93,47 @@ EXPECTED_FULL_RAW_ROOT_TEMPLATE = (
     "attempts/{attempt_id}/raw"
 )
 TEST_ONLY_FULL_CONTRACT_ID = "synthetic_two_batch_full_sequential_v1"
+AUTHENTICATION_SUCCESSOR_EXECUTION_ID = "r7h_auth_successor_v1"
+AUTHENTICATION_SUCCESSOR_ATTEMPT_ID = "lvef_c3_full_904d0ab65f003c1e_e1cdb674"
+AUTHENTICATION_SUCCESSOR_PLAN_SHA256 = (
+    "904d0ab65f003c1eb68adeee8c0b1dd786ec7a9ef4bb496b646b22cc7a540247"
+)
+AUTHENTICATION_SUCCESSOR_SCIENTIFIC_COMMIT = "e1cdb674ada23bbc9f3a1ff77c33927bd324d3ed"
+AUTHENTICATION_SUCCESSOR_BATCH_IDS = ("c3_batch_016", "c3_batch_017", "c3_batch_018")
+
+
+@dataclass(frozen=True)
+class AuthenticationSuccessorDownloadAuthority:
+    """Controller-validated authority for one separate R7H download journal."""
+
+    execution_id: str
+    implementation_commit: str
+    attempt_id: str
+    plan_sha256: str
+    authority_receipt_sha256: str
+    consumed_terminal_journal_sha256: str
+    consumed_reconciliation_sha256: str
+    consumed_array_submission_sha256: str
+    consumed_finalizer_submission_sha256: str
+    credential_readiness_sha256: str
+    successor_claim_sha256: str
+    successor_array_job_id: str
+
+
+def authentication_successor_download_receipt(
+    authority: AuthenticationSuccessorDownloadAuthority,
+) -> dict[str, Any]:
+    """Serialize the controller binding without a self-referential digest."""
+    if type(authority) is not AuthenticationSuccessorDownloadAuthority:
+        raise OrchestrationError("AUTH_SUCCESSOR_DOWNLOAD_AUTHORITY_INVALID")
+    fields = dict(vars(authority))
+    del fields["authority_receipt_sha256"]
+    return {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_authentication_successor_download_authority_v1",
+        "status": "AUTHORIZED_BOUND_AUTHENTICATION_SUCCESSOR_DOWNLOAD",
+        **fields,
+    }
 
 STATES = (
     "PLANNED",
@@ -3363,9 +3404,14 @@ def materialize_selected_batch_manifest(
 
 def materialize_verified_download_manifest(
     *, plan: Mapping[str, Any], ledger: Mapping[str, Any], batch_id: str,
-    batch_root: Path
+    batch_root: Path, receipt_root: Path | None = None,
 ) -> tuple[Path, str]:
     validate_resume_authority(ledger, expected_authority=ledger["authority"])
+    if receipt_root is not None and receipt_root not in {
+        batch_root / "receipts",
+        batch_root / AUTHENTICATION_SUCCESSOR_EXECUTION_ID / "receipts",
+    }:
+        raise OrchestrationError("DOWNLOAD_MANIFEST_RECEIPT_ROOT_INVALID")
     batch_plan = next((row for row in plan["batches"] if row["batch_id"] == batch_id), None)
     if batch_plan is None or batch_id not in ledger["batches"]:
         raise OrchestrationError("DOWNLOAD_MANIFEST_BATCH_NOT_PLANNED")
@@ -3375,7 +3421,7 @@ def materialize_verified_download_manifest(
     rows: list[dict[str, Any]] = []
     for object_row in batch_plan["objects"]:
         key = str(object_row["source_object_key"])
-        receipt_path = batch_root / "receipts" / f"{key}.verification.json"
+        receipt_path = (receipt_root or batch_root / "receipts") / f"{key}.verification.json"
         final_path = batch_root / "objects" / f"{key}.dcm"
         if sha256_file(receipt_path) != receipts.get(key):
             raise OrchestrationError("DOWNLOAD_MANIFEST_RECEIPT_HASH_MISMATCH")
@@ -3631,6 +3677,284 @@ def load_latest_ledger_snapshot(
         },
     )
     return updated
+
+
+def _authentication_successor_private_directory(path: Path) -> None:
+    try:
+        if any(part.is_symlink() for part in (path, *path.parents)):
+            raise OrchestrationError("AUTH_SUCCESSOR_CONTROL_SYMLINK")
+        metadata = path.lstat()
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or not owner_private_directory_mode_ok(metadata.st_mode)
+        ):
+            raise OrchestrationError("AUTH_SUCCESSOR_CONTROL_DIRECTORY_INVALID")
+    except OSError as exc:
+        raise OrchestrationError("AUTH_SUCCESSOR_CONTROL_DIRECTORY_INVALID") from exc
+
+
+def _authentication_successor_control_bytes(path: Path) -> bytes:
+    """Read only bounded private control evidence, through a stable descriptor."""
+    _authentication_successor_private_directory(path.parent)
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        before = os.fstat(descriptor)
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise OrchestrationError("AUTH_SUCCESSOR_CONTROL_FILE_INVALID") from exc
+    try:
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_nlink != 1
+            or not 0 < before.st_size <= 4 * 1024 * 1024
+        ):
+            raise OrchestrationError("AUTH_SUCCESSOR_CONTROL_FILE_INVALID")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            payload = handle.read(before.st_size + 1)
+            after = os.fstat(handle.fileno())
+        visible = path.lstat()
+        identity = lambda item: (
+            item.st_dev, item.st_ino, item.st_mode, item.st_uid,
+            item.st_nlink, item.st_size, item.st_mtime_ns, item.st_ctime_ns,
+        )
+        if (
+            len(payload) != before.st_size
+            or identity(before) != identity(after)
+            or identity(after) != identity(visible)
+        ):
+            raise OrchestrationError("AUTH_SUCCESSOR_CONTROL_FILE_CHANGED")
+        return payload
+    except OSError as exc:
+        raise OrchestrationError("AUTH_SUCCESSOR_CONTROL_FILE_INVALID") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def validate_consumed_authentication_failure(
+    *, plan: Mapping[str, Any], requirements: PlanRequirements,
+    authority: Mapping[str, Any], attempt_id: str, output_root: Path,
+    require_pristine_tail: bool = True,
+) -> dict[str, Any]:
+    """Replay the fixed, zero-payload failure without resetting its journal.
+
+    A later execution may populate canonical payload directories.  Its caller
+    must keep the original consumption seal; this replay still verifies the
+    original terminal controls, independently of that later payload.
+    """
+    plan_sha = validate_current_batch_plan_v3(plan, requirements=requirements)
+    if (
+        attempt_id != AUTHENTICATION_SUCCESSOR_ATTEMPT_ID
+        or plan_sha != AUTHENTICATION_SUCCESSOR_PLAN_SHA256
+        or authority.get("git_commit") != AUTHENTICATION_SUCCESSOR_SCIENTIFIC_COMMIT
+        or output_root.name != "raw"
+        or output_root.parent.name != attempt_id
+        or output_root.parent.parent.name != "attempts"
+        or type(require_pristine_tail) is not bool
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_SCIENTIFIC_SCOPE_INVALID")
+    _authentication_successor_private_directory(output_root)
+    failed_batch = AUTHENTICATION_SUCCESSOR_BATCH_IDS[0]
+    planned = next((row for row in plan["batches"] if row["batch_id"] == failed_batch), None)
+    if planned is None or not planned["objects"]:
+        raise OrchestrationError("AUTH_SUCCESSOR_FAILED_BATCH_INVALID")
+    first_key = str(planned["objects"][0]["source_object_key"])
+    root = output_root / failed_batch
+    _authentication_successor_private_directory(root)
+    journal_root = root / "ledger"
+    receipts_root = root / "receipts"
+    _authentication_successor_private_directory(journal_root)
+    _authentication_successor_private_directory(receipts_root)
+    journal_paths = sorted(journal_root.iterdir(), key=lambda path: path.name)
+    expected_receipt_names = {
+        "download_start_transition.restricted.json",
+        f"{first_key}.failure.restricted.json",
+        f"{first_key}.failure_transition.restricted.json",
+    }
+    if len(journal_paths) != 4 or {path.name for path in receipts_root.iterdir()} != expected_receipt_names:
+        raise OrchestrationError("AUTH_SUCCESSOR_TERMINAL_CONTROL_SET_INVALID")
+    initial = initialize_resume_ledger(
+        plan, requirements=requirements, attempt_id=attempt_id,
+        authority=authority, batch_ids=[failed_batch],
+    )
+    updated = copy.deepcopy(initial)
+    journal_hashes: dict[str, str] = {}
+    controls: dict[str, str] = {}
+    transitions: list[Mapping[str, Any]] = []
+    expected_operations = ("TRANSITION", "SELECTED_BATCH_MANIFEST", "DOWNLOAD_ATTEMPT", "TRANSITION")
+    for sequence, (path, operation) in enumerate(zip(journal_paths, expected_operations), start=1):
+        body = _authentication_successor_control_bytes(path)
+        digest = hashlib.sha256(body).hexdigest()
+        try:
+            entry = json.loads(body.decode("utf-8"), object_pairs_hook=_strict_pairs)
+        except (UnicodeError, ValueError) as exc:
+            raise OrchestrationError("AUTH_SUCCESSOR_JOURNAL_INVALID") from exc
+        match = JOURNAL_ENTRY_RE.fullmatch(path.name)
+        if (
+            not isinstance(entry, Mapping) or set(entry) != JOURNAL_ENTRY_KEYS
+            or match is None or int(match[1]) != sequence or match[2] != digest[:16]
+            or canonical_json_bytes(entry) != body
+            or entry.get("schema_version") != 2
+            or entry.get("artifact_type") != "lvef_c3_resume_journal_delta_v2"
+            or entry.get("status") != "PASS_DURABLE_LEDGER_DELTA"
+            or entry.get("attempt_id") != attempt_id
+            or entry.get("batch_id") != failed_batch
+            or entry.get("sequence") != sequence
+            or entry.get("operation") != operation
+            or entry.get("prior_journal_sha256") != updated["journal_head_sha256"]
+            or entry.get("authority_sha256") != canonical_json_sha256(authority)
+        ):
+            raise OrchestrationError("AUTH_SUCCESSOR_JOURNAL_INVALID")
+        _apply_journal_operation_inplace(updated, operation=operation, payload=entry["payload"])
+        updated["journal_sequence"] = sequence
+        updated["journal_head_sha256"] = digest
+        journal_hashes[path.name] = digest
+        controls[f"ledger/{path.name}"] = digest
+        if operation == "TRANSITION":
+            transitions.append(entry["payload"]["receipt"])
+    validate_resume_authority(updated, expected_authority=authority, attempt_id=attempt_id)
+    batch = updated["batches"][failed_batch]
+    attempts = batch["download_attempts"]
+    if (
+        updated["status"] != "FAILED" or batch["state"] != "FAILED_NONRETRYABLE"
+        or attempts.get(first_key) != 1 or sum(attempts.values()) != 1
+        or batch["download_verification_receipts"] or batch["download_recovery_receipts"]
+        or batch["download_manifest_sha256"] is not None
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_TERMINAL_STATE_INVALID")
+    values: dict[str, Any] = {}
+    for name in sorted(expected_receipt_names):
+        body = _authentication_successor_control_bytes(receipts_root / name)
+        try:
+            value = json.loads(body.decode("utf-8"), object_pairs_hook=_strict_pairs)
+        except (UnicodeError, ValueError) as exc:
+            raise OrchestrationError("AUTH_SUCCESSOR_TERMINAL_RECEIPT_INVALID") from exc
+        if canonical_json_bytes(value) != body:
+            raise OrchestrationError("AUTH_SUCCESSOR_TERMINAL_RECEIPT_INVALID")
+        values[name] = value
+        controls[f"receipts/{name}"] = hashlib.sha256(body).hexdigest()
+    failure_name = f"{first_key}.failure.restricted.json"
+    expected_failure = {
+        "schema_version": 2, "artifact_type": "lvef_c3_restricted_download_failure_v2",
+        "status": "FAILED_NONRETRYABLE", "attempt_id": attempt_id,
+        "batch_id": failed_batch, "source_object_key": first_key,
+        "failure_code": "AUTHENTICATION", "attempts_used": 1,
+        "authority_sha256": canonical_json_sha256(authority),
+    }
+    if (
+        canonical_json_bytes(values[failure_name]) != canonical_json_bytes(expected_failure)
+        or canonical_json_bytes(values["download_start_transition.restricted.json"]) != canonical_json_bytes(transitions[0])
+        or canonical_json_bytes(values[f"{first_key}.failure_transition.restricted.json"]) != canonical_json_bytes(transitions[-1])
+        or transitions[-1]["output_manifest_sha256"] != canonical_json_sha256(expected_failure)
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_TERMINAL_RECEIPT_INVALID")
+    selected = _authentication_successor_control_bytes(root / "selected_batch.restricted.csv")
+    selected_sha = hashlib.sha256(selected).hexdigest()
+    if selected_sha != batch["selected_batch_manifest_sha256"]:
+        raise OrchestrationError("AUTH_SUCCESSOR_SELECTED_MANIFEST_CHANGED")
+    controls["selected_batch.restricted.csv"] = selected_sha
+    if require_pristine_tail:
+        if {path.name for path in root.iterdir()} != {"ledger", "receipts", "objects", "partials", "selected_batch.restricted.csv"}:
+            raise OrchestrationError("AUTH_SUCCESSOR_PRISTINE_TAIL_INVALID")
+        for name in ("objects", "partials"):
+            _authentication_successor_private_directory(root / name)
+            if any((root / name).iterdir()):
+                raise OrchestrationError("AUTH_SUCCESSOR_RETAINED_PAYLOAD_PRESENT")
+        if any(os.path.lexists(output_root / item) for item in AUTHENTICATION_SUCCESSOR_BATCH_IDS[1:]):
+            raise OrchestrationError("AUTH_SUCCESSOR_PRISTINE_TAIL_INVALID")
+    return {
+        "status": "PASS_R7H_ZERO_PAYLOAD_AUTHENTICATION_FAILURE",
+        "terminal_journal_sha256": canonical_json_sha256({"journal_file_sha256": journal_hashes}),
+        "terminal_control_sha256": canonical_json_sha256({"control_file_sha256": controls}),
+        "journal_file_sha256": journal_hashes, "control_file_sha256": controls,
+        "attempts_used": 1, "verified_objects": 0,
+        "pristine_tail_checked": require_pristine_tail,
+        "retained_payload_files": 0 if require_pristine_tail else None,
+    }
+
+
+def _authentication_successor_control_root(
+    value: AuthenticationSuccessorDownloadAuthority, *, plan: Mapping[str, Any],
+    requirements: PlanRequirements, ledger: Mapping[str, Any], batch_id: str,
+    output_root: Path,
+) -> Path:
+    if (
+        type(value) is not AuthenticationSuccessorDownloadAuthority
+        or value.execution_id != AUTHENTICATION_SUCCESSOR_EXECUTION_ID
+        or value.attempt_id != ledger["attempt_id"]
+        or value.plan_sha256 != ledger["authority"]["batch_plan_sha256"]
+        or not isinstance(value.implementation_commit, str)
+        or GIT_COMMIT_RE.fullmatch(value.implementation_commit) is None
+        or not isinstance(value.successor_array_job_id, str)
+        or CANONICAL_ID_RE.fullmatch(value.successor_array_job_id) is None
+        or value.successor_array_job_id in {"7489283", "7489284"}
+        or os.environ.get("JOB_ID") != value.successor_array_job_id
+        or batch_id not in AUTHENTICATION_SUCCESSOR_BATCH_IDS
+        or os.environ.get("SGE_TASK_ID") != str(17 + AUTHENTICATION_SUCCESSOR_BATCH_IDS.index(batch_id))
+        or any(not isinstance(getattr(value, name), str) or SHA256_RE.fullmatch(getattr(value, name)) is None for name in (
+            "authority_receipt_sha256", "consumed_terminal_journal_sha256",
+            "consumed_reconciliation_sha256", "consumed_array_submission_sha256",
+            "consumed_finalizer_submission_sha256", "credential_readiness_sha256",
+            "successor_claim_sha256",
+        ))
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_DOWNLOAD_AUTHORITY_INVALID")
+    controller_root = output_root.parent / AUTHENTICATION_SUCCESSOR_EXECUTION_ID
+    receipt = _authentication_successor_control_bytes(controller_root / "download_authority.restricted.json")
+    if (
+        hashlib.sha256(receipt).hexdigest() != value.authority_receipt_sha256
+        or receipt != canonical_json_bytes(authentication_successor_download_receipt(value))
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_DOWNLOAD_RECEIPT_MISMATCH")
+    claim = _authentication_successor_control_bytes(controller_root / "continuation_claim.restricted.json")
+    if hashlib.sha256(claim).hexdigest() != value.successor_claim_sha256:
+        raise OrchestrationError("AUTH_SUCCESSOR_CLAIM_CHANGED")
+    try:
+        probe = json.loads(_authentication_successor_control_bytes(
+            controller_root / "credential_probe" / "result.restricted.json"
+        ).decode("utf-8"), object_pairs_hook=_strict_pairs)
+        array_submission = json.loads(_authentication_successor_control_bytes(
+            controller_root / "scheduler" / "array_submission.restricted.json"
+        ).decode("utf-8"), object_pairs_hook=_strict_pairs)
+    except (UnicodeError, ValueError) as exc:
+        raise OrchestrationError("AUTH_SUCCESSOR_CREDENTIAL_SOURCE_INVALID") from exc
+    credential = probe.get("credential_check") if isinstance(probe, Mapping) else None
+    if (
+        not isinstance(credential, Mapping)
+        or probe.get("status") != "PASS_R7H_AUTH_SUCCESSOR_CREDENTIAL_PROBE"
+        or probe.get("implementation_commit") != value.implementation_commit
+        or probe.get("credential_readiness_sha256") != value.credential_readiness_sha256
+        or canonical_json_sha256(credential) != value.credential_readiness_sha256
+        or credential.get("status") != "PASS_R7H_ADC_IDENTITY_AND_SOURCE_ACCESS"
+        or credential.get("attempt_id") != value.attempt_id
+        or credential.get("batch_plan_sha256") != value.plan_sha256
+        or credential.get("scientific_commit") != AUTHENTICATION_SUCCESSOR_SCIENTIFIC_COMMIT
+        or any(credential.get(field) is not True for field in (
+            "adc_identity_matches_expected", "adc_quota_project_matches_expected",
+            "source_metadata_matches_plan",
+        ))
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_CREDENTIAL_SOURCE_INVALID")
+    if (
+        not isinstance(array_submission, Mapping)
+        or array_submission.get("job_id") != value.successor_array_job_id
+        or array_submission.get("implementation_commit") != value.implementation_commit
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_ARRAY_SUBMISSION_MISMATCH")
+    evidence = validate_consumed_authentication_failure(
+        plan=plan, requirements=requirements, authority=ledger["authority"],
+        attempt_id=str(ledger["attempt_id"]), output_root=output_root,
+        require_pristine_tail=False,
+    )
+    if evidence["terminal_journal_sha256"] != value.consumed_terminal_journal_sha256:
+        raise OrchestrationError("AUTH_SUCCESSOR_CONSUMED_JOURNAL_CHANGED")
+    return output_root / batch_id / value.execution_id
 
 
 def _safe_transport_failure_from_http(status: int) -> str:
@@ -4005,6 +4329,7 @@ def execute_exact_batch_download(
     direct_manifest: Mapping[str, Any] | None = None,
     direct_full_authority: Mapping[str, Any] | None = None,
     test_only_synthetic_full_scope: bool = False,
+    authentication_successor_authority: AuthenticationSuccessorDownloadAuthority | None = None,
 ) -> dict[str, Any]:
     """Execute one authorization-scoped exact batch; callers persist returned ledger."""
     plan_sha = validate_current_batch_plan_v3(plan, requirements=requirements)
@@ -4146,6 +4471,13 @@ def execute_exact_batch_download(
         expected_authority=ledger["authority"],
         expected_object_keys=expected_object_scope,
     )
+    successor_control_root = (
+        _authentication_successor_control_root(
+            authentication_successor_authority, plan=plan, requirements=requirements,
+            ledger=ledger, batch_id=batch_id, output_root=output_root,
+        )
+        if authentication_successor_authority is not None else None
+    )
     batch_root = output_root / batch_id
     if batch_root.exists():
         if batch_root.is_symlink() or not batch_root.is_dir():
@@ -4154,14 +4486,50 @@ def execute_exact_batch_download(
         batch_root.mkdir(mode=0o700)
     partial_root = batch_root / "partials"
     final_root = batch_root / "objects"
-    receipt_root = batch_root / "receipts"
-    ledger_root = batch_root / "ledger"
+    receipt_root = (successor_control_root or batch_root) / "receipts"
+    ledger_root = (successor_control_root or batch_root) / "ledger"
+    if successor_control_root is not None:
+        binding = {
+            "schema_version": 1,
+            "artifact_type": "lvef_c3_authentication_successor_download_execution_v1",
+            "status": "AUTHORIZED_SEPARATE_AUTHENTICATION_SUCCESSOR_JOURNAL",
+            "batch_id": batch_id,
+            **vars(authentication_successor_authority),
+        }
+        first_journal = True
+        if os.path.lexists(ledger_root):
+            _authentication_successor_private_directory(ledger_root)
+            first_journal = not any(ledger_root.iterdir())
+        if first_journal:
+            # A fresh journal cannot adopt payload from an unbound execution.
+            for payload_root in (partial_root, final_root):
+                if os.path.lexists(payload_root):
+                    _authentication_successor_private_directory(payload_root)
+                    if any(payload_root.iterdir()):
+                        raise OrchestrationError("AUTH_SUCCESSOR_RETAINED_PAYLOAD_PRESENT")
+        if not os.path.lexists(successor_control_root):
+            successor_control_root.mkdir(mode=0o700)
+        _authentication_successor_private_directory(successor_control_root)
+        if not {path.name for path in successor_control_root.iterdir()} <= {
+            "ledger", "receipts", "execution_authority.restricted.json"
+        }:
+            raise OrchestrationError("AUTH_SUCCESSOR_UNBOUND_CONTROLS_PRESENT")
+        binding_path = successor_control_root / "execution_authority.restricted.json"
+        if os.path.lexists(binding_path):
+            if _authentication_successor_control_bytes(binding_path) != canonical_json_bytes(binding):
+                raise OrchestrationError("AUTH_SUCCESSOR_EXECUTION_BINDING_CHANGED")
+        else:
+            if any(successor_control_root.iterdir()):
+                raise OrchestrationError("AUTH_SUCCESSOR_UNBOUND_CONTROLS_PRESENT")
+            atomic_write_json_no_clobber(binding_path, binding, attempt_id=str(ledger["attempt_id"]))
     for directory in (partial_root, final_root, receipt_root, ledger_root):
         if directory.exists():
             if directory.is_symlink() or not directory.is_dir():
                 raise OrchestrationError("DOWNLOAD_SUBDIRECTORY_INVALID")
         else:
             directory.mkdir(mode=0o700)
+        if successor_control_root is not None:
+            _authentication_successor_private_directory(directory)
     updated = load_latest_ledger_snapshot(ledger_root, initial_ledger=ledger)
     validate_resume_authority(
         updated,
@@ -4230,7 +4598,8 @@ def execute_exact_batch_download(
         raise OrchestrationError("SELECTED_BATCH_MANIFEST_CHANGED")
     if updated["batches"][batch_id]["state"] == "DOWNLOAD_VERIFIED":
         _, observed_manifest_sha = materialize_verified_download_manifest(
-            plan=plan, ledger=updated, batch_id=batch_id, batch_root=batch_root
+            plan=plan, ledger=updated, batch_id=batch_id, batch_root=batch_root,
+            receipt_root=receipt_root,
         )
         if observed_manifest_sha != updated["batches"][batch_id]["download_manifest_sha256"]:
             raise OrchestrationError("RESUME_DOWNLOAD_MANIFEST_HASH_MISMATCH")
@@ -4440,7 +4809,8 @@ def execute_exact_batch_download(
     if len(updated["batches"][batch_id]["download_verification_receipts"]) != batch_plan["n_objects"]:
         raise OrchestrationError("BATCH_DOWNLOAD_INCOMPLETE")
     _, manifest_sha = materialize_verified_download_manifest(
-        plan=plan, ledger=updated, batch_id=batch_id, batch_root=batch_root
+        plan=plan, ledger=updated, batch_id=batch_id, batch_root=batch_root,
+        receipt_root=receipt_root,
     )
     append_ledger_delta_no_clobber(
         ledger_root,

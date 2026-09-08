@@ -505,6 +505,7 @@ class FullRun:
     launch_authority: Mapping[str, Any]
     launch_authority_sha256: str
     scheduler_job_identity: str
+    authentication_successor_download_authority: core.AuthenticationSuccessorDownloadAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -611,6 +612,7 @@ class FullDependencies:
         [], capacity.DynamicSuccessorCapacityCapture
     ] | None = None
     environment_validator: Callable[..., Mapping[str, Any]] | None = None
+    pre_download_validator: Callable[..., Mapping[str, Any]] | None = None
     r8u_r7d_worker_submission_validator: Callable[..., Any] | None = None
     r8u_r7h_worker_submission_validator: Callable[..., Any] | None = None
     r8u_r7h_sealed_history_validator: Callable[[], Mapping[str, Any]] | None = None
@@ -642,6 +644,12 @@ def _stage_boundary(stage: str) -> Iterator[None]:
         raise
     except Exception as exc:
         observed = getattr(exc, "code", "")
+        if (
+            isinstance(exc, core.OrchestrationError)
+            and len(exc.args) == 1
+            and isinstance(exc.args[0], str)
+        ):
+            observed = exc.args[0]
         code = (
             str(observed)
             if isinstance(observed, str)
@@ -742,6 +750,7 @@ def resolve_dependencies(value: FullDependencies | None = None) -> FullDependenc
             source.environment_validator
             or stages.validate_environment_authority_for_scientific_commit
         ),
+        pre_download_validator=source.pre_download_validator,
         r8u_r7d_worker_submission_validator=(
             source.r8u_r7d_worker_submission_validator
         ),
@@ -1981,6 +1990,25 @@ def run_batch_task(
             _fail("FULL_SEQUENTIAL_PREBODY_CHECKPOINT_AUTHORITY_FAILED")
 
     with _stage_boundary("DOWNLOAD"):
+        successor_authority = getattr(
+            effective_run, "authentication_successor_download_authority", None
+        )
+        if successor_authority is not None:
+            if dependency.pre_download_validator is None:
+                _fail("AUTH_SUCCESSOR_FRESH_CREDENTIAL_CHECK_REQUIRED")
+            credential = dependency.pre_download_validator(
+                run=effective_run, batch_id=batch_id
+            )
+            if (
+                not isinstance(credential, Mapping)
+                or credential.get("status") != "PASS_R7H_ADC_IDENTITY_AND_SOURCE_ACCESS"
+                or credential.get("attempt_id") != effective_run.attempt_id
+                or credential.get("batch_plan_sha256") != effective_run.plan_sha256
+                or credential.get("scientific_commit") != effective_run.authority.governing_commit
+                or credential.get("batch_id") != batch_id
+                or credential.get("job_id") != effective_run.scheduler_job_identity
+            ):
+                _fail("AUTH_SUCCESSOR_FRESH_CREDENTIAL_CHECK_INVALID")
         _ensure_private_directory(effective_run.attempt_root)
         _ensure_private_directory(paths["raw_root"])
         _ensure_private_directory(paths["batch_root"].parent, parents=True)
@@ -2001,6 +2029,9 @@ def run_batch_task(
             with _digest_provider(
                 dependency.digest_provider_factory, effective_run.authority
             ) as digest:
+                successor_arguments: dict[str, Any] = {}
+                if successor_authority is not None:
+                    successor_arguments["authentication_successor_authority"] = successor_authority
                 downloaded = dependency.download(
                     plan=effective_run.plan,
                     requirements=effective_run.requirements,
@@ -2023,6 +2054,7 @@ def run_batch_task(
                     test_only_synthetic_full_scope=(
                         dependency.test_only_synthetic_full_scope
                     ),
+                    **successor_arguments,
                 )
         finally:
             if previous_billing is None:

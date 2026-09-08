@@ -1555,6 +1555,78 @@ def test_nonretryable_download_failure_persists_terminal_receipt_and_ledger() ->
         assert list((output / "c3_batch_000" / "receipts").glob("*.failure.restricted.json"))
 
 
+def test_authentication_failure_is_terminal_and_credential_renewal_cannot_resume_it() -> None:
+    """Reproduce the zero-payload failure without rewriting its durable history."""
+    plan, _ = _plan()
+    ledger = _batch_planned_ledger(plan)
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    authorization = _body_authorization(plan, ledger, now=now)
+    contract = copy.deepcopy(core.load_orchestration_contract(CONTRACT_PATH))
+    provider = mock.Mock(
+        side_effect=core.DownloadTransportError(
+            "ADC_TOKEN_ACQUISITION_FAILED", "AUTHENTICATION"
+        )
+    )
+    transport = mock.Mock()
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "raw"
+        output.mkdir()
+        contract["storage"]["raw_root"] = str(output)
+        with mock.patch.dict(
+            "os.environ",
+            {"LVEF_C3_GCP_BILLING_PROJECT": "synthetic-private-project"},
+        ):
+            try:
+                _run_download_for_crash_test(
+                    plan=plan, ledger=ledger, authorization=authorization,
+                    contract=contract, output=output, transport=transport,
+                    token_provider=provider, now=now,
+                )
+            except core.OrchestrationError as exc:
+                assert str(exc) == "DOWNLOAD_FAILED_NONRETRYABLE_OR_EXHAUSTED"
+            else:
+                raise AssertionError("Authentication failure did not terminate")
+            provider.assert_called_once_with()
+            transport.fetch.assert_not_called()
+            batch_root = output / "c3_batch_000"
+            latest = core.load_latest_ledger_snapshot(
+                batch_root / "ledger", initial_ledger=ledger
+            )
+            batch = latest["batches"]["c3_batch_000"]
+            assert batch["state"] == "FAILED_NONRETRYABLE"
+            assert sum(batch["download_attempts"].values()) == 1
+            assert batch["download_verification_receipts"] == {}
+            assert list((batch_root / "objects").iterdir()) == []
+            assert list((batch_root / "partials").iterdir()) == []
+            failures = list((batch_root / "receipts").glob("*.failure.restricted.json"))
+            assert len(failures) == 1
+            failure = core.load_strict_json(failures[0])
+            assert failure["failure_code"] == "AUTHENTICATION"
+            assert failure["attempts_used"] == 1
+            assert len(list((batch_root / "ledger").iterdir())) == 4
+            before = {
+                path.relative_to(output): path.read_bytes()
+                for path in output.rglob("*") if path.is_file()
+            }
+            renewed_provider = mock.Mock(return_value="synthetic-renewed-token")
+            try:
+                _run_download_for_crash_test(
+                    plan=plan, ledger=ledger, authorization=authorization,
+                    contract=contract, output=output, transport=transport,
+                    token_provider=renewed_provider, now=now,
+                )
+            except core.OrchestrationError as exc:
+                assert str(exc) == "DOWNLOAD_BATCH_NOT_RESUMABLE"
+            else:
+                raise AssertionError("Terminal journal resumed in place")
+            renewed_provider.assert_not_called()
+            transport.fetch.assert_not_called()
+            assert {
+                path.relative_to(output): path.read_bytes()
+                for path in output.rglob("*") if path.is_file()
+            } == before
+
+
 def test_resume_journal_is_constant_size_per_event_and_replays_exactly() -> None:
     plan, _ = _plan()
     initial = _ledger_in_download_state(plan)
