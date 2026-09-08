@@ -90,6 +90,36 @@ R8U_R7H_FAILED_PARTIAL_METADATA_SHA256 = (
 R8U_R7H_TOPOLOGY_PASS = (
     "PASS_R7H_SEALED_SAME_ATTEMPT_PARTIAL_EXCLUDED_FROM_ACTIVE_TOPOLOGY"
 )
+# Immutable claim hashes consumed by the subsequent historical failure evidence.
+# These are retained controls, not new publication authority or adoptable data.
+R8U_R7H_RETAINED_PUBLICATION_CLAIMS = {
+    ".r8u_r5_publication_claim": (
+        "r5", "7b7c3657e110b53a6e6112567410243377437db4",
+        "890eeb28b89b018b0d384d43b588efd5ba5d55aa2c87eff29c55363def70941c",
+        "r8u_r6_batch16_publication_resume/r8u_r5_failure_evidence.restricted.json",
+        "5791f8ac789ecf0b5002834a56d287b797af93128569fcd1613be68ef268554c",
+    ),
+    ".r8u_r6_publication_claim": (
+        "r6", "17b147397ff4d1d445e648f04789ac3df0dc32b0",
+        "673118655ec7221ea4845937c462c0c6cf6505d9ea2a59898737fd2c54ae4898",
+        "r8u_r7_batch16_preservation_recovery/r8u_r6_failure_evidence.restricted.json",
+        "320dd53b39a63b3d17c7a20a7841541e9bd87224f3cda361af1454ed71cbef77",
+    ),
+}
+R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS = frozenset({
+    "all_failure_substages_none", "all_fallback_encoder_visible_signal_gates_passed",
+    "all_pixel_decodes_passed", "all_post_crop_signal_gates_passed",
+    "all_sampled_signal_gates_passed", "all_shapes_and_dtypes_valid",
+    "all_source_signal_gates_passed", "artifact_type", "clip_keys_unique",
+    "identifiers_emitted", "n_extracted_clips", "n_fallback_path_failed",
+    "n_fallback_path_pass", "n_multiframe_candidates", "n_objects",
+    "n_ordinary_preprocessing_path", "n_pixel_decode_failures", "n_readable",
+    "n_single_frame", "n_spatial_fallback_preprocessing_path",
+    "n_spatial_temporal_fallback_preprocessing_path", "n_studies",
+    "n_studies_with_extracted_clips", "n_temporal_fallback_preprocessing_path",
+    "n_unreadable", "paths_emitted", "physical_source_keys_unique",
+    "schema_version", "status",
+})
 R8U_R7H_FIXED_CACHE_TOPOLOGY_KEYS = frozenset(
     {
         "active_finalized_extraction_caches",
@@ -470,6 +500,9 @@ class R8UR7HExtractionCacheTopology:
     """Aggregate-safe classification for the one fixed R7H tail epoch."""
 
     status: str
+    retained_metadata_roots: int
+    retained_metadata_files: int
+    retained_metadata_bytes: int
     cache_bearing_attempt_roots: int
     current_attempt_cache_bearing_roots: int
     canonical_clips_roots: int
@@ -2773,6 +2806,306 @@ def _r8u_r7h_observe_partial_metadata(
     }
 
 
+def _r8u_r7h_metadata_receipt(path: Path) -> tuple[Mapping[str, Any], str]:
+    """Read an existing bounded private control without touching payloads."""
+
+    try:
+        value, payload = _load_owner_private_json(path)
+    except (OSError, FullSequentialError) as exc:
+        raise FullSequentialError("R7H_METADATA_RECEIPT_MISMATCH") from exc
+    return value, hashlib.sha256(payload).hexdigest()
+
+
+def _r8u_r7h_metadata_runtime(
+    value: Any, *, attempt: Path,
+) -> dict[str, str]:
+    try:
+        runtime = core.validate_runtime_authority(value)
+    except (TypeError, core.OrchestrationError) as exc:
+        raise FullSequentialError("R7H_METADATA_RECEIPT_MISMATCH") from exc
+    expected_attempt = (
+        f"lvef_c3_full_{runtime['batch_plan_sha256'][:16]}_"
+        f"{runtime['git_commit'][:8]}"
+    )
+    if attempt.name != expected_attempt or (
+        attempt.name == R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+        and (
+            runtime["git_commit"] != R8U_R7H_SCIENTIFIC_COMMIT
+            or runtime["batch_plan_sha256"] != R8U_R7H_PLAN_SHA256
+        )
+    ):
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    return runtime
+
+
+def _r8u_r7h_metadata_transition(
+    value: Mapping[str, Any], *, attempt: Path, batch: Path,
+    runtime: Mapping[str, Any], from_state: str, to_state: str,
+    output_sha256: str | None = None,
+) -> None:
+    if (
+        set(value) != core.RECEIPT_KEYS
+        or value.get("schema_version") != 2
+        or value.get("receipt_type") != "lvef_c3_state_transition_v2"
+        or value.get("status") != "PASS"
+        or value.get("attempt_id") != attempt.name
+        or value.get("batch_id") != batch.name
+        or value.get("from_state") != from_state
+        or value.get("to_state") != to_state
+        or value.get("authority") != runtime
+        or type(value.get("input_receipt_sha256")) is not list
+        or len(value["input_receipt_sha256"]) != 1
+        or SHA_RE.fullmatch(str(value["input_receipt_sha256"][0])) is None
+        or SHA_RE.fullmatch(str(value.get("output_manifest_sha256"))) is None
+        or (
+            output_sha256 is not None
+            and value.get("output_manifest_sha256") != output_sha256
+        )
+    ):
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+
+
+def _r8u_r7h_retained_extraction_metadata(
+    parent: Path, *, attempt: Path, batch: Path,
+    entries: Callable[[Path], list[tuple[Path, os.stat_result]]],
+) -> tuple[int, int]:
+    """Recognize retired producer metadata through its scientific receipts.
+
+    The two established producer shapes differ by the technical-disposition
+    manifest. Transition receipts are optional: publication recovery retained
+    them in its own control root. Only their fixed basenames are admitted;
+    neither a clipless directory nor a JSON/CSV suffix grants a metadata role.
+    """
+
+    files: dict[str, tuple[Path, os.stat_result]] = {}
+    directories: dict[str, Path] = {}
+
+    def inspect(path: Path, item: os.stat_result, *, directory: bool) -> None:
+        if stat.S_ISLNK(item.st_mode) or (
+            not (stat.S_ISDIR(item.st_mode) if directory else stat.S_ISREG(item.st_mode))
+        ) or (not directory and item.st_nlink != 1):
+            _fail("R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR")
+        if item.st_uid != os.geteuid() or stat.S_IMODE(item.st_mode) not in (
+            {0o700, 0o2700} if directory else {0o600}
+        ):
+            _fail("R7H_EXTRACTION_CACHE_OWNER_OR_MODE_INVALID")
+        if not directory and (item.st_size < 1 or item.st_size > 256 * 1024 * 1024):
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+
+    for child, item in entries(parent):
+        is_directory = stat.S_ISDIR(item.st_mode)
+        inspect(child, item, directory=is_directory)
+        if is_directory:
+            if child.name != "transition_receipts":
+                _fail("R7H_UNEXPECTED_PAYLOAD" if child.name == "clips" else "R7H_METADATA_ROLE_UNKNOWN")
+            directories[child.name] = child
+        else:
+            if child.name not in {
+                "dicom_audit.restricted.csv", "extraction_manifest.restricted.csv",
+                "technical_disposition_manifest.restricted.csv", "dicom_extraction.summary.json",
+                "stage_completion_receipt.restricted.json",
+            }:
+                _fail("R7H_UNEXPECTED_PAYLOAD" if child.suffix.lower() in {".npz", ".npy", ".dcm", ".dicom"} else "R7H_METADATA_ROLE_UNKNOWN")
+            files[child.name] = (child, item)
+
+    stage, _stage_sha = _r8u_r7h_metadata_receipt(parent / "stage_completion_receipt.restricted.json")
+    if (
+        set(stage) != {
+            "schema_version", "artifact_type", "status", "stage", "batch_id",
+            "attempt_id", "runtime_authority", "input_manifest_sha256", "artifacts",
+        }
+        or stage.get("schema_version") != 1
+        or stage.get("artifact_type") != "lvef_c3_stage_completion_receipt_v1"
+        or stage.get("status") != "PASS_STAGE_OUTPUT_ATOMICALLY_FINALIZABLE"
+        or stage.get("stage") != "DICOM_EXTRACTION"
+        or stage.get("batch_id") != batch.name
+        or stage.get("attempt_id") != attempt.name
+        or SHA_RE.fullmatch(str(stage.get("input_manifest_sha256"))) is None
+        or not isinstance(stage.get("artifacts"), Mapping)
+    ):
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    runtime = _r8u_r7h_metadata_runtime(stage["runtime_authority"], attempt=attempt)
+    summary, summary_sha = _r8u_r7h_metadata_receipt(parent / "dicom_extraction.summary.json")
+    legacy = (summary.get("schema_version"), summary.get("artifact_type")) == (
+        1, "lvef_c3_batch_dicom_extraction_summary_v1"
+    )
+    current = (summary.get("schema_version"), summary.get("artifact_type")) == (
+        2, "lvef_c3_batch_dicom_extraction_summary_v2"
+    )
+    if (
+        not (legacy or current)
+        or summary.get("identifiers_emitted") is not False
+        or summary.get("paths_emitted") is not False
+        or (legacy and (
+            set(summary) != R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS
+            or summary.get("status") != "PASS_DICOM_EXTRACTION"
+        ))
+        or (current and (
+            set(summary) != stages.DICOM_EXTRACTION_SUMMARY_KEYS_V2
+            or summary.get("status") not in {
+                "PASS_EXTRACTION_ALL_OBJECTS_EMBEDDABLE",
+                "PASS_EXTRACTION_WITH_OBJECT_TECHNICAL_DISPOSITIONS",
+            }
+        ))
+    ):
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    for key, value in summary.items():
+        if key.startswith("n_") and (type(value) is not int or value < 0):
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+        if (key.startswith("all_") or key in {"clip_keys_unique", "physical_source_keys_unique"}) and type(value) is not bool:
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    artifact_names = {
+        "dicom_audit.restricted.csv", "extraction_manifest.restricted.csv",
+        "dicom_extraction.summary.json",
+    }
+    if current:
+        artifact_names.add("technical_disposition_manifest.restricted.csv")
+    if set(files) != artifact_names | {"stage_completion_receipt.restricted.json"} or set(stage["artifacts"]) != artifact_names:
+        _fail("R7H_METADATA_ROLE_UNKNOWN")
+    if any(SHA_RE.fullmatch(str(value)) is None for value in stage["artifacts"].values()) or stage["artifacts"]["dicom_extraction.summary.json"] != summary_sha:
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+
+    receipt_root = attempt / "batches" / batch.name / "preservation"
+    final, final_sha = _r8u_r7h_metadata_receipt(receipt_root / "batch_finalization_receipt.restricted.json")
+    try:
+        finalizer._validate_receipt(final)
+    except finalizer.ProductionFinalizationError as exc:
+        raise FullSequentialError("R7H_METADATA_RECEIPT_MISMATCH") from exc
+    if (
+        final.get("attempt_id") != attempt.name
+        or final.get("batch_id") != batch.name
+        or final.get("governing_commit") != runtime["git_commit"]
+        or any(final.get(key) != runtime[key] for key in (
+            "batch_plan_sha256", "checkpoint_sha256", "environment_receipt_sha256",
+            "orchestration_contract_sha256",
+        ))
+        or final.get("split_version") != f"split_map_sha256:{runtime['split_map_sha256']}"
+        or final.get("extracted_cache_retired") is not True
+        or final.get("raw_dicoms_retained") is not True
+        or legacy != (final.get("schema_version") == 1)
+    ):
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    ordinal = int(batch.name[-3:])
+    if attempt.name == R8U_R7H_SCIENTIFIC_ATTEMPT_ID and ordinal < 16 and final_sha != finalizer.R8U_R7D_FINALIZED_PREFIX_RECEIPT_SHA256[ordinal]:
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    for name, field in (
+        ("dicom_audit.restricted.csv", "dicom_audit_sha256"),
+        ("extraction_manifest.restricted.csv", "extraction_manifest_sha256"),
+        ("technical_disposition_manifest.restricted.csv", "technical_disposition_manifest_sha256"),
+    ):
+        if name in artifact_names and stage["artifacts"][name] != final.get(field):
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    if current and summary.get("technical_disposition_manifest_sha256") != final.get("technical_disposition_manifest_sha256"):
+        _fail("R7H_METADATA_RECEIPT_MISMATCH")
+
+    if "transition_receipts" in directories:
+        transition_entries = entries(directories["transition_receipts"])
+        if {path.name for path, _item in transition_entries} != {
+            "dicom_audit_complete.restricted.json", "extraction_complete.restricted.json"
+        }:
+            _fail("R7H_METADATA_ROLE_UNKNOWN")
+        transitions = {}
+        for path, item in transition_entries:
+            inspect(path, item, directory=False)
+            transitions[path.name] = _r8u_r7h_metadata_receipt(path)[0]
+            files[f"transition_receipts/{path.name}"] = (path, item)
+        prior = transitions["dicom_audit_complete.restricted.json"]
+        latter = transitions["extraction_complete.restricted.json"]
+        for value, from_state, to_state, artifact in (
+            (prior, "DOWNLOAD_VERIFIED", "DICOM_AUDIT_COMPLETE", "dicom_audit.restricted.csv"),
+            (latter, "DICOM_AUDIT_COMPLETE", "EXTRACTION_COMPLETE", "extraction_manifest.restricted.csv"),
+        ):
+            _r8u_r7h_metadata_transition(value, attempt=attempt, batch=batch, runtime=runtime,
+                from_state=from_state, to_state=to_state, output_sha256=stage["artifacts"][artifact])
+        if latter["input_receipt_sha256"] != [core.canonical_json_sha256(prior)]:
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+
+    # These are retained manifest hashes, not DICOM/NPZ bodies. The fixed names
+    # and receipt hashes establish their role before any manifest is opened.
+    # No restricted row is parsed or emitted; live identity is checked only
+    # during each current read, never against historical inode/timestamp data.
+    for name in artifact_names - {"dicom_extraction.summary.json"}:
+        path, item = files[name]
+        try:
+            payload = _read_owner_private_regular(
+                path, maximum_bytes=256 * 1024 * 1024, exact_bytes=item.st_size,
+            )
+        except (OSError, FullSequentialError) as exc:
+            raise FullSequentialError("R7H_METADATA_RECEIPT_MISMATCH") from exc
+        if hashlib.sha256(payload).hexdigest() != stage["artifacts"][name]:
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    return len(files), sum(item.st_size for _path, item in files.values())
+
+
+def _r8u_r7h_retained_batch_control(
+    child: Path, *, attempt: Path, batch: Path,
+    entries: Callable[[Path], list[tuple[Path, os.stat_result]]],
+) -> tuple[int, int]:
+    """Recognize bounded failure evidence and the two consumed old claims."""
+
+    publication = R8U_R7H_RETAINED_PUBLICATION_CLAIMS.get(child.name)
+    expected_name = "claim.restricted.json" if publication else "stage_failure.restricted.json"
+    children = entries(child)
+    if len(children) != 1 or children[0][0].name != expected_name:
+        _fail("R7H_METADATA_ROLE_UNKNOWN")
+    path, item = children[0]
+    if stat.S_ISLNK(item.st_mode) or not stat.S_ISREG(item.st_mode) or item.st_nlink != 1:
+        _fail("R7H_EXTRACTION_CACHE_SYMLINK_OR_NONREGULAR")
+    if item.st_uid != os.geteuid() or stat.S_IMODE(item.st_mode) != 0o600:
+        _fail("R7H_EXTRACTION_CACHE_OWNER_OR_MODE_INVALID")
+    value, digest = _r8u_r7h_metadata_receipt(path)
+    if publication:
+        # Import only maintained schema constants and pure historical producers.
+        # No live publication, scheduler, or scientific validator is invoked.
+        import lvef_c3_r8r_recovery_continuation as historical
+
+        family, producer, claim_sha, evidence_name, evidence_sha = publication
+        schema = getattr(historical, f"R8U_{family.upper()}_PUBLICATION_CLAIM_KEYS")
+        common = getattr(historical, f"_r8u_{family}_common")(
+            artifact_type=f"lvef_c3_r8u_{family}_publication_claim_v1",
+            status=f"AUTHORIZED_EXCLUSIVE_R8U_{family.upper()}_BATCH16_PUBLICATION",
+            implementation_commit=producer,
+        )
+        evidence, observed_evidence_sha = _r8u_r7h_metadata_receipt(attempt / evidence_name)
+        if (
+            attempt.name != R8U_R7H_SCIENTIFIC_ATTEMPT_ID
+            or batch.name != R8U_R7H_HISTORICAL_PARTIAL_BATCH_ID
+            or set(value) != schema
+            or any(value.get(key) != expected for key, expected in common.items())
+            or digest != claim_sha
+            or observed_evidence_sha != evidence_sha
+            or evidence.get("publication_claim_sha256") != digest
+            or value.get("target_role") != "extracted_cache/c3_batch_015/dicom_extraction"
+            or value.get("target_absent") is not True
+            or any(value.get(key) != 0 for key in (
+                "competing_active_jobs", "competing_active_processes", "cloud_requests",
+                "downloads", "dicom_body_reads", "dicom_extraction_executions", "npz_body_reads",
+            ))
+        ):
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+    elif child.name == "dicom_extraction_failure_receipt":
+        runtime = _r8u_r7h_metadata_runtime(value.get("authority"), attempt=attempt)
+        partial = batch / "dicom_extraction.partial"
+        if not _closed_terminal_failure_summary(partial):
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+        failure, _failure_sha = _r8u_r7h_metadata_receipt(partial / "failure.summary.json")
+        error_code = (
+            "DICOM_OR_PIXEL_DECODE_GATE_FAILED"
+            if failure.get("status") == "FAIL_DICOM_OR_PIXEL_DECODE_GATE"
+            else failure.get("error_code")
+        )
+        if not isinstance(error_code, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{1,127}", error_code) is None:
+            _fail("R7H_METADATA_RECEIPT_MISMATCH")
+        output_sha = hashlib.sha256(f"DICOM_EXTRACTION:{error_code}".encode("ascii")).hexdigest()
+        _r8u_r7h_metadata_transition(value, attempt=attempt, batch=batch, runtime=runtime,
+            from_state="DOWNLOAD_VERIFIED", to_state="FAILED_NONRETRYABLE", output_sha256=output_sha)
+        # PASS is the transition-publication status; FAILED_NONRETRYABLE above
+        # remains failure evidence and never grants a final scientific receipt.
+    else:
+        _fail("R7H_METADATA_ROLE_UNKNOWN")
+    return 1, item.st_size
+
+
 def validate_r8u_r7h_extraction_cache_topology(
     production_root: Path,
     *,
@@ -2810,6 +3143,9 @@ def validate_r8u_r7h_extraction_cache_topology(
         / "dicom_extraction.partial"
     )
     counts = {
+        "retained_metadata_roots": 0,
+        "retained_metadata_files": 0,
+        "retained_metadata_bytes": 0,
         "cache_bearing_attempt_roots": 0,
         "current_attempt_cache_bearing_roots": 0,
         "canonical_clips_roots": 0,
@@ -2924,6 +3260,7 @@ def validate_r8u_r7h_extraction_cache_topology(
             cache_root = attempt / "extracted_cache"
             if not os.path.lexists(cache_root):
                 continue
+            observe_directory(attempt)
             if not observe_directory(cache_root):
                 counts["cache_bearing_attempt_roots"] += 1
                 if attempt.name == current_attempt_id:
@@ -2968,25 +3305,45 @@ def validate_r8u_r7h_extraction_cache_topology(
                     or not valid_batch
                 ):
                     continue
-                attempt_bears_cache = True
+                attempt_bears_cache |= bool(clips_present or partial_present or not valid_batch)
                 observe_directory(batch)
+                retained_metadata = False
                 if other_children:
-                    unknown_cache_roots.add(batch)
                     for child in other_children:
-                        observe_unknown_entry(child)
+                        if child.name in R8U_R7H_RETAINED_PUBLICATION_CLAIMS or child.name == "dicom_extraction_failure_receipt":
+                            if not observe_directory(child):
+                                unknown_cache_roots.add(batch)
+                                attempt_bears_cache = True
+                                continue
+                            files, occupied = _r8u_r7h_retained_batch_control(
+                                child, attempt=attempt, batch=batch, entries=bounded_outer_entries,
+                            )
+                            counts["retained_metadata_files"] += files
+                            counts["retained_metadata_bytes"] += occupied
+                            retained_metadata = True
+                        else:
+                            unknown_cache_roots.add(batch)
+                            attempt_bears_cache = True
+                            observe_unknown_entry(child)
+                            if child.suffix.lower() in {".npz", ".npy", ".dcm", ".dicom"}:
+                                _fail("R7H_UNEXPECTED_PAYLOAD")
                 if extraction_parent_present:
                     parent_is_directory = observe_directory(extraction_parent)
                     if not clips_present and parent_is_directory:
-                        unknown_cache_roots.add(batch)
-                        merge_security(
-                            _r8u_r7h_observe_partial_metadata(
-                                extraction_parent,
-                                attempt_root=attempt,
-                                shared_entry_counter=(
-                                    partial_content_entries_seen
-                                ),
-                            )
+                        if not valid_attempt or not valid_batch:
+                            _fail("R7H_METADATA_ROLE_UNKNOWN")
+                        files, occupied = _r8u_r7h_retained_extraction_metadata(
+                            extraction_parent, attempt=attempt, batch=batch,
+                            entries=bounded_outer_entries,
                         )
+                        counts["retained_metadata_files"] += files
+                        counts["retained_metadata_bytes"] += occupied
+                        retained_metadata = True
+                    elif not parent_is_directory:
+                        unknown_cache_roots.add(batch)
+                        attempt_bears_cache = True
+                if retained_metadata:
+                    counts["retained_metadata_roots"] += 1
                 if clips_present:
                     counts["canonical_clips_roots"] += 1
                     finalized_roots.add(batch)
@@ -3164,6 +3521,9 @@ def validate_r8u_r7h_extraction_cache_topology(
 
     return R8UR7HExtractionCacheTopology(
         status=R8U_R7H_TOPOLOGY_PASS,
+        retained_metadata_roots=counts["retained_metadata_roots"],
+        retained_metadata_files=counts["retained_metadata_files"],
+        retained_metadata_bytes=counts["retained_metadata_bytes"],
         cache_bearing_attempt_roots=counts["cache_bearing_attempt_roots"],
         current_attempt_cache_bearing_roots=(
             counts["current_attempt_cache_bearing_roots"]

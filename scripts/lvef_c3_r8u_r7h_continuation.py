@@ -66,6 +66,12 @@ R7G_ADJUDICATION_COMMIT: Final = (
 R7H_CORRECTION_BASE_COMMIT: Final = (
     "8230d1535247256529616cb481dd48cce1f9a78f"
 )
+R7H_TOPOLOGY_CORRECTION_BASE_COMMIT: Final = (
+    "95b105841fd1af69e3d29f3e1b4640de15ab25df"
+)
+PREDECESSOR_CONSUMED_EVIDENCE_SHA256: Final = (
+    "40fb2c77f2eaebb67bbc34e085c23bd9ad83351593dcb67978e3a2da2ca7741d"
+)
 R7G_TERMINAL_AUTHORITY_SHA256: Final = (
     "3764a284f3b8ba2a5bf3e9abbc9708a6dc2c9cecfa8e2bbef05a2b507252610e"
 )
@@ -436,6 +442,7 @@ def _common(
             R7F_RUNTIME_COMMIT,
             R7G_ADJUDICATION_COMMIT,
             R7H_CORRECTION_BASE_COMMIT,
+            R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
         }
     ):
         _fail("R7H_CONTROL_SCHEMA_INVALID")
@@ -453,16 +460,21 @@ def _common(
 
 
 def _current_r8u_r7h_implementation_commit() -> str:
-    """Require the one corrective child of the fixed, unexecuted R7H base."""
+    """Require the fixed topology correction and every concrete parent link."""
 
     try:
         current = sequential._current_commit()
         parent = sequential._git("rev-list", "--parents", "-n", "1", current)
         base_parent = sequential._git(
+            "rev-list", "--parents", "-n", "1",
+            R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+        )
+        runtime_base_parent = sequential._git(
             "rev-list", "--parents", "-n", "1", R7H_CORRECTION_BASE_COMMIT
         )
         distance = sequential._git(
-            "rev-list", "--count", f"{R7H_CORRECTION_BASE_COMMIT}..{current}"
+            "rev-list", "--count",
+            f"{R7H_TOPOLOGY_CORRECTION_BASE_COMMIT}..{current}",
         )
         relation = sequential._git(
             "merge-base", "--is-ancestor", SCIENTIFIC_COMMIT, current
@@ -479,9 +491,12 @@ def _current_r8u_r7h_implementation_commit() -> str:
             R7F_RUNTIME_COMMIT,
             R7G_ADJUDICATION_COMMIT,
             R7H_CORRECTION_BASE_COMMIT,
+            R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
         }
-        or parent != f"{current} {R7H_CORRECTION_BASE_COMMIT}"
+        or parent != f"{current} {R7H_TOPOLOGY_CORRECTION_BASE_COMMIT}"
         or base_parent
+        != f"{R7H_TOPOLOGY_CORRECTION_BASE_COMMIT} {R7H_CORRECTION_BASE_COMMIT}"
+        or runtime_base_parent
         != f"{R7H_CORRECTION_BASE_COMMIT} {R7G_ADJUDICATION_COMMIT}"
     ):
         _fail("R7H_PARENT_MISMATCH")
@@ -1026,11 +1041,37 @@ def _fixed_consumed_r7f_controls() -> dict[str, str]:
     return dict(sorted(observed.items()))
 
 
+def _consumed_evidence_common(
+    *, evidence_producer_commit: str,
+) -> dict[str, Any]:
+    """Reconstruct historical evidence without granting it execution authority."""
+
+    current = _current_r8u_r7h_implementation_commit()
+    if evidence_producer_commit not in {
+        current, R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+    }:
+        _fail("R7H_CONTROL_EPOCH_MISMATCH")
+    value = _common(
+        artifact_type="lvef_c3_r8u_r7h_consumed_r7f_evidence_v1",
+        status="PASS_R7H_CONSUMED_R7F_ATTEMPT_CLOSED",
+        implementation_commit=current,
+    )
+    # This is an in-memory replay of the named historical producer, never an
+    # update of the sealed source receipt. New execution controls use _common
+    # directly, which rejects every predecessor implementation.
+    value["r7h_runtime_commit"] = evidence_producer_commit
+    return value
+
+
 def _derive_consumed_r7f_evidence(
     run: sequential.FullRun,
     *,
     capture_missing: bool,
+    evidence_producer_commit: str | None = None,
 ) -> tuple[dict[str, Any], int]:
+    producer = evidence_producer_commit or _current_r8u_r7h_implementation_commit()
+    if capture_missing and producer != _current_r8u_r7h_implementation_commit():
+        _fail("R7H_CONTROL_EPOCH_MISMATCH")
     authority, specs = _fixed_terminal_authority()
     consumed_controls = _fixed_consumed_r7f_controls()
     try:
@@ -1130,12 +1171,9 @@ def _derive_consumed_r7f_evidence(
     except OSError as exc:
         raise R7HContinuationError("R7H_CONSUMED_R7F_EVIDENCE_INVALID") from exc
 
-    implementation_commit = _current_r8u_r7h_implementation_commit()
     value = {
-        **_common(
-            artifact_type="lvef_c3_r8u_r7h_consumed_r7f_evidence_v1",
-            status="PASS_R7H_CONSUMED_R7F_ATTEMPT_CLOSED",
-            implementation_commit=implementation_commit,
+        **_consumed_evidence_common(
+            evidence_producer_commit=producer,
         ),
         "r7g_terminal_authority_sha256": R7G_TERMINAL_AUTHORITY_SHA256,
         "consumed_r7f_authority_sha256": consumed_controls,
@@ -1172,10 +1210,13 @@ def _validate_consumed_evidence(
     value: Mapping[str, Any], *, run: sequential.FullRun,
     replay_tail_artifacts: bool = True,
 ) -> dict[str, Any]:
-    expected_common = _common(
-        artifact_type="lvef_c3_r8u_r7h_consumed_r7f_evidence_v1",
-        status="PASS_R7H_CONSUMED_R7F_ATTEMPT_CLOSED",
-        implementation_commit=_current_r8u_r7h_implementation_commit(),
+    producer = value.get("r7h_runtime_commit")
+    if producer != R7H_TOPOLOGY_CORRECTION_BASE_COMMIT:
+        _fail("R7H_CONTROL_EPOCH_MISMATCH")
+    if _sha256(_canonical(value)) != PREDECESSOR_CONSUMED_EVIDENCE_SHA256:
+        _fail("R7H_CONTROL_EVIDENCE_HASH")
+    expected_common = _consumed_evidence_common(
+        evidence_producer_commit=producer,
     )
     expected_keys = set(expected_common) | {
         "r7g_terminal_authority_sha256",
@@ -1259,7 +1300,7 @@ def _validate_consumed_evidence(
     # totals on every reuse without issuing any qacct query or opening a
     # scientific body.
     replay, replay_queries = _derive_consumed_r7f_evidence(
-        run, capture_missing=False
+        run, capture_missing=False, evidence_producer_commit=producer,
     )
     if replay_queries != 0:
         _fail("R7H_CONSUMED_R7F_EVIDENCE_INVALID")
@@ -1372,6 +1413,34 @@ def _validate_consumed_evidence(
         ):
             _fail("R7H_CONSUMED_R7F_EVIDENCE_INVALID")
     return dict(value)
+
+
+def _same_topology_execution_invariants(
+    current: Mapping[str, Any], sealed: Mapping[str, Any],
+) -> bool:
+    """Compare payload safety while allowing validated provenance to grow."""
+
+    if (
+        not isinstance(current, Mapping)
+        or not isinstance(sealed, Mapping)
+        or set(current) != set(sealed)
+    ):
+        return False
+    informational = {
+        "retained_metadata_roots",
+        "retained_metadata_files",
+        "retained_metadata_bytes",
+    }
+    for value in (current, sealed):
+        if any(
+            type(value[field]) is not int or value[field] < 0
+            for field in informational & set(value)
+        ):
+            return False
+    return _exact(
+        {key: value for key, value in current.items() if key not in informational},
+        {key: value for key, value in sealed.items() if key not in informational},
+    )
 
 
 def _topology_authority(
@@ -1783,6 +1852,11 @@ def capture_r8u_r7h_capacity(
     if tuple(prefix) != tuple(PREFIX_FINAL_RECEIPT_SHA256):
         _fail("R7H_FINALIZED_PREFIX_INVALID")
     sealed_history = load_r8u_r7h_sealed_history()
+    # The failed 95b1058 control attempt already sealed this evidence.
+    # Missing history cannot be repaired by generating a new producer epoch
+    # or repeating historical accounting queries, even in the fixed namespace.
+    if not os.path.lexists(CONSUMED_EVIDENCE_PATH):
+        _fail("R7H_CONTROL_EPOCH_MISMATCH")
 
     if os.path.lexists(CAPACITY_RECEIPT_PATH):
         evidence, _payload, _digest = _read_private_json(
@@ -1803,20 +1877,10 @@ def capture_r8u_r7h_capacity(
         return validated
 
     _ensure_private_directory(R7H_ROOT)
-    if os.path.lexists(CONSUMED_EVIDENCE_PATH):
-        evidence, _payload, evidence_sha = _read_private_json(
-            CONSUMED_EVIDENCE_PATH, code="R7H_CONSUMED_R7F_EVIDENCE_INVALID"
-        )
-        _validate_consumed_evidence(evidence, run=run)
-    else:
-        evidence, _query_count = _derive_consumed_r7f_evidence(
-            run, capture_missing=True
-        )
-        evidence_sha = _write_private_json(
-            CONSUMED_EVIDENCE_PATH,
-            evidence,
-            code="R7H_CONSUMED_R7F_EVIDENCE_PUBLICATION_INVALID",
-        )
+    evidence, _payload, evidence_sha = _read_private_json(
+        CONSUMED_EVIDENCE_PATH, code="R7H_CONSUMED_R7F_EVIDENCE_INVALID"
+    )
+    _validate_consumed_evidence(evidence, run=run)
 
     if os.path.lexists(TOPOLOGY_AUTHORITY_PATH):
         observed, _payload, topology_sha = _read_private_json(
@@ -2544,7 +2608,9 @@ def submit_r8u_r7h_continuation_topology_probe(
         active_job_references=references["active_job_references"],
         active_process_references=references["active_process_references"],
     )
-    if not _exact(topology, topology_authority.get("topology_projection")):
+    if not _same_topology_execution_invariants(
+        topology, topology_authority.get("topology_projection")
+    ):
         _fail("R7H_TOPOLOGY_AUTHORITY_INVALID")
     _ensure_private_directory(PROBE_ROOT, fresh=True)
     _ensure_private_directory(PROBE_SCHEDULER_ROOT, fresh=True)
@@ -4095,7 +4161,9 @@ def submit_r8u_r7h_continuation_17_19(
         active_job_references=references["active_job_references"],
         active_process_references=references["active_process_references"],
     )
-    if not _exact(topology, topology_authority.get("topology_projection")):
+    if not _same_topology_execution_invariants(
+        topology, topology_authority.get("topology_projection")
+    ):
         _fail("R7H_TOPOLOGY_AUTHORITY_INVALID")
     claim = _continuation_claim(
         run=run,

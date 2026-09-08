@@ -163,7 +163,7 @@
       },
       "entrypoint": {
         "path": "scripts/finalize_lvef_c3_production.py",
-        "sha256": "f830e0aa85f5db4ad8e1272b8db08f267f501abee5f519bdee51f1c9a2e2a035",
+        "sha256": "99ae1a29f16ad2548ac0e5e2736ebfeb65d68d88b7381f8d5da810f95520a9ea",
         "callable": "finalize_canary_preservation_receipt"
       },
       "required_predecessor_receipts": [

@@ -146,6 +146,156 @@ def test_capacity_real_load_chain_replays_sealed_runtime_across_kernel_patch_dri
             fixture.namespace.assert_not_called()
 
 
+def test_capacity_real_runtime_and_metadata_classifier_reach_resource_command() -> None:
+    import test_lvef_c3_r8u_r7f_capacity as capacity_tests
+    import test_lvef_c3_r8u_r7h_metadata_topology as metadata_tests
+
+    class ResourceBoundaryReached(BaseException):
+        """Stop before the first synthetic resource command can execute."""
+
+    plan = capacity_tests._production_scalar_plan()
+    capture = capacity.capture_validate_and_seal_fixed_r8u_r7f_tasks17_19_capacity
+    classify = r7h.sequential.validate_r8u_r7h_extraction_cache_topology
+    topology_wrapper = r7h.validate_r8u_r7h_extraction_cache_topology
+    validate_runtime = core.validate_runtime_authority
+
+    def real_classifier(*args: Any, **kwargs: Any) -> Any:
+        # The loader fixture stubs its synthetic plan's runtime construction;
+        # retained metadata must still use the real shared runtime contract.
+        with mock.patch.object(core, "validate_runtime_authority", validate_runtime):
+            return classify(*args, **kwargs)
+
+    command = mock.Mock(side_effect=ResourceBoundaryReached())
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory).resolve()
+        runtime_root = root / "runtime"
+        runtime_root.mkdir(mode=0o700)
+        controls = root / "controls"
+        controls.mkdir(mode=0o700)
+        consumed = controls / "consumed.json"
+        consumed.write_bytes(core.canonical_json_bytes({"synthetic_sealed_predecessor": True}))
+        consumed.chmod(0o600)
+        capacity_root = controls / "capacity"
+        capacity_root.mkdir(mode=0o700)
+        resources = capacity_tests._authority(root)
+        with (
+            metadata_tests.synthetic_retained_metadata_topology(root / "production") as metadata,
+            _synthetic_capacity_runtime(runtime_root) as runtime,
+            capacity_tests._plan_authority(plan),
+            contextlib.ExitStack() as stack,
+        ):
+            runtime.boundary.side_effect = None
+            runtime.boundary.return_value = r7h.PREFIX_FINAL_RECEIPT_SHA256
+            runtime.publication.return_value = SHA
+            for name, path in {
+                "PRODUCTION_ROOT": metadata.root,
+                "R7H_ROOT": controls,
+                "CAPACITY_ROOT": capacity_root,
+                "CAPACITY_RECEIPT_PATH": controls / "capacity.json",
+                "CONSUMED_EVIDENCE_PATH": controls / "consumed.json",
+                "TOPOLOGY_AUTHORITY_PATH": controls / "topology.json",
+                "STATIC_PLAN_PROJECTION_PATH": capacity_root / "plan.json",
+                "CAPACITY_PRODUCER_PATH": capacity_root / "producer.json",
+                "CAPACITY_RAW_CAPTURE_ROOT": capacity_root / "raw",
+            }.items():
+                stack.enter_context(mock.patch.object(r7h, name, path))
+            stack.enter_context(mock.patch.object(r7h.sequential, "_build_frozen_plan", return_value=(plan, SimpleNamespace(), {})))
+            stack.enter_context(mock.patch.object(r7h.sequential, "_load_full_batch_plan_payload", return_value=plan))
+            stack.enter_context(mock.patch.object(r7h, "load_r8u_r7h_sealed_history", side_effect=metadata.sealed_history))
+            stack.enter_context(mock.patch.object(
+                r7h, "validate_r8u_r7h_extraction_cache_topology",
+                side_effect=lambda **kwargs: topology_wrapper(sealed_history_validator=metadata.sealed_history, **kwargs),
+            ))
+            # Predecessor-epoch replay has its own behavioral tests; keep this
+            # fixture focused on the real runtime/classifier/resource path.
+            stack.enter_context(mock.patch.object(r7h, "_validate_consumed_evidence"))
+            stack.enter_context(mock.patch.object(r7h, "_derive_consumed_r7f_evidence", side_effect=AssertionError("sealed predecessor was recaptured")))
+            stack.enter_context(mock.patch.object(r7h, "_capacity_baselines", return_value={}))
+            stack.enter_context(mock.patch.object(scheduler, "build_qsub_environment", return_value=({}, "synthetic")))
+            stack.enter_context(mock.patch.object(r7h, "_live_reference_projection", return_value=_references(0)))
+            classifier = stack.enter_context(mock.patch.object(
+                r7h.sequential, "validate_r8u_r7h_extraction_cache_topology",
+                side_effect=real_classifier,
+            ))
+            stack.enter_context(mock.patch.object(
+                capacity, "capture_validate_and_seal_fixed_r8u_r7f_tasks17_19_capacity",
+                side_effect=lambda plan, **kwargs: capture(plan, authority=resources, **kwargs),
+            ))
+            try:
+                r7h.capture_r8u_r7h_capacity(capacity_process_runner=command)
+            except ResourceBoundaryReached:
+                pass
+            else:
+                raise AssertionError("the first resource command boundary was not reached")
+            runtime.validator.assert_called_once()
+            classifier.assert_called_once()
+            command.assert_called_once()
+            assert Path(command.call_args.args[0][0]) == resources.pquota_path
+            topology = next(
+                call.args[1]["topology_projection"]
+                for call in runtime.publication.call_args_list
+                if call.args[0] == controls / "topology.json"
+            )
+            assert topology["retained_metadata_roots"] == metadata.metadata_roots
+            assert topology["other_active_scientific_caches"] == 0
+            assert topology["unknown_or_unsealed_caches"] == 0
+
+
+def test_tail_admission_and_finalizer_accept_growing_retained_metadata() -> None:
+    import test_lvef_c3_r8u_r7h_metadata_topology as metadata_tests
+
+    sequential = r7h.sequential
+    topology_wrapper = r7h.validate_r8u_r7h_extraction_cache_topology
+    for finalized in (16, 17, 18, 19):
+        with tempfile.TemporaryDirectory() as directory:
+            with metadata_tests.synthetic_retained_metadata_topology(
+                Path(directory).resolve(), current_batches=finalized
+            ) as metadata:
+                run = SimpleNamespace(
+                    authority=SimpleNamespace(governing_commit=r7h.SCIENTIFIC_COMMIT),
+                    plan={"batches": [{"ordinal": index, "batch_id": f"c3_batch_{index:03d}"} for index in range(19)]},
+                    plan_sha256=r7h.PLAN_SHA256, attempt_id=r7h.ATTEMPT_ID,
+                    production_root=metadata.root, requirements=SimpleNamespace(batch_count=19),
+                )
+                sentinel = sequential.FullSequentialError("SYNTHETIC_AFTER_LIVE_TOPOLOGY")
+                with (
+                    mock.patch.object(sequential, "validate_r8u_r7h_extraction_cache_topology", wraps=sequential.validate_r8u_r7h_extraction_cache_topology) as topology,
+                    mock.patch.dict(os.environ, {"JOB_ID": "124", "SGE_TASK_ID": "undefined", "NSLOTS": "4", "CUDA_VISIBLE_DEVICES": ""}),
+                ):
+                    if finalized < 19:
+                        dependencies = sequential.FullDependencies(
+                            prior_batch_validator=lambda **_kwargs: None,
+                            r8u_r7h_worker_submission_validator=mock.Mock(side_effect=sentinel),
+                            r8u_r7h_sealed_history_validator=metadata.sealed_history,
+                            execution_context=sequential.R8U_R7H_FIXED_CONTINUATION,
+                        )
+                        try:
+                            sequential.run_batch_task(task_id=finalized + 1, run=run, dependencies=dependencies)
+                        except sequential.FullSequentialError as exc:
+                            assert exc is sentinel
+                            assert exc.stage == "SUBMISSION_AUTHORITY"
+                        else:
+                            raise AssertionError("tail admission did not pass live topology")
+                    else:
+                        with (
+                            mock.patch.object(r7h, "PRODUCTION_ROOT", metadata.root),
+                            mock.patch.object(r7h, "load_r8u_r7h_sealed_history", side_effect=metadata.sealed_history),
+                            mock.patch.object(r7h, "validate_r8u_r7h_extraction_cache_topology", side_effect=lambda **kwargs: topology_wrapper(sealed_history_validator=metadata.sealed_history, **kwargs)),
+                            mock.patch.object(r7h, "validate_r8u_r7h_continuation_worker_submission"),
+                            mock.patch.object(r7h, "_load_capacity_chain", return_value=(run, {}, {"retained_metadata_roots": 16}, {}, _account())),
+                            mock.patch.object(r7h, "_validate_continuation_chain", return_value={}),
+                            mock.patch.object(r7h, "_worker_live_references", return_value=_references(2)),
+                            mock.patch.object(sequential, "_batch_paths", side_effect=sentinel),
+                        ):
+                            try:
+                                r7h.run_r8u_r7h_continuation_finalizer()
+                            except sequential.FullSequentialError as exc:
+                                assert exc is sentinel
+                            else:
+                                raise AssertionError("finalizer did not pass live topology")
+                    topology.assert_called_once()
+
+
 def test_capacity_runtime_contradictions_fail_before_capacity_or_controls() -> None:
     for field, code in (
         ("python_executable_sha256", "R7H_PYTHON_HASH"),
@@ -169,14 +319,16 @@ def test_capacity_runtime_contradictions_fail_before_capacity_or_controls() -> N
 
 
 def test_controller_requires_exact_corrective_child_and_current_repository() -> None:
-    base = r7h.R7H_CORRECTION_BASE_COMMIT
+    base = r7h.R7H_TOPOLOGY_CORRECTION_BASE_COMMIT
+    previous = r7h.R7H_CORRECTION_BASE_COMMIT
     good = {
         ("rev-parse", "HEAD"): IMPLEMENTATION_COMMIT,
         ("rev-parse", "refs/remotes/origin/codex/lvef-multitask-revalidation"): IMPLEMENTATION_COMMIT,
         ("branch", "--show-current"): r7h.sequential.EXPECTED_BRANCH,
         ("status", "--porcelain", "--untracked-files=no"): "",
         ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT): f"{IMPLEMENTATION_COMMIT} {base}",
-        ("rev-list", "--parents", "-n", "1", base): f"{base} {r7h.R7G_ADJUDICATION_COMMIT}",
+        ("rev-list", "--parents", "-n", "1", base): f"{base} {previous}",
+        ("rev-list", "--parents", "-n", "1", previous): f"{previous} {r7h.R7G_ADJUDICATION_COMMIT}",
         ("rev-list", "--count", f"{base}..{IMPLEMENTATION_COMMIT}"): "1",
         ("merge-base", "--is-ancestor", r7h.SCIENTIFIC_COMMIT, IMPLEMENTATION_COMMIT): "",
     }
@@ -185,9 +337,12 @@ def test_controller_requires_exact_corrective_child_and_current_repository() -> 
     parent_key = ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT)
     for key, value, code in (
         (parent_key, f"{IMPLEMENTATION_COMMIT} {r7h.R7G_ADJUDICATION_COMMIT}", "R7H_PARENT_MISMATCH"),
+        (parent_key, f"{IMPLEMENTATION_COMMIT} {previous}", "R7H_PARENT_MISMATCH"),
         (parent_key, f"{IMPLEMENTATION_COMMIT} {base} {'e' * 40}", "R7H_PARENT_MISMATCH"),
         (("rev-list", "--count", f"{base}..{IMPLEMENTATION_COMMIT}"), "2", "R7H_ANCESTRY_DISTANCE"),
         (("rev-list", "--parents", "-n", "1", base), f"{base} {'e' * 40}", "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--parents", "-n", "1", base), f"{base} {previous} {'e' * 40}", "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--parents", "-n", "1", previous), f"{previous} {'e' * 40}", "R7H_PARENT_MISMATCH"),
         (("rev-parse", "refs/remotes/origin/codex/lvef-multitask-revalidation"), "e" * 40, "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),
         (("branch", "--show-current"), "other-branch", "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),
         (("status", "--porcelain", "--untracked-files=no"), " M scripts/changed.py", "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),

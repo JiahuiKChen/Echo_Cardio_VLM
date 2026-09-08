@@ -197,6 +197,7 @@ def test_r7h_finalizer_api_is_strictly_additive() -> None:
 def _repository_outputs() -> dict[tuple[str, ...], bytes]:
     fixed_r7g = finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT
     fixed_r7h = finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
+    fixed_runtime = finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT
     return {
         ("rev-parse", "HEAD"): f"{IMPLEMENTATION_COMMIT}\n".encode(),
         (
@@ -207,11 +208,15 @@ def _repository_outputs() -> dict[tuple[str, ...], bytes]:
             b"codex/lvef-multitask-revalidation\n"
         ),
         ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT): (
-            f"{IMPLEMENTATION_COMMIT} {fixed_r7h}\n".encode()
+            f"{IMPLEMENTATION_COMMIT} {fixed_runtime}\n".encode()
         ),
         (
-            "rev-list", "--count", f"{fixed_r7h}..{IMPLEMENTATION_COMMIT}"
+            "rev-list", "--count", f"{fixed_runtime}..{IMPLEMENTATION_COMMIT}"
         ): b"1\n",
+        ("rev-list", "--parents", "-n", "1", fixed_runtime): (
+            f"{fixed_runtime} {fixed_r7h}\n".encode()
+        ),
+        ("rev-list", "--count", f"{fixed_r7h}..{fixed_runtime}"): b"1\n",
         ("rev-list", "--parents", "-n", "1", fixed_r7h): (
             f"{fixed_r7h} {fixed_r7g}\n".encode()
         ),
@@ -228,6 +233,7 @@ def _repository_runner(
         finalizer.R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT,
         finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
         finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
+        finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
         IMPLEMENTATION_COMMIT,
     )
     permitted_empty = {
@@ -270,6 +276,7 @@ def test_r7h_repository_authority_requires_one_corrective_child() -> None:
 def test_r7h_repository_authority_rejects_wrong_lineage_or_checkout() -> None:
     fixed_r7g = finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT
     fixed_r7h = finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
+    fixed_runtime = finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT
     parent_arguments = ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT)
     base_parent_arguments = ("rev-list", "--parents", "-n", "1", fixed_r7h)
     cases = (
@@ -277,12 +284,20 @@ def test_r7h_repository_authority_rejects_wrong_lineage_or_checkout() -> None:
         # and an additional descendant must each fail the exact-parent gate.
         (parent_arguments, f"{IMPLEMENTATION_COMMIT} {fixed_r7g}\n".encode(),
          "R7H_PARENT_MISMATCH"),
+        (parent_arguments, f"{IMPLEMENTATION_COMMIT} {fixed_r7h}\n".encode(),
+         "R7H_PARENT_MISMATCH"),
         (parent_arguments, f"{IMPLEMENTATION_COMMIT} {'e' * 40}\n".encode(),
          "R7H_PARENT_MISMATCH"),
         (parent_arguments,
-         f"{IMPLEMENTATION_COMMIT} {fixed_r7h} {'e' * 40}\n".encode(),
+         f"{IMPLEMENTATION_COMMIT} {fixed_runtime} {'e' * 40}\n".encode(),
          "R7H_PARENT_MISMATCH"),
-        (("rev-list", "--count", f"{fixed_r7h}..{IMPLEMENTATION_COMMIT}"),
+        (("rev-list", "--count", f"{fixed_runtime}..{IMPLEMENTATION_COMMIT}"),
+         b"2\n", "R7H_ANCESTRY_DISTANCE"),
+        (("rev-list", "--parents", "-n", "1", fixed_runtime),
+         f"{fixed_runtime} {fixed_r7g}\n".encode(), "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--parents", "-n", "1", fixed_runtime),
+         f"{fixed_runtime} {fixed_r7h} {'e' * 40}\n".encode(), "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--count", f"{fixed_r7h}..{fixed_runtime}"),
          b"2\n", "R7H_ANCESTRY_DISTANCE"),
         (base_parent_arguments, f"{fixed_r7h} {'e' * 40}\n".encode(),
          "R7H_PARENT_MISMATCH"),
@@ -313,24 +328,28 @@ def test_r7h_repository_authority_rejects_wrong_lineage_or_checkout() -> None:
             )
 
 
-def test_r7h_rejects_uncorrected_base_as_current_implementation() -> None:
-    with mock.patch.object(
-        finalizer.subprocess, "run", side_effect=AssertionError("Git reached")
+def test_r7h_rejects_uncorrected_bases_as_current_implementation() -> None:
+    for prior_implementation in (
+        finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
+        finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
     ):
+        with mock.patch.object(
+            finalizer.subprocess, "run", side_effect=AssertionError("Git reached")
+        ):
+            _raises(
+                "R8U_R7H_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH",
+                lambda: finalizer._validate_r8u_r7h_repository_authority(
+                    prior_implementation
+                ),
+            )
         _raises(
-            "R8U_R7H_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH",
-            lambda: finalizer._validate_r8u_r7h_repository_authority(
-                finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
+            "R8U_R7H_FINALIZER_AUTHORITY_INVALID",
+            lambda: _validate(
+                _receipts(), authority=replace(
+                    _authority(), implementation_commit=prior_implementation
+                )
             ),
         )
-    _raises(
-        "R8U_R7H_FINALIZER_AUTHORITY_INVALID",
-        lambda: _validate(
-            _receipts(), authority=replace(
-                _authority(), implementation_commit=finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
-            )
-        ),
-    )
 
 
 def test_r7h_accepts_only_fixed_prefix_plus_fresh_three_batch_tail() -> None:
