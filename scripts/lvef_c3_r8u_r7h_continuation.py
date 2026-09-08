@@ -63,6 +63,9 @@ R7F_RUNTIME_COMMIT: Final = "2223d9768a1cc23efbe95a3c5474ea747a383a10"
 R7G_ADJUDICATION_COMMIT: Final = (
     "cf83c19521a2ed7b722c29a44c01f00cad0cf717"
 )
+R7H_CORRECTION_BASE_COMMIT: Final = (
+    "8230d1535247256529616cb481dd48cce1f9a78f"
+)
 R7G_TERMINAL_AUTHORITY_SHA256: Final = (
     "3764a284f3b8ba2a5bf3e9abbc9708a6dc2c9cecfa8e2bbef05a2b507252610e"
 )
@@ -432,6 +435,7 @@ def _common(
             SCIENTIFIC_COMMIT,
             R7F_RUNTIME_COMMIT,
             R7G_ADJUDICATION_COMMIT,
+            R7H_CORRECTION_BASE_COMMIT,
         }
     ):
         _fail("R7H_CONTROL_SCHEMA_INVALID")
@@ -449,34 +453,98 @@ def _common(
 
 
 def _current_r8u_r7h_implementation_commit() -> str:
-    """Require the sole direct R7H child of the fixed R7G-R1 commit."""
+    """Require the one corrective child of the fixed, unexecuted R7H base."""
 
     try:
         current = sequential._current_commit()
         parent = sequential._git("rev-list", "--parents", "-n", "1", current)
+        base_parent = sequential._git(
+            "rev-list", "--parents", "-n", "1", R7H_CORRECTION_BASE_COMMIT
+        )
         distance = sequential._git(
-            "rev-list", "--count", f"{R7G_ADJUDICATION_COMMIT}..{current}"
+            "rev-list", "--count", f"{R7H_CORRECTION_BASE_COMMIT}..{current}"
         )
         relation = sequential._git(
-            "merge-base", "--is-ancestor", R7G_ADJUDICATION_COMMIT, current
+            "merge-base", "--is-ancestor", SCIENTIFIC_COMMIT, current
         )
     except Exception as exc:
         raise R7HContinuationError(
             "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"
         ) from exc
+    if COMMIT_RE.fullmatch(current) is None:
+        _fail("R7H_HEAD_MISMATCH")
     if (
-        COMMIT_RE.fullmatch(current) is None
-        or current in {
+        current in {
             SCIENTIFIC_COMMIT,
             R7F_RUNTIME_COMMIT,
             R7G_ADJUDICATION_COMMIT,
+            R7H_CORRECTION_BASE_COMMIT,
         }
-        or parent != f"{current} {R7G_ADJUDICATION_COMMIT}"
-        or distance != "1"
-        or relation
+        or parent != f"{current} {R7H_CORRECTION_BASE_COMMIT}"
+        or base_parent
+        != f"{R7H_CORRECTION_BASE_COMMIT} {R7G_ADJUDICATION_COMMIT}"
     ):
-        _fail("R7H_IMPLEMENTATION_ANCESTRY_INVALID")
+        _fail("R7H_PARENT_MISMATCH")
+    if distance != "1" or relation:
+        _fail("R7H_ANCESTRY_DISTANCE")
     return current
+
+
+def _runtime_authority_failure_code(error: BaseException) -> str:
+    """Project known runtime failures to short, non-sensitive field codes."""
+
+    fields = {
+        "python_executable_sha256": "R7H_PYTHON_HASH",
+        "python_version": "R7H_PYTHON_VERSION",
+        "torch_version": "R7H_TORCH_VERSION",
+        "torchvision_version": "R7H_TORCHVISION_VERSION",
+        "cuda_version": "R7H_CUDA_VERSION",
+        "cudnn_version": "R7H_CUDNN_VERSION",
+        "operating_system": "R7H_OPERATING_SYSTEM",
+    }
+    codes = {
+        "ENVIRONMENT_RECEIPT_HASH_BINDING_MISMATCH": "R7H_ENV_RECEIPT_HASH",
+        "MINIMAL_CURRENT_ENVIRONMENT_IDENTITY_MISMATCH": "R7H_ENV_RECEIPT_HASH",
+        "MINIMAL_CURRENT_ENVIRONMENT_MISSING": "R7H_ENV_RECEIPT_MISSING",
+        "MINIMAL_CURRENT_ENVIRONMENT_AMBIGUOUS": "R7H_ENV_RECEIPT_AMBIGUOUS",
+        "MINIMAL_CURRENT_ENVIRONMENT_COMMIT_MISMATCH": "R7H_ENV_RECEIPT_COMMIT",
+        "ENVIRONMENT_RECEIPT_SCHEMA_MISMATCH": "R7H_ENV_RECEIPT_SCHEMA",
+        "ENVIRONMENT_RECEIPT_IDENTITY_MISMATCH": "R7H_ENV_RECEIPT_IDENTITY",
+        "RUNNING_PACKAGE_INVENTORY_MISMATCH": "R7H_PACKAGE_INVENTORY",
+        "PACKAGE_INVENTORY_SCHEMA_INVALID": "R7H_PACKAGE_INVENTORY",
+        "PACKAGE_INVENTORY_DUPLICATE_NAME": "R7H_PACKAGE_INVENTORY",
+        "PACKAGE_INVENTORY_NOT_SORTED": "R7H_PACKAGE_INVENTORY",
+        "PACKAGE_HASH_INVALID": "R7H_PACKAGE_INVENTORY",
+        "PYTHON_HASH_INVALID": "R7H_PYTHON_HASH",
+        "PYTHON_EXECUTABLE_RESOLUTION_FAILED": "R7H_PYTHON_HASH",
+        "ENVIRONMENT_RUNTIME_UNAVAILABLE": "R7H_RUNTIME_UNAVAILABLE",
+        "CUDA_CUDNN_RUNTIME_UNAVAILABLE": "R7H_CUDA_CUDNN_UNAVAILABLE",
+        "CHECKPOINT_FILENAME_MISMATCH": "R7H_CHECKPOINT_NAME",
+        "CHECKPOINT_NOT_REGULAR": "R7H_CHECKPOINT_FILE",
+        "CHECKPOINT_SIZE_MISMATCH": "R7H_CHECKPOINT_SIZE",
+        "CHECKPOINT_SHA256_MISMATCH": "R7H_CHECKPOINT_HASH",
+        "CRC32C_EXTERNAL_FILE_AUTHORITY_MISMATCH": "R7H_CRC32C_FILE_HASH",
+        "CRC32C_EXTERNAL_RUNTIME_AUTHORITY_MISMATCH": "R7H_CRC32C_RUNTIME",
+        "MINIMAL_ROW_AUTHORITY_HASH_BINDING_MISMATCH": "R7H_SOURCE_COHORT_HASH",
+    }
+    # Wrappers can retain their established public error code. Follow only
+    # explicit causes, with a fixed bound, and never stringify an exception.
+    current: BaseException | None = error
+    for _ in range(8):
+        if current is None:
+            break
+        code = getattr(current, "code", None)
+        if (
+            isinstance(current, stages.ProductionStageError)
+            and code == "RUNNING_ENVIRONMENT_RUNTIME_MISMATCH"
+        ):
+            field_code = fields.get(getattr(current, "runtime_field", None))
+            if field_code is not None:
+                return field_code
+        if isinstance(code, str) and code in codes:
+            return codes[code]
+        current = current.__cause__
+    return "R7H_RUNTIME_AUTHORITY_INVALID"
 
 
 def _script_authority() -> dict[str, str]:
@@ -509,7 +577,7 @@ def _load_fixed_original_run(
             runtime_validation_context=runtime_validation_context
         )
     except Exception as exc:
-        raise R7HContinuationError("R7H_RUNTIME_AUTHORITY_INVALID") from exc
+        raise R7HContinuationError(_runtime_authority_failure_code(exc)) from exc
     if current.governing_commit != implementation_commit:
         _fail("R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID")
     scientific = replace(current, governing_commit=SCIENTIFIC_COMMIT)
@@ -1709,7 +1777,7 @@ def capture_r8u_r7h_capacity(
     implementation_commit = _current_r8u_r7h_implementation_commit()
     run = _load_fixed_original_run(
         scheduler_job_identity="R8U_R7H_CAPACITY_SUBMITTER",
-        runtime_validation_context=stages.LIVE_RUNTIME_CAPTURE,
+        runtime_validation_context=stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
     )
     prefix = historical._r8u_r7d_bounded_prefix(run)
     if tuple(prefix) != tuple(PREFIX_FINAL_RECEIPT_SHA256):
@@ -2831,7 +2899,12 @@ def validate_r8u_r7h_continuation_worker_submission(
             submission_path = FINALIZER_SUBMISSION_PATH
         authority_path = CONTINUATION_CLAIM_PATH
     if current_job_id != expected_job_id:
-        _fail("SCHEDULER_JOB_ID_BINDING_MISMATCH")
+        _fail("R7H_JOB_ID_MISMATCH")
+    # A sealed receipt is evidence for its original worker observation; each
+    # invocation must still match the exact current dispatch, including the
+    # role and implementation suffix carried by its scheduler job name.
+    if os.environ.get("JOB_NAME") != expected_job_name:
+        _fail("R7H_JOB_NAME_MISMATCH")
     try:
         observed_runner_sha = core.sha256_file(RUNNER_PATH)
         if Path(sys.executable) != scheduler.ECHOPRIME_PYTHON:

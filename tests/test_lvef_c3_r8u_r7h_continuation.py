@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import inspect
 import io
 import json
@@ -27,9 +28,359 @@ import lvef_c3_orchestration_core as core
 import lvef_c3_r8u_r7d_capacity as capacity
 import lvef_c3_r8u_r7h_continuation as r7h
 
+# Reuse the maintained closed environment receipt rather than a second schema.
+if str(ROOT / "tests") not in sys.path:
+    sys.path.insert(0, str(ROOT / "tests"))
+import test_lvef_c3_environment_authority_validation as environment_tests
+
 
 IMPLEMENTATION_COMMIT = "f" * 40
 SHA = "a" * 64
+
+
+@contextlib.contextmanager
+def _synthetic_capacity_runtime(root: Path, *, changed_field: str | None = None):
+    """Keep the complete runtime/hash validator and fixed-run load chain real."""
+    stages = r7h.stages
+    minimal = r7h.minimal
+    receipt = environment_tests._receipt()
+    receipt["operating_system"] = "Linux-synthetic-553.153.1-x86_64"
+    environment, digest = environment_tests._write_receipt(root, receipt)
+    observation = {**environment_tests._runtime(),
+                   "operating_system": "Linux-synthetic-553.158.1-x86_64"}
+    if changed_field is not None:
+        observation[changed_field] = "changed-synthetic-value"
+    checkpoint = root / stages.CHECKPOINT_FILENAME
+    checkpoint.write_bytes(b"synthetic checkpoint")
+    values = {name: "/synthetic/authority" for name in minimal.LEGACY_SESSION_REQUIRED_NAMES}
+    values.update({
+        "EXPECTED_COMMIT": "b" * 40,
+        "EXPECTED_SELECTED_STUDIES_SHA256": core.EXPECTED_SELECTED_MANIFEST_SHA256,
+        "EXPECTED_SELECTED_SOURCE_SHA256": core.EXPECTED_SELECTED_SOURCE_MANIFEST_SHA256,
+        "EXPECTED_SPLIT_MAP_SHA256": core.EXPECTED_SPLIT_MAP_SHA256,
+        "EXPECTED_GCLOUD_RESOLUTION_RECORD_SHA256": SHA,
+    })
+    projection = minimal.LegacySessionProjection(
+        values=values, source_sha256=SHA, source_size=1,
+        repeated_assignment_count=0, repeated_name_count=0, conflict_count=0,
+    )
+    torch = SimpleNamespace(
+        __version__=observation["torch_version"],
+        version=SimpleNamespace(cuda=observation["cuda_version"]),
+        backends=SimpleNamespace(cudnn=SimpleNamespace(
+            version=lambda: observation["cudnn_version"])),
+    )
+    packages = [SimpleNamespace(metadata={"Name": item["name"]}, version=item["version"])
+                for item in environment_tests._packages()]
+    plan = {"authority": {}}
+    with contextlib.ExitStack() as stack:
+        for owner, name, replacement in (
+            (r7h, "_current_r8u_r7h_implementation_commit", mock.Mock(return_value=IMPLEMENTATION_COMMIT)),
+            (minimal, "_project_legacy_session_environment", mock.Mock(return_value=projection)),
+            (minimal, "_parse_literal_environment", mock.Mock(return_value={"LVEF_C3_GCP_BILLING_PROJECT": "synthetic-project"})),
+            (minimal, "_git", mock.Mock(return_value=IMPLEMENTATION_COMMIT)),
+            (minimal, "_git_is_ancestor", mock.Mock(return_value=True)),
+            (minimal, "PRODUCTION_ROOT", root / "production"),
+            (minimal, "CHECKPOINT_PATH", checkpoint),
+            (minimal, "CURRENT_ENVIRONMENT_SHA256", digest),
+            (minimal, "validate_private_directory", mock.Mock()),
+            (minimal, "_discover_current_environment_receipt", mock.Mock(return_value=environment)),
+            (minimal, "_validate_row_authority_metadata", mock.Mock()),
+            (minimal, "_read_regular", mock.Mock(return_value=b"synthetic auxiliary authority")),
+            (core.GcloudADCTokenProvider, "validate_authority", mock.Mock(return_value={"gcloud_executable_sha256": SHA})),
+            (stages, "CHECKPOINT_BYTES", checkpoint.stat().st_size),
+            (stages, "CHECKPOINT_SHA256", hashlib.sha256(checkpoint.read_bytes()).hexdigest()),
+            (stages, "resolved_python_executable_sha256", mock.Mock(return_value=observation["python_executable_sha256"])),
+            (stages.platform, "python_version", mock.Mock(return_value=observation["python_version"])),
+            (stages.platform, "platform", mock.Mock(return_value=observation["operating_system"])),
+            (stages.importlib.metadata, "distributions", mock.Mock(return_value=packages)),
+            (stages, "validate_crc32c_external_authority", mock.Mock(return_value=receipt)),
+            (r7h.sequential, "_build_frozen_plan", mock.Mock(return_value=(plan, SimpleNamespace(), {}))),
+            (core, "validate_current_batch_plan_v3", mock.Mock(return_value=r7h.PLAN_SHA256)),
+            (core, "validate_runtime_authority", mock.Mock(return_value={})),
+            (r7h.sequential, "_load_full_batch_plan_payload", mock.Mock(return_value=plan)),
+            (r7h.historical, "_read_private_exact", mock.Mock(return_value=b"{}")),
+            (r7h.sequential, "_validate_private_directory", mock.Mock()),
+            (r7h.sequential, "_validate_full_run", mock.Mock()),
+        ):
+            stack.enter_context(mock.patch.object(owner, name, replacement))
+        stack.enter_context(mock.patch.dict(sys.modules, {
+            "torch": torch,
+            "torchvision": SimpleNamespace(__version__=observation["torchvision_version"]),
+        }))
+        validator = stack.enter_context(mock.patch.object(
+            stages, "validate_environment_receipt_against_current_runtime",
+            wraps=stages.validate_environment_receipt_against_current_runtime,
+        ))
+        boundary = stack.enter_context(mock.patch.object(
+            r7h.historical, "_r8u_r7d_bounded_prefix",
+            side_effect=RuntimeError("synthetic next capacity boundary"),
+        ))
+        publication = stack.enter_context(mock.patch.object(r7h, "_write_private_json"))
+        namespace = stack.enter_context(mock.patch.object(r7h, "_ensure_private_directory"))
+        yield SimpleNamespace(environment=environment, digest=digest, validator=validator,
+                              boundary=boundary, publication=publication, namespace=namespace)
+
+
+def test_capacity_real_load_chain_replays_sealed_runtime_across_kernel_patch_drift() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        with _synthetic_capacity_runtime(Path(directory)) as fixture:
+            before = fixture.environment.read_bytes()
+            try:
+                r7h.capture_r8u_r7h_capacity()
+            except RuntimeError as exc:
+                assert str(exc) == "synthetic next capacity boundary"
+            else:
+                raise AssertionError("capacity did not reach its next boundary")
+            fixture.validator.assert_called_once_with(
+                fixture.environment,
+                runtime_validation_context=r7h.stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+                expected_environment_receipt_sha256=fixture.digest,
+            )
+            fixture.boundary.assert_called_once()
+            run = fixture.boundary.call_args.args[0]
+            assert run.authority.governing_commit == r7h.SCIENTIFIC_COMMIT
+            assert run.authority.environment_receipt_sha256 == fixture.digest
+            assert fixture.environment.read_bytes() == before
+            fixture.publication.assert_not_called()
+            fixture.namespace.assert_not_called()
+
+
+def test_capacity_runtime_contradictions_fail_before_capacity_or_controls() -> None:
+    for field, code in (
+        ("python_executable_sha256", "R7H_PYTHON_HASH"),
+        ("torch_version", "R7H_TORCH_VERSION"),
+        ("receipt_hash", "R7H_ENV_RECEIPT_HASH"),
+        ("tampered_receipt", "R7H_ENV_RECEIPT_HASH"),
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            with _synthetic_capacity_runtime(
+                Path(directory), changed_field=field if field in r7h.stages.PORTABLE_ENVIRONMENT_RUNTIME_KEYS else None
+            ) as fixture:
+                with contextlib.ExitStack() as stack:
+                    if field == "receipt_hash":
+                        stack.enter_context(mock.patch.object(r7h.minimal, "CURRENT_ENVIRONMENT_SHA256", None))
+                    elif field == "tampered_receipt":
+                        fixture.environment.write_bytes(fixture.environment.read_bytes() + b" ")
+                    _raises(code, r7h.capture_r8u_r7h_capacity)
+                fixture.boundary.assert_not_called()
+                fixture.publication.assert_not_called()
+                fixture.namespace.assert_not_called()
+
+
+def test_controller_requires_exact_corrective_child_and_current_repository() -> None:
+    base = r7h.R7H_CORRECTION_BASE_COMMIT
+    good = {
+        ("rev-parse", "HEAD"): IMPLEMENTATION_COMMIT,
+        ("rev-parse", "refs/remotes/origin/codex/lvef-multitask-revalidation"): IMPLEMENTATION_COMMIT,
+        ("branch", "--show-current"): r7h.sequential.EXPECTED_BRANCH,
+        ("status", "--porcelain", "--untracked-files=no"): "",
+        ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT): f"{IMPLEMENTATION_COMMIT} {base}",
+        ("rev-list", "--parents", "-n", "1", base): f"{base} {r7h.R7G_ADJUDICATION_COMMIT}",
+        ("rev-list", "--count", f"{base}..{IMPLEMENTATION_COMMIT}"): "1",
+        ("merge-base", "--is-ancestor", r7h.SCIENTIFIC_COMMIT, IMPLEMENTATION_COMMIT): "",
+    }
+    with mock.patch.object(r7h.sequential, "_git", side_effect=lambda *args: good[args]):
+        assert r7h._current_r8u_r7h_implementation_commit() == IMPLEMENTATION_COMMIT
+    parent_key = ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT)
+    for key, value, code in (
+        (parent_key, f"{IMPLEMENTATION_COMMIT} {r7h.R7G_ADJUDICATION_COMMIT}", "R7H_PARENT_MISMATCH"),
+        (parent_key, f"{IMPLEMENTATION_COMMIT} {base} {'e' * 40}", "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--count", f"{base}..{IMPLEMENTATION_COMMIT}"), "2", "R7H_ANCESTRY_DISTANCE"),
+        (("rev-list", "--parents", "-n", "1", base), f"{base} {'e' * 40}", "R7H_PARENT_MISMATCH"),
+        (("rev-parse", "refs/remotes/origin/codex/lvef-multitask-revalidation"), "e" * 40, "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),
+        (("branch", "--show-current"), "other-branch", "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),
+        (("status", "--porcelain", "--untracked-files=no"), " M scripts/changed.py", "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),
+    ):
+        changed = {**good, key: value}
+        with mock.patch.object(r7h.sequential, "_git", side_effect=lambda *args: changed[args]):
+            _raises(code, r7h._current_r8u_r7h_implementation_commit)
+
+
+def test_runtime_diagnostics_keep_only_allowlisted_codes_and_field_names() -> None:
+    wrapped = RuntimeError("synthetic private diagnostic must remain absent")
+    wrapped.__cause__ = r7h.stages.ProductionStageError(
+        "RUNNING_ENVIRONMENT_RUNTIME_MISMATCH", runtime_field="torch_version"
+    )
+    assert r7h._runtime_authority_failure_code(wrapped) == "R7H_TORCH_VERSION"
+    unsafe_field = r7h.stages.ProductionStageError(
+        "RUNNING_ENVIRONMENT_RUNTIME_MISMATCH", runtime_field="synthetic private field value"
+    )
+    assert unsafe_field.runtime_field is None
+    for error in (RuntimeError("synthetic private exception"), unsafe_field):
+        assert r7h._runtime_authority_failure_code(error) == "R7H_RUNTIME_AUTHORITY_INVALID"
+
+
+def test_reachable_r7h_control_and_worker_entries_forward_sealed_replay() -> None:
+    sentinel = RuntimeError("synthetic fixed run boundary")
+    cases = (
+        (lambda: r7h._validate_topology_authority({}), {}, "R8U_R7H_TOPOLOGY_AUTHORITY_READBACK"),
+        (r7h.submit_r8u_r7h_continuation_topology_probe, {}, "R8U_R7H_PROBE_SUBMITTER"),
+        (r7h.adjudicate_r8u_r7h_continuation_topology_probe, {}, "R8U_R7H_PROBE_ADJUDICATOR"),
+        (r7h.submit_r8u_r7h_continuation_17_19, {}, "R8U_R7H_CONTINUATION_SUBMITTER"),
+        (r7h.run_r8u_r7h_continuation_context_probe, {"JOB_ID": "123", "SGE_TASK_ID": "17", "NSLOTS": "1", "CUDA_VISIBLE_DEVICES": ""}, "123"),
+        (r7h.run_r8u_r7h_continuation_array_task, {"JOB_ID": "123", "SGE_TASK_ID": "17", "NSLOTS": "4", "CUDA_VISIBLE_DEVICES": "0"}, "123"),
+        (r7h.run_r8u_r7h_continuation_finalizer, {"JOB_ID": "124", "SGE_TASK_ID": "undefined", "NSLOTS": "4", "CUDA_VISIBLE_DEVICES": ""}, "124"),
+    )
+    for entrypoint, environment, identity in cases:
+        with (
+            mock.patch.dict(os.environ, environment, clear=True),
+            mock.patch.object(r7h, "_current_r8u_r7h_implementation_commit", return_value=IMPLEMENTATION_COMMIT),
+            mock.patch.object(r7h, "load_r8u_r7h_sealed_history", return_value={}),
+            mock.patch.object(r7h, "_read_private_json", return_value=(_account(), b"{}", SHA)),
+            mock.patch.object(r7h, "_validate_scheduler_account"),
+            mock.patch.object(r7h.scheduler, "validate_scheduler_tools"),
+            mock.patch.object(r7h.scheduler, "build_qsub_environment", return_value=({}, "synthetic")),
+            mock.patch.object(r7h.os.path, "lexists", return_value=False),
+            mock.patch.object(r7h, "_load_fixed_original_run", side_effect=sentinel) as loader,
+            mock.patch.object(r7h, "_write_private_json") as publication,
+            mock.patch.object(r7h.scheduler, "_capture_qsub") as qsub,
+        ):
+            try:
+                entrypoint()
+            except RuntimeError as exc:
+                assert exc is sentinel
+            else:
+                raise AssertionError("entrypoint did not reach the fixed runtime gate")
+            loader.assert_called_once_with(
+                scheduler_job_identity=identity,
+                runtime_validation_context=r7h.stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+            )
+            publication.assert_not_called()
+            qsub.assert_not_called()
+
+
+def test_existing_worker_receipt_cannot_replace_current_invocation_identity() -> None:
+    sealed = {**scheduler.CONTROLLED_QSUB_ENVIRONMENT,
+              "SGE_ROOT": str(scheduler.CANONICAL_SGE_ROOT),
+              "USER": "owner", "LOGNAME": "owner", "HOME": "/home/owner", "SHELL": "/bin/bash"}
+    digest = scheduler.qsub_environment_sha256(sealed)
+    for mutation, expected in (
+        ("none", None),
+        ("current_job", "R7H_JOB_ID_MISMATCH"),
+        ("ambient_job", "SCHEDULER_JOB_ID_BINDING_MISMATCH"),
+        ("job_name", "R7H_JOB_NAME_MISMATCH"),
+        ("task", "SCHEDULER_TASK_ID_BINDING_MISMATCH"),
+        ("uid", "SCHEDULER_EFFECTIVE_UID_MISMATCH"),
+        ("runner", "SCHEDULER_RUNNER_AUTHORITY_MISMATCH"),
+        ("python", "SCHEDULER_PYTHON_AUTHORITY_MISMATCH"),
+        ("python_path", "SCHEDULER_PYTHON_AUTHORITY_MISMATCH"),
+        ("account", "SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH"),
+        ("environment_hash", "SCHEDULER_QSUB_ENVIRONMENT_BINDING_MISMATCH"),
+    ):
+        account = {**_account(), "qsub_environment_sha256": digest, "sealed_qsub_environment": sealed}
+        observed = {**sealed, "JOB_ID": "123", "SGE_TASK_ID": "17",
+                    "JOB_NAME": r7h._probe_job_name(IMPLEMENTATION_COMMIT)}
+        if mutation == "ambient_job":
+            observed["JOB_ID"] = "999"
+        if mutation == "task":
+            observed["SGE_TASK_ID"] = "18"
+        if mutation == "job_name":
+            observed["JOB_NAME"] = r7h._array_job_name(IMPLEMENTATION_COMMIT)
+        if mutation == "uid":
+            account["expected_effective_uid"] += 1
+        if mutation == "account":
+            account["expected_scheduler_username"] = "other-owner"
+        if mutation == "environment_hash":
+            account["qsub_environment_sha256"] = "0" * 64
+        with (
+            mock.patch.dict(os.environ, observed, clear=True),
+            mock.patch.object(r7h, "_current_r8u_r7h_implementation_commit", return_value=IMPLEMENTATION_COMMIT),
+            mock.patch.object(r7h, "_read_private_json", return_value=(account, b"{}", SHA)) as read,
+            mock.patch.object(r7h, "_validate_scheduler_account"),
+            mock.patch.object(r7h, "_load_fixed_original_run", return_value=SimpleNamespace()) as replay,
+            mock.patch.object(r7h, "_wait_for_private_control"),
+            mock.patch.object(r7h, "_validate_probe_chain", return_value={"probe_job_id": "123"}),
+            mock.patch.object(r7h.core, "sha256_file", return_value="b" * 64 if mutation == "runner" else SHA),
+            mock.patch.object(r7h.stages, "resolved_python_executable_sha256", return_value="b" * 64 if mutation == "python" else SHA),
+            mock.patch.object(r7h.sys, "executable", "/synthetic/wrong-python" if mutation == "python_path" else str(scheduler.ECHOPRIME_PYTHON)),
+            mock.patch.object(scheduler, "validate_sge_root_authority", return_value="SGE_ROOT_CANONICAL_INPUT"),
+            mock.patch.object(scheduler.pwd, "getpwuid", return_value=SimpleNamespace(pw_name="owner", pw_dir="/home/owner", pw_shell="/bin/bash")),
+            mock.patch.object(r7h.os.path, "lexists", return_value=True),
+            mock.patch.object(r7h, "_validate_worker_receipt", return_value={"status": "existing"}) as existing,
+            mock.patch.object(r7h, "_write_private_json") as publication,
+        ):
+            operation = lambda: r7h.validate_r8u_r7h_continuation_worker_submission(
+                current_job_id="999" if mutation == "current_job" else "123", role="probe"
+            )
+            if expected is None:
+                assert operation() == {"status": "existing"}
+                existing.assert_called_once()
+                assert read.call_count == 2
+            else:
+                _raises(expected, operation)
+                existing.assert_not_called()
+                assert read.call_count == 1
+            replay.assert_called_once_with(
+                scheduler_job_identity="999" if mutation == "current_job" else "123",
+                runtime_validation_context=r7h.stages.SEALED_SCHEDULER_RUNTIME_REPLAY,
+            )
+            publication.assert_not_called()
+
+
+def test_r7h_sequential_prebody_embedding_and_preservation_forward_replay() -> None:
+    sequential = r7h.sequential
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        authority = SimpleNamespace(
+            governing_commit=r7h.SCIENTIFIC_COMMIT,
+            checkpoint=root / "synthetic.checkpoint",
+            environment_receipt=root / "synthetic.environment",
+            billing_variable="SYNTHETIC_R7H_BILLING",
+            billing_project="synthetic-project",
+        )
+        run = SimpleNamespace(
+            plan={"batches": [{"ordinal": index, "batch_id": f"c3_batch_{index:03d}", "objects": []} for index in range(19)]},
+            authority=authority, attempt_id=r7h.ATTEMPT_ID,
+            plan_sha256=r7h.PLAN_SHA256,
+            attempt_root=root / "attempt", production_root=root,
+            runtime_authority={"environment_receipt_sha256": SHA, "checkpoint_sha256": SHA},
+            requirements=SimpleNamespace(), contract={}, contract_path=root / "contract",
+            plan_path=root / "plan", launch_authority={}, launch_authority_sha256=SHA,
+            scheduler_job_identity="123",
+        )
+        environment = mock.Mock()
+        embedding = mock.Mock(return_value={})
+        preservation = mock.Mock(side_effect=sequential.FullSequentialError("SYNTHETIC_PRESERVATION_BOUNDARY"))
+        dependency = sequential.FullDependencies(
+            prior_batch_validator=lambda **_kwargs: None,
+            environment_validator=environment,
+            download=mock.Mock(return_value={}), dicom=mock.Mock(return_value={}),
+            echoprime=embedding, preserve=preservation,
+            r8u_r7h_worker_submission_validator=lambda **_kwargs: None,
+            execution_context=sequential.R8U_R7H_FIXED_CONTINUATION,
+        )
+        with contextlib.ExitStack() as stack:
+            for owner, name in (
+                (sequential, "validate_r8u_r7h_extraction_cache_topology"),
+                (sequential, "_validate_full_run"),
+                (sequential, "_ensure_private_directory"),
+                (sequential, "_write_private_json"),
+                (core, "initialize_resume_ledger"),
+                (r7h.stages, "validate_stage_predecessor"),
+                (r7h.stages, "validate_download_manifest_plan_membership"),
+                (r7h.stages, "advance_stage_ledger"),
+                (r7h.stages, "validate_extraction_manifest_plan_membership"),
+            ):
+                stack.enter_context(mock.patch.object(owner, name))
+            stack.enter_context(mock.patch.object(core, "sha256_file", return_value=SHA))
+            stack.enter_context(mock.patch.object(sequential, "_provider_and_transport", return_value=(None, None)))
+            stack.enter_context(mock.patch.object(sequential, "_digest_provider", return_value=contextlib.nullcontext(None)))
+            stack.enter_context(mock.patch.dict(os.environ, {"JOB_ID": "123"}))
+            try:
+                sequential.run_batch_task(task_id=17, run=run, dependencies=dependency)
+            except sequential.FullSequentialError as exc:
+                assert exc.code == "SYNTHETIC_PRESERVATION_BOUNDARY"
+                assert exc.stage == "BATCH_PRESERVATION"
+            else:
+                raise AssertionError("preservation boundary was not reached")
+        for boundary in (environment, embedding, preservation):
+            boundary.assert_called_once()
+            assert boundary.call_args.kwargs["runtime_validation_context"] is r7h.stages.SEALED_SCHEDULER_RUNTIME_REPLAY
+        assert environment.call_args.kwargs["expected_environment_receipt_sha256"] == SHA
+        assert embedding.call_args.kwargs["runtime_authority"]["environment_receipt_sha256"] == SHA
+        assert preservation.call_args.kwargs["expected_runtime_authority"]["environment_receipt_sha256"] == SHA
+        assert preservation.call_args.kwargs["scheduler_runner_path"] == r7h.RUNNER_PATH
 
 
 def _raises(code: str, function: Callable[[], Any]) -> r7h.R7HContinuationError:
@@ -277,21 +628,29 @@ def test_worker_receipt_has_closed_schema_and_typed_identity() -> None:
             authority_sha256="2" * 64,
             submission_sha256="3" * 64,
         )
-        changed = {**receipt, "task_id": True}
-        _raises(
-            "R7H_WORKER_CONTEXT_RECEIPT_INVALID",
-            lambda: r7h._validate_worker_receipt(
-                changed,
-                role="probe",
-                logical_role=r7h.PROBE_ROLE,
-                expected_job_id="123",
-                expected_task_id="17",
-                expected_job_name=r7h._probe_job_name(IMPLEMENTATION_COMMIT),
-                account_sha256="1" * 64,
-                authority_sha256="2" * 64,
-                submission_sha256="3" * 64,
-            ),
-        )
+        for field, value in (
+            ("task_id", True), ("task_id", 18), ("job_id", "999"),
+            ("role", "array"), ("logical_worker_role", r7h.ARRAY_ROLE),
+            ("expected_full_job_name", r7h._array_job_name(IMPLEMENTATION_COMMIT)),
+            ("scheduler_account_authority_sha256", "9" * 64),
+            ("role_authority_sha256", "9" * 64),
+            ("role_submission_receipt_sha256", "9" * 64),
+        ):
+            changed = {**receipt, field: value}
+            _raises(
+                "R7H_WORKER_CONTEXT_RECEIPT_INVALID",
+                lambda: r7h._validate_worker_receipt(
+                    changed,
+                    role="probe",
+                    logical_role=r7h.PROBE_ROLE,
+                    expected_job_id="123",
+                    expected_task_id="17",
+                    expected_job_name=r7h._probe_job_name(IMPLEMENTATION_COMMIT),
+                    account_sha256="1" * 64,
+                    authority_sha256="2" * 64,
+                    submission_sha256="3" * 64,
+                ),
+            )
 
 
 def test_probe_diagnostic_authorizes_no_science() -> None:

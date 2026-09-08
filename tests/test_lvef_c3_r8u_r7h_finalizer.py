@@ -194,10 +194,10 @@ def test_r7h_finalizer_api_is_strictly_additive() -> None:
     }
 
 
-def test_r7h_repository_authority_requires_direct_child_of_r7g_r1() -> None:
-    fixed_r7f = finalizer.R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT
+def _repository_outputs() -> dict[tuple[str, ...], bytes]:
     fixed_r7g = finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT
-    exact = {
+    fixed_r7h = finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
+    return {
         ("rev-parse", "HEAD"): f"{IMPLEMENTATION_COMMIT}\n".encode(),
         (
             "rev-parse",
@@ -207,67 +207,134 @@ def test_r7h_repository_authority_requires_direct_child_of_r7g_r1() -> None:
             b"codex/lvef-multitask-revalidation\n"
         ),
         ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT): (
-            f"{IMPLEMENTATION_COMMIT} {fixed_r7g}\n".encode()
+            f"{IMPLEMENTATION_COMMIT} {fixed_r7h}\n".encode()
         ),
         (
-            "rev-list", "--count", f"{fixed_r7g}..{IMPLEMENTATION_COMMIT}"
+            "rev-list", "--count", f"{fixed_r7h}..{IMPLEMENTATION_COMMIT}"
         ): b"1\n",
+        ("rev-list", "--parents", "-n", "1", fixed_r7h): (
+            f"{fixed_r7h} {fixed_r7g}\n".encode()
+        ),
+        ("rev-list", "--count", f"{fixed_r7g}..{fixed_r7h}"): b"1\n",
+        ("status", "--porcelain", "--untracked-files=no"): b"",
     }
-    observed: set[tuple[str, ...]] = set()
+
+
+def _repository_runner(
+    exact: dict[tuple[str, ...], bytes], observed: set[tuple[str, ...]],
+) -> Any:
+    fixed_commits = (
+        finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+        finalizer.R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT,
+        finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
+        IMPLEMENTATION_COMMIT,
+    )
+    permitted_empty = {
+        ("cat-file", "-e", f"{commit}^{{commit}}")
+        for commit in fixed_commits
+    } | {
+        ("merge-base", "--is-ancestor", parent, child)
+        for parent, child in zip(fixed_commits[:-1], fixed_commits[1:], strict=True)
+    }
 
     def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         arguments = tuple(argv[3:])
         observed.add(arguments)
         if arguments in exact:
             return subprocess.CompletedProcess(argv, 0, exact[arguments], b"")
-        if arguments[:2] in {
-            ("cat-file", "-e"),
-            ("merge-base", "--is-ancestor"),
-        }:
+        if arguments in permitted_empty:
             return subprocess.CompletedProcess(argv, 0, b"", b"")
-        if arguments == ("status", "--porcelain", "--untracked-files=no"):
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
-        raise AssertionError((fixed_r7f, arguments))
+        raise AssertionError(arguments)
 
-    with mock.patch.object(finalizer.subprocess, "run", side_effect=run):
+    return run
+
+
+def test_r7h_repository_authority_requires_one_corrective_child() -> None:
+    exact = _repository_outputs()
+    observed: set[tuple[str, ...]] = set()
+    with mock.patch.object(
+        finalizer.subprocess, "run", side_effect=_repository_runner(exact, observed)
+    ):
         finalizer._validate_r8u_r7h_repository_authority(
             IMPLEMENTATION_COMMIT
         )
     assert set(exact) <= observed
+    assert (
+        "merge-base", "--is-ancestor",
+        finalizer.R8R_SCIENTIFIC_GOVERNING_COMMIT,
+        finalizer.R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT,
+    ) in observed
 
 
-def test_r7h_repository_authority_rejects_nonchild() -> None:
+def test_r7h_repository_authority_rejects_wrong_lineage_or_checkout() -> None:
     fixed_r7g = finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT
-    initial = {
-        ("rev-parse", "HEAD"): f"{IMPLEMENTATION_COMMIT}\n".encode(),
+    fixed_r7h = finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
+    parent_arguments = ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT)
+    base_parent_arguments = ("rev-list", "--parents", "-n", "1", fixed_r7h)
+    cases = (
+        # The uncorrected implementation lineage, another parent, a merge,
+        # and an additional descendant must each fail the exact-parent gate.
+        (parent_arguments, f"{IMPLEMENTATION_COMMIT} {fixed_r7g}\n".encode(),
+         "R7H_PARENT_MISMATCH"),
+        (parent_arguments, f"{IMPLEMENTATION_COMMIT} {'e' * 40}\n".encode(),
+         "R7H_PARENT_MISMATCH"),
+        (parent_arguments,
+         f"{IMPLEMENTATION_COMMIT} {fixed_r7h} {'e' * 40}\n".encode(),
+         "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--count", f"{fixed_r7h}..{IMPLEMENTATION_COMMIT}"),
+         b"2\n", "R7H_ANCESTRY_DISTANCE"),
+        (base_parent_arguments, f"{fixed_r7h} {'e' * 40}\n".encode(),
+         "R7H_PARENT_MISMATCH"),
+        (base_parent_arguments, f"{fixed_r7h} {fixed_r7g} {'e' * 40}\n".encode(),
+         "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--count", f"{fixed_r7g}..{fixed_r7h}"),
+         b"2\n", "R7H_ANCESTRY_DISTANCE"),
+        (("rev-parse", "HEAD"), f"{'e' * 40}\n".encode(), "R7H_HEAD_MISMATCH"),
         (
-            "rev-parse",
-            "refs/remotes/origin/codex/lvef-multitask-revalidation",
-        ): f"{IMPLEMENTATION_COMMIT}\n".encode(),
-        ("branch", "--show-current"): (
-            b"codex/lvef-multitask-revalidation\n"
+            ("rev-parse", "refs/remotes/origin/codex/lvef-multitask-revalidation"),
+            f"{'e' * 40}\n".encode(), "R7H_ORIGIN_MISMATCH",
         ),
-        ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT): (
-            f"{IMPLEMENTATION_COMMIT} {'e' * 40}\n".encode()
-        ),
-    }
+        (("branch", "--show-current"), b"another-branch\n", "R7H_BRANCH_MISMATCH"),
+        (("status", "--porcelain", "--untracked-files=no"),
+         b" M scripts/finalize_lvef_c3_production.py\n", "R7H_TRACKED_TREE_DIRTY"),
+    )
+    for arguments, output, code in cases:
+        exact = _repository_outputs()
+        exact[arguments] = output
+        with mock.patch.object(
+            finalizer.subprocess, "run", side_effect=_repository_runner(exact, set())
+        ):
+            _raises(
+                code,
+                lambda: finalizer._validate_r8u_r7h_repository_authority(
+                    IMPLEMENTATION_COMMIT
+                ),
+            )
 
-    def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        arguments = tuple(argv[3:])
-        if arguments in initial:
-            return subprocess.CompletedProcess(argv, 0, initial[arguments], b"")
-        raise AssertionError((fixed_r7g, arguments))
 
-    with mock.patch.object(finalizer.subprocess, "run", side_effect=run):
+def test_r7h_rejects_uncorrected_base_as_current_implementation() -> None:
+    with mock.patch.object(
+        finalizer.subprocess, "run", side_effect=AssertionError("Git reached")
+    ):
         _raises(
             "R8U_R7H_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH",
             lambda: finalizer._validate_r8u_r7h_repository_authority(
-                IMPLEMENTATION_COMMIT
+                finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
             ),
         )
+    _raises(
+        "R8U_R7H_FINALIZER_AUTHORITY_INVALID",
+        lambda: _validate(
+            _receipts(), authority=replace(
+                _authority(), implementation_commit=finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
+            )
+        ),
+    )
 
 
 def test_r7h_accepts_only_fixed_prefix_plus_fresh_three_batch_tail() -> None:
+    assert len({finalizer._receipt_implementation_epoch(item) for item in _receipts()}) == 4
     result = _validate(_receipts())
     assert finalizer.SHA256_RE.fullmatch(result) is not None
     staged = finalizer._stage_authority_receipts(

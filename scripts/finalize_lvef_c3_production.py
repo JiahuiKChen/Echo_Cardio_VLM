@@ -257,6 +257,9 @@ R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT = (
 R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT = (
     "cf83c19521a2ed7b722c29a44c01f00cad0cf717"
 )
+R8U_R7H_BASE_IMPLEMENTATION_COMMIT = (
+    "8230d1535247256529616cb481dd48cce1f9a78f"
+)
 R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256 = (
     "63b002947814e92c616d0eb7f74ca334cba4e77cdc17f7ce2b55cfc51e090439"
 )
@@ -7765,12 +7768,13 @@ def _validate_r8u_r7d_repository_authority(
 def _validate_r8u_r7h_repository_authority(
     implementation_commit: str,
 ) -> None:
-    """Require the R7H runtime to be the sole child of fixed R7G-R1."""
+    """Require the one corrective child of the fixed R7H base and R7G-R1."""
 
     fixed_commits = (
         R8R_SCIENTIFIC_GOVERNING_COMMIT,
         R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT,
         R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
+        R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
     )
     if (
         type(implementation_commit) is not str
@@ -7809,41 +7813,62 @@ def _validate_r8u_r7h_repository_authority(
             ) from exc
 
     exact_outputs = {
-        ("rev-parse", "HEAD"): f"{implementation_commit}\n".encode("ascii"),
+        ("rev-parse", "HEAD"): (
+            f"{implementation_commit}\n".encode("ascii"),
+            "R7H_HEAD_MISMATCH",
+        ),
         (
             "rev-parse",
             "refs/remotes/origin/codex/lvef-multitask-revalidation",
-        ): f"{implementation_commit}\n".encode("ascii"),
+        ): (
+            f"{implementation_commit}\n".encode("ascii"),
+            "R7H_ORIGIN_MISMATCH",
+        ),
         ("branch", "--show-current"): (
-            b"codex/lvef-multitask-revalidation\n"
+            b"codex/lvef-multitask-revalidation\n",
+            "R7H_BRANCH_MISMATCH",
         ),
         (
             "rev-list", "--parents", "-n", "1", implementation_commit,
         ): (
-            f"{implementation_commit} "
-            f"{R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT}\n"
-        ).encode("ascii"),
+            (
+                f"{implementation_commit} "
+                f"{R8U_R7H_BASE_IMPLEMENTATION_COMMIT}\n"
+            ).encode("ascii"),
+            "R7H_PARENT_MISMATCH",
+        ),
+        (
+            "rev-list", "--count",
+            f"{R8U_R7H_BASE_IMPLEMENTATION_COMMIT}.."
+            f"{implementation_commit}",
+        ): (b"1\n", "R7H_ANCESTRY_DISTANCE"),
+        (
+            "rev-list", "--parents", "-n", "1",
+            R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
+        ): (
+            (
+                f"{R8U_R7H_BASE_IMPLEMENTATION_COMMIT} "
+                f"{R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT}\n"
+            ).encode("ascii"),
+            "R7H_PARENT_MISMATCH",
+        ),
         (
             "rev-list", "--count",
             f"{R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT}.."
-            f"{implementation_commit}",
-        ): b"1\n",
+            f"{R8U_R7H_BASE_IMPLEMENTATION_COMMIT}",
+        ): (b"1\n", "R7H_ANCESTRY_DISTANCE"),
     }
-    for arguments, expected_stdout in exact_outputs.items():
+    for arguments, (expected_stdout, code) in exact_outputs.items():
         result = run_git(*arguments)
         if (
             result.returncode != 0
             or result.stderr
             or result.stdout != expected_stdout
         ):
-            raise ProductionFinalizationError(
-                "R8U_R7H_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
-            )
+            raise ProductionFinalizationError(code)
     status = run_git("status", "--porcelain", "--untracked-files=no")
     if status.returncode != 0 or status.stderr or status.stdout:
-        raise ProductionFinalizationError(
-            "R8U_R7H_FINALIZER_REPOSITORY_AUTHORITY_MISMATCH"
-        )
+        raise ProductionFinalizationError("R7H_TRACKED_TREE_DIRTY")
     for commit in (*fixed_commits, implementation_commit):
         exists = run_git("cat-file", "-e", f"{commit}^{{commit}}")
         if exists.returncode != 0 or exists.stdout or exists.stderr:
@@ -7856,7 +7881,11 @@ def _validate_r8u_r7h_repository_authority(
             R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT,
             R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
         ),
-        (R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT, implementation_commit),
+        (
+            R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
+            R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
+        ),
+        (R8U_R7H_BASE_IMPLEMENTATION_COMMIT, implementation_commit),
     ):
         ancestry = run_git("merge-base", "--is-ancestor", ancestor, descendant)
         if ancestry.returncode != 0 or ancestry.stdout or ancestry.stderr:
@@ -18234,6 +18263,7 @@ def _validate_r8u_r7h_mixed_implementation_epochs(
             R8R_SCIENTIFIC_GOVERNING_COMMIT,
             R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT,
             R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
+            R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
         }
         or authority.r7f_runtime_commit
         != R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT

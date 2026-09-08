@@ -32,9 +32,33 @@ The fresh no-clobber root is `r8u_r7h_continuation_17_19`. Its authorities
 separate the unchanged scientific commit
 `e1cdb674ada23bbc9f3a1ff77c33927bd324d3ed`, consumed R7F runtime commit
 `2223d9768a1cc23efbe95a3c5474ea747a383a10`, R7G-R1 adjudication commit
-`cf83c19521a2ed7b722c29a44c01f00cad0cf717`, and the new R7H runtime commit,
-which must be the single direct child of R7G-R1. The R7F and R7G roots remain
-read-only.
+`cf83c19521a2ed7b722c29a44c01f00cad0cf717`, the R7H base implementation
+`8230d1535247256529616cb481dd48cce1f9a78f`, and the corrective R7H runtime
+commit derived from the committed checkout. The permitted chain is exactly
+R7G-R1 → R7H base → corrective child. Each link has one parent and distance
+one; merges and additional descendants are rejected. The branch, clean
+tracked tree, origin/current-commit agreement where required, and scientific
+ancestry remain enforced. The R7F and R7G roots remain read-only.
+
+The base stopped at capacity runtime validation before capacity commands or
+R7H control publication because it selected live capture for an established
+sealed continuation. This is `CONTROL_PLANE_IMPLEMENTATION`, triggered by
+`VOLATILE_INFRASTRUCTURE_METADATA`: kernel patch `553.153.1` → `553.158.1`.
+The corrective capacity entrypoint selects
+`SEALED_SCHEDULER_RUNTIME_REPLAY`, as do topology readback, worker submission
+validation, and the sequential prebody, EchoPrime, and preservation wrappers.
+The existing replay contract keeps the OS difference diagnostic while
+requiring the sealed receipt SHA-256 before and after validation, the live
+package inventory, and every portable runtime field. Live capture retains
+its global default. The environment receipt is neither rewritten nor
+resealed, and live scheduler, account/UID, job/task/role, runner/interpreter,
+claim, and submission checks still validate the current invocation.
+
+Fresh controls, script hashes, claims, jobs, and tail receipts bind the
+corrective commit. The base produced no scientific receipts, so the finalizer
+continues to require exactly four scientific implementation epochs: original
+Batches 1--2, the fixed Batches 3--15 epoch, the fixed R7 Batch-16 epoch, and
+one current corrective epoch shared by Batches 17--19.
 
 R7H binds all 16 finalized prefix receipt hashes, the exact Batch-16 final
 receipt, the external failed-partial evidence, R7G terminal authority, all

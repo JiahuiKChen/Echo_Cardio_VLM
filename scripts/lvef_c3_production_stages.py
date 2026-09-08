@@ -358,9 +358,18 @@ SEALED_SCHEDULER_RUNTIME_REPLAY = (
 class ProductionStageError(RuntimeError):
     """Fail-closed stage validation error with a stable, non-sensitive code."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, runtime_field: str | None = None):
         super().__init__(code)
         self.code = code
+        # Carry only a closed field name, never the observed or sealed value.
+        # Existing callers retain the stable error code while bounded adapters
+        # can report which portable runtime check failed.
+        self.runtime_field = (
+            runtime_field
+            if isinstance(runtime_field, str)
+            and runtime_field in ENVIRONMENT_RUNTIME_KEYS
+            else None
+        )
 
 
 def _require_runtime_validation_context(
@@ -2425,7 +2434,9 @@ def validate_environment_receipt_payload(
     )
     for key in sorted(compared_runtime_keys):
         if str(receipt.get(key)) != str(live_runtime[key]):
-            raise ProductionStageError("RUNNING_ENVIRONMENT_RUNTIME_MISMATCH")
+            raise ProductionStageError(
+                "RUNNING_ENVIRONMENT_RUNTIME_MISMATCH", runtime_field=key
+            )
 
 
 def validate_environment_receipt_against_current_runtime(

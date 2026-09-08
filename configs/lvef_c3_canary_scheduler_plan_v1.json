@@ -64,7 +64,7 @@
       },
       "entrypoint": {
         "path": "scripts/lvef_c3_production_stages.py",
-        "sha256": "caf71e1ebdd5def78105a23363368ef64ee2775027b1c2a2bf05d78292ebe0ac",
+        "sha256": "05c6ae847a49ecc0edd709d50159acb7c1f631c33a2d6cacf1b55cb5093cfe8f",
         "callable": "run_production_dicom_extraction"
       },
       "required_predecessor_receipts": [
@@ -97,7 +97,7 @@
       },
       "entrypoint": {
         "path": "scripts/lvef_c3_production_stages.py",
-        "sha256": "caf71e1ebdd5def78105a23363368ef64ee2775027b1c2a2bf05d78292ebe0ac",
+        "sha256": "05c6ae847a49ecc0edd709d50159acb7c1f631c33a2d6cacf1b55cb5093cfe8f",
         "callable": "run_production_echoprime"
       },
       "required_predecessor_receipts": [
@@ -163,7 +163,7 @@
       },
       "entrypoint": {
         "path": "scripts/finalize_lvef_c3_production.py",
-        "sha256": "5fc9c9c15d82d96e40e0279449af73235ddb7d9fee77c18549a03bfde3decc55",
+        "sha256": "f830e0aa85f5db4ad8e1272b8db08f267f501abee5f519bdee51f1c9a2e2a035",
         "callable": "finalize_canary_preservation_receipt"
       },
       "required_predecessor_receipts": [
