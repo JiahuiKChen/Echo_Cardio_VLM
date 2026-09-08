@@ -30,6 +30,10 @@ from .safety import (
 PROTOCOL_V3_NAME = "JDIM_INPUT_CONTENT_AUDIT_V3_SCORING_SCOPE_CLARIFIED"
 PROTOCOL_V3_STATUS = "JDIM_INPUT_CONTENT_AUDIT_V3_SCORING_SCOPE_CLARIFIED"
 PROTOCOL_V3_SCHEMA = "jdim-input-content-audit-protocol-v3"
+PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM = "JDIM_AUDIT_V3_SIDE_BY_SIDE_DISPLAY_ADDENDUM_V1"
+PROTOCOL_V3_BASE_COMMIT = "c9d1f2c5f84ad738437017626aad5cb9f86de903"
+V3_SIDE_BY_SIDE_SCORING_VERIFIED = "V3_SIDE_BY_SIDE_SCORING_VERIFIED"
+READY_FOR_V3_BLINDED_HUMAN_AUDIT = "READY_FOR_V3_BLINDED_HUMAN_AUDIT"
 ACTIVE_PROTOCOL_SCHEMA = "jdim-active-audit-protocol-v1"
 PROTOCOL_ARCHIVE_STATUS = "PROTOCOL_CLARIFICATION_PILOT_EXCLUDED"
 PROTOCOL_ARCHIVE_SCHEMA = "jdim-protocol-clarification-archive-v1"
@@ -42,7 +46,7 @@ V3_ROOT_NAME = "jdim_input_content_audit_v3_scoring_scope_clarified"
 V3_DRY_RUN_PASS = "JDIM_INPUT_CONTENT_AUDIT_V3_DRY_RUN_PASS"
 V3_ACTIVE = "JDIM_INPUT_CONTENT_AUDIT_V3_ACTIVE"
 
-SCORING_SCOPE_BY_TIER = {
+BASE_SCORING_SCOPE_BY_TIER = {
     TIER_A: (
         "Score the exact model input in the right panel. Use the source acquisition "
         "only for context. Do not count source-only features as model-input content."
@@ -50,6 +54,20 @@ SCORING_SCOPE_BY_TIER = {
     TIER_C: (
         "Score the source acquisition. Findings will be reported separately as "
         "source-acquisition evidence and not as verified model-input content."
+    ),
+}
+
+SCORING_SCOPE_BY_TIER = {
+    TIER_A: (
+        "Score all primary audit fields from the exact model input in the right panel. "
+        "Use the source acquisition on the left only for context and source-to-input "
+        "comparison. Do not count features visible only in the source acquisition as "
+        "model-input content."
+    ),
+    TIER_C: (
+        "Score the source acquisition shown here. This clip is not a verified exact "
+        "model input. Findings will be reported separately as source-acquisition "
+        "evidence and must not be interpreted as content proven to have reached the encoder."
     ),
 }
 
@@ -84,6 +102,25 @@ FIELD_DEFINITIONS = {
     "calipers": "Visible calipers or measurement markers in the scored panel.",
 }
 
+SOURCE_ONLY_FIELD_DEFINITIONS = {
+    "source_only_relevant_content": (
+        "Is any potentially relevant measurement or annotation content visible in the "
+        "source acquisition but not visible in the exact model input?"
+    ),
+    "source_only_visible_text": "Alphabetic text or abbreviation",
+    "source_only_numeric_value": "Numeric value",
+    "source_only_unit": "Unit",
+    "source_only_measurement_name": "Measurement name",
+    "source_only_lvot_vti_specific_label": "LVOT VTI-specific label",
+    "source_only_tapse_specific_label": "TAPSE-specific label",
+    "source_only_candidate_target_value": "Candidate target measurement value",
+    "source_only_spectral_doppler_waveform": "Spectral Doppler waveform",
+    "source_only_m_mode_tracing": "M-mode tracing",
+    "source_only_caliper": "Caliper",
+    "source_only_contour_or_measurement_trace": "Contour or measurement trace",
+    "source_only_other_measurement_annotation": "Other measurement-related annotation",
+}
+
 V3_CLIP_PRESENCE_FIELDS = (
     "waveform_or_measurement_tracing",
     "calipers",
@@ -100,10 +137,34 @@ V3_CLIP_FREE_TEXT_FIELDS = (
     "display_precision",
     "restricted_notes",
 )
+V3_SOURCE_ONLY_PRIMARY_FIELD = "source_only_relevant_content"
+V3_SOURCE_ONLY_CATEGORY_FIELDS = (
+    "source_only_visible_text",
+    "source_only_numeric_value",
+    "source_only_unit",
+    "source_only_measurement_name",
+    "source_only_lvot_vti_specific_label",
+    "source_only_tapse_specific_label",
+    "source_only_candidate_target_value",
+    "source_only_spectral_doppler_waveform",
+    "source_only_m_mode_tracing",
+    "source_only_caliper",
+    "source_only_contour_or_measurement_trace",
+    "source_only_other_measurement_annotation",
+)
+V3_SOURCE_ONLY_FREE_TEXT_FIELDS = (
+    "source_only_candidate_target_value_text",
+)
+V3_SOURCE_ONLY_CLIP_FIELDS = {
+    V3_SOURCE_ONLY_PRIMARY_FIELD,
+    *V3_SOURCE_ONLY_CATEGORY_FIELDS,
+    *V3_SOURCE_ONLY_FREE_TEXT_FIELDS,
+}
 V3_CLIP_ANNOTATION_FIELDS = {
     "acquisition_content_type",
     *V3_CLIP_PRESENCE_FIELDS,
     *V3_CLIP_FREE_TEXT_FIELDS,
+    *V3_SOURCE_ONLY_CLIP_FIELDS,
     "reader_confidence",
 }
 V3_STUDY_OUTCOMES = (
@@ -117,6 +178,12 @@ V3_STUDY_OUTCOMES = (
     "tapse_specific_label_present",
     "candidate_target_value_present",
 )
+V3_SOURCE_ONLY_STUDY_OUTCOMES = (
+    "source_only_relevant_content_present",
+    "source_content_not_visible_in_exact_model_input_present",
+    "source_only_target_specific_label_present",
+    "source_only_candidate_target_value_present",
+)
 V3_REQUIRED_CLIP_ANNOTATION_FIELDS = {
     "acquisition_content_type",
     *V3_CLIP_PRESENCE_FIELDS,
@@ -124,6 +191,7 @@ V3_REQUIRED_CLIP_ANNOTATION_FIELDS = {
 }
 V3_STUDY_ANNOTATION_FIELDS = {
     *V3_STUDY_OUTCOMES,
+    *V3_SOURCE_ONLY_STUDY_OUTCOMES,
     "reader_confidence",
     "restricted_notes",
     "derived_summary_confirmed",
@@ -138,6 +206,7 @@ V3_CLIENT_STUDY_FIELDS = {
     "restricted_notes",
     "derived_summary_confirmed",
     *V3_STUDY_OUTCOMES,
+    *V3_SOURCE_ONLY_STUDY_OUTCOMES,
 }
 
 
@@ -200,6 +269,7 @@ def _content_presence(value: Any, requested: str) -> str:
 
 def derive_study_summary(
     clip_records: Mapping[str, Mapping[str, Any]],
+    clip_evidence_tiers: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Derive study outcomes exclusively from V3 clip-level responses."""
 
@@ -207,7 +277,7 @@ def derive_study_summary(
     for record in records:
         if not isinstance(record, Mapping):
             raise ValueError("clip annotation must be an object")
-    return {
+    primary = {
         "spectral_doppler_present": rollup_presence(
             _content_presence(record.get("acquisition_content_type", ""), "spectral")
             for record in records
@@ -238,6 +308,58 @@ def derive_study_summary(
             record.get("candidate_target_value_present", "") for record in records
         ),
     }
+    if clip_evidence_tiers is None:
+        source_records = [
+            record
+            for record in records
+            if str(record.get(V3_SOURCE_ONLY_PRIMARY_FIELD, "")).strip()
+        ]
+    else:
+        unknown = sorted(set(clip_records) - set(clip_evidence_tiers))
+        if unknown:
+            raise ValueError("study roll-up is missing clip evidence tiers")
+        source_records = [
+            clip_records[clip_id]
+            for clip_id in clip_records
+            if clip_evidence_tiers[clip_id] == TIER_A
+        ]
+
+    source_values = [
+        str(record.get(V3_SOURCE_ONLY_PRIMARY_FIELD, "")).strip()
+        for record in source_records
+    ]
+    source_values = [value for value in source_values if value]
+    relevant = rollup_presence(source_values)
+
+    def category_rollup(fields: Sequence[str]) -> str:
+        values: list[str] = []
+        for record in source_records:
+            selected = any(str(record.get(field, "")).strip() == "yes" for field in fields)
+            source_scope = str(record.get(V3_SOURCE_ONLY_PRIMARY_FIELD, "")).strip()
+            if selected:
+                values.append("yes")
+            elif source_scope == "uncertain":
+                values.append("uncertain")
+            elif source_scope == "not_assessable":
+                values.append("not_assessable")
+            elif source_scope:
+                values.append("no")
+        return rollup_presence(values)
+
+    source_only = {
+        "source_only_relevant_content_present": relevant,
+        "source_content_not_visible_in_exact_model_input_present": relevant,
+        "source_only_target_specific_label_present": category_rollup(
+            (
+                "source_only_lvot_vti_specific_label",
+                "source_only_tapse_specific_label",
+            )
+        ),
+        "source_only_candidate_target_value_present": category_rollup(
+            ("source_only_candidate_target_value",)
+        ),
+    }
+    return {**primary, **source_only}
 
 
 @dataclass(frozen=True)
@@ -250,6 +372,8 @@ class ActiveProtocolPaths:
     archive_manifest_path: Path
     policy_path: Path
     study_manifest_path: Path
+    protocol_definition_path: Path
+    interface_policy_path: Path
 
 
 @dataclass(frozen=True)
@@ -509,6 +633,77 @@ def _v3_queue_policy(plan: V3TransitionPlan) -> dict[str, Any]:
     }
 
 
+def _protocol_definition(
+    *,
+    created_at_utc: str,
+    source_commit: str,
+    familiarization_study: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": PROTOCOL_V3_SCHEMA,
+        "protocol_name": PROTOCOL_V3_NAME,
+        "status": PROTOCOL_V3_STATUS,
+        "created_at_utc": created_at_utc,
+        "source_commit": source_commit,
+        "display_addendum": PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM,
+        "scoring_scope_by_tier": SCORING_SCOPE_BY_TIER,
+        "clip_field_definitions": FIELD_DEFINITIONS,
+        "source_only_field_definitions": SOURCE_ONLY_FIELD_DEFINITIONS,
+        "clip_presence_fields": list(V3_CLIP_PRESENCE_FIELDS),
+        "source_only_primary_field": V3_SOURCE_ONLY_PRIMARY_FIELD,
+        "source_only_category_fields": list(V3_SOURCE_ONLY_CATEGORY_FIELDS),
+        "source_only_free_text_fields": list(V3_SOURCE_ONLY_FREE_TEXT_FIELDS),
+        "study_outcome_fields": list(V3_STUDY_OUTCOMES),
+        "source_only_study_outcome_fields": list(V3_SOURCE_ONLY_STUDY_OUTCOMES),
+        "study_rollup": {
+            "yes": "any clip Yes",
+            "uncertain": "no Yes and at least one Uncertain",
+            "no": "all assessable clips No",
+            "not_assessable": "all relevant clips Not assessable",
+            "reviewer_confirmation_required": True,
+            "independent_manual_study_outcome_entry": False,
+            "model_input_and_source_only_rollups_separate": True,
+        },
+        "familiarization_study": {
+            "physical_study_token": familiarization_study,
+            "retained_in_primary_descriptive_audit": True,
+            "fresh_attributable_review_required": True,
+            "excluded_from_formal_reliability": True,
+        },
+    }
+
+
+def _interface_policy() -> dict[str, Any]:
+    return {
+        "status": PROTOCOL_V3_STATUS,
+        "display_addendum": PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM,
+        "mandatory_tier_scoring_banner": True,
+        "tier_a_synchronized_side_by_side": True,
+        "tier_a_shared_frame_index": True,
+        "tier_a_encoder_frames": 16,
+        "tier_a_source_only_comparison": True,
+        "tier_c_exact_model_input_panel": False,
+        "clip_level_scoring": True,
+        "derived_study_summary": True,
+        "model_input_and_source_only_rollups_separate": True,
+        "independent_study_outcome_entry": False,
+        "finalized_read_only_view": True,
+        "owner_only_protocol_restart": True,
+        "target_visible": False,
+        "split_visible": False,
+        "report_label_visible": False,
+        "prediction_visible": False,
+        "residual_visible": False,
+        "identifiers_or_paths_visible": False,
+        "formal_reliability_status_visible": False,
+        "ocr_available": False,
+        "automated_annotation": False,
+        "image_download_button": False,
+        "localhost_only": True,
+        "protected_parent_media_reused": True,
+    }
+
+
 def apply_protocol_v3_transition(
     plan: V3TransitionPlan,
     *,
@@ -586,31 +781,11 @@ def apply_protocol_v3_transition(
     protocol_definition_path = interface_root / "protocol_definition_restricted.json"
     write_json(
         protocol_definition_path,
-        {
-            "schema_version": PROTOCOL_V3_SCHEMA,
-            "protocol_name": PROTOCOL_V3_NAME,
-            "status": PROTOCOL_V3_STATUS,
-            "created_at_utc": plan.created_at_utc,
-            "source_commit": source_commit,
-            "scoring_scope_by_tier": SCORING_SCOPE_BY_TIER,
-            "clip_field_definitions": FIELD_DEFINITIONS,
-            "clip_presence_fields": list(V3_CLIP_PRESENCE_FIELDS),
-            "study_outcome_fields": list(V3_STUDY_OUTCOMES),
-            "study_rollup": {
-                "yes": "any clip Yes",
-                "uncertain": "no Yes and at least one Uncertain",
-                "no": "all assessable clips No",
-                "not_assessable": "all relevant clips Not assessable",
-                "reviewer_confirmation_required": True,
-                "independent_manual_study_outcome_entry": False,
-            },
-            "familiarization_study": {
-                "physical_study_token": plan.familiarization_study,
-                "retained_in_primary_descriptive_audit": True,
-                "fresh_attributable_review_required": True,
-                "excluded_from_formal_reliability": True,
-            },
-        },
+        _protocol_definition(
+            created_at_utc=plan.created_at_utc,
+            source_commit=source_commit,
+            familiarization_study=plan.familiarization_study,
+        ),
     )
     queue_state_path = queue_root / "queue_state.json"
     write_json(
@@ -626,30 +801,7 @@ def apply_protocol_v3_transition(
     )
     (queue_root / ".queue.lock").touch(mode=0o600, exist_ok=False)
     interface_policy_path = interface_root / "interface_policy.json"
-    write_json(
-        interface_policy_path,
-        {
-            "status": PROTOCOL_V3_STATUS,
-            "mandatory_tier_scoring_banner": True,
-            "clip_level_scoring": True,
-            "derived_study_summary": True,
-            "independent_study_outcome_entry": False,
-            "finalized_read_only_view": True,
-            "owner_only_protocol_restart": True,
-            "target_visible": False,
-            "split_visible": False,
-            "report_label_visible": False,
-            "prediction_visible": False,
-            "residual_visible": False,
-            "identifiers_or_paths_visible": False,
-            "formal_reliability_status_visible": False,
-            "ocr_available": False,
-            "automated_annotation": False,
-            "image_download_button": False,
-            "localhost_only": True,
-            "protected_parent_media_reused": True,
-        },
-    )
+    write_json(interface_policy_path, _interface_policy())
 
     active_pointer = {
         "schema_version": ACTIVE_PROTOCOL_SCHEMA,
@@ -662,6 +814,8 @@ def apply_protocol_v3_transition(
         "study_manifest_sha256": sha256_file(study_manifest_path),
         "protocol_definition_sha256": sha256_file(protocol_definition_path),
         "interface_policy_sha256": sha256_file(interface_policy_path),
+        "protocol_definition_relative": str(protocol_definition_path.relative_to(package_root)),
+        "interface_policy_relative": str(interface_policy_path.relative_to(package_root)),
         "archive_manifest_relative": str(archive_manifest_path.relative_to(package_root)),
         "archive_manifest_sha256": sha256_file(archive_manifest_path),
     }
@@ -688,6 +842,31 @@ def active_protocol_paths(package_root: Path) -> ActiveProtocolPaths:
     interface_root = protocol_root / "interface"
     policy_path = interface_root / "queue_policy_restricted.json"
     study_manifest_path = interface_root / "study_manifest_restricted.json"
+    protocol_definition_path = (
+        package_root
+        / str(
+            pointer.get(
+                "protocol_definition_relative",
+                str(
+                    (interface_root / "protocol_definition_restricted.json").relative_to(
+                        package_root
+                    )
+                ),
+            )
+        )
+    ).resolve()
+    interface_policy_path = (
+        package_root
+        / str(
+            pointer.get(
+                "interface_policy_relative",
+                str((interface_root / "interface_policy.json").relative_to(package_root)),
+            )
+        )
+    ).resolve()
+    for path in (protocol_definition_path, interface_policy_path):
+        if protocol_root.resolve() not in path.parents:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "active protocol artifact escaped its root")
     archive_manifest_path = (
         package_root / str(pointer.get("archive_manifest_relative", ""))
     ).resolve()
@@ -696,10 +875,8 @@ def active_protocol_paths(package_root: Path) -> ActiveProtocolPaths:
     expected_hashes = {
         policy_path: pointer.get("queue_policy_sha256"),
         study_manifest_path: pointer.get("study_manifest_sha256"),
-        interface_root / "protocol_definition_restricted.json": pointer.get(
-            "protocol_definition_sha256"
-        ),
-        interface_root / "interface_policy.json": pointer.get("interface_policy_sha256"),
+        protocol_definition_path: pointer.get("protocol_definition_sha256"),
+        interface_policy_path: pointer.get("interface_policy_sha256"),
         archive_manifest_path: pointer.get("archive_manifest_sha256"),
     }
     for path, expected in expected_hashes.items():
@@ -714,7 +891,239 @@ def active_protocol_paths(package_root: Path) -> ActiveProtocolPaths:
         archive_manifest_path=archive_manifest_path,
         policy_path=policy_path,
         study_manifest_path=study_manifest_path,
+        protocol_definition_path=protocol_definition_path,
+        interface_policy_path=interface_policy_path,
     )
+
+
+def _flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def validate_side_by_side_manifest(study_manifest: Mapping[str, Any]) -> dict[str, int]:
+    """Validate display evidence without reading protected image pixels."""
+
+    studies = study_manifest.get("studies", [])
+    if not isinstance(studies, list) or not studies:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 study manifest is invalid")
+    counts = {"tier_a_clips": 0, "tier_c_clips": 0, "clips": 0}
+    for study in studies:
+        if not isinstance(study, Mapping):
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 study manifest entry is invalid")
+        clips = study.get("clips", [])
+        if not isinstance(clips, list) or not clips:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 study is missing clips")
+        tiers = {str(clip.get("evidence_tier", "")) for clip in clips if isinstance(clip, Mapping)}
+        if len(tiers) != 1:
+            raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 study mixes evidence tiers")
+        for clip in clips:
+            if not isinstance(clip, Mapping):
+                raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 clip manifest entry is invalid")
+            tier = str(clip.get("evidence_tier", ""))
+            source_token = str(clip.get("source_media_id", "")).strip()
+            model_token = str(clip.get("model_input_media_id", "")).strip()
+            counts["clips"] += 1
+            if tier == TIER_A:
+                if (
+                    not source_token
+                    or not model_token
+                    or not _flag(clip.get("model_input_verified"))
+                    or _flag(clip.get("source_only"))
+                ):
+                    raise Tier1BlockedError(
+                        BLOCKED_LINEAGE,
+                        "Tier-A clip lacks verified paired source and exact-input media",
+                    )
+                counts["tier_a_clips"] += 1
+            elif tier == TIER_C:
+                if (
+                    not source_token
+                    or model_token
+                    or _flag(clip.get("model_input_verified"))
+                    or not _flag(clip.get("source_only"))
+                ):
+                    raise Tier1BlockedError(
+                        BLOCKED_LINEAGE,
+                        "Tier-C clip incorrectly declares an exact model input",
+                    )
+                counts["tier_c_clips"] += 1
+            else:
+                raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 clip has an invalid evidence tier")
+    if not counts["tier_a_clips"] or not counts["tier_c_clips"]:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 manifest lacks a required evidence tier")
+    return counts
+
+
+def apply_side_by_side_addendum(
+    package_root: Path,
+    *,
+    source_commit: str,
+    applied_at_utc: str | None = None,
+) -> dict[str, Any]:
+    """Apply the display addendum only to an untouched, blank base-V3 namespace."""
+
+    source_commit = str(source_commit).strip()
+    if len(source_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in source_commit
+    ):
+        raise ValueError("source commit must be a full lowercase Git SHA")
+    package_root = require_restricted_destination(package_root)
+    pointer_path = package_root / "restricted" / "active_audit_protocol.json"
+    pointer = _load_object(pointer_path)
+    paths = active_protocol_paths(package_root)
+    protocol_definition = _load_object(paths.protocol_definition_path)
+    if protocol_definition.get("display_addendum") == PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM:
+        result = validate_active_protocol_v3(package_root, require_fresh=True)
+        return {**result, "addendum_already_applied": True}
+
+    if pointer.get("source_commit") != PROTOCOL_V3_BASE_COMMIT:
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "active V3 source is not the approved base commit")
+    if (
+        protocol_definition.get("schema_version") != PROTOCOL_V3_SCHEMA
+        or protocol_definition.get("protocol_name") != PROTOCOL_V3_NAME
+        or protocol_definition.get("source_commit") != PROTOCOL_V3_BASE_COMMIT
+        or protocol_definition.get("scoring_scope_by_tier") != BASE_SCORING_SCOPE_BY_TIER
+        or protocol_definition.get("clip_field_definitions") != FIELD_DEFINITIONS
+        or protocol_definition.get("clip_presence_fields") != list(V3_CLIP_PRESENCE_FIELDS)
+        or protocol_definition.get("study_outcome_fields") != list(V3_STUDY_OUTCOMES)
+        or protocol_definition.get("study_rollup", {}).get(
+            "independent_manual_study_outcome_entry"
+        )
+        is not False
+        or "source_only_primary_field" in protocol_definition
+        or "source_only_category_fields" in protocol_definition
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "active V3 base definition is not exact")
+
+    base_interface_policy = _load_object(paths.interface_policy_path)
+    required_base_policy = {
+        "status": PROTOCOL_V3_STATUS,
+        "mandatory_tier_scoring_banner": True,
+        "clip_level_scoring": True,
+        "derived_study_summary": True,
+        "independent_study_outcome_entry": False,
+        "target_visible": False,
+        "split_visible": False,
+        "report_label_visible": False,
+        "prediction_visible": False,
+        "residual_visible": False,
+        "identifiers_or_paths_visible": False,
+        "ocr_available": False,
+        "automated_annotation": False,
+        "localhost_only": True,
+        "protected_parent_media_reused": True,
+    }
+    if any(
+        base_interface_policy.get(key) != value
+        for key, value in required_base_policy.items()
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "active V3 base interface policy is not exact")
+    archive = _load_object(paths.archive_manifest_path)
+    if archive.get("status") != PROTOCOL_ARCHIVE_STATUS or not all(
+        archive.get(field) is True
+        for field in (
+            "excluded_from_prevalence",
+            "excluded_from_agreement",
+            "excluded_from_adjudication",
+            "excluded_from_final_aggregation",
+        )
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "prior pilot archive is not excluded")
+
+    queue_state_path = paths.queue_root / "queue_state.json"
+    queue_state = _load_object(queue_state_path)
+    checkpoint_files = [path for path in paths.checkpoint_root.rglob("*") if path.is_file()]
+    if (
+        queue_state.get("schema_version") != V3_QUEUE_SCHEMA
+        or queue_state.get("protocol_name") != PROTOCOL_V3_NAME
+        or queue_state.get("queue_policy_sha256") != sha256_file(paths.policy_path)
+        or queue_state.get("events") != []
+        or queue_state.get("superseded_event_ids") != []
+        or checkpoint_files
+    ):
+        raise Tier1BlockedError(
+            BLOCKED_LINEAGE,
+            "side-by-side addendum requires a fresh blank V3 review namespace",
+        )
+    manifest_counts = validate_side_by_side_manifest(_load_object(paths.study_manifest_path))
+    archive_hash = sha256_file(paths.archive_manifest_path)
+    policy_hash = sha256_file(paths.policy_path)
+    manifest_hash = sha256_file(paths.study_manifest_path)
+    queue_hash = sha256_file(queue_state_path)
+    prior_definition_hash = sha256_file(paths.protocol_definition_path)
+    prior_interface_policy_hash = sha256_file(paths.interface_policy_path)
+
+    timestamp = applied_at_utc or utc_now()
+    familiarization = str(
+        protocol_definition.get("familiarization_study", {}).get(
+            "physical_study_token", ""
+        )
+    )
+    new_definition = _protocol_definition(
+        created_at_utc=str(protocol_definition.get("created_at_utc", "")),
+        source_commit=source_commit,
+        familiarization_study=familiarization,
+    )
+    new_definition["display_addendum_applied_at_utc"] = timestamp
+    new_definition["base_protocol_definition_sha256"] = prior_definition_hash
+    new_interface_policy = _interface_policy()
+    new_interface_policy["display_addendum_applied_at_utc"] = timestamp
+    new_interface_policy["base_interface_policy_sha256"] = prior_interface_policy_hash
+
+    definition_path = paths.interface_root / "protocol_definition_side_by_side_v1_restricted.json"
+    interface_policy_path = paths.interface_root / "interface_policy_side_by_side_v1.json"
+    certificate_path = (
+        package_root / "aggregate_safe" / "audit_v3_side_by_side_addendum_certificate.json"
+    )
+    for destination in (definition_path, interface_policy_path, certificate_path):
+        if destination.exists():
+            raise FileExistsError(f"refusing to overwrite side-by-side artifact: {destination.name}")
+    write_json(definition_path, new_definition)
+    write_json(interface_policy_path, new_interface_policy)
+    updated_pointer = {
+        **pointer,
+        "source_commit": source_commit,
+        "display_addendum": PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM,
+        "display_addendum_applied_at_utc": timestamp,
+        "protocol_definition_relative": str(definition_path.relative_to(package_root)),
+        "protocol_definition_sha256": sha256_file(definition_path),
+        "interface_policy_relative": str(interface_policy_path.relative_to(package_root)),
+        "interface_policy_sha256": sha256_file(interface_policy_path),
+    }
+    temporary_pointer = pointer_path.with_name(f".{pointer_path.name}.side-by-side.tmp")
+    if temporary_pointer.exists():
+        raise FileExistsError("temporary active-protocol pointer already exists")
+    write_json(temporary_pointer, updated_pointer)
+    temporary_pointer.replace(pointer_path)
+
+    validation = validate_active_protocol_v3(package_root, require_fresh=True)
+    if (
+        sha256_file(paths.archive_manifest_path) != archive_hash
+        or sha256_file(paths.policy_path) != policy_hash
+        or sha256_file(paths.study_manifest_path) != manifest_hash
+        or sha256_file(queue_state_path) != queue_hash
+    ):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "display addendum changed locked audit state")
+    certificate = {
+        **validation,
+        "status": V3_SIDE_BY_SIDE_SCORING_VERIFIED,
+        "deployment_readiness_status": READY_FOR_V3_BLINDED_HUMAN_AUDIT,
+        "source_commit": source_commit,
+        "display_addendum": PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM,
+        "applied_at_utc": timestamp,
+        "selected_sample_unchanged": True,
+        "technical_evidence_tiers_unchanged": True,
+        "queue_and_checkpoint_state_blank": True,
+        "protected_media_reused": True,
+        "protected_media_regenerated": False,
+        "prior_pilot_archive_unchanged": True,
+        "scientific_analysis_changed": False,
+        **manifest_counts,
+    }
+    write_json(certificate_path, certificate)
+    return {**certificate, "certificate_sha256": sha256_file(certificate_path)}
 
 
 def validate_active_protocol_v3(
@@ -756,9 +1165,8 @@ def validate_active_protocol_v3(
         if not source_path.is_file() or sha256_file(source_path) != record.get("sha256"):
             raise Tier1BlockedError(BLOCKED_LINEAGE, "legacy source audit file changed")
     policy = _load_object(paths.policy_path)
-    protocol_definition = _load_object(
-        paths.interface_root / "protocol_definition_restricted.json"
-    )
+    protocol_definition = _load_object(paths.protocol_definition_path)
+    interface_policy = _load_object(paths.interface_policy_path)
     queue_state_path = paths.queue_root / "queue_state.json"
     queue = _load_object(queue_state_path)
     if (
@@ -773,6 +1181,7 @@ def validate_active_protocol_v3(
         raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 queue state is invalid")
     primary = list(map(str, policy.get("primary_queue", [])))
     formal = list(map(str, policy.get("formal_reliability_queue", [])))
+    manifest_counts = validate_side_by_side_manifest(_load_object(paths.study_manifest_path))
     if len(primary) != len(set(primary)) or not primary:
         raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 primary queue is invalid")
     if len(formal) != FORMAL_RELIABILITY_N or not set(formal).issubset(primary):
@@ -795,14 +1204,43 @@ def validate_active_protocol_v3(
         or protocol_definition.get("clip_field_definitions") != FIELD_DEFINITIONS
         or protocol_definition.get("clip_presence_fields")
         != list(V3_CLIP_PRESENCE_FIELDS)
+        or protocol_definition.get("source_only_primary_field")
+        != V3_SOURCE_ONLY_PRIMARY_FIELD
+        or protocol_definition.get("source_only_category_fields")
+        != list(V3_SOURCE_ONLY_CATEGORY_FIELDS)
+        or protocol_definition.get("source_only_free_text_fields")
+        != list(V3_SOURCE_ONLY_FREE_TEXT_FIELDS)
         or protocol_definition.get("study_outcome_fields")
         != list(V3_STUDY_OUTCOMES)
+        or protocol_definition.get("source_only_study_outcome_fields")
+        != list(V3_SOURCE_ONLY_STUDY_OUTCOMES)
         or protocol_definition.get("study_rollup", {}).get(
             "independent_manual_study_outcome_entry"
         )
         is not False
+        or protocol_definition.get("study_rollup", {}).get(
+            "model_input_and_source_only_rollups_separate"
+        )
+        is not True
+        or protocol_definition.get("display_addendum")
+        != PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM
     ):
         raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 scoring protocol definition changed")
+    required_interface_policy = {
+        "display_addendum": PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM,
+        "mandatory_tier_scoring_banner": True,
+        "tier_a_synchronized_side_by_side": True,
+        "tier_a_shared_frame_index": True,
+        "tier_a_encoder_frames": 16,
+        "tier_a_source_only_comparison": True,
+        "tier_c_exact_model_input_panel": False,
+        "model_input_and_source_only_rollups_separate": True,
+        "ocr_available": False,
+        "automated_annotation": False,
+        "protected_parent_media_reused": True,
+    }
+    if any(interface_policy.get(key) != value for key, value in required_interface_policy.items()):
+        raise Tier1BlockedError(BLOCKED_LINEAGE, "V3 side-by-side interface policy changed")
     required_slots = policy.get("required_review_slots", [])
     expected_slots = [
         {"physical_study_token": value, "role": "primary", "formal_reliability": False}
@@ -832,6 +1270,12 @@ def validate_active_protocol_v3(
         "prior_answers_prepopulated": False if require_fresh else None,
         "mandatory_scoring_scope_banner": True,
         "automatic_study_rollup": True,
+        "side_by_side_status": V3_SIDE_BY_SIDE_SCORING_VERIFIED,
+        "deployment_readiness_status": READY_FOR_V3_BLINDED_HUMAN_AUDIT,
+        "tier_a_synchronized_side_by_side": True,
+        "tier_c_source_acquisition_only": True,
+        "source_only_fields_separate": True,
+        **manifest_counts,
         "finalized_read_only_view": True,
         "owner_only_protocol_restart": True,
         "clinical_annotations_emitted": False,
@@ -867,9 +1311,15 @@ def protocol_definition_digest() -> str:
     return sha256_json(
         {
             "protocol_name": PROTOCOL_V3_NAME,
+            "display_addendum": PROTOCOL_V3_SIDE_BY_SIDE_ADDENDUM,
             "scoring_scope_by_tier": SCORING_SCOPE_BY_TIER,
             "field_definitions": FIELD_DEFINITIONS,
+            "source_only_field_definitions": SOURCE_ONLY_FIELD_DEFINITIONS,
             "clip_presence_fields": V3_CLIP_PRESENCE_FIELDS,
+            "source_only_primary_field": V3_SOURCE_ONLY_PRIMARY_FIELD,
+            "source_only_category_fields": V3_SOURCE_ONLY_CATEGORY_FIELDS,
+            "source_only_free_text_fields": V3_SOURCE_ONLY_FREE_TEXT_FIELDS,
             "study_outcome_fields": V3_STUDY_OUTCOMES,
+            "source_only_study_outcome_fields": V3_SOURCE_ONLY_STUDY_OUTCOMES,
         }
     )

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from jdim_tier1.audit_protocol_v3 import (
+    apply_side_by_side_addendum,
     apply_protocol_v3_transition,
     plan_protocol_v3_transition,
     validate_active_protocol_v3,
@@ -25,6 +26,9 @@ def parse_args() -> argparse.Namespace:
     validate = subparsers.add_parser("validate")
     validate.add_argument("--package-root", type=Path, required=True)
     validate.add_argument("--require-fresh", action="store_true")
+    addendum = subparsers.add_parser("apply-side-by-side-addendum")
+    addendum.add_argument("--package-root", type=Path, required=True)
+    addendum.add_argument("--source-commit", required=True)
     return parser.parse_args()
 
 
@@ -36,6 +40,11 @@ def main() -> int:
         elif args.command == "activate":
             plan = plan_protocol_v3_transition(args.package_root)
             result = apply_protocol_v3_transition(plan, source_commit=args.source_commit)
+        elif args.command == "apply-side-by-side-addendum":
+            result = apply_side_by_side_addendum(
+                args.package_root,
+                source_commit=args.source_commit,
+            )
         else:
             result = validate_active_protocol_v3(
                 args.package_root,

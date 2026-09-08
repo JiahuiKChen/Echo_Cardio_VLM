@@ -17,16 +17,23 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from jdim_tier1.audit import STUDY_OUTCOMES  # noqa: E402
 from jdim_tier1.audit_interface import CLIP_PRESENCE_FIELDS  # noqa: E402
 from jdim_tier1.audit_protocol_v3 import (  # noqa: E402
+    BASE_SCORING_SCOPE_BY_TIER,
     FIELD_DEFINITIONS,
     PROTOCOL_ARCHIVE_STATUS,
+    PROTOCOL_V3_BASE_COMMIT,
     PROTOCOL_V3_NAME,
     SCORING_SCOPE_BY_TIER,
+    SOURCE_ONLY_FIELD_DEFINITIONS,
     V3_ACTIVE,
     V3_CLIP_PRESENCE_FIELDS,
     V3_REQUIRED_CLIP_ANNOTATION_FIELDS,
     V3_REQUIRED_STUDY_ANNOTATION_FIELDS,
+    V3_SOURCE_ONLY_CATEGORY_FIELDS,
+    V3_SOURCE_ONLY_PRIMARY_FIELD,
+    V3_SOURCE_ONLY_STUDY_OUTCOMES,
     V3_STUDY_OUTCOMES,
     aggregation_eligible_events_from_state,
+    apply_side_by_side_addendum,
     apply_protocol_v3_transition,
     derive_study_summary,
     plan_protocol_v3_transition,
@@ -260,12 +267,16 @@ def complete_payload(study: dict[str, object]) -> dict[str, object]:
 
 def complete_v3_payload(study: dict[str, object]) -> dict[str, object]:
     clips = {}
+    clip_tiers = {}
     for clip in study["clips"]:
         record = {field: "not_assessable" for field in V3_CLIP_PRESENCE_FIELDS}
         record["acquisition_content_type"] = "not_assessable"
         record["reader_confidence"] = "not_assessable"
+        if clip["evidence_tier"] == TIER_A:
+            record[V3_SOURCE_ONLY_PRIMARY_FIELD] = "not_assessable"
         clips[clip["clip_audit_id"]] = record
-    study_record = derive_study_summary(clips)
+        clip_tiers[clip["clip_audit_id"]] = clip["evidence_tier"]
+    study_record = derive_study_summary(clips, clip_evidence_tiers=clip_tiers)
     study_record["reader_confidence"] = "not_assessable"
     study_record["derived_summary_confirmed"] = "yes"
     return {
@@ -1008,6 +1019,52 @@ class ProtocolV3ClarificationTests(unittest.TestCase):
         )
         return apply_protocol_v3_transition(plan, source_commit="a" * 40)
 
+    def activate_legacy_for_addendum(self) -> None:
+        plan = plan_protocol_v3_transition(
+            self.output,
+            created_at_utc="2026-09-03T12:00:00Z",
+        )
+        apply_protocol_v3_transition(plan, source_commit=PROTOCOL_V3_BASE_COMMIT)
+        pointer_path = self.output / "restricted/active_audit_protocol.json"
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        definition_path = self.output / pointer["protocol_definition_relative"]
+        definition = json.loads(definition_path.read_text(encoding="utf-8"))
+        definition["scoring_scope_by_tier"] = BASE_SCORING_SCOPE_BY_TIER
+        for key in (
+            "display_addendum",
+            "source_only_field_definitions",
+            "source_only_primary_field",
+            "source_only_category_fields",
+            "source_only_free_text_fields",
+            "source_only_study_outcome_fields",
+        ):
+            definition.pop(key, None)
+        definition["study_rollup"].pop(
+            "model_input_and_source_only_rollups_separate", None
+        )
+        definition["source_commit"] = PROTOCOL_V3_BASE_COMMIT
+        write_json(definition_path, definition)
+        interface_policy_path = self.output / pointer["interface_policy_relative"]
+        interface_policy = json.loads(interface_policy_path.read_text(encoding="utf-8"))
+        for key in (
+            "display_addendum",
+            "tier_a_synchronized_side_by_side",
+            "tier_a_shared_frame_index",
+            "tier_a_encoder_frames",
+            "tier_a_source_only_comparison",
+            "tier_c_exact_model_input_panel",
+            "model_input_and_source_only_rollups_separate",
+        ):
+            interface_policy.pop(key, None)
+        write_json(interface_policy_path, interface_policy)
+        pointer["source_commit"] = PROTOCOL_V3_BASE_COMMIT
+        pointer.pop("display_addendum", None)
+        pointer.pop("protocol_definition_relative", None)
+        pointer.pop("interface_policy_relative", None)
+        pointer["protocol_definition_sha256"] = sha256_file(definition_path)
+        pointer["interface_policy_sha256"] = sha256_file(interface_policy_path)
+        write_json(pointer_path, pointer)
+
     def service(self) -> RoleAwareAuditService:
         return RoleAwareAuditService(self.output, self.fixture.paths.parent_media_root)
 
@@ -1025,13 +1082,16 @@ class ProtocolV3ClarificationTests(unittest.TestCase):
     def test_scoring_scope_and_field_definitions_are_exact(self) -> None:
         self.assertEqual(
             SCORING_SCOPE_BY_TIER[TIER_A],
-            "Score the exact model input in the right panel. Use the source acquisition "
-            "only for context. Do not count source-only features as model-input content.",
+            "Score all primary audit fields from the exact model input in the right panel. "
+            "Use the source acquisition on the left only for context and source-to-input "
+            "comparison. Do not count features visible only in the source acquisition as "
+            "model-input content.",
         )
         self.assertEqual(
             SCORING_SCOPE_BY_TIER[TIER_C],
-            "Score the source acquisition. Findings will be reported separately as "
-            "source-acquisition evidence and not as verified model-input content.",
+            "Score the source acquisition shown here. This clip is not a verified exact "
+            "model input. Findings will be reported separately as source-acquisition "
+            "evidence and must not be interpreted as content proven to have reached the encoder.",
         )
         self.assertIn("Numbers alone do not count", FIELD_DEFINITIONS["visible_text"])
         self.assertIn("generic depth", FIELD_DEFINITIONS["visible_numeric_value"])
@@ -1039,6 +1099,10 @@ class ProtocolV3ClarificationTests(unittest.TestCase):
         self.assertIn("written-out equivalent", FIELD_DEFINITIONS["tapse_specific_label"])
         self.assertIn("Exclude depth markers", FIELD_DEFINITIONS["candidate_target_value_present"])
         self.assertIn("routine ECG gating strip alone does not count", FIELD_DEFINITIONS["waveform_or_measurement_tracing"])
+        self.assertIn(
+            "source acquisition but not visible in the exact model input",
+            SOURCE_ONLY_FIELD_DEFINITIONS[V3_SOURCE_ONLY_PRIMARY_FIELD],
+        )
 
     def test_clip_rollup_hierarchy_and_not_assessable_rule(self) -> None:
         self.assertEqual(rollup_presence(["no", "yes", "uncertain"]), "yes")
@@ -1232,7 +1296,131 @@ class ProtocolV3ClarificationTests(unittest.TestCase):
         self.assertIn(FIELD_DEFINITIONS["candidate_target_value_present"], javascript)
         self.assertIn("renderStudySummary", javascript)
         self.assertIn("derived_summary_confirmed", javascript)
+        self.assertIn("Source acquisition — corresponding source frame", html)
+        self.assertIn("Exact model input — scoring target", html)
+        self.assertIn("Source content not visible in exact model input", html)
+        self.assertIn('max="15"', html)
+        self.assertIn("drawSprite('source');drawSprite('model')", javascript)
+        self.assertIn("frameIndex=(frameIndex+1)%16", javascript)
+        self.assertIn("frameIndex=Number(e.target.value);renderFrame()", javascript)
         self.assertNotIn('name="spectral_doppler_present"', html)
+
+    def test_source_only_rollup_is_separate_from_model_input_rollup(self) -> None:
+        clips = {
+            "clipA": {
+                "acquisition_content_type": "2d_b_mode",
+                "visible_text": "no",
+                "source_only_relevant_content": "yes",
+                "source_only_visible_text": "yes",
+                "source_only_lvot_vti_specific_label": "yes",
+                "source_only_candidate_target_value": "yes",
+            }
+        }
+        summary = derive_study_summary(
+            clips,
+            clip_evidence_tiers={"clipA": TIER_A},
+        )
+        self.assertEqual(summary["visible_text_present"], "no")
+        self.assertEqual(summary["source_only_relevant_content_present"], "yes")
+        self.assertEqual(summary["source_only_target_specific_label_present"], "yes")
+        self.assertEqual(summary["source_only_candidate_target_value_present"], "yes")
+        self.assertEqual(
+            set(V3_SOURCE_ONLY_STUDY_OUTCOMES),
+            {
+                "source_only_relevant_content_present",
+                "source_content_not_visible_in_exact_model_input_present",
+                "source_only_target_specific_label_present",
+                "source_only_candidate_target_value_present",
+            },
+        )
+
+    def test_tier_a_yes_requires_category_and_tier_c_rejects_source_only_fields(self) -> None:
+        self.activate()
+        service = self.service()
+        responses = []
+        for index in range(8):
+            code = f"scopeR{index}"
+            service.registry.register(code, qualified=True)
+            responses.append(self.claim(service, code, ROLE_PRIMARY))
+        tier_a = responses[0]
+        tier_a_payload = complete_v3_payload(tier_a["study"])
+        tier_a_clip = tier_a["study"]["clips"][0]["clip_audit_id"]
+        tier_a_payload["annotations"]["clips"][tier_a_clip][
+            V3_SOURCE_ONLY_PRIMARY_FIELD
+        ] = "yes"
+        tier_a_study_record = tier_a_payload["annotations"]["studies"][
+            tier_a["study"]["audit_id"]
+        ]
+        for field in (*V3_STUDY_OUTCOMES, *V3_SOURCE_ONLY_STUDY_OUTCOMES):
+            tier_a_study_record.pop(field, None)
+        service.save(tier_a["session_token"], tier_a_payload["annotations"])
+        review = service.checkpoints.review_state(
+            service.queue.get_event(tier_a["event"]["event_id"])
+        )
+        self.assertTrue(
+            any("source-only category" in message for message in review["requirements"])
+        )
+        with self.assertRaises(ValueError):
+            service.lock(tier_a["session_token"])
+        tier_a_payload["annotations"]["clips"][tier_a_clip][
+            V3_SOURCE_ONLY_CATEGORY_FIELDS[0]
+        ] = "yes"
+        saved = service.save(tier_a["session_token"], tier_a_payload["annotations"])
+        self.assertEqual(
+            saved["checkpoint"]["annotations"]["studies"][tier_a["study"]["audit_id"]][
+                "visible_text_present"
+            ],
+            "not_assessable",
+        )
+
+        tier_c = responses[-1]
+        tier_c_payload = complete_v3_payload(tier_c["study"])
+        tier_c_clip = tier_c["study"]["clips"][0]["clip_audit_id"]
+        tier_c_payload["annotations"]["clips"][tier_c_clip][
+            V3_SOURCE_ONLY_PRIMARY_FIELD
+        ] = "yes"
+        tier_c_payload["annotations"]["clips"][tier_c_clip][
+            V3_SOURCE_ONLY_CATEGORY_FIELDS[0]
+        ] = "yes"
+        with self.assertRaisesRegex(ValueError, "Tier-C clips cannot contain"):
+            service.save(tier_c["session_token"], tier_c_payload["annotations"])
+
+    def test_side_by_side_addendum_updates_only_versioned_metadata_when_blank(self) -> None:
+        self.activate_legacy_for_addendum()
+        pointer_path = self.output / "restricted/active_audit_protocol.json"
+        pointer_before = json.loads(pointer_path.read_text(encoding="utf-8"))
+        preserved_paths = [
+            self.output / pointer_before["archive_manifest_relative"],
+            self.output / pointer_before["protocol_root_relative"] / "queue/queue_state.json",
+            self.output / pointer_before["protocol_root_relative"] / "interface/queue_policy_restricted.json",
+            self.output / pointer_before["protocol_root_relative"] / "interface/study_manifest_restricted.json",
+        ]
+        preserved_hashes = {path: sha256_file(path) for path in preserved_paths}
+        result = apply_side_by_side_addendum(
+            self.output,
+            source_commit="b" * 40,
+            applied_at_utc="2026-09-08T12:00:00Z",
+        )
+        self.assertEqual(result["status"], "V3_SIDE_BY_SIDE_SCORING_VERIFIED")
+        self.assertEqual(result["deployment_readiness_status"], "READY_FOR_V3_BLINDED_HUMAN_AUDIT")
+        self.assertEqual(result["current_protocol_events"], 0)
+        self.assertEqual(result["current_protocol_checkpoint_files"], 0)
+        self.assertTrue(result["protected_media_reused"])
+        self.assertEqual(preserved_hashes, {path: sha256_file(path) for path in preserved_paths})
+        pointer_after = json.loads(pointer_path.read_text(encoding="utf-8"))
+        self.assertEqual(pointer_after["source_commit"], "b" * 40)
+        self.assertNotEqual(
+            pointer_after["protocol_definition_relative"],
+            pointer_before.get("protocol_definition_relative"),
+        )
+
+    def test_side_by_side_addendum_fails_closed_after_review_state_exists(self) -> None:
+        self.activate_legacy_for_addendum()
+        service = self.service()
+        service.registry.register("startedR", qualified=True)
+        self.claim(service, "startedR", ROLE_PRIMARY)
+        with self.assertRaisesRegex(Tier1BlockedError, "fresh blank V3"):
+            apply_side_by_side_addendum(self.output, source_commit="b" * 40)
 
     def test_metadata_validation_fails_if_familiarization_reenters_formal_queue(self) -> None:
         self.activate()
