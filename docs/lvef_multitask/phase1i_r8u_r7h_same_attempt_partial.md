@@ -40,7 +40,7 @@ a retained failure receipt as metadata never converts it into scientific
 success or makes its partial adoptable.
 
 The private diagnostic at `95b10584` found 16 finalized metadata roots in the
-current attempt and three finalized legacy roots in an older attempt. The
+current attempt and three finalized legacy roots in older attempts. The
 first 15 current roots retain seven files, including technical dispositions
 and two transition receipts. The current Batch-16 root retains five files
 and has no transition-receipt directory. The three legacy roots retain six
@@ -49,6 +49,12 @@ additional Batch-16 controls are the original R5 and R6 publication claims,
 bound to their exact claim hashes and consumed-failure evidence hashes; they
 are not generic failure directories. These counts describe the observed
 history and do not define an acceptance whitelist.
+Two foreign roots use the later 29-key extraction summary; a separate older
+producer uses the 18-key summary without the 11 later preprocessing
+diagnostics. Both retain schema version 1 and the same summary artifact
+type. The 18-key variant is accepted only with its established scientific
+commit and production-wrapper hash; missing keys from another producer do
+not receive that exception.
 
 The shared classifier is used by capacity, probe, every tail-task PREBODY,
 and the finalizer wrapper. Retained metadata counts and occupied bytes are
@@ -64,9 +70,11 @@ separate the unchanged scientific commit
 `2223d9768a1cc23efbe95a3c5474ea747a383a10`, R7G-R1 adjudication commit
 `cf83c19521a2ed7b722c29a44c01f00cad0cf717`, the R7H base implementation
 `8230d1535247256529616cb481dd48cce1f9a78f`, sealed-runtime correction
-`95b105841fd1af69e3d29f3e1b4640de15ab25df`, and the topology correction
+`95b105841fd1af69e3d29f3e1b4640de15ab25df`, topology correction
+`d591c303125d20df1e9d26b4e9b185426f3ae13d`, and the legacy-metadata correction
 derived from the committed checkout. The permitted chain is exactly
-R7G-R1 → R7H base → sealed-runtime correction → topology correction.
+R7G-R1 → R7H base → sealed-runtime correction → topology correction →
+legacy-metadata correction.
 Each link has one parent and distance
 one; merges and additional descendants are rejected. The branch, clean
 tracked tree, origin/current-commit agreement where required, and scientific
@@ -102,8 +110,17 @@ The existing topology-authority schema supplies the successor binding through
 receipt or namespace. Missing or substituted source evidence fails with
 `R7H_CONTROL_EPOCH_MISMATCH` or `R7H_CONTROL_EVIDENCE_HASH`.
 
+The topology correction admitted the first 18 retained metadata roots but
+stopped before resource commands on the third foreign root's valid legacy
+summary variant. This remains `CONTROL_PLANE_IMPLEMENTATION`. Its bounded
+successor recognizes that established producer shape; it does not loosen
+arbitrary summary-schema acceptance or change scientific authority. No
+topology authority, capacity receipt, probe, or scientific job was produced
+by that failed pre-scientific execution. The original consumed evidence and
+the private diagnostics remain preserved.
+
 Fresh controls, script hashes, claims, jobs, and tail receipts bind the
-topology correction. Neither pre-scientific R7H implementation produced
+current correction. None of the prior pre-scientific R7H implementations produced
 scientific receipts, so the finalizer
 continues to require exactly four scientific implementation epochs: original
 Batches 1--2, the fixed Batches 3--15 epoch, the fixed R7 Batch-16 epoch, and

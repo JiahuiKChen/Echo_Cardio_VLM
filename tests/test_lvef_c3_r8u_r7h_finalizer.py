@@ -198,6 +198,7 @@ def _repository_outputs() -> dict[tuple[str, ...], bytes]:
     fixed_r7g = finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT
     fixed_r7h = finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
     fixed_runtime = finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT
+    fixed_topology = finalizer.R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT
     return {
         ("rev-parse", "HEAD"): f"{IMPLEMENTATION_COMMIT}\n".encode(),
         (
@@ -208,11 +209,15 @@ def _repository_outputs() -> dict[tuple[str, ...], bytes]:
             b"codex/lvef-multitask-revalidation\n"
         ),
         ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT): (
-            f"{IMPLEMENTATION_COMMIT} {fixed_runtime}\n".encode()
+            f"{IMPLEMENTATION_COMMIT} {fixed_topology}\n".encode()
         ),
         (
-            "rev-list", "--count", f"{fixed_runtime}..{IMPLEMENTATION_COMMIT}"
+            "rev-list", "--count", f"{fixed_topology}..{IMPLEMENTATION_COMMIT}"
         ): b"1\n",
+        ("rev-list", "--parents", "-n", "1", fixed_topology): (
+            f"{fixed_topology} {fixed_runtime}\n".encode()
+        ),
+        ("rev-list", "--count", f"{fixed_runtime}..{fixed_topology}"): b"1\n",
         ("rev-list", "--parents", "-n", "1", fixed_runtime): (
             f"{fixed_runtime} {fixed_r7h}\n".encode()
         ),
@@ -234,6 +239,7 @@ def _repository_runner(
         finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
         finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
         finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+        finalizer.R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
         IMPLEMENTATION_COMMIT,
     )
     permitted_empty = {
@@ -277,6 +283,7 @@ def test_r7h_repository_authority_rejects_wrong_lineage_or_checkout() -> None:
     fixed_r7g = finalizer.R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT
     fixed_r7h = finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT
     fixed_runtime = finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT
+    fixed_topology = finalizer.R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT
     parent_arguments = ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT)
     base_parent_arguments = ("rev-list", "--parents", "-n", "1", fixed_r7h)
     cases = (
@@ -286,12 +293,20 @@ def test_r7h_repository_authority_rejects_wrong_lineage_or_checkout() -> None:
          "R7H_PARENT_MISMATCH"),
         (parent_arguments, f"{IMPLEMENTATION_COMMIT} {fixed_r7h}\n".encode(),
          "R7H_PARENT_MISMATCH"),
+        (parent_arguments, f"{IMPLEMENTATION_COMMIT} {fixed_runtime}\n".encode(),
+         "R7H_PARENT_MISMATCH"),
         (parent_arguments, f"{IMPLEMENTATION_COMMIT} {'e' * 40}\n".encode(),
          "R7H_PARENT_MISMATCH"),
         (parent_arguments,
-         f"{IMPLEMENTATION_COMMIT} {fixed_runtime} {'e' * 40}\n".encode(),
+         f"{IMPLEMENTATION_COMMIT} {fixed_topology} {'e' * 40}\n".encode(),
          "R7H_PARENT_MISMATCH"),
-        (("rev-list", "--count", f"{fixed_runtime}..{IMPLEMENTATION_COMMIT}"),
+        (("rev-list", "--count", f"{fixed_topology}..{IMPLEMENTATION_COMMIT}"),
+         b"2\n", "R7H_ANCESTRY_DISTANCE"),
+        (("rev-list", "--parents", "-n", "1", fixed_topology),
+         f"{fixed_topology} {fixed_r7h}\n".encode(), "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--parents", "-n", "1", fixed_topology),
+         f"{fixed_topology} {fixed_runtime} {'e' * 40}\n".encode(), "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--count", f"{fixed_runtime}..{fixed_topology}"),
          b"2\n", "R7H_ANCESTRY_DISTANCE"),
         (("rev-list", "--parents", "-n", "1", fixed_runtime),
          f"{fixed_runtime} {fixed_r7g}\n".encode(), "R7H_PARENT_MISMATCH"),
@@ -332,6 +347,7 @@ def test_r7h_rejects_uncorrected_bases_as_current_implementation() -> None:
     for prior_implementation in (
         finalizer.R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
         finalizer.R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+        finalizer.R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
     ):
         with mock.patch.object(
             finalizer.subprocess, "run", side_effect=AssertionError("Git reached")

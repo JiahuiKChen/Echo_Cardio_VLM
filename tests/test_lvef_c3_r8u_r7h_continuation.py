@@ -319,8 +319,9 @@ def test_capacity_runtime_contradictions_fail_before_capacity_or_controls() -> N
 
 
 def test_controller_requires_exact_corrective_child_and_current_repository() -> None:
-    base = r7h.R7H_TOPOLOGY_CORRECTION_BASE_COMMIT
-    previous = r7h.R7H_CORRECTION_BASE_COMMIT
+    base = r7h.R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT
+    previous = r7h.R7H_TOPOLOGY_CORRECTION_BASE_COMMIT
+    original = r7h.R7H_CORRECTION_BASE_COMMIT
     good = {
         ("rev-parse", "HEAD"): IMPLEMENTATION_COMMIT,
         ("rev-parse", "refs/remotes/origin/codex/lvef-multitask-revalidation"): IMPLEMENTATION_COMMIT,
@@ -328,7 +329,8 @@ def test_controller_requires_exact_corrective_child_and_current_repository() -> 
         ("status", "--porcelain", "--untracked-files=no"): "",
         ("rev-list", "--parents", "-n", "1", IMPLEMENTATION_COMMIT): f"{IMPLEMENTATION_COMMIT} {base}",
         ("rev-list", "--parents", "-n", "1", base): f"{base} {previous}",
-        ("rev-list", "--parents", "-n", "1", previous): f"{previous} {r7h.R7G_ADJUDICATION_COMMIT}",
+        ("rev-list", "--parents", "-n", "1", previous): f"{previous} {original}",
+        ("rev-list", "--parents", "-n", "1", original): f"{original} {r7h.R7G_ADJUDICATION_COMMIT}",
         ("rev-list", "--count", f"{base}..{IMPLEMENTATION_COMMIT}"): "1",
         ("merge-base", "--is-ancestor", r7h.SCIENTIFIC_COMMIT, IMPLEMENTATION_COMMIT): "",
     }
@@ -343,6 +345,7 @@ def test_controller_requires_exact_corrective_child_and_current_repository() -> 
         (("rev-list", "--parents", "-n", "1", base), f"{base} {'e' * 40}", "R7H_PARENT_MISMATCH"),
         (("rev-list", "--parents", "-n", "1", base), f"{base} {previous} {'e' * 40}", "R7H_PARENT_MISMATCH"),
         (("rev-list", "--parents", "-n", "1", previous), f"{previous} {'e' * 40}", "R7H_PARENT_MISMATCH"),
+        (("rev-list", "--parents", "-n", "1", original), f"{original} {'e' * 40}", "R7H_PARENT_MISMATCH"),
         (("rev-parse", "refs/remotes/origin/codex/lvef-multitask-revalidation"), "e" * 40, "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),
         (("branch", "--show-current"), "other-branch", "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),
         (("status", "--porcelain", "--untracked-files=no"), " M scripts/changed.py", "R7H_IMPLEMENTATION_GIT_AUTHORITY_INVALID"),

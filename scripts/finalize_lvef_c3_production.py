@@ -263,6 +263,9 @@ R8U_R7H_BASE_IMPLEMENTATION_COMMIT = (
 R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT = (
     "95b105841fd1af69e3d29f3e1b4640de15ab25df"
 )
+R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT = (
+    "d591c303125d20df1e9d26b4e9b185426f3ae13d"
+)
 R8U_R7D_BATCH16_FINAL_RECEIPT_SHA256 = (
     "63b002947814e92c616d0eb7f74ca334cba4e77cdc17f7ce2b55cfc51e090439"
 )
@@ -7771,7 +7774,7 @@ def _validate_r8u_r7d_repository_authority(
 def _validate_r8u_r7h_repository_authority(
     implementation_commit: str,
 ) -> None:
-    """Require the exact topology correction after the fixed runtime repair."""
+    """Require the exact legacy-metadata correction after the fixed repairs."""
 
     fixed_commits = (
         R8R_SCIENTIFIC_GOVERNING_COMMIT,
@@ -7779,6 +7782,7 @@ def _validate_r8u_r7h_repository_authority(
         R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
         R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
         R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+        R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
     )
     if (
         type(implementation_commit) is not str
@@ -7837,6 +7841,21 @@ def _validate_r8u_r7h_repository_authority(
         ): (
             (
                 f"{implementation_commit} "
+                f"{R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT}\n"
+            ).encode("ascii"),
+            "R7H_PARENT_MISMATCH",
+        ),
+        (
+            "rev-list", "--count",
+            f"{R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT}.."
+            f"{implementation_commit}",
+        ): (b"1\n", "R7H_ANCESTRY_DISTANCE"),
+        (
+            "rev-list", "--parents", "-n", "1",
+            R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
+        ): (
+            (
+                f"{R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT} "
                 f"{R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT}\n"
             ).encode("ascii"),
             "R7H_PARENT_MISMATCH",
@@ -7844,7 +7863,7 @@ def _validate_r8u_r7h_repository_authority(
         (
             "rev-list", "--count",
             f"{R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT}.."
-            f"{implementation_commit}",
+            f"{R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT}",
         ): (b"1\n", "R7H_ANCESTRY_DISTANCE"),
         (
             "rev-list", "--parents", "-n", "1",
@@ -7908,7 +7927,11 @@ def _validate_r8u_r7h_repository_authority(
             R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
             R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
         ),
-        (R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT, implementation_commit),
+        (
+            R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+            R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
+        ),
+        (R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT, implementation_commit),
     ):
         ancestry = run_git("merge-base", "--is-ancestor", ancestor, descendant)
         if ancestry.returncode != 0 or ancestry.stdout or ancestry.stderr:
@@ -18288,6 +18311,7 @@ def _validate_r8u_r7h_mixed_implementation_epochs(
             R8U_R7G_R1_ADJUDICATION_IMPLEMENTATION_COMMIT,
             R8U_R7H_BASE_IMPLEMENTATION_COMMIT,
             R8U_R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+            R8U_R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
         }
         or authority.r7f_runtime_commit
         != R8U_R7F_RUNTIME_IMPLEMENTATION_COMMIT

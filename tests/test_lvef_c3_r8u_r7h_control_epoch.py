@@ -125,7 +125,10 @@ def test_predecessor_evidence_replays_without_requery_or_relabeling():
 
 def test_predecessor_epoch_or_sealed_hash_cannot_be_substituted():
     with _predecessor_evidence() as fixture:
-        for commit in (CURRENT, r7h.R7H_CORRECTION_BASE_COMMIT, "e" * 40):
+        for commit in (
+            CURRENT, r7h.R7H_CORRECTION_BASE_COMMIT,
+            r7h.R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT, "e" * 40,
+        ):
             changed = {**fixture.value, "r7h_runtime_commit": commit}
             _expect("R7H_CONTROL_EPOCH_MISMATCH", lambda: r7h._validate_consumed_evidence(changed, run=SimpleNamespace()))
         changed = {**fixture.value, "qacct_queries_to_close_consumed_attempt": 0}
@@ -255,7 +258,11 @@ def test_consumed_failure_stays_historical_as_tail_metadata_accumulates():
 
 
 def test_new_controls_reject_predecessor_execution_epoch():
-    for commit in (r7h.R7H_TOPOLOGY_CORRECTION_BASE_COMMIT, r7h.R7H_CORRECTION_BASE_COMMIT):
+    for commit in (
+        r7h.R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+        r7h.R7H_CORRECTION_BASE_COMMIT,
+        r7h.R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
+    ):
         _expect("R7H_CONTROL_SCHEMA_INVALID", lambda: r7h._common(
             artifact_type="synthetic_new_control", status="PASS_SYNTHETIC",
             implementation_commit=commit,

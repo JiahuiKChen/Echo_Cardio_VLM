@@ -69,6 +69,9 @@ R7H_CORRECTION_BASE_COMMIT: Final = (
 R7H_TOPOLOGY_CORRECTION_BASE_COMMIT: Final = (
     "95b105841fd1af69e3d29f3e1b4640de15ab25df"
 )
+R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT: Final = (
+    "d591c303125d20df1e9d26b4e9b185426f3ae13d"
+)
 PREDECESSOR_CONSUMED_EVIDENCE_SHA256: Final = (
     "40fb2c77f2eaebb67bbc34e085c23bd9ad83351593dcb67978e3a2da2ca7741d"
 )
@@ -443,6 +446,7 @@ def _common(
             R7G_ADJUDICATION_COMMIT,
             R7H_CORRECTION_BASE_COMMIT,
             R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+            R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
         }
     ):
         _fail("R7H_CONTROL_SCHEMA_INVALID")
@@ -467,6 +471,10 @@ def _current_r8u_r7h_implementation_commit() -> str:
         parent = sequential._git("rev-list", "--parents", "-n", "1", current)
         base_parent = sequential._git(
             "rev-list", "--parents", "-n", "1",
+            R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
+        )
+        topology_base_parent = sequential._git(
+            "rev-list", "--parents", "-n", "1",
             R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
         )
         runtime_base_parent = sequential._git(
@@ -474,7 +482,7 @@ def _current_r8u_r7h_implementation_commit() -> str:
         )
         distance = sequential._git(
             "rev-list", "--count",
-            f"{R7H_TOPOLOGY_CORRECTION_BASE_COMMIT}..{current}",
+            f"{R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT}..{current}",
         )
         relation = sequential._git(
             "merge-base", "--is-ancestor", SCIENTIFIC_COMMIT, current
@@ -492,9 +500,12 @@ def _current_r8u_r7h_implementation_commit() -> str:
             R7G_ADJUDICATION_COMMIT,
             R7H_CORRECTION_BASE_COMMIT,
             R7H_TOPOLOGY_CORRECTION_BASE_COMMIT,
+            R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT,
         }
-        or parent != f"{current} {R7H_TOPOLOGY_CORRECTION_BASE_COMMIT}"
+        or parent != f"{current} {R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT}"
         or base_parent
+        != f"{R7H_LEGACY_METADATA_CORRECTION_BASE_COMMIT} {R7H_TOPOLOGY_CORRECTION_BASE_COMMIT}"
+        or topology_base_parent
         != f"{R7H_TOPOLOGY_CORRECTION_BASE_COMMIT} {R7H_CORRECTION_BASE_COMMIT}"
         or runtime_base_parent
         != f"{R7H_CORRECTION_BASE_COMMIT} {R7G_ADJUDICATION_COMMIT}"

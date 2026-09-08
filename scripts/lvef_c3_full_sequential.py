@@ -120,6 +120,24 @@ R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS = frozenset({
     "n_unreadable", "paths_emitted", "physical_source_keys_unique",
     "schema_version", "status",
 })
+# The original producer retained the same v1 artifact identity before adding
+# preprocessing diagnostics. Its closed 18-field schema is accepted only with
+# the original scientific producer and wrapper recorded by finalization.
+R8U_R7H_INITIAL_EXTRACTION_PRODUCER_COMMIT = (
+    "b805fd1a403b3ff0503d09bb79d35b01805dd765"
+)
+R8U_R7H_INITIAL_EXTRACTION_WRAPPER_SHA256 = (
+    "1522acfc2d40ed0b52c10ed1ba66d853f945dfc977c0eb433946b166d13dfeb7"
+)
+R8U_R7H_INITIAL_EXTRACTION_SUMMARY_KEYS = (
+    R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS - frozenset({
+        "all_failure_substages_none", "all_fallback_encoder_visible_signal_gates_passed",
+        "all_post_crop_signal_gates_passed", "all_sampled_signal_gates_passed",
+        "all_source_signal_gates_passed", "n_fallback_path_failed", "n_fallback_path_pass",
+        "n_ordinary_preprocessing_path", "n_spatial_fallback_preprocessing_path",
+        "n_spatial_temporal_fallback_preprocessing_path", "n_temporal_fallback_preprocessing_path",
+    })
+)
 R8U_R7H_FIXED_CACHE_TOPOLOGY_KEYS = frozenset(
     {
         "active_finalized_extraction_caches",
@@ -2932,13 +2950,15 @@ def _r8u_r7h_retained_extraction_metadata(
     current = (summary.get("schema_version"), summary.get("artifact_type")) == (
         2, "lvef_c3_batch_dicom_extraction_summary_v2"
     )
+    initial_legacy = legacy and set(summary) == R8U_R7H_INITIAL_EXTRACTION_SUMMARY_KEYS
     if (
         not (legacy or current)
         or summary.get("identifiers_emitted") is not False
         or summary.get("paths_emitted") is not False
         or (legacy and (
-            set(summary) != R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS
+            (not initial_legacy and set(summary) != R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS)
             or summary.get("status") != "PASS_DICOM_EXTRACTION"
+            or (initial_legacy and runtime["git_commit"] != R8U_R7H_INITIAL_EXTRACTION_PRODUCER_COMMIT)
         ))
         or (current and (
             set(summary) != stages.DICOM_EXTRACTION_SUMMARY_KEYS_V2
@@ -2983,6 +3003,7 @@ def _r8u_r7h_retained_extraction_metadata(
         or final.get("extracted_cache_retired") is not True
         or final.get("raw_dicoms_retained") is not True
         or legacy != (final.get("schema_version") == 1)
+        or (initial_legacy and final.get("production_stage_wrapper_sha256") != R8U_R7H_INITIAL_EXTRACTION_WRAPPER_SHA256)
     ):
         _fail("R7H_METADATA_RECEIPT_MISMATCH")
     ordinal = int(batch.name[-3:])

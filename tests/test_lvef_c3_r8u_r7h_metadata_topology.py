@@ -52,12 +52,14 @@ def _runtime(attempt: Path) -> dict[str, str]:
         value.update(git_commit=sequential.R8U_R7H_SCIENTIFIC_COMMIT,
                      batch_plan_sha256=sequential.R8U_R7H_PLAN_SHA256)
     else:
-        value.update(git_commit="b" * 40, batch_plan_sha256="c" * 64)
+        value.update(git_commit=(sequential.R8U_R7H_INITIAL_EXTRACTION_PRODUCER_COMMIT
+                     if attempt.name.endswith("_b805fd1a") else "b" * 40),
+                     batch_plan_sha256="c" * 64)
     return value
 
 
 def _retired_metadata(attempt: Path, ordinal: int, *, legacy: bool = False,
-                      transitions: bool = True) -> str:
+                      transitions: bool = True, initial_legacy: bool = False) -> str:
     batch_id = f"c3_batch_{ordinal:03d}"
     parent = attempt / "extracted_cache" / batch_id / "dicom_extraction"
     runtime = _runtime(attempt)
@@ -75,6 +77,8 @@ def _retired_metadata(attempt: Path, ordinal: int, *, legacy: bool = False,
         final.update(schema_version=1, artifact_type="lvef_c3_batch_finalization_receipt_v2")
         for key in ("n_multiframe_cines", "n_extracted_clips", "n_unique_clip_keys", "n_clip_embeddings"):
             final[key] = final["n_expected_objects"] - 1
+        if initial_legacy:
+            final["production_stage_wrapper_sha256"] = sequential.R8U_R7H_INITIAL_EXTRACTION_WRAPPER_SHA256
     artifacts = {}
     for name, field in (
         ("dicom_audit.restricted.csv", "dicom_audit_sha256"),
@@ -86,6 +90,8 @@ def _retired_metadata(attempt: Path, ordinal: int, *, legacy: bool = False,
         artifacts[name] = _write(parent / name, b"synthetic_metadata_header\nsynthetic_metadata_value\n")
         final[field] = artifacts[name]
     summary_keys = sequential.R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS if legacy else sequential.stages.DICOM_EXTRACTION_SUMMARY_KEYS_V2
+    if initial_legacy:
+        summary_keys = sequential.R8U_R7H_INITIAL_EXTRACTION_SUMMARY_KEYS
     summary = {key: True if key.startswith("all_") or key in {"clip_keys_unique", "physical_source_keys_unique"} else 0 for key in summary_keys}
     summary.update(schema_version=1 if legacy else 2,
                    artifact_type=f"lvef_c3_batch_dicom_extraction_summary_v{1 if legacy else 2}",
@@ -147,9 +153,11 @@ def synthetic_retained_metadata_topology(root: Path, *, current_batches: int = 1
               for index in range(current_batches)]
     bindings = _publication_controls(attempt)
     foreign_attempt = root / "attempts" / ("lvef_c3_full_" + "c" * 16 + "_bbbbbbbb")
+    initial_foreign_attempt = root / "attempts" / ("lvef_c3_full_" + "c" * 16 + "_b805fd1a")
     if foreign:
-        for index in range(3):
+        for index in range(2):
             _retired_metadata(foreign_attempt, index, legacy=True)
+        _retired_metadata(initial_foreign_attempt, 0, legacy=True, initial_legacy=True)
         for index in (3, 4):
             _write(foreign_attempt / "extracted_cache" / f"c3_batch_{index:03d}" /
                    "dicom_extraction.partial/failure.summary.json", {
@@ -162,6 +170,7 @@ def synthetic_retained_metadata_topology(root: Path, *, current_batches: int = 1
             "R8U_R7D_FINALIZED_PREFIX_RECEIPT_SHA256", tuple(hashes[:16])))
         stack.enter_context(mock.patch.object(sequential, "R8U_R7H_RETAINED_PUBLICATION_CLAIMS", bindings))
         fixture = SimpleNamespace(root=root, current_attempt=attempt, foreign_attempt=foreign_attempt,
+            initial_foreign_attempt=initial_foreign_attempt,
             sealed_history=existing_topology._r7h_sealed_history, prefix_hashes=tuple(hashes[:16]),
             metadata_roots=current_batches + (3 if foreign else 0), expected_partial=expected_partial)
         fixture.classify = lambda: sequential.validate_r8u_r7h_extraction_cache_topology(
@@ -181,6 +190,35 @@ def test_current_legacy_and_consumed_claim_metadata_coexist_with_sealed_partials
             assert topology.sealed_cross_attempt_terminal_failed_caches == 2
             assert topology.sealed_current_attempt_batch16_failed_partials == 1
             assert topology.historical_partial_adoptable is False
+
+
+def test_initial_legacy_summary_requires_exact_producer_schema_and_wrapper() -> None:
+    assert len(sequential.R8U_R7H_INITIAL_EXTRACTION_SUMMARY_KEYS) == 18
+    assert len(sequential.R8U_R7H_LEGACY_EXTRACTION_SUMMARY_KEYS) == 29
+    for mutation in ("extra_field", "missing_field", "wrapper", "producer"):
+        with tempfile.TemporaryDirectory() as directory:
+            with synthetic_retained_metadata_topology(Path(directory)) as fixture:
+                if mutation == "producer":
+                    _retired_metadata(fixture.foreign_attempt, 5, legacy=True, initial_legacy=True)
+                elif mutation == "wrapper":
+                    path = fixture.initial_foreign_attempt / "batches/c3_batch_000/preservation/batch_finalization_receipt.restricted.json"
+                    value = json.loads(path.read_bytes())
+                    value["production_stage_wrapper_sha256"] = "f" * 64
+                    _write(path, value)
+                else:
+                    parent = fixture.initial_foreign_attempt / "extracted_cache/c3_batch_000/dicom_extraction"
+                    path = parent / "dicom_extraction.summary.json"
+                    value = json.loads(path.read_bytes())
+                    if mutation == "extra_field":
+                        value["unexplained_content"] = "not producer output"
+                    else:
+                        del value["n_extracted_clips"]
+                    digest = _write(path, value)
+                    stage_path = parent / "stage_completion_receipt.restricted.json"
+                    stage = json.loads(stage_path.read_bytes())
+                    stage["artifacts"][path.name] = digest
+                    _write(stage_path, stage)
+                _fails("R7H_METADATA_RECEIPT_MISMATCH", fixture.classify)
 
 
 def _fails(code: str, action: Any) -> None:
