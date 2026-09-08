@@ -16,6 +16,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from jdim_tier1.audit import STUDY_OUTCOMES  # noqa: E402
 from jdim_tier1.audit_interface import CLIP_PRESENCE_FIELDS  # noqa: E402
+from jdim_tier1.audit_default_preset import (  # noqa: E402
+    DEFAULT_PRESET_ID,
+    DEFAULT_PRESET_VALUES,
+    REVIEWED_CONFIRMED,
+    REVIEWED_MODIFIED_AND_CONFIRMED,
+    activate_default_preset,
+    build_default_preset_configuration,
+    create_production_review_backup,
+    metadata_only_default_preset_dry_run,
+)
 from jdim_tier1.audit_protocol_v3 import (  # noqa: E402
     BASE_SCORING_SCOPE_BY_TIER,
     FIELD_DEFINITIONS,
@@ -35,6 +45,7 @@ from jdim_tier1.audit_protocol_v3 import (  # noqa: E402
     aggregation_eligible_events_from_state,
     apply_side_by_side_addendum,
     apply_protocol_v3_transition,
+    active_protocol_paths,
     derive_study_summary,
     plan_protocol_v3_transition,
     rollup_presence,
@@ -1444,6 +1455,296 @@ class ProtocolV3ClarificationTests(unittest.TestCase):
         write_json(state_path, state)
         with self.assertRaises(Tier1BlockedError):
             validate_active_protocol_v3(self.output)
+
+
+class AuditDefaultPresetTests(unittest.TestCase):
+    SOURCE_COMMIT = "d" * 40
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.fixture = ParentFixture(self.root)
+        self.output = self.root / "reduced"
+        self.fixture.build_package(self.output)
+        plan = plan_protocol_v3_transition(
+            self.output,
+            created_at_utc="2026-09-03T12:00:00Z",
+        )
+        apply_protocol_v3_transition(plan, source_commit="a" * 40)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def service(self, *, preset: bool = False) -> RoleAwareAuditService:
+        if preset:
+            paths = active_protocol_paths(self.output)
+            config = build_default_preset_configuration(
+                source_commit=self.SOURCE_COMMIT,
+                cutover_timestamp_utc="2026-09-08T16:00:00Z",
+                cutover_id="V31-TEST-CUTOVER-0001",
+            )
+            config_path = paths.interface_root / "clip_default_preset_v1_restricted.json"
+            if not config_path.exists():
+                write_json(config_path, config)
+            return RoleAwareAuditService(
+                self.output,
+                self.fixture.paths.parent_media_root,
+                source_commit=self.SOURCE_COMMIT,
+            )
+        return RoleAwareAuditService(self.output, self.fixture.paths.parent_media_root)
+
+    @staticmethod
+    def claim(service: RoleAwareAuditService, code: str, role: str) -> dict[str, object]:
+        return service.claim(
+            {
+                "reviewer_code": code,
+                "role": role,
+                "action": ACTION_CLAIM_NEXT,
+                "qualification_confirmed": True,
+            }
+        )
+
+    @staticmethod
+    def preset_record(study: dict[str, object]) -> tuple[str, dict[str, str]]:
+        clip = study["clips"][0]
+        record = dict(DEFAULT_PRESET_VALUES)
+        if clip["evidence_tier"] == TIER_A:
+            record[V3_SOURCE_ONLY_PRIMARY_FIELD] = "no"
+        return str(clip["clip_audit_id"]), record
+
+    def test_pre_cutover_progress_and_behavior_are_unchanged(self) -> None:
+        before = self.service()
+        before.registry.register("precutover", qualified=True)
+        response = self.claim(before, "precutover", ROLE_PRIMARY)
+        event_id = response["event"]["event_id"]
+        before.save(response["session_token"], {"studies": {}, "clips": {}})
+        queue_hash = sha256_file(before.queue.state_path)
+        checkpoint_path = before.checkpoints.root / event_id / "checkpoint.json"
+        checkpoint_hash = sha256_file(checkpoint_path)
+
+        after = self.service(preset=True)
+        resumed = after.claim(
+            {
+                "reviewer_code": "precutover",
+                "role": ROLE_PRIMARY,
+                "action": ACTION_RESUME,
+                "qualification_confirmed": True,
+            }
+        )
+        self.assertIsNone(resumed["default_preset"])
+        self.assertNotIn("clip_review_states", resumed["checkpoint"])
+        self.assertNotIn("clip_default_preset_version", after.queue.get_event(event_id))
+        self.assertEqual(checkpoint_hash, sha256_file(checkpoint_path))
+        self.assertEqual(queue_hash, sha256_file(after.queue.state_path))
+
+    def test_new_primary_and_secondary_claims_receive_lazy_preset(self) -> None:
+        service = self.service(preset=True)
+        for code in ("newprimary", "newsecondary"):
+            service.registry.register(code, qualified=True)
+        primary = self.claim(service, "newprimary", ROLE_PRIMARY)
+        secondary = self.claim(service, "newsecondary", ROLE_SECONDARY)
+        for response, expected_type in (
+            (primary, "new_primary_claim"),
+            (secondary, "new_secondary_claim"),
+        ):
+            self.assertEqual(response["default_preset"]["field_values"], DEFAULT_PRESET_VALUES)
+            self.assertEqual(response["checkpoint"]["annotations"], {"studies": {}, "clips": {}})
+            self.assertEqual(response["checkpoint"]["clip_review_states"], {})
+            event = service.queue.get_event(response["event"]["event_id"])
+            self.assertEqual(event["clip_default_preset_version"], DEFAULT_PRESET_ID)
+            self.assertEqual(event["preset_event_type"], expected_type)
+            self.assertEqual(event["clip_completion_count"], 0)
+
+    def test_only_explicit_confirmation_saves_one_clip(self) -> None:
+        service = self.service(preset=True)
+        service.registry.register("confirmer", qualified=True)
+        response = self.claim(service, "confirmer", ROLE_PRIMARY)
+        clip_id, record = self.preset_record(response["study"])
+        with self.assertRaisesRegex(PermissionError, "explicit clip confirmation"):
+            service.save(
+                response["session_token"],
+                {"studies": {}, "clips": {clip_id: record}},
+            )
+        confirmed = service.confirm_clip(
+            response["session_token"],
+            clip_id=clip_id,
+            annotation=record,
+        )
+        self.assertEqual(set(confirmed["checkpoint"]["annotations"]["clips"]), {clip_id})
+        metadata = confirmed["checkpoint"]["clip_review_states"][clip_id]
+        self.assertEqual(metadata["state"], REVIEWED_CONFIRMED)
+        self.assertTrue(metadata["human_review_confirmed"])
+        self.assertTrue(metadata["confirmed_without_change"])
+        self.assertEqual(metadata["fields_changed_from_preset"], [])
+        event = service.queue.get_event(response["event"]["event_id"])
+        self.assertEqual(event["clip_completion_count"], 1)
+
+    def test_changed_confirmation_and_candidate_field_rules(self) -> None:
+        service = self.service(preset=True)
+        service.registry.register("modifier", qualified=True)
+        response = self.claim(service, "modifier", ROLE_PRIMARY)
+        clip_id, record = self.preset_record(response["study"])
+        record["visible_text"] = "no"
+        modified = service.confirm_clip(
+            response["session_token"],
+            clip_id=clip_id,
+            annotation=record,
+        )
+        metadata = modified["checkpoint"]["clip_review_states"][clip_id]
+        self.assertEqual(metadata["state"], REVIEWED_MODIFIED_AND_CONFIRMED)
+        self.assertFalse(metadata["confirmed_without_change"])
+        self.assertEqual(metadata["fields_changed_from_preset"], ["visible_text"])
+        record["candidate_target_value"] = "18"
+        with self.assertRaisesRegex(ValueError, "must be blank"):
+            service.confirm_clip(
+                response["session_token"],
+                clip_id=clip_id,
+                annotation=record,
+            )
+
+    def test_finalization_is_gated_and_restart_receives_preset(self) -> None:
+        service = self.service(preset=True)
+        service.registry.register("restarter", qualified=True)
+        response = self.claim(service, "restarter", ROLE_PRIMARY)
+        with self.assertRaises((FileNotFoundError, ValueError)):
+            service.lock(response["session_token"])
+        clip_id, record = self.preset_record(response["study"])
+        confirmed = service.confirm_clip(
+            response["session_token"], clip_id=clip_id, annotation=record
+        )
+        audit_id = response["study"]["audit_id"]
+        study_record = dict(confirmed["checkpoint"]["annotations"]["studies"][audit_id])
+        study_record.update(
+            {
+                "reader_confidence": "high",
+                "derived_summary_confirmed": "yes",
+                "restricted_notes": "Positive derived summary reviewed.",
+            }
+        )
+        service.save(
+            response["session_token"],
+            {
+                "studies": {audit_id: study_record},
+                "clips": confirmed["checkpoint"]["annotations"]["clips"],
+            },
+        )
+        service.lock(response["session_token"])
+        view = service.view_finalized(
+            {
+                "reviewer_code": "restarter",
+                "role": ROLE_PRIMARY,
+                "qualification_confirmed": True,
+            }
+        )
+        restarted = service.restart_finalized(
+            view["session_token"], owner_confirmed=True
+        )
+        self.assertEqual(restarted["default_preset"]["preset_identifier"], DEFAULT_PRESET_ID)
+        self.assertEqual(restarted["checkpoint"]["annotations"], {"studies": {}, "clips": {}})
+        self.assertEqual(restarted["checkpoint"]["clip_review_states"], {})
+        restarted_event = service.queue.get_event(restarted["event"]["event_id"])
+        self.assertEqual(restarted_event["preset_event_type"], "owner_authorized_restart")
+
+    def test_interface_contains_confirmation_and_no_bulk_accept(self) -> None:
+        assets = current_role_aware_interface_assets()
+        html = assets["index.html"].decode("utf-8")
+        javascript = assets["app.js"].decode("utf-8")
+        self.assertIn("Confirm defaults &amp; next", html)
+        self.assertIn("They are not model predictions or prior reviewer answers", html)
+        self.assertIn("Numbers alone do not count as visible text", html)
+        self.assertIn("event.altKey&&event.key==='Enter'", javascript)
+        self.assertIn("/api/confirm-clip", javascript)
+        self.assertIn("syncCandidateValueVisibility", javascript)
+        self.assertNotIn("Accept defaults for study", html + javascript)
+
+    def test_confirmed_answers_survive_service_restart(self) -> None:
+        service = self.service(preset=True)
+        service.registry.register("persistent", qualified=True)
+        response = self.claim(service, "persistent", ROLE_PRIMARY)
+        clip_id, record = self.preset_record(response["study"])
+        record["calipers"] = "yes"
+        confirmed = service.confirm_clip(
+            response["session_token"], clip_id=clip_id, annotation=record
+        )["checkpoint"]
+        restarted_service = RoleAwareAuditService(
+            self.output,
+            self.fixture.paths.parent_media_root,
+            source_commit=self.SOURCE_COMMIT,
+        )
+        resumed = restarted_service.claim(
+            {
+                "reviewer_code": "persistent",
+                "role": ROLE_PRIMARY,
+                "action": ACTION_RESUME,
+                "qualification_confirmed": True,
+            }
+        )
+        self.assertEqual(resumed["checkpoint"]["annotations"], confirmed["annotations"])
+        self.assertEqual(
+            resumed["checkpoint"]["clip_review_states"],
+            confirmed["clip_review_states"],
+        )
+
+    def test_confirmation_metadata_tampering_fails_closed(self) -> None:
+        service = self.service(preset=True)
+        service.registry.register("tampercheck", qualified=True)
+        response = self.claim(service, "tampercheck", ROLE_PRIMARY)
+        clip_id, record = self.preset_record(response["study"])
+        service.confirm_clip(response["session_token"], clip_id=clip_id, annotation=record)
+        checkpoint_path = (
+            service.checkpoints.root / response["event"]["event_id"] / "checkpoint.json"
+        )
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        checkpoint["clip_review_states"][clip_id]["human_review_confirmed"] = False
+        write_json(checkpoint_path, checkpoint)
+        with self.assertRaises(Tier1BlockedError):
+            service.checkpoint(response["session_token"])
+
+    def test_metadata_only_dry_run_does_not_change_live_state(self) -> None:
+        paths = active_protocol_paths(self.output)
+        before = {
+            "queue": sha256_file(paths.queue_root / "queue_state.json"),
+            "pointer": sha256_file(self.output / "restricted/active_audit_protocol.json"),
+        }
+        result = metadata_only_default_preset_dry_run(
+            self.output,
+            source_commit=self.SOURCE_COMMIT,
+        )
+        self.assertEqual(result["status"], "DEFAULT_PRESET_DRY_RUN_PASS")
+        self.assertEqual(result["production_state_sha256_before"], result["production_state_sha256_after"])
+        self.assertEqual(
+            before,
+            {
+                "queue": sha256_file(paths.queue_root / "queue_state.json"),
+                "pointer": sha256_file(self.output / "restricted/active_audit_protocol.json"),
+            },
+        )
+
+    def test_backup_and_activation_require_quiet_gate_and_preserve_counts(self) -> None:
+        backup = create_production_review_backup(
+            self.output,
+            source_commit=self.SOURCE_COMMIT,
+            created_at_utc="2026-09-08T16:10:00Z",
+        )
+        self.assertEqual(backup["status"], "CURRENT_REVIEW_PROGRESS_BACKED_UP")
+        with self.assertRaises(PermissionError):
+            activate_default_preset(
+                self.output,
+                source_commit=self.SOURCE_COMMIT,
+                backup_certificate_path=Path(backup["certificate_path"]),
+                owner_quiet_window_confirmed=False,
+            )
+        activated = activate_default_preset(
+            self.output,
+            source_commit=self.SOURCE_COMMIT,
+            backup_certificate_path=Path(backup["certificate_path"]),
+            owner_quiet_window_confirmed=True,
+            cutover_timestamp_utc="2026-09-08T16:15:00Z",
+            cutover_id="V31-TEST-ACTIVATION-0001",
+        )
+        self.assertEqual(activated["status"], "DEFAULT_PRESET_PRODUCTION_VERIFIED")
+        self.assertEqual(activated["aggregate_counts_before"], activated["aggregate_counts_after"])
+        self.assertFalse(activated["existing_records_modified"])
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--media-root", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--source-commit")
     return parser.parse_args()
 
 
@@ -126,6 +127,20 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
                         raise ValueError("annotations must be an object")
                     self._send_json(service.save(str(payload.get("session_token", "")), annotations))
                     return
+                if route == "/api/confirm-clip":
+                    if set(payload) != {"session_token", "clip_id", "annotation"}:
+                        raise ValueError("clip-confirmation request contains unsupported fields")
+                    annotation = payload.get("annotation")
+                    if not isinstance(annotation, dict):
+                        raise ValueError("clip annotation must be an object")
+                    self._send_json(
+                        service.confirm_clip(
+                            str(payload.get("session_token", "")),
+                            clip_id=str(payload.get("clip_id", "")),
+                            annotation=annotation,
+                        )
+                    )
+                    return
                 if route == "/api/lock":
                     if set(payload) != {"session_token"}:
                         raise ValueError("lock request contains unsupported fields")
@@ -166,7 +181,11 @@ def main() -> int:
     ready = validate_active_protocol_v3(package_root)
     if ready.get("status") != V3_ACTIVE or ready.get("protocol_name") != PROTOCOL_V3_NAME:
         raise ValueError("clarified V3 audit protocol is not active")
-    service = RoleAwareAuditService(package_root, media_root)
+    service = RoleAwareAuditService(
+        package_root,
+        media_root,
+        source_commit=args.source_commit,
+    )
     server = ThreadingHTTPServer((args.host, args.port), build_handler(service))
     print(
         json.dumps(
