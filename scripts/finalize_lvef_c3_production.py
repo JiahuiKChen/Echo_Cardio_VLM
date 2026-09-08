@@ -18451,8 +18451,20 @@ def _validate_r8u_r7h_mixed_implementation_epochs(
     else:
         # The zero-payload authentication successor has fresh dispatch and
         # finalizer authority.  Its original failed authority remains immutable.
-        from lvef_c3_r8u_r7h_auth_successor import validate_finalizer_successor_binding
-        validate_finalizer_successor_binding(authority, binding_path=auth_successor_binding, receipts=receipts)
+        from lvef_c3_r8u_r7h_auth_successor import (
+            FINALIZER_BINDING_PATH as authentication_v1_binding,
+            validate_finalizer_successor_binding as validate_authentication_v1,
+        )
+        from lvef_c3_r8u_r7h_auth_publication_successor import (
+            FINALIZER_BINDING_PATH as authentication_v2_binding,
+            validate_finalizer_successor_binding as validate_authentication_v2,
+        )
+        if auth_successor_binding == authentication_v1_binding:
+            validate_authentication_v1(authority, binding_path=auth_successor_binding, receipts=receipts)
+        elif auth_successor_binding == authentication_v2_binding:
+            validate_authentication_v2(authority, binding_path=auth_successor_binding, receipts=receipts)
+        else:
+            raise ProductionFinalizationError("R8U_R7H_FINALIZER_SUCCESSOR_BINDING_PATH_INVALID")
     authority_payload = {
         "schema_version": 1,
         "artifact_type": "lvef_c3_r8u_r7h_finalizer_authority_v1",

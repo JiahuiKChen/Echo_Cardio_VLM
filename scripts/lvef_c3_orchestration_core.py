@@ -94,6 +94,39 @@ EXPECTED_FULL_RAW_ROOT_TEMPLATE = (
 )
 TEST_ONLY_FULL_CONTRACT_ID = "synthetic_two_batch_full_sequential_v1"
 AUTHENTICATION_SUCCESSOR_EXECUTION_ID = "r7h_auth_successor_v1"
+AUTHENTICATION_SUCCESSOR_V2_EXECUTION_ID = "r7h_auth_successor_v2"
+AUTHENTICATION_SUCCESSOR_V1_PUBLICATION_FAILURE_SHA256 = (
+    "3747c4366d9f3d5cceafb1e1a201650e986e543523a6b05be7dad8c9eca7a86e"
+)
+AUTHENTICATION_SUCCESSOR_V1_IMPLEMENTATION_COMMIT = "08a2c05a7a850acc40ca169a2a50b28bbf3594b9"
+AUTHENTICATION_SUCCESSOR_V1_CONTROL_PATHS = {
+    "consumed_failure": "consumed_authentication_failure.restricted.json",
+    "scheduler_account": "scheduler_account_authority.restricted.json",
+    "capacity": "capacity/capacity.restricted.json",
+    "claim": "continuation_claim.restricted.json",
+    "array_submission": "scheduler/array_submission.restricted.json",
+    "finalizer_submission": "scheduler/finalizer_submission.restricted.json",
+    "submission": "scheduler/submission.restricted.json",
+    "download_authority": "download_authority.restricted.json",
+    "probe_authority": "credential_probe/authority.restricted.json",
+    "probe_submission": "credential_probe/submission.restricted.json",
+    "probe_result": "credential_probe/result.restricted.json",
+    "probe_accounting": "credential_probe/accounting.restricted.json",
+    "probe_terminal": "credential_probe/terminal.restricted.json",
+    "probe_worker": "credential_probe/worker_context.restricted.json",
+}
+AUTHENTICATION_SUCCESSOR_V1_WORKER_PATHS = {
+    "array_task_18": "worker_context/array_task_18.restricted.json",
+    "array_task_19": "worker_context/array_task_19.restricted.json",
+    "finalizer": "worker_context/finalizer.restricted.json",
+}
+AUTHENTICATION_SUCCESSOR_V1_EVIDENCE_PATHS = {
+    "task17_qacct_sha256": "publication_failure_evidence/task17_qacct.restricted.txt",
+    "task17_scheduler_log_sha256": "publication_failure_evidence/task17_scheduler_log.restricted.txt",
+    "cancellation_capture_sha256": "publication_failure_evidence/cancellation_capture.restricted.json",
+    "quiescence_qstat_sha256": "publication_failure_evidence/quiescence_qstat.restricted.xml",
+    "quiescence_process_sha256": "publication_failure_evidence/quiescence_process.restricted.json",
+}
 AUTHENTICATION_SUCCESSOR_ATTEMPT_ID = "lvef_c3_full_904d0ab65f003c1e_e1cdb674"
 AUTHENTICATION_SUCCESSOR_PLAN_SHA256 = (
     "904d0ab65f003c1eb68adeee8c0b1dd786ec7a9ef4bb496b646b22cc7a540247"
@@ -120,17 +153,28 @@ class AuthenticationSuccessorDownloadAuthority:
     successor_array_job_id: str
 
 
+@dataclass(frozen=True)
+class AuthenticationSuccessorDownloadAuthorityV2(AuthenticationSuccessorDownloadAuthority):
+    """A fresh journal consuming the preserved v1 publication failure."""
+
+    consumed_publication_failure_sha256: str
+
+
 def authentication_successor_download_receipt(
     authority: AuthenticationSuccessorDownloadAuthority,
 ) -> dict[str, Any]:
     """Serialize the controller binding without a self-referential digest."""
-    if type(authority) is not AuthenticationSuccessorDownloadAuthority:
+    if type(authority) not in {
+        AuthenticationSuccessorDownloadAuthority,
+        AuthenticationSuccessorDownloadAuthorityV2,
+    }:
         raise OrchestrationError("AUTH_SUCCESSOR_DOWNLOAD_AUTHORITY_INVALID")
+    version = 2 if type(authority) is AuthenticationSuccessorDownloadAuthorityV2 else 1
     fields = dict(vars(authority))
     del fields["authority_receipt_sha256"]
     return {
-        "schema_version": 1,
-        "artifact_type": "lvef_c3_authentication_successor_download_authority_v1",
+        "schema_version": version,
+        "artifact_type": f"lvef_c3_authentication_successor_download_authority_v{version}",
         "status": "AUTHORIZED_BOUND_AUTHENTICATION_SUCCESSOR_DOWNLOAD",
         **fields,
     }
@@ -3410,6 +3454,7 @@ def materialize_verified_download_manifest(
     if receipt_root is not None and receipt_root not in {
         batch_root / "receipts",
         batch_root / AUTHENTICATION_SUCCESSOR_EXECUTION_ID / "receipts",
+        batch_root / AUTHENTICATION_SUCCESSOR_V2_EXECUTION_ID / "receipts",
     }:
         raise OrchestrationError("DOWNLOAD_MANIFEST_RECEIPT_ROOT_INVALID")
     batch_plan = next((row for row in plan["batches"] if row["batch_id"] == batch_id), None)
@@ -3879,21 +3924,156 @@ def validate_consumed_authentication_failure(
     }
 
 
+def validate_consumed_publication_failure(
+    *, plan: Mapping[str, Any], requirements: PlanRequirements,
+    authority: Mapping[str, Any], attempt_id: str, output_root: Path,
+    require_pristine_tail: bool = True,
+) -> dict[str, Any]:
+    """Replay the sealed v1 control failure without adopting its execution.
+
+    The fixed digest binds the historical scheduler observations.  Current
+    checks reread every preserved control and prefix receipt, and continue to
+    forbid v1 download journals or credentials after v2 begins producing data.
+    """
+    pinned = AUTHENTICATION_SUCCESSOR_V1_PUBLICATION_FAILURE_SHA256
+    if not isinstance(pinned, str) or SHA256_RE.fullmatch(pinned) is None:
+        raise OrchestrationError("AUTH_SUCCESSOR_V1_PUBLICATION_FAILURE_NOT_SEALED")
+    root = output_root.parent / AUTHENTICATION_SUCCESSOR_EXECUTION_ID
+    body = _authentication_successor_control_bytes(root / "publication_failure.restricted.json")
+    if hashlib.sha256(body).hexdigest() != pinned:
+        raise OrchestrationError("AUTH_SUCCESSOR_V1_PUBLICATION_FAILURE_CHANGED")
+    try:
+        value = json.loads(body.decode("utf-8"), object_pairs_hook=_strict_pairs)
+    except (UnicodeError, ValueError) as exc:
+        raise OrchestrationError("AUTH_SUCCESSOR_V1_PUBLICATION_FAILURE_INVALID") from exc
+    fixed = {
+        "schema_version": 1,
+        "artifact_type": "lvef_c3_r7ha_v1_publication_failure_v1",
+        "status": "PASS_R7HA_V1_QUIESCENT_ZERO_PAYLOAD_PUBLICATION_FAILURE",
+        "execution_id": AUTHENTICATION_SUCCESSOR_EXECUTION_ID,
+        "attempt_id": AUTHENTICATION_SUCCESSOR_ATTEMPT_ID,
+        "batch_plan_sha256": AUTHENTICATION_SUCCESSOR_PLAN_SHA256,
+        "scientific_commit": AUTHENTICATION_SUCCESSOR_SCIENTIFIC_COMMIT,
+        "implementation_commit": AUTHENTICATION_SUCCESSOR_V1_IMPLEMENTATION_COMMIT,
+        "array_job_id": "7491124", "finalizer_job_id": "7491257", "probe_job_id": "7491004",
+        "task17_failure_code": "R7HA_SUBMISSION_RECEIPT_TIMEOUT", "task17_exit_status": 78,
+        "active_execution_jobs": 0, "active_execution_processes": 0,
+        "tail_payload_files": 0, "v1_nested_journal_roots": 0,
+        "task17_worker_receipt_present": False,
+        "task17_predownload_credential_receipt_present": False,
+        "v1_predownload_credential_receipts": 0,
+        "scientific_stage_replayed": False, "identifiers_emitted": False,
+        "restricted_paths_emitted": False,
+    }
+    digest_fields = {
+        "task17_qacct_sha256", "task17_scheduler_log_sha256", "cancellation_capture_sha256",
+        "quiescence_qstat_sha256", "quiescence_process_sha256", "original_terminal_journal_sha256",
+    }
+    variable_fields = digest_fields | {
+        "task17_failed", "observed_utc", "v1_control_sha256",
+        "v1_worker_control_sha256", "prefix_final_receipt_sha256",
+    }
+    if (
+        type(value) is not dict or set(value) != set(fixed) | variable_fields
+        or canonical_json_bytes(value) != body
+        or any(type(value.get(key)) is not type(expected) or value[key] != expected for key, expected in fixed.items())
+        or any(type(value.get(key)) is not str or SHA256_RE.fullmatch(value[key]) is None for key in digest_fields)
+        or type(value["task17_failed"]) is not int or value["task17_failed"] < 0
+        or type(value["observed_utc"]) is not str
+    ):
+        raise OrchestrationError("AUTH_SUCCESSOR_V1_PUBLICATION_FAILURE_INVALID")
+    try:
+        observed = datetime.fromisoformat(value["observed_utc"].replace("Z", "+00:00"))
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            raise ValueError
+    except ValueError as exc:
+        raise OrchestrationError("AUTH_SUCCESSOR_V1_PUBLICATION_FAILURE_INVALID") from exc
+    for key, relative in AUTHENTICATION_SUCCESSOR_V1_EVIDENCE_PATHS.items():
+        if hashlib.sha256(_authentication_successor_control_bytes(root / relative)).hexdigest() != value[key]:
+            raise OrchestrationError("AUTH_SUCCESSOR_V1_SCHEDULER_EVIDENCE_CHANGED")
+    for key, paths, allow_subset in (
+        ("v1_control_sha256", AUTHENTICATION_SUCCESSOR_V1_CONTROL_PATHS, False),
+        ("v1_worker_control_sha256", AUTHENTICATION_SUCCESSOR_V1_WORKER_PATHS, True),
+    ):
+        recorded = value[key]
+        if (
+            type(recorded) is not dict
+            or (not set(recorded) <= set(paths) if allow_subset else set(recorded) != set(paths))
+            or any(type(digest) is not str or SHA256_RE.fullmatch(digest) is None for digest in recorded.values())
+        ):
+            raise OrchestrationError("AUTH_SUCCESSOR_V1_CONTROL_SET_INVALID")
+        for role, relative in paths.items():
+            path = root / relative
+            if role not in recorded:
+                if os.path.lexists(path):
+                    raise OrchestrationError("AUTH_SUCCESSOR_V1_CONTROLS_CHANGED")
+            elif hashlib.sha256(_authentication_successor_control_bytes(path)).hexdigest() != recorded[role]:
+                raise OrchestrationError("AUTH_SUCCESSOR_V1_CONTROLS_CHANGED")
+    worker_root = root / "worker_context"
+    expected_worker_names = {
+        Path(AUTHENTICATION_SUCCESSOR_V1_WORKER_PATHS[role]).name
+        for role in value["v1_worker_control_sha256"]
+    }
+    if os.path.lexists(worker_root):
+        _authentication_successor_private_directory(worker_root)
+        if {path.name for path in worker_root.iterdir()} != expected_worker_names:
+            raise OrchestrationError("AUTH_SUCCESSOR_V1_EXECUTION_APPEARED")
+    for batch in AUTHENTICATION_SUCCESSOR_BATCH_IDS:
+        if os.path.lexists(output_root / batch / AUTHENTICATION_SUCCESSOR_EXECUTION_ID):
+            raise OrchestrationError("AUTH_SUCCESSOR_V1_EXECUTION_APPEARED")
+    prefix = value["prefix_final_receipt_sha256"]
+    if type(prefix) is not list or len(prefix) != 16 or any(type(digest) is not str or SHA256_RE.fullmatch(digest) is None for digest in prefix):
+        raise OrchestrationError("AUTH_SUCCESSOR_V1_PREFIX_INVALID")
+    for index, digest in enumerate(prefix):
+        path = output_root.parent / "batches" / f"c3_batch_{index:03d}" / "preservation" / "batch_finalization_receipt.restricted.json"
+        if hashlib.sha256(_authentication_successor_control_bytes(path)).hexdigest() != digest:
+            raise OrchestrationError("AUTH_SUCCESSOR_V1_PREFIX_CHANGED")
+    original_failure = validate_consumed_authentication_failure(
+        plan=plan, requirements=requirements, authority=authority,
+        attempt_id=attempt_id, output_root=output_root,
+        require_pristine_tail=require_pristine_tail,
+    )
+    if original_failure["terminal_journal_sha256"] != value["original_terminal_journal_sha256"]:
+        raise OrchestrationError("AUTH_SUCCESSOR_CONSUMED_JOURNAL_CHANGED")
+    if require_pristine_tail:
+        for batch in AUTHENTICATION_SUCCESSOR_BATCH_IDS:
+            for directory in (
+                output_root.parent / "batches" / batch,
+                output_root.parent / "extracted_cache" / batch,
+            ):
+                if os.path.lexists(directory):
+                    _authentication_successor_private_directory(directory)
+                    if any(directory.iterdir()):
+                        raise OrchestrationError("AUTH_SUCCESSOR_V1_SCIENTIFIC_OUTPUT_PRESENT")
+    return value
+
+
 def _authentication_successor_control_root(
     value: AuthenticationSuccessorDownloadAuthority, *, plan: Mapping[str, Any],
     requirements: PlanRequirements, ledger: Mapping[str, Any], batch_id: str,
     output_root: Path,
 ) -> Path:
+    version_two = type(value) is AuthenticationSuccessorDownloadAuthorityV2
+    execution_id = (
+        AUTHENTICATION_SUCCESSOR_V2_EXECUTION_ID if version_two
+        else AUTHENTICATION_SUCCESSOR_EXECUTION_ID
+    )
     if (
-        type(value) is not AuthenticationSuccessorDownloadAuthority
-        or value.execution_id != AUTHENTICATION_SUCCESSOR_EXECUTION_ID
+        type(value) not in {
+            AuthenticationSuccessorDownloadAuthority,
+            AuthenticationSuccessorDownloadAuthorityV2,
+        }
+        or value.execution_id != execution_id
         or value.attempt_id != ledger["attempt_id"]
         or value.plan_sha256 != ledger["authority"]["batch_plan_sha256"]
         or not isinstance(value.implementation_commit, str)
         or GIT_COMMIT_RE.fullmatch(value.implementation_commit) is None
         or not isinstance(value.successor_array_job_id, str)
         or CANONICAL_ID_RE.fullmatch(value.successor_array_job_id) is None
-        or value.successor_array_job_id in {"7489283", "7489284"}
+        or value.successor_array_job_id in (
+            {"7489283", "7489284", "7491004", "7491124", "7491257"} if version_two
+            else {"7489283", "7489284"}
+        )
         or os.environ.get("JOB_ID") != value.successor_array_job_id
         or batch_id not in AUTHENTICATION_SUCCESSOR_BATCH_IDS
         or os.environ.get("SGE_TASK_ID") != str(17 + AUTHENTICATION_SUCCESSOR_BATCH_IDS.index(batch_id))
@@ -3905,7 +4085,7 @@ def _authentication_successor_control_root(
         ))
     ):
         raise OrchestrationError("AUTH_SUCCESSOR_DOWNLOAD_AUTHORITY_INVALID")
-    controller_root = output_root.parent / AUTHENTICATION_SUCCESSOR_EXECUTION_ID
+    controller_root = output_root.parent / execution_id
     receipt = _authentication_successor_control_bytes(controller_root / "download_authority.restricted.json")
     if (
         hashlib.sha256(receipt).hexdigest() != value.authority_receipt_sha256
@@ -3927,7 +4107,10 @@ def _authentication_successor_control_root(
     credential = probe.get("credential_check") if isinstance(probe, Mapping) else None
     if (
         not isinstance(credential, Mapping)
-        or probe.get("status") != "PASS_R7H_AUTH_SUCCESSOR_CREDENTIAL_PROBE"
+        or probe.get("status") != (
+            "PASS_R7H_AUTH_PUBLICATION_SUCCESSOR_CREDENTIAL_PROBE" if version_two
+            else "PASS_R7H_AUTH_SUCCESSOR_CREDENTIAL_PROBE"
+        )
         or probe.get("implementation_commit") != value.implementation_commit
         or probe.get("credential_readiness_sha256") != value.credential_readiness_sha256
         or canonical_json_sha256(credential) != value.credential_readiness_sha256
@@ -3947,12 +4130,26 @@ def _authentication_successor_control_root(
         or array_submission.get("implementation_commit") != value.implementation_commit
     ):
         raise OrchestrationError("AUTH_SUCCESSOR_ARRAY_SUBMISSION_MISMATCH")
-    evidence = validate_consumed_authentication_failure(
-        plan=plan, requirements=requirements, authority=ledger["authority"],
-        attempt_id=str(ledger["attempt_id"]), output_root=output_root,
-        require_pristine_tail=False,
-    )
-    if evidence["terminal_journal_sha256"] != value.consumed_terminal_journal_sha256:
+    if version_two:
+        if value.consumed_publication_failure_sha256 != AUTHENTICATION_SUCCESSOR_V1_PUBLICATION_FAILURE_SHA256:
+            raise OrchestrationError("AUTH_SUCCESSOR_V1_PUBLICATION_FAILURE_CHANGED")
+        evidence = validate_consumed_publication_failure(
+            plan=plan, requirements=requirements, authority=ledger["authority"],
+            attempt_id=str(ledger["attempt_id"]), output_root=output_root,
+            require_pristine_tail=(
+                batch_id == AUTHENTICATION_SUCCESSOR_BATCH_IDS[0]
+                and not os.path.lexists(output_root / batch_id / execution_id)
+            ),
+        )
+        terminal_sha256 = evidence["original_terminal_journal_sha256"]
+    else:
+        evidence = validate_consumed_authentication_failure(
+            plan=plan, requirements=requirements, authority=ledger["authority"],
+            attempt_id=str(ledger["attempt_id"]), output_root=output_root,
+            require_pristine_tail=False,
+        )
+        terminal_sha256 = evidence["terminal_journal_sha256"]
+    if terminal_sha256 != value.consumed_terminal_journal_sha256:
         raise OrchestrationError("AUTH_SUCCESSOR_CONSUMED_JOURNAL_CHANGED")
     return output_root / batch_id / value.execution_id
 
@@ -4490,8 +4687,14 @@ def execute_exact_batch_download(
     ledger_root = (successor_control_root or batch_root) / "ledger"
     if successor_control_root is not None:
         binding = {
-            "schema_version": 1,
-            "artifact_type": "lvef_c3_authentication_successor_download_execution_v1",
+            "schema_version": (
+                2 if type(authentication_successor_authority) is AuthenticationSuccessorDownloadAuthorityV2 else 1
+            ),
+            "artifact_type": (
+                "lvef_c3_authentication_successor_download_execution_v2"
+                if type(authentication_successor_authority) is AuthenticationSuccessorDownloadAuthorityV2
+                else "lvef_c3_authentication_successor_download_execution_v1"
+            ),
             "status": "AUTHORIZED_SEPARATE_AUTHENTICATION_SUCCESSOR_JOURNAL",
             "batch_id": batch_id,
             **vars(authentication_successor_authority),

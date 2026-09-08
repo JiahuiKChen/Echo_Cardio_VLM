@@ -13,7 +13,7 @@ JOB_STORAGE_BASE=/restricted/projectnb/mimicecho/lvef_multitask_c3_v2/scheduler_
 
 [[ $# -eq 0 ]] || exit 64
 [[ "${JOB_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || exit 78
-[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin)|r8u_r4_(res|seq|fin)|r8u_r5_(ctx|res|seq|fin)|r8u_r6_(loc|res|seq|fin)|r8u_r7_(rec|seq|fin)|r8u_r7d_(ctx|seq|fin)|r8u_r7h_(ctx|seq|fin)|r8u_r7ha_(ctx|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
+[[ "${JOB_NAME:-}" =~ ^lvef_c3_(r8r_(rec|seq|fin)|r8u_(rec|seq|fin)|r8u_r3_(res|seq|fin)|r8u_r4_(res|seq|fin)|r8u_r5_(ctx|res|seq|fin)|r8u_r6_(loc|res|seq|fin)|r8u_r7_(rec|seq|fin)|r8u_r7d_(ctx|seq|fin)|r8u_r7h_(ctx|seq|fin)|r8u_r7ha_(ctx|seq|fin)|r8u_r7hb_(ctx|seq|fin))_[0-9a-f]{8}$ ]] || exit 78
 [[ -f "$COMMON" && ! -L "$COMMON" ]] || exit 78
 # shellcheck disable=SC1090 -- fixed authority-worktree helper path.
 source "$COMMON"
@@ -36,7 +36,7 @@ r8u_r5_require_private_projectnb_directory() {
 require_job_private_projectnb_directory() {
   if [[ "$JOB_FAMILY" == r8u_r5 ]]; then
     r8u_r5_require_private_projectnb_directory "$1"
-  elif [[ "$JOB_FAMILY" == r8u_r6 || "$JOB_FAMILY" == r8u_r7 || "$JOB_FAMILY" == r8u_r7d || "$JOB_FAMILY" == r8u_r7h || "$JOB_FAMILY" == r8u_r7ha ]]; then
+  elif [[ "$JOB_FAMILY" == r8u_r6 || "$JOB_FAMILY" == r8u_r7 || "$JOB_FAMILY" == r8u_r7d || "$JOB_FAMILY" == r8u_r7h || "$JOB_FAMILY" == r8u_r7ha || "$JOB_FAMILY" == r8u_r7hb ]]; then
     r8u_r5_require_private_projectnb_directory "$1"
   else
     lvef_c3_require_private_projectnb_directory "$1"
@@ -327,10 +327,40 @@ case "$JOB_NAME" in
     CONTROLLER="$WORKTREE/scripts/lvef_c3_r8u_r7h_auth_successor.py"
     PYCACHE_ROLE=lvef_c3_r8u_r7ha
     ;;
+  lvef_c3_r8u_r7hb_ctx_*)
+    [[ "${SGE_TASK_ID:-}" == "17" ]] || exit 78
+    [[ "${NSLOTS:-}" == "1" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u_r7hb
+    ROLE=r8u_r7hb_context_probe
+    MODE=probe
+    CONTROLLER="$WORKTREE/scripts/lvef_c3_r8u_r7h_auth_publication_successor.py"
+    PYCACHE_ROLE=lvef_c3_r8u_r7hb
+    ;;
+  lvef_c3_r8u_r7hb_seq_*)
+    [[ "${SGE_TASK_ID:-}" =~ ^1[7-9]$ ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]] || exit 78
+    JOB_FAMILY=r8u_r7hb
+    ROLE="r8u_r7hb_array_task_${SGE_TASK_ID}"
+    MODE=array
+    CONTROLLER="$WORKTREE/scripts/lvef_c3_r8u_r7h_auth_publication_successor.py"
+    PYCACHE_ROLE=lvef_c3_r8u_r7hb
+    ;;
+  lvef_c3_r8u_r7hb_fin_*)
+    [[ "${SGE_TASK_ID:-undefined}" == "undefined" ]] || exit 78
+    [[ "${NSLOTS:-}" == "4" ]] || exit 78
+    export CUDA_VISIBLE_DEVICES=''
+    JOB_FAMILY=r8u_r7hb
+    ROLE=r8u_r7hb_finalizer
+    MODE=finalizer
+    CONTROLLER="$WORKTREE/scripts/lvef_c3_r8u_r7h_auth_publication_successor.py"
+    PYCACHE_ROLE=lvef_c3_r8u_r7hb
+    ;;
   *) exit 78 ;;
 esac
 
-if [[ "$ROLE" != r8u_r7d_context_probe && "$ROLE" != r8u_r7h_context_probe && "$ROLE" != r8u_r7ha_context_probe ]]; then
+if [[ "$ROLE" != r8u_r7d_context_probe && "$ROLE" != r8u_r7h_context_probe && "$ROLE" != r8u_r7ha_context_probe && "$ROLE" != r8u_r7hb_context_probe ]]; then
   JOB_STORAGE_PARENT="$JOB_STORAGE_BASE/${JOB_FAMILY}_job_$JOB_ID"
   JOB_STORAGE_ROOT="$JOB_STORAGE_PARENT/$ROLE"
   for storage_directory in \
