@@ -30,6 +30,77 @@ METRICS = ("mae", "normalized_mae", "rmse", "r2", "mean_signed_error", "pearson_
            "spearman_correlation", "calibration_intercept", "calibration_slope")
 FORBIDDEN = {"subject_id", "subject_ids", "study_id", "study_ids", "target_values", "prediction", "predictions",
              "score", "calibrated_probability", "uncalibrated_probability", "test_subject_roster", "restricted_path"}
+INPUT_FLOW_REPLAY_SHA256 = "501501b91069ff9252f0bfc98d102e1d61b18a493f91daa278aa6cd80b99ec01"
+INPUT_FLOW_RECEIPT_SHA256 = "b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de"
+INPUT_FLOW_COMPLETION_SHA256 = "48ab39b48fb95e8257ab07c076a587151eeb993dbe638ce7d6908d3be7168605"
+INPUT_FLOW_ANALYSIS_COMMIT = "073d3883fc54c4041a043efce850ecfeca07890a"
+INPUT_FLOW_DOCUMENT_SHA256 = "df0ecb0008da5a9ea4afceda0ed154359b5d94b84da81d0f05f8614d7dc36e35"
+
+
+def extract_verified_input_flow(replay_body: bytes, *, funnel_document: bytes) -> dict[str, Any]:
+    """Replay two fixed, previously verified aggregate sources without data access.
+
+    The original serialized-input replay contains pre-imaging LVEF totals. Its
+    split breakdown is separately recorded in the exact verified funnel document.
+    Neither historical preparation source grants current clinical/model authority.
+    """
+    require(type(replay_body) is bytes and 0 < len(replay_body) <= 128 * 1024
+            and hashlib.sha256(replay_body).hexdigest() == INPUT_FLOW_REPLAY_SHA256,
+            "RENDER_INPUT_REPLAY_CHANGED")
+    require(type(funnel_document) is bytes and 0 < len(funnel_document) <= 128 * 1024
+            and hashlib.sha256(funnel_document).hexdigest() == INPUT_FLOW_DOCUMENT_SHA256,
+            "RENDER_INPUT_FUNNEL_DOCUMENT_CHANGED")
+    source = json.loads(replay_body)
+    require(canonical_bytes(source) == replay_body, "RENDER_INPUT_REPLAY_NOT_CANONICAL")
+    require(source["status"] == "PASS_SERIALIZED_INPUT_IDENTITY_REPLAY"
+            and source["analysis_commit"] == INPUT_FLOW_ANALYSIS_COMMIT
+            and source["input_receipt_sha256"] == INPUT_FLOW_RECEIPT_SHA256
+            and source["private_split_artifacts_rehashed"] is True
+            and source["ordered_row_label_fingerprints_replayed"] is True
+            and source["model_fitting_count"] == source["test_performance_access_count"] == 0,
+            "RENDER_INPUT_REPLAY_BINDING_INVALID")
+    from lvef_multitask_audit_utils import assert_aggregate_safe_json
+    assert_aggregate_safe_json(source)
+    _no_rows(source)
+    text = funnel_document.decode("utf-8")
+    require(all(pin in text for pin in (INPUT_FLOW_REPLAY_SHA256, INPUT_FLOW_RECEIPT_SHA256, INPUT_FLOW_ANALYSIS_COMMIT)),
+            "RENDER_INPUT_DOCUMENT_BINDING_INVALID")
+    lines = [line for line in text.splitlines() if line.startswith("| Exact-name numeric LVEF before imaging intersection |")]
+    require(len(lines) == 1, "RENDER_INPUT_PREIMAGING_ROW_INVALID")
+    cells = [cell.strip() for cell in lines[0].split("|")[2:-1]]
+    require(len(cells) == 4 and all(re.fullmatch(r"[0-9,]+", cell) for cell in cells), "RENDER_INPUT_PREIMAGING_ROW_INVALID")
+    total, *split_values = (int(cell.replace(",", "")) for cell in cells)
+    pre = dict(zip(("train", "val", "test"), split_values))
+    require(pre == {"train": 1998, "val": 411, "test": 427} and sum(pre.values()) == total
+            == source["candidate_funnel"]["lvef"]["observed_selected_before_imaging"] == 2836,
+            "RENDER_INPUT_PREIMAGING_COUNTS_INVALID")
+    keys = ("selected_split_counts", "imaging_split_counts", "lvef_common_counts", "exact40_counts")
+    flow = {"counts": dict(source["counts"]), **{key: dict(source[key]) for key in keys}, "lvef_pre_imaging_counts": pre}
+    for key in keys:
+        require(set(flow[key]) == {"train", "val", "test"} and all(type(n) is int and n >= 0 for n in flow[key].values()),
+                "RENDER_INPUT_FLOW_COUNTS_INVALID")
+    flow["no_cine_split_counts"] = {s: flow["selected_split_counts"][s] - flow["imaging_split_counts"][s] for s in pre}
+    flow["labeled_no_cine_counts"] = {s: pre[s] - flow["lvef_common_counts"][s] for s in pre}
+    require(flow["counts"] == {"selected_studies": 4530, "selected_subjects": 4530, "imaging_eligible": 4525,
+            "no_cine": 5, "clip_embeddings": 184570}
+            and sum(flow["selected_split_counts"].values()) == 4530 and sum(flow["imaging_split_counts"].values()) == 4525
+            and flow["no_cine_split_counts"] == {"train": 3, "val": 1, "test": 1}
+            and flow["labeled_no_cine_counts"] == {"train": 1, "val": 1, "test": 1}
+            and flow["lvef_common_counts"] == {"train": 1997, "val": 410, "test": 426}
+            and flow["exact40_counts"] == {"train": 71, "val": 12, "test": 20}, "RENDER_INPUT_FLOW_TOTAL_MISMATCH")
+    for split in pre:
+        classes = source["binary_class_counts"]
+        require(classes["lvef_le_40"][split][0] - classes["lvef_lt_40"][split][0] == flow["exact40_counts"][split]
+                and all(sum(v[split]) == flow["lvef_common_counts"][split] for v in classes.values()),
+                "RENDER_INPUT_CLASS_COUNT_MISMATCH")
+    result = {"schema_version": 1, "artifact_type": "lvef_verified_input_flow_v1", "status": "PASS_VERIFIED_INPUT_FLOW",
+        "input_identity_replay_sha256": INPUT_FLOW_REPLAY_SHA256, "input_receipt_sha256": INPUT_FLOW_RECEIPT_SHA256,
+        "previously_verified_c3_completion_sha256": INPUT_FLOW_COMPLETION_SHA256,
+        "pre_imaging_split_document_sha256": INPUT_FLOW_DOCUMENT_SHA256, "input_preparation_commit": INPUT_FLOW_ANALYSIS_COMMIT,
+        "flow": flow, "model_performance_estimates": False, "grants_model_or_clinical_authority": False,
+        "poster_export_authorized": False}
+    assert_aggregate_safe_json(result)
+    return result
 
 
 def _no_rows(value: Any) -> None:
@@ -251,6 +322,52 @@ def _frame(title: str, subtitle: str, *, height=6):
     return fig, ax
 
 
+def _render_verified_input_flow(flow: Mapping[str, Any], output: Path, *, preview_root: Path | None = None) -> list[dict[str, Any]]:
+    """Draw aggregate input eligibility only; no model/result path is invoked."""
+    fig, ax = _frame("Verified cohort and LVEF analysis flow",
+        "Audited input counts | Parentheses show training / validation / test", height=7.4)
+    ax.set(xlim=(0, 1), ylim=(0, 1)); ax.axis("off")
+    counts = flow["counts"]
+    def split(key):
+        return " / ".join(f"{flow[key][s]:,}" for s in ("train", "val", "test"))
+    _box(ax, f"Selected one-study-per-subject cohort\n{counts['selected_subjects']:,} subjects ({split('selected_split_counts')})",
+        (.18, .81), width=.64, height=.14)
+    _box(ax, f"Canonical imaging cohort\n{counts['imaging_eligible']:,} subjects ({split('imaging_split_counts')})\n"
+        f"{counts['no_cine']} prespecified no-cine exclusions ({split('no_cine_split_counts')})",
+        (.015, .52), width=.44, height=.19, fontsize=10)
+    _box(ax, f"Observed exact-name LVEF\n{sum(flow['lvef_pre_imaging_counts'].values()):,} subjects ({split('lvef_pre_imaging_counts')})\nBefore imaging intersection",
+        (.545, .52), width=.44, height=.19, fontsize=10)
+    _box(ax, f"Common LVEF denominator\n{sum(flow['lvef_common_counts'].values()):,} subjects ({split('lvef_common_counts')})\n"
+        "Identical rows and labels across all three modalities",
+        (.18, .205), width=.64, height=.18, color="#e6f0ed", fontsize=11)
+    for start, end in (((.39, .80), (.235, .73)), ((.61, .80), (.765, .73)),
+                       ((.235, .51), (.39, .405)), ((.765, .51), (.61, .405))):
+        ax.annotate("", xy=end, xytext=start, arrowprops={"arrowstyle": "->", "color": "#536b80", "lw": 1.2})
+    ax.text(.5, .445, f"{sum(flow['labeled_no_cine_counts'].values())} labeled no-cine studies excluded ({split('labeled_no_cine_counts')})",
+        ha="center", va="center", fontsize=9, color="#52616e")
+    ax.text(.5, .095, f"Common LVEF exactly 40: {sum(flow['exact40_counts'].values())} subjects ({split('exact40_counts')})",
+        ha="center", fontsize=11, weight="bold", color="#173b5a")
+    fig.text(.08, .04, "All-missing permitted structured context remains eligible. These counts contain no model-performance estimates.\n"
+        "LVEF uses the exact-name source field; source measurement method and native-unit declaration remain unspecified.", fontsize=9)
+    return _save(fig, output, "cohort_flow.verified_inputs", preview_root=preview_root)
+
+
+def render_verified_input_flow(output: Path, *, replay_body: bytes, funnel_document: bytes,
+                               preview_root: Path | None = None) -> dict[str, Any]:
+    verified = extract_verified_input_flow(replay_body, funnel_document=funnel_document)
+    require(not output.is_symlink(), "RENDER_OUTPUT_SYMLINK")
+    output.mkdir(parents=True, exist_ok=True)
+    artifacts = _render_verified_input_flow(verified["flow"], output, preview_root=preview_root)
+    _publish(output / "cohort_flow.verified_inputs.json", canonical_bytes(verified))
+    manifest = {"schema_version": 1, "status": "PASS_RENDERED_VERIFIED_INPUT_FLOW",
+        "verified_flow_sha256": digest(verified), "input_identity_replay_sha256": INPUT_FLOW_REPLAY_SHA256,
+        "pre_imaging_split_document_sha256": INPUT_FLOW_DOCUMENT_SHA256, "artifacts": artifacts,
+        "invented_results": False, "patient_level_outputs": False, "performance_figures_generated": 0,
+        "poster_export_authorized": False}
+    _publish(output / "render_manifest.verified_inputs.json", canonical_bytes(manifest))
+    return manifest
+
+
 def render(output: Path, *, bundle: Mapping[str, Any] | None = None, preview_root: Path | None = None) -> dict[str, Any]:
     candidate = validate_bundle(bundle) if bundle is not None else None
     require(not output.is_symlink(), "RENDER_OUTPUT_SYMLINK")
@@ -391,11 +508,26 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--templates", action="store_true")
     mode.add_argument("--bundle", type=Path)
+    mode.add_argument("--input-flow", type=Path, help="Exact previously verified aggregate input-replay JSON")
+    parser.add_argument("--input-funnel-document", type=Path, help="Exact recorded supplementary pre-imaging split evidence")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--preview-root", type=Path)
     args = parser.parse_args(argv)
-    bundle = json.loads(args.bundle.read_bytes()) if args.bundle else None
-    result = render(args.output, bundle=bundle, preview_root=args.preview_root)
+    if args.input_flow:
+        if args.input_funnel_document is None:
+            parser.error("--input-flow requires --input-funnel-document")
+        def bounded(path):
+            with path.open("rb") as stream:
+                body = stream.read(128 * 1024 + 1)
+            require(0 < len(body) <= 128 * 1024, "RENDER_INPUT_SOURCE_SIZE_INVALID")
+            return body
+        result = render_verified_input_flow(args.output, replay_body=bounded(args.input_flow),
+            funnel_document=bounded(args.input_funnel_document), preview_root=args.preview_root)
+    else:
+        if args.input_funnel_document is not None:
+            parser.error("--input-funnel-document is only valid with --input-flow")
+        bundle = json.loads(args.bundle.read_bytes()) if args.bundle else None
+        result = render(args.output, bundle=bundle, preview_root=args.preview_root)
     print(json.dumps({"status": result["status"], "artifacts": len(result["artifacts"]), "invented_results": False}))
     return 0
 

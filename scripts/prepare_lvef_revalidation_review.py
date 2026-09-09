@@ -14,8 +14,44 @@ from lvef_multitask_clinical_metadata import ALLOWED_TARGETS
 from lvef_multitask_analysis_modes import load_policy, bind_approved_restricted_path
 from lvef_revalidation_authority import C3_COMPLETION, canonical, decode, digest, private_bytes, publish, require
 from prepare_lvef_revalidation_inputs import SOURCE_HASHES
+from build_target_dependency_registry import STRICT_TARGETS
 
 REVIEWED_TECHNICAL_MANIFEST_SHA256 = "4e6c7ab3e957cfb5a369739021e2c71a41400a35103e7a77aa4bce2080e7b22a"
+REVIEWED_INPUT_SHA256 = "b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de"
+REVIEWED_TECHNICAL_DECISIONS_SHA256 = "427fd59fe75b4985cb2556e94a6b949af1edeabe98282bac0e0eab1c2d28a975"
+REVIEWED_REGISTRY_SHA256 = "33b0b91619c02e90cb067d63ddbacb46326145771a965c1d7a5b9cc283aa6752"
+REVIEWED_CLINICAL_REGISTRY_SHA256 = "974aa61a6b7c746c5f0411152535fb60a4dd4998eb1c8a3ae873e6ef7949da14"
+
+# Positive measurement definitions, independently of gaps in the old edge table.
+# Independence below means a separately defined measurement, not statistical
+# independence, proven acquisition provenance, or absence of physiological association.
+MEASUREMENT_DEFINITIONS = {
+    "lvef": "exact-name reported left-ventricular ejection fraction",
+    "arch_diam": "transverse aortic-arch linear diameter",
+    "ascending_aorta_diameter": "tubular ascending-aortic linear diameter",
+    "av_pk_vel": "aortic-valve peak blood-flow velocity",
+    "inf_lat_thickness": "end-diastolic inferolateral/posterior wall thickness, one construct",
+    "ivc_diam": "end-expiratory inferior-vena-cava diameter without collapse or RAP inference",
+    "la_4ch_length": "left-atrial four-chamber linear length",
+    "la_dimen": "parasternal-long-axis anteroposterior left-atrial dimension at LV end systole",
+    "lat_e_prime": "lateral mitral-annular early-diastolic tissue velocity",
+    "left_ventricular_end_diastolic_diameter": "left-ventricular end-diastolic linear diameter",
+    "left_ventricular_end_systolic_diameter": "left-ventricular end-systolic linear diameter",
+    "lvot_diam": "left-ventricular-outflow-tract linear diameter",
+    "lvot_vti": "left-ventricular-outflow-tract velocity-time integral, a distance",
+    "mv_peak_a": "mitral inflow late-diastolic peak blood-flow velocity",
+    "mv_peak_e": "mitral inflow early-diastolic peak blood-flow velocity from its compatible source alone",
+    "ra_length": "right-atrial linear length",
+    "rv_diam": "right-ventricular linear diameter",
+    "sept_e_prime": "septal mitral-annular early-diastolic tissue velocity",
+    "septal_thickness": "interventricular septal wall thickness",
+    "sinus_diam": "sinus-of-Valsalva linear diameter",
+    "tricuspid_annular_plane_systolic_excursion": "tricuspid-annular longitudinal systolic excursion",
+    "tricuspid_regurgitant_peak_velocity": "peak tricuspid-regurgitant blood-flow velocity",
+    "resting_hr": "recorded resting heart rate, not cardiac output",
+    "resting_sbp": "recorded resting systolic blood pressure, not pulse pressure or mean arterial pressure",
+    "resting_dbp": "recorded resting diastolic blood pressure, not pulse pressure or mean arterial pressure",
+}
 
 TECHNICAL_RULINGS = (('BSA_FORMULA_WEIGHT_AVAILABILITY', 'CONSERVATIVE_EXCLUSION', 'Five candidate fields are present in training. Metadata classes include area, length, mass and two unrecognized numeric unit classes. Anthropometrics remain outside the primary echo macro; no BSA formula or weight-source pathway is inferred. Use only explicitly supported units for any separately reviewed context predictor; prohibit uncertain derived shortcuts and keep BSA confined to any verified indexed pathway.'), ('DIMENSION_CM_MM_UNITS', 'RESOLVED_PROJECT_METADATA', 'Eighteen dimension candidate fields are present: sixteen have explicit cm numeric measurements and two have unknown-unit categorical values with zero numeric measurements. Convert the compatible cm measurements to mm by exactly 10 before the declared within-report aggregation. Unknown or incompatible unit rows cannot supply numeric dimension labels. Clinical construct and alias aggregation decisions remain separate.'), ('LVEDV_LVESV_FIELDS', 'CONSERVATIVE_EXCLUSION', 'Four candidate volume exports are present with numeric training values. Prohibit them as LVEF predictors without asserting method/beat matching or formula equivalence to the separate exact-name LVEF target. A projection class unrecognized by a finite unit vocabulary is not evidence that the source unit is invalid; the conservative shortcut exclusion does not depend on that classification.'), ('LVEF_ALIASES', 'CONSERVATIVE_EXCLUSION', 'Seven candidate EF-related fields are present. Preserve only exact case-sensitive raw lvef as label authority and prohibit other candidate EF exports as LVEF predictors. The fifteen prespecified same-report training pair diagnostics are diagnostic only; neither numerical agreement nor metadata similarity promotes an alias, and no synthetic canonical lvef row is created.'), ('LVEF_METHOD_MIXTURE', 'OPERATIONAL_DEFINITION_WITH_LIMITATION', 'Retain the operational exact-name numeric-median LVEF label on its historical EF-percentage-point analytical scale. The retained export and builder do not establish the acquisition method of each exact-name label. Method-specific candidate exports are not a verified method indicator for that label. Record method unspecified and unstratifiable, actual method mixture unknown, and native source-unit declaration unverified; do not claim homogeneous or demonstrated mixed methods.'), ('LV_MASS_RWT_FIELDS', 'CONSERVATIVE_EXCLUSION', 'The one candidate field has 135 categorical training values and zero numeric values. Do not infer category coding or a numeric LV-mass/RWT target or formula edge; exclude this unadjudicated export from primary predictors. LV mass, RWT and indexed mass remain separate possible dependency sets; BSA is relevant only to an indexed pathway.'), ('MITRAL_EA_EEPRIME_RATIO_FIELDS', 'CONSERVATIVE_EXCLUSION', 'Two ratio candidate fields have numeric training values but unknown declared units. Do not invent a unitless normalization, component identity or ratio-to-target equivalence. Prohibit these candidate ratio shortcuts as primary predictors. The relationship between the two E-labelled fields remains the separate clinician question, including its actual recorded unit mismatch.'), ('VELOCITY_MPS_CMPS_UNITS', 'RESOLVED_PROJECT_METADATA', 'Seven velocity-labelled candidate fields are present: six have explicit m/s numeric measurements and mitral_e_velocity has ms numeric measurements. Convert only m/s to cm/s by exactly 100. Keep mitral_e_velocity classified as time and exclude its incompatible rows from a velocity target before aggregation, common-row construction and support checks. It is outside candidate21. Do not reinterpret time as velocity, rename the canonical target, or merge it with mv_peak_e; any correction requires separate source-unit authority even if clinician Q6 describes the same construct.'), ('WALL_MOTION_FIELDS', 'CONSERVATIVE_EXCLUSION', 'Seventeen candidate wall-motion fields have categorical training values and zero numeric values. Prohibit all unadjudicated category exports as primary predictors rather than assigning numeric scores. Available technical evidence does not establish which are segmental correlates, global summaries or deterministic aggregates; none is treated as an EF-equivalent field or formula solely from its name.'))
 
@@ -187,6 +223,169 @@ def prepare_review(*, inputs_path: Path, metadata_root: Path, review_rows_path: 
             "draft_sha256": draft_sha, "raw_metadata_exported": False, "source_arrays_read": False}
 
 
+def finalized_records(inputs: dict[str, Any], mapping: pd.DataFrame, evidence: pd.DataFrame,
+                      registry: pd.DataFrame, clinical_registry: pd.DataFrame, *,
+                      clinical: dict[str, Any], technical: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    """Apply the fixed expert operational review and positive measurement definitions.
+
+    This constructs a new authority from source evidence; it does not mutate or
+    approve the old UNREVIEWED draft. Unknown and derived-only fields stay out.
+    """
+    from build_lvef_clinician_signoff_packet import OWNER_RELAY_Q6_PROCESSING, clinical_review_provenance, OWNER_RELAY_DECISIONS, CLINICAL_ISSUE_IDS
+    require(clinical.get("status") == "PASS_OWNER_RELAYED_QUALIFIED_ECHO_REVIEW"
+            and clinical.get("clinical_adjudication_complete") is True
+            and clinical.get("human_signoff_complete") is False
+            and clinical.get("review_mode") == "OWNER_RELAYED_QUALIFIED_ECHO_REVIEW"
+            and clinical.get("n_pending_questions") == 0, "REVIEW_OWNER_RELAYED_ADJUDICATION_REQUIRED")
+    require([(r["issue_id"], r["selected_option"]) for r in clinical["questions"]]
+            == [(issue, row[0]) for issue, row in zip(CLINICAL_ISSUE_IDS, OWNER_RELAY_DECISIONS)],
+            "REVIEW_FIXED_CLINICAL_DECISIONS_MISMATCH")
+    targets = inputs["target_names"]
+    require(len(targets) == 22 and targets[0] == "lvef"
+            and set(targets[1:]) == STRICT_TARGETS, "REVIEW_FIXED_TARGET_SET_MISMATCH")
+    require(set(inputs["structured_units"]) == set(inputs["structured_names"]), "REVIEW_RAW_UNIT_UNIVERSE_MISMATCH")
+    draft = grouped_review(inputs, mapping, evidence, registry, clinical_registry,
+                           clinical=clinical, technical=technical)
+    indexed = {(r["target"], r["raw_predictor"]): r for r in draft["raw_field_decisions"]}
+    approvals, policies, positives, excluded = {}, [], [], []
+    for row in draft["policies"]:
+        name = row["name"]
+        actual = inputs["targets"][name]
+        require(actual["support_floors_passed"] is True and actual["source_raw_fields"]
+                and actual["valid_unit_raw_fields"]
+                and set(actual["valid_unit_raw_fields"]) <= set(actual["source_raw_fields"]),
+                "REVIEW_TARGET_SOURCE_OR_SUPPORT_INVALID")
+        candidates = {raw for group in row["candidate_positive_groups"].values() for raw in group}
+        allowed = []
+        for raw in inputs["structured_names"]:
+            record = indexed[name, raw]
+            canonicals = record["canonical_names"]
+            canonical_name = canonicals[0] if len(canonicals) == 1 else None
+            explicit = (raw in candidates and canonical_name in MEASUREMENT_DEFINITIONS
+                        and canonical_name != "lvef")
+            if explicit and canonical_name in inputs["targets"]:
+                source_policy = inputs["targets"][canonical_name]
+                explicit = (raw in source_policy["valid_unit_raw_fields"]
+                            and inputs["structured_units"][raw] == source_policy["unit"])
+            elif explicit:
+                explicit = inputs["structured_units"][raw] == {
+                    "resting_hr": "bpm", "resting_sbp": "mmhg", "resting_dbp": "mmhg"}[canonical_name]
+            if explicit:
+                allowed.append(raw)
+                positives.append({"target": name, "raw_predictor": raw, "disposition": "INDEPENDENT_ALLOWED",
+                    "evidence_sha256": technical["technical_manifest_sha256"],
+                    "rationale": (
+                        f"Target: {MEASUREMENT_DEFINITIONS[name]}. Context: {MEASUREMENT_DEFINITIONS[canonical_name]}. "
+                        "The exact unambiguous source has compatible declared units and represents a separately "
+                        "defined measurement in a distinct reviewed family. Target/alias, shared formula, "
+                        "method-dependent shortcut, joint family, and technical exclusions were applied first. "
+                        "INDEPENDENT_ALLOWED means non-shortcut measurement context, not statistical independence "
+                        "or verified acquisition conventions for every source examination.")})
+            else:
+                excluded.append({"target": name, "raw_predictor": raw,
+                    "disposition": record["proposed_disposition"] if raw not in candidates else "EXCLUDE_NO_COMPATIBLE_POSITIVE_MEASUREMENT_AUTHORITY",
+                    "evidence_sha256": technical["technical_manifest_sha256"]})
+        require(bool(allowed), "REVIEW_NO_POSITIVELY_SUPPORTED_CONTEXT")
+        masks = row["masks"]
+        masks["family_fields"] = sorted(set(masks["family_fields"]) | {
+            raw for raw in inputs["structured_names"]
+            if set(indexed[name, raw]["source_families"]) & set(row["family_candidates"])})
+        policy = {"name": name, "unit": actual["unit"], "family": "__".join(row["family_candidates"]),
+                  "allowed_predictors": sorted(allowed),
+                  **{key: sorted(masks[key]) for key in ("exact_target_fields", "aliases", "deterministic_fields", "near_deterministic_fields", "family_fields")},
+                  "dependencies_resolved": True, "row_fingerprints": actual["row_fingerprints"],
+                  "support_counts": {s: actual["counts"][s] for s in ("train", "val", "test")},
+                  "binary_class_counts": actual["binary_class_counts"], "null_reference": None}
+        policies.append(policy)
+        expert_scoped = any(name in issue["targets"] for issue in CLINICAL_ISSUE_SPECS)
+        label_status = ("EXPERT_ADJUDICATED_OPERATIONAL_DEFINITION_WITH_LIMITATION" if expert_scoped
+                        else "TECHNICALLY_REVIEWED_OPERATIONAL_DEFINITION_WITH_LIMITATION")
+        evidence_strength = ("EXPERT_ENDORSED_GUIDELINE_INFORMED_OPERATIONAL_INTERPRETATION" if expert_scoped
+                             else "PROJECT_METADATA_AND_TECHNICAL_PROCESSING_REVIEW")
+        limitations = ["Individual source acquisition conventions were not verified; the operational definition follows the recorded field and the stated review scope.",
+                       "Physiological association and report-level correlation may remain after prohibited-shortcut masking."]
+        if name == "lvef":
+            label_status = "OPERATIONAL_DEFINITION_WITH_LIMITATION"
+            evidence_strength = "SEPARATE_EXACT_NAME_LABEL_AUTHORITY_WITH_LIMITATION"
+            limitations = ["Exact-name operational analytical EF scale; native source unit is unverified.",
+                           "Measurement method is unspecified and unstratifiable; actual method mixture is unknown."]
+        if name == "inf_lat_thickness":
+            limitations.append("Posterior wall is a nomenclature synonym for this single inferolateral construct; unrelated exports are not merged.")
+        if name == "mv_peak_e":
+            limitations.append("Probable same construct as mitral_e_velocity is only a hypothesis; the ms source is excluded, with no merge or time-to-velocity conversion.")
+        approvals[name] = {"unit": actual["unit"], "source_raw_fields": actual["source_raw_fields"],
+            "valid_unit_raw_fields": actual["valid_unit_raw_fields"], "aggregation_rule": actual["aggregation_rule"],
+            "construct_id": "END_DIASTOLIC_INFEROLATERAL_POSTERIOR_WALL" if name == "inf_lat_thickness" else name,
+            "label_definition_status": label_status,
+            "rationale": (MEASUREMENT_DEFINITIONS[name] + ". Retain the exact source set and within-selected-report aggregation from the unchanged input authority; only its compatible numeric source rows supply labels."),
+            "evidence_strength": evidence_strength,
+            "source_acquisition_conventions_verified": False, "limitations": limitations}
+    provenance = clinical_review_provenance(clinical)
+    common = {"clinical_response_sha256": clinical["response_sha256"],
+              "clinical_review_provenance": provenance,
+              "technical_decisions_sha256": REVIEWED_TECHNICAL_DECISIONS_SHA256,
+              "input_receipt_sha256": REVIEWED_INPUT_SHA256, "new_test_performance_used": False}
+    panel = {**common, "artifact_type": "lvef_revalidation_panel_v1", "status": "APPROVED_CLINICAL_PANEL",
+             "strict_targets": targets[1:], "target_approvals": approvals,
+             "mitral_e_processing": json.loads(json.dumps(OWNER_RELAY_Q6_PROCESSING)),
+             "excluded_targets": ["mitral_e_velocity", "fs", "tr_mmhg", "body_surface_area", "height_cm", "resting_hr", "resting_sbp", "resting_dbp"],
+             "lvef_is_separate_anchor": True, "non_lvef_clinical_margins": "UNRESOLVED_NOT_REQUIRED_FOR_ERROR_INTERVAL_REPORTING"}
+    policy_fields = ("name", "unit", "family", "allowed_predictors", "exact_target_fields", "aliases", "deterministic_fields", "near_deterministic_fields", "family_fields", "dependencies_resolved")
+    dependencies = {**common, "artifact_type": "lvef_revalidation_dependencies_v1", "status": "APPROVED_REVIEWED_DEPENDENCIES",
+        "policies": [{k: p[k] for k in policy_fields} for p in policies],
+        "reviewed_predictor_universe": sorted(inputs["structured_names"]), "predictor_decisions": positives,
+        "excluded_raw_decisions": excluded, "technical_manifest_sha256": technical["technical_manifest_sha256"],
+        "positive_definition_scope": MEASUREMENT_DEFINITIONS,
+        "family_identifier_separator": "__", "family_masks_use_all_memberships": True,
+        "absence_of_registry_edge_implies_independence": False,
+        "statistical_independence_claimed": False, "source_arrays_read": False}
+    return panel, dependencies, policies
+
+
+def finalize_review(*, inputs_path: Path, metadata_root: Path, review_rows_path: Path, mapping_path: Path,
+                    packet_dir: Path, owner_relayed_response_path: Path, technical_decisions_path: Path,
+                    output_dir: Path, registry_path: Path, clinical_registry_path: Path) -> dict[str, Any]:
+    """Publish the fixed reviewed authorities without fitting or numerical input changes."""
+    safe_policy, _ = load_policy(Path(__file__).resolve().parents[1] / "configs/lvef_multitask_safe_export_policy.yaml")
+    output_dir = bind_approved_restricted_path(output_dir, policy=safe_policy, must_exist=False,
+                                              expect="directory", root_kind="direct")
+    require(not output_dir.exists(), "REVIEW_OUTPUT_ALREADY_EXISTS")
+    input_bytes, technical_bytes = private_bytes(inputs_path), private_bytes(technical_decisions_path)
+    require(digest(input_bytes) == REVIEWED_INPUT_SHA256, "REVIEW_FIXED_INPUT_HASH_MISMATCH")
+    require(digest(technical_bytes) == REVIEWED_TECHNICAL_DECISIONS_SHA256, "REVIEW_FIXED_TECHNICAL_HASH_MISMATCH")
+    inputs, technical = decode(input_bytes), decode(technical_bytes)
+    expected = {"clinical_review_rows": digest(readiness._bytes(review_rows_path)),
+                "raw_canonical_mapping": SOURCE_HASHES["mapping"], "structured_measurements": SOURCE_HASHES["structured"],
+                "selected_studies": SOURCE_HASHES["selected"], "subject_split_map": SOURCE_HASHES["split"]}
+    require(technical == prepare_technical_decisions(metadata_root, expected), "REVIEW_FIXED_TECHNICAL_RECORD_CHANGED")
+    clinical = readiness.inspect_clinician_packet(packet_dir, review_rows_path,
+                                                 owner_relayed_response_path=owner_relayed_response_path)
+    manifest = decode(readiness._bytes(metadata_root / "aggregate/technical_metadata/technical_metadata_manifest.json"))
+    evidence_name = "technical_metadata_evidence_restricted.csv"
+    evidence_sha = next(row["sha256"] for row in manifest["output_checksums"] if row["relative_name"] == evidence_name)
+    panel, dependencies, policies = finalized_records(inputs, _csv(mapping_path, SOURCE_HASHES["mapping"]),
+        _csv(metadata_root / "restricted/technical_metadata" / evidence_name, evidence_sha),
+        _csv(registry_path, REVIEWED_REGISTRY_SHA256),
+        _csv(clinical_registry_path, REVIEWED_CLINICAL_REGISTRY_SHA256), clinical=clinical, technical=technical)
+    for record in (panel, dependencies):
+        record["source_bindings"] = {"mapping_sha256": SOURCE_HASHES["mapping"],
+            "registry_sha256": digest(readiness._bytes(registry_path)),
+            "clinical_registry_sha256": digest(readiness._bytes(clinical_registry_path)),
+            "implementation_sha256": digest(readiness._bytes(Path(__file__).resolve()))}
+    output_dir.mkdir(mode=0o700)
+    panel_sha = publish(output_dir / "panel.restricted.json", panel)
+    dependency_sha = publish(output_dir / "dependencies.restricted.json", dependencies)
+    policy_sha = publish(output_dir / "policy_specification.restricted.json", {
+        "artifact_type": "lvef_revalidation_policy_specification_v1", "status": "PASS_FINALIZED_POLICY_PREPARATION",
+        "panel_sha256": panel_sha, "dependencies_sha256": dependency_sha, "input_receipt_sha256": REVIEWED_INPUT_SHA256,
+        "strict_panel": panel["strict_targets"], "policies": policies, "new_test_performance_used": False})
+    return {"status": "PASS_FINALIZED_PANEL_AND_DEPENDENCIES", "strict_target_count": len(panel["strict_targets"]),
+            "separate_lvef_anchor": True, "positive_raw_decisions": len(dependencies["predictor_decisions"]),
+            "excluded_raw_decisions": len(dependencies["excluded_raw_decisions"]),
+            "panel_sha256": panel_sha, "dependencies_sha256": dependency_sha, "policy_specification_sha256": policy_sha,
+            "source_arrays_read": False, "numerical_inputs_changed": False, "new_test_performance_used": False}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("inputs", "metadata-root", "review-rows", "mapping", "packet-dir", "output-dir"):
@@ -194,11 +393,22 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     parser.add_argument("--registry", type=Path, default=root / "docs/lvef_multitask/target_dependency_registry.csv")
     parser.add_argument("--clinical-registry", type=Path, default=root / "docs/lvef_multitask/target_dependency_registry_clinical_draft.csv")
+    parser.add_argument("--finalize", action="store_true")
+    parser.add_argument("--owner-relayed-response", type=Path)
+    parser.add_argument("--technical-decisions", type=Path)
     args = parser.parse_args()
     try:
-        result = prepare_review(inputs_path=args.inputs, metadata_root=args.metadata_root, review_rows_path=args.review_rows,
-                                mapping_path=args.mapping, packet_dir=args.packet_dir, output_dir=args.output_dir,
-                                registry_path=args.registry, clinical_registry_path=args.clinical_registry)
+        parameters = dict(inputs_path=args.inputs, metadata_root=args.metadata_root, review_rows_path=args.review_rows,
+                          mapping_path=args.mapping, packet_dir=args.packet_dir, output_dir=args.output_dir,
+                          registry_path=args.registry, clinical_registry_path=args.clinical_registry)
+        if args.finalize:
+            require(args.owner_relayed_response is not None and args.technical_decisions is not None,
+                    "REVIEW_FINALIZATION_BINDINGS_REQUIRED")
+            result = finalize_review(**parameters, owner_relayed_response_path=args.owner_relayed_response,
+                                     technical_decisions_path=args.technical_decisions)
+        else:
+            require(args.owner_relayed_response is None and args.technical_decisions is None, "REVIEW_DRAFT_ROUTE_ARGUMENT_MISMATCH")
+            result = prepare_review(**parameters)
         print(json.dumps(result, sort_keys=True))
         return 0
     except Exception as exc:

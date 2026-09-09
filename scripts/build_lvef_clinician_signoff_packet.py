@@ -127,6 +127,38 @@ CLINICAL_ISSUE_SPECS: tuple[dict[str, Any], ...] = (
 )
 
 CLINICAL_ISSUE_IDS = tuple(spec["issue_id"] for spec in CLINICAL_ISSUE_SPECS)
+OWNER_RELAY_MODE = "OWNER_RELAYED_QUALIFIED_ECHO_REVIEW"
+OWNER_RELAY_SOURCE_SHA256 = "c752a837fa9dc9defdf0ed0e91bf2ffaefca998eb6928f2e37020554e2b8109f"
+OWNER_RELAY_PACKET_SHA256 = "e5c6230c0f2a6f2b4f74d5ec5212b4e87f75b1350d4412b04bb4a7b8c82a71e7"
+OWNER_RELAY_INPUT_SHA256 = "b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de"
+OWNER_RELAY_OBSERVED_AT = "2026-09-09T14:40:15Z"
+OWNER_RELAY_SOURCE_PATH = Path(__file__).resolve().parents[1] / "docs/lvef_multitask/revalidation_2026-09-09/owner_relayed_review_source_2026_09_09.txt"
+OWNER_RELAY_EVIDENCE_STRENGTH = "EXPERT_ENDORSED_GUIDELINE_INFORMED_OPERATIONAL_INTERPRETATION"
+OWNER_RELAY_Q6 = "SAME_CONSTRUCT_HYPOTHESIS_SOURCE_UNIT_CONFLICT"
+OWNER_RELAY_Q6_PROCESSING = {
+    "clinical_option": OWNER_RELAY_Q6, "scored_targets": ["mv_peak_e"],
+    "retained_target": "mv_peak_e", "excluded_target": "mitral_e_velocity",
+    "source_unit_conflict": True, "merge_authorized": False,
+    "time_to_velocity_conversion_authorized": False, "joint_mitral_family_mask_required": True,
+}
+OWNER_RELAY_DECISIONS = (
+    ("TRANSVERSE_ARCH", "Use transverse arch as the expert-endorsed operational meaning of arch_diam.",
+     "Possible source-level mixing remains; the exact arch level was not verified for every original report."),
+    ("LEADING_EDGE_END_DIASTOLIC", "Interpret ascending_aorta_diameter as tubular ascending aorta using the stated adult convention.",
+     "Source-wide adherence and exact segment remain uncertain; no new field is created from the shorthand."),
+    ("END_DIASTOLIC_INFEROLATERAL_WALL", "Record posterior wall as the accepted nomenclature synonym for end-diastolic inferolateral wall.",
+     "The synonym creates neither a second scored task nor an automatic merge of unrelated wall-thickness exports."),
+    ("END_EXPIRATORY_DIAMETER_ONLY", "Interpret ivc_diam as end-expiratory diameter alone.",
+     "Do not infer collapse, ventilation status or right-atrial pressure from the field name."),
+    ("PLAX_ANTEROPOSTERIOR_AT_LV_END_SYSTOLE", "Use the stated linear LA operational definition.",
+     "Do not relabel it as LA volume or claim individual source-level timing verification."),
+    (OWNER_RELAY_Q6, "The two E-labelled fields probably describe the same clinical measurement, conditional on unit verification; retain the supported mv_peak_e velocity source.",
+     "mitral_e_velocity is recorded in ms and remains excluded from velocity labels, aggregation and predictors; no merge or time-to-velocity conversion is authorized."),
+    ("LEADING_EDGE_END_DIASTOLIC", "Use the stated sinus-of-Valsalva operational convention.",
+     "Individual source acquisition details remain unverified."),
+    ("PEAK_TR_OR_RV_RA_GRADIENT_WITHOUT_RAP", "Interpret tr_mmhg as the TR-derived RV-RA gradient.",
+     "Do not relabel it as RVSP/PASP or add/subtract RAP; apply the formula and family shortcut masks."),
+)
 METADATA_COLUMNS: tuple[str, ...] = (
     "allowlisted_target",
     "raw_name",
@@ -160,6 +192,9 @@ def _metadata_group(rows: pd.DataFrame, targets: tuple[str, ...]) -> pd.DataFram
 
 
 def option_consequence(option: str) -> str:
+    if option == OWNER_RELAY_Q6:
+        return ("Retain only the supported mv_peak_e velocity construct; exclude mitral_e_velocity and its raw aliases. "
+                "Do not merge fields or convert time into velocity; retain joint mitral-family shortcut masking.")
     if option == "UNRESOLVED_EXCLUDE":
         return (
             "Do not merge aliases; apply the conservative unresolved-family mask; "
@@ -259,7 +294,84 @@ def response_template(packet_sha256: str) -> dict[str, Any]:
     }
 
 
+def _owner_relayed_body(original_response_sha256: str, review_rows_sha256: str) -> dict[str, Any]:
+    for value in (original_response_sha256, review_rows_sha256):
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError("OWNER_RELAY_SOURCE_BINDING_INVALID")
+    if sha256_file(OWNER_RELAY_SOURCE_PATH) != OWNER_RELAY_SOURCE_SHA256:
+        raise ValueError("OWNER_RELAY_STATEMENT_CHANGED")
+    return {
+        "schema_version": 1, "artifact_type": "lvef_owner_relayed_echo_review_v1",
+        "review_mode": OWNER_RELAY_MODE, "owner_statement_sha256": OWNER_RELAY_SOURCE_SHA256,
+        "packet_sha256": OWNER_RELAY_PACKET_SHA256, "original_response_sha256": original_response_sha256,
+        "review_rows_sha256": review_rows_sha256, "input_audit_sha256": OWNER_RELAY_INPUT_SHA256,
+        "communication_observed_at": OWNER_RELAY_OBSERVED_AT,
+        "expert": {"name_or_initials": None, "direct_signature": None, "actual_review_date": None,
+                   "qualification_reported_by_owner": "QUALIFIED_ECHOCARDIOGRAPHER",
+                   "agreement_reported_by_owner": True},
+        "evidence_strength": OWNER_RELAY_EVIDENCE_STRENGTH,
+        "source_acquisition_conventions_verified": False,
+        "interpretation_qualification": "MOST_LIKELY_OPERATIONAL_INTERPRETATIONS_NOT_EXAMINATION_LEVEL_VERIFICATION",
+        "unresolved_reference_identifiers": [f"[{index}]" for index in range(1, 17)],
+        "bibliography_supplied": False,
+        "responses": [{"issue_id": issue, "selected_option": row[0], "rationale": row[1],
+                       "limitations": [row[2]], "accepted_nomenclature_synonyms":
+                       ["END_DIASTOLIC_POSTERIOR_WALL"] if issue == "INF_LAT_THICKNESS_DEFINITION" else []}
+                      for issue, row in zip(CLINICAL_ISSUE_IDS, OWNER_RELAY_DECISIONS)],
+        "mitral_e_processing": json.loads(json.dumps(OWNER_RELAY_Q6_PROCESSING)),
+        "direct_expert_entry": False, "clinical_adjudication_complete": True,
+        "original_questionnaire_rewritten": False, "original_response_rewritten": False,
+        "new_test_performance_used": False,
+    }
+
+
+def build_owner_relayed_response(*, packet_path: Path, original_response_path: Path,
+                                review_rows_path: Path) -> dict[str, Any]:
+    """Construct this one observed owner relay; never fill the original form."""
+    if sha256_file(packet_path) != OWNER_RELAY_PACKET_SHA256:
+        raise ValueError("OWNER_RELAY_PACKET_MISMATCH")
+    original = json.loads(original_response_path.read_bytes())
+    if original != response_template(OWNER_RELAY_PACKET_SHA256):
+        raise ValueError("OWNER_RELAY_ORIGINAL_BLANK_RESPONSE_CHANGED")
+    return _owner_relayed_body(sha256_file(original_response_path), sha256_file(review_rows_path))
+
+
+def _validate_owner_relayed_response(packet_path: Path, response: dict[str, Any]) -> dict[str, Any]:
+    issues = []
+    if sha256_file(packet_path) != OWNER_RELAY_PACKET_SHA256:
+        issues.append("OWNER_RELAY_PACKET_MISMATCH")
+    try:
+        expected = _owner_relayed_body(response.get("original_response_sha256"), response.get("review_rows_sha256"))
+        if json.dumps(response, sort_keys=True, allow_nan=False) != json.dumps(expected, sort_keys=True, allow_nan=False):
+            issues.append("OWNER_RELAY_EXACT_EVIDENCE_MISMATCH")
+    except (ValueError, OSError):
+        issues.append("OWNER_RELAY_SOURCE_EVIDENCE_INVALID")
+    return {"audit": "lvef_multitask_owner_relayed_echo_validation_v1", "status": "PASS" if not issues else "FAIL",
+        "signoff_complete": not issues, "clinical_adjudication_complete": not issues,
+        "human_signoff_complete": False, "review_mode": OWNER_RELAY_MODE,
+        "packet_checksum_verified": sha256_file(packet_path) == response.get("packet_sha256") == OWNER_RELAY_PACKET_SHA256,
+        "n_expected_questions": 8, "n_responses": len(response.get("responses", [])),
+        "n_unresolved_exclude": 0, "n_validation_issues": len(issues), "validation_issues": issues,
+        "reviewer_identity_exported": False, "restricted_metadata_exported": False}
+
+
+def clinical_review_provenance(proof: dict[str, Any]) -> dict[str, Any]:
+    """Closed provenance shared by the new panel and dependency authorities."""
+    if proof.get("review_mode") != OWNER_RELAY_MODE or proof.get("clinical_adjudication_complete") is not True:
+        raise ValueError("OWNER_RELAY_CLINICAL_PROOF_REQUIRED")
+    return {"review_mode": OWNER_RELAY_MODE, "clinical_response_sha256": proof["response_sha256"],
+        "packet_sha256": proof["packet_sha256"], "original_response_sha256": proof["original_response_sha256"],
+        "review_rows_sha256": proof["review_rows_sha256"], "owner_statement_sha256": OWNER_RELAY_SOURCE_SHA256,
+        "input_audit_sha256": OWNER_RELAY_INPUT_SHA256, "communication_observed_at": OWNER_RELAY_OBSERVED_AT,
+        "expert_name_or_initials": None, "expert_direct_signature": None, "actual_expert_review_date": None,
+        "qualification_reported_by_owner": "QUALIFIED_ECHOCARDIOGRAPHER", "agreement_reported_by_owner": True,
+        "evidence_strength": OWNER_RELAY_EVIDENCE_STRENGTH, "source_acquisition_conventions_verified": False,
+        "direct_expert_entry": False, "unresolved_reference_identifiers": [f"[{index}]" for index in range(1, 17)]}
+
+
 def validate_response(packet_path: Path, response: dict[str, Any]) -> dict[str, Any]:
+    if response.get("artifact_type") == "lvef_owner_relayed_echo_review_v1":
+        return _validate_owner_relayed_response(packet_path, response)
     issues: list[str] = []
     packet_checksum = sha256_file(packet_path)
     if response.get("packet_sha256") != packet_checksum:

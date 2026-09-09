@@ -44,6 +44,10 @@ REQUIRED_SOURCE_PATHS = {
     "technical_metadata": "scripts/audit_lvef_multitask_technical_metadata.py",
     "target_panel": "scripts/build_multitask_target_panel.py",
     "clinical_metadata": "scripts/lvef_multitask_clinical_metadata.py",
+    "review": "scripts/prepare_lvef_revalidation_review.py",
+    "dependency_registry_builder": "scripts/build_target_dependency_registry.py",
+    "owner_relay_source": "docs/lvef_multitask/revalidation_2026-09-09/owner_relayed_review_source_2026_09_09.txt",
+    "stage_chain": "scripts/lvef_revalidation_stage_chain.py",
 }
 
 
@@ -267,15 +271,25 @@ def create_gate(name: str, *, spec_path: Path, parameters: Mapping[str, Any]) ->
         refs[role] = _reference(path)
         return read_bound(Path(path), refs[role]["sha256"])
     if name == "clinical_signoff":
-        require(set(parameters) == {"packet_dir", "review_rows_path"}, "ANALYSIS_CLINICAL_PARAMETERS_INVALID")
+        relay_mode = "owner_relayed_response_path" in parameters
+        require(set(parameters) == ({"packet_dir", "review_rows_path", "owner_relayed_response_path"} if relay_mode
+                                    else {"packet_dir", "review_rows_path"}), "ANALYSIS_CLINICAL_PARAMETERS_INVALID")
         packet = Path(parameters["packet_dir"])
         for role, filename in (("packet", "clinical_metadata_clinician_signoff_restricted.md"),
                                ("response", "clinical_metadata_clinician_response_restricted.json"),
                                ("manifest", "clinical_metadata_clinician_packet_manifest_restricted.json")):
             refs[role] = _reference(packet / filename)
         refs["review_rows"] = _reference(parameters["review_rows_path"])
-        proof = readiness.inspect_clinician_packet(packet, Path(parameters["review_rows_path"]))
-        require(proof["status"] == "PASS_CLINICIAN_SIGNOFF" and proof["human_signoff_complete"] is True
+        if relay_mode:
+            refs["original_response"] = refs["response"]
+            refs["response"] = _reference(parameters["owner_relayed_response_path"])
+        proof = readiness.inspect_clinician_packet(packet, Path(parameters["review_rows_path"]),
+            **({"owner_relayed_response_path": Path(parameters["owner_relayed_response_path"])} if relay_mode else {}))
+        accepted = (proof["status"] == "PASS_OWNER_RELAYED_QUALIFIED_ECHO_REVIEW"
+                    and proof.get("clinical_adjudication_complete") is True and proof["human_signoff_complete"] is False
+                    and proof.get("input_audit_sha256") == spec["bindings"]["input_audit"]) if relay_mode else (
+                    proof["status"] == "PASS_CLINICIAN_SIGNOFF" and proof["human_signoff_complete"] is True)
+        require(accepted
                 and proof["n_questions"] == 8 and proof["n_validation_issues"] == 0
                 and proof["metadata_packet_regenerated_exactly"] is True, "ANALYSIS_CLINICAL_SIGNOFF_REQUIRED")
         require(all(proof[role + "_sha256"] == refs[role]["sha256"] for role in refs),
@@ -302,13 +316,15 @@ def create_gate(name: str, *, spec_path: Path, parameters: Mapping[str, Any]) ->
         proof = {"prepared_evidence": inspected, "n_dispositioned": len(rows)}
     elif name == "panel_and_dependencies":
         from lvef_multitask_clinical_metadata import ALLOWED_TARGET_SET
-        from build_lvef_clinician_signoff_packet import CLINICAL_ISSUE_SPECS
+        from build_lvef_clinician_signoff_packet import (CLINICAL_ISSUE_SPECS, OWNER_RELAY_MODE,
+            OWNER_RELAY_Q6, OWNER_RELAY_Q6_PROCESSING, OWNER_RELAY_EVIDENCE_STRENGTH, clinical_review_provenance)
         require(set(parameters) == {"panel_path", "dependency_path", "clinical_parameters", "technical_parameters"}, "ANALYSIS_PANEL_PARAMETERS_INVALID")
         panel, dependencies = bound("panel", parameters["panel_path"]), bound("dependencies", parameters["dependency_path"])
         clinical = create_gate("clinical_signoff", spec_path=spec_path, parameters=parameters["clinical_parameters"])
         technical = create_gate("technical_adjudication", spec_path=spec_path, parameters=parameters["technical_parameters"])
         require(clinical["gate"] == "clinical_signoff" and technical["gate"] == "technical_adjudication", "ANALYSIS_PANEL_REVIEW_GATE_MISMATCH")
         response_sha = clinical["evidence"]["response"]["sha256"]
+        relay_mode = clinical["proof"].get("review_mode") == OWNER_RELAY_MODE
         decision_sha = technical["evidence"]["decisions"]["sha256"]
         require(panel.get("status") == "APPROVED_CLINICAL_PANEL" and panel.get("artifact_type") == "lvef_revalidation_panel_v1"
                 and dependencies.get("status") == "APPROVED_REVIEWED_DEPENDENCIES"
@@ -319,6 +335,9 @@ def create_gate(name: str, *, spec_path: Path, parameters: Mapping[str, Any]) ->
         for item in (panel, dependencies):
             require(item.get("clinical_response_sha256") == response_sha and item.get("technical_decisions_sha256") == decision_sha
                     and item.get("new_test_performance_used") is False, "ANALYSIS_PANEL_REVIEW_BINDING_INVALID")
+            if relay_mode:
+                require(item.get("clinical_review_provenance") == clinical_review_provenance(clinical["proof"]),
+                        "ANALYSIS_OWNER_RELAY_PANEL_PROVENANCE_INVALID")
         fields = ("name", "unit", "family", "allowed_predictors", "exact_target_fields", "aliases", "deterministic_fields", "near_deterministic_fields", "family_fields", "dependencies_resolved")
         expected = [{k: policy[k] for k in fields} for policy in spec["policies"]]
         require(dependencies.get("policies") == expected and set(spec["strict_panel"]) <= ALLOWED_TARGET_SET,
@@ -339,29 +358,51 @@ def create_gate(name: str, *, spec_path: Path, parameters: Mapping[str, Any]) ->
         require(decision_keys == {(p["name"], name) for p in expected for name in p["allowed_predictors"]}, "ANALYSIS_POSITIVE_ALLOWLIST_MISMATCH")
         approvals = panel.get("target_approvals")
         require(isinstance(approvals, dict) and set(approvals) == {p["name"] for p in expected}, "ANALYSIS_TARGET_APPROVAL_SET_INVALID")
+        expert_reviewed_targets = {target for issue in CLINICAL_ISSUE_SPECS for target in issue["targets"]}
         for policy in expected:
             row = approvals[policy["name"]]
-            require(set(row) == {"unit", "source_raw_fields", "valid_unit_raw_fields", "aggregation_rule", "construct_id", "label_definition_status", "rationale"}
+            expert_scoped = policy["name"] in expert_reviewed_targets
+            approval_fields = {"unit", "source_raw_fields", "valid_unit_raw_fields", "aggregation_rule", "construct_id", "label_definition_status", "rationale"}
+            if relay_mode:
+                approval_fields |= {"evidence_strength", "source_acquisition_conventions_verified", "limitations"}
+                expected_strength = ("SEPARATE_EXACT_NAME_LABEL_AUTHORITY_WITH_LIMITATION" if policy["name"] == "lvef" else
+                    OWNER_RELAY_EVIDENCE_STRENGTH if expert_scoped else "PROJECT_METADATA_AND_TECHNICAL_PROCESSING_REVIEW")
+                require(row.get("evidence_strength") == expected_strength
+                        and row.get("source_acquisition_conventions_verified") is False
+                        and isinstance(row.get("limitations"), list) and row["limitations"]
+                        and all(isinstance(x, str) and x.strip() for x in row["limitations"]),
+                        "ANALYSIS_OPERATIONAL_EVIDENCE_STRENGTH_INVALID")
+            require(set(row) == approval_fields
                     and row["unit"] == policy["unit"] and isinstance(row["construct_id"], str) and row["construct_id"]
                     and isinstance(row["source_raw_fields"], list) and len(row["source_raw_fields"]) == len(set(row["source_raw_fields"])) > 0
                     and isinstance(row["rationale"], str) and row["rationale"].strip(), "ANALYSIS_TARGET_APPROVAL_INVALID")
-            expected_status = "OPERATIONAL_DEFINITION_WITH_LIMITATION" if policy["name"] == "lvef" else "CLINICALLY_REVIEWED_MEASUREMENT"
+            expected_status = "OPERATIONAL_DEFINITION_WITH_LIMITATION" if policy["name"] == "lvef" else (
+                "CLINICALLY_REVIEWED_MEASUREMENT" if not relay_mode else
+                "EXPERT_ADJUDICATED_OPERATIONAL_DEFINITION_WITH_LIMITATION" if expert_scoped else
+                "TECHNICALLY_REVIEWED_OPERATIONAL_DEFINITION_WITH_LIMITATION")
             require(row["label_definition_status"] == expected_status, "ANALYSIS_LABEL_DEFINITION_NOT_APPROVED")
         constructs = [approvals[name]["construct_id"] for name in spec["strict_panel"]]
         require(len(constructs) == len(set(constructs)), "ANALYSIS_DUPLICATE_SCORED_CONSTRUCT")
         unresolved = {r["issue_id"] for r in clinical["proof"]["questions"] if r["selected_option"] == "UNRESOLVED_EXCLUDE" or r["selected_option"].startswith("MIXED_")}
-        excluded = {target for issue in CLINICAL_ISSUE_SPECS if issue["issue_id"] in unresolved for target in issue["targets"]}
+        clinical_excluded = {target for issue in CLINICAL_ISSUE_SPECS if issue["issue_id"] in unresolved for target in issue["targets"]}
+        processing_excluded = {"mitral_e_velocity"} if relay_mode else set()
+        excluded = clinical_excluded | processing_excluded
         require(not set(spec["strict_panel"]) & excluded
                 and all(not set(p["allowed_predictors"]) & excluded for p in expected), "ANALYSIS_CLINICALLY_UNRESOLVED_TARGET_SURVIVED")
         relation = next(r["selected_option"] for r in clinical["proof"]["questions"] if r["issue_id"] == "MITRAL_E_FIELD_RELATIONSHIP")
         scored_e = set(spec["strict_panel"]) & {"mv_peak_e", "mitral_e_velocity"}
-        if relation.startswith("SAME_CONSTRUCT"):
+        if relation == OWNER_RELAY_Q6:
+            require(relay_mode and scored_e == {"mv_peak_e"}
+                    and panel.get("mitral_e_processing") == OWNER_RELAY_Q6_PROCESSING
+                    and "mitral_e_aggregation_approval" not in panel, "ANALYSIS_MITRAL_E_UNIT_CONFLICT_HANDLING_INVALID")
+        elif relation.startswith("SAME_CONSTRUCT"):
             require(len(scored_e) <= 1, "ANALYSIS_DUPLICATE_MITRAL_E_CONSTRUCT")
             require(panel.get("mitral_e_aggregation_approval") == {"clinical_option": relation,
                     "scored_targets": sorted(scored_e), "aggregation_explicitly_approved": True}, "ANALYSIS_MITRAL_E_AGGREGATION_APPROVAL_REQUIRED")
         elif relation == "DISTINCT_ACQUISITION_CONSTRUCTS" and len(scored_e) == 2:
             require(not set(approvals["mv_peak_e"]["source_raw_fields"]) & set(approvals["mitral_e_velocity"]["source_raw_fields"]), "ANALYSIS_DISTINCT_MITRAL_E_MERGED")
-        proof = {"target_approvals": approvals, "strict_targets": spec["strict_panel"], "reviewed_policy_count": len(expected), "clinical_unresolved_excluded": sorted(excluded)}
+        proof = {"target_approvals": approvals, "strict_targets": spec["strict_panel"], "reviewed_policy_count": len(expected),
+                 "clinical_unresolved_excluded": sorted(clinical_excluded), "processing_excluded_targets": sorted(processing_excluded)}
     elif name == "common_inputs":
         require(set(parameters) == {"inputs_path"}, "ANALYSIS_INPUT_PARAMETERS_INVALID")
         inputs = bound("inputs", parameters["inputs_path"])
@@ -455,7 +496,8 @@ def validate_prerequisites(gates: Mapping[str, Mapping[str, Any]], *, spec_sha25
     expected = {role: inputs["source_checksums"][key] for role, key in aliases.items()}
     expected["clinical_review_rows"] = clinical["evidence"]["review_rows"]["sha256"]
     require(technical["parameters"]["input_checksums"] == expected, "ANALYSIS_TECHNICAL_COMMON_SOURCE_MISMATCH")
-    excluded = gates["panel_and_dependencies"]["proof"]["clinical_unresolved_excluded"]
+    panel_proof = gates["panel_and_dependencies"]["proof"]
+    excluded = panel_proof["clinical_unresolved_excluded"] + panel_proof.get("processing_excluded_targets", [])
     raw_map = inputs["source_raw_fields_by_canonical"]
     require(all(name in raw_map and isinstance(raw_map[name], list) for name in excluded), "ANALYSIS_EXCLUDED_RAW_SOURCE_CLOSURE_MISSING")
     prohibited_raw = {raw for name in excluded for raw in raw_map[name]}

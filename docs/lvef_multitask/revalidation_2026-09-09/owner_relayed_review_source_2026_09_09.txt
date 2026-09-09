@@ -1,0 +1,142 @@
+Apply the qualified echocardiographer's agreement below as the clinical adjudication for the existing LVEF/multitask analysis, record the interpretations and their limitations accurately, and proceed through the remaining technical lock into fitting and reporting.
+
+The owner confirms: “Reviewer who is qualified echocardiographer agrees with this outlined table that supports that metadata is likely aligned with guidelines for each measurement.” The owner directs that these decisions be codified and handled through appropriate Methods/Limitations amendments rather than remain blocking questions.
+
+This is new, explicit authority to recognize the owner-relayed expert review. Do not ask the reviewer to re-enter the same eight decisions solely to satisfy a direct-entry form. Existing authorization for scoped implementation changes, commits, normal pushes, SCC analysis execution, fitting, fixed-test evaluation and reporting remains in force.
+
+Preserve current authority and completed work
+
+Repository: JiahuiKChen/Echo_Cardio_VLM
+Branch: codex/lvef-multitask-revalidation
+Current documentation HEAD: 8bf8f1d431a370732aba81c4459c360170eb975b
+Previously validated analysis implementation: 073d3883fc54c4041a043efce850ecfeca07890a
+Completed C3 producer: cda842d04cc18eb3669ad5377c31a6e955fc43cb
+
+C3 remains complete: 19 batches / 4,530 selected subjects; 184,570 clip embeddings; 4,525 study embeddings; five prespecified no-cine studies. Preserve all original receipts, canonical artifacts, implementation epochs and the sealed historical partial.
+
+Completion receipt: 48ab39b48fb95e8257ab07c076a587151eeb993dbe638ce7d6908d3be7168605
+Verified analysis inputs: b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de
+Original clinician packet: e5c6230c0f2a6f2b4f74d5ec5212b4e87f75b1350d4412b04bb4a7b8c82a71e7
+
+Retain the verified common LVEF cohort of 2,833, split 1,997/410/426, and the exact-40 count of 103, including 20 test labels. No model fitting or test-performance access has occurred.
+
+Record the review truthfully and without another approval loop
+
+Preserve the owner's supplied table and confirmation as source evidence. Record a narrowly scoped review mode such as OWNER_RELAYED_QUALIFIED_ECHO_REVIEW, binding the statement and its actual hash to the original questionnaire, source metadata and this analysis.
+
+Record expert qualification and agreement as reported by the owner. Reviewer name, direct signature and actual expert-review date were not supplied: retain these as unknown/not provided. Record the actual time this owner communication is received separately. Do not invent an expert identity, sign on the expert's behalf, or use the owner's name/date as a clinician signature.
+
+The evidence supports expert-endorsed, guideline-informed operational interpretations. It does not establish independently verified acquisition conventions for every source examination. Preserve that distinction in structured provenance and manuscript wording.
+
+If the existing validator only accepts direct named clinician entry, implement the smallest versioned response/amendment that represents this genuine owner-relayed review. Preserve the original questionnaire and any existing response evidence. Do not falsify old required fields or broadly disable clinical checks.
+
+Update all affected readers and gates coherently: clinician-response validation, readiness inspection, clinical authority, panel/dependency approval, provenance summaries and relevant tests. Permit this precisely bound review route for these decisions; do not create a generic missing-review override.
+
+Codify these eight decisions
+
+Issue
+
+Recorded interpretation
+
+Processing and reporting consequence
+
+ARCH_DIAM_LEVEL
+
+TRANSVERSE_ARCH
+
+Use transverse arch as the expert-endorsed operational meaning of arch_diam. Retain possible source-level mixing as a limitation; do not claim every original report's exact arch level was verified.
+
+ASCENDING_AORTA_CONVENTION
+
+LEADING_EDGE_END_DIASTOLIC
+
+Interpret the tubular ascending-aorta field using the stated adult convention. Preserve uncertainty about source-wide adherence and exact segment. Map the owner's shorthand to the existing ascending_aorta_diameter identifier; do not invent a new field.
+
+INF_LAT_THICKNESS_DEFINITION
+
+END_DIASTOLIC_INFEROLATERAL_WALL
+
+Record posterior wall as the accepted nomenclature synonym for this interpretation. Do not create two tasks from this synonym or automatically merge unrelated wall-thickness exports.
+
+IVC_DIAM_CONTEXT
+
+END_EXPIRATORY_DIAMETER_ONLY
+
+Interpret as diameter alone. Do not infer collapse, ventilation status or RAP from this field's name.
+
+LA_DIMEN_PLANE
+
+PLAX_ANTEROPOSTERIOR_AT_LV_END_SYSTOLE
+
+Use the stated linear LA operational definition; do not relabel it as LA volume or claim source-level verification of timing.
+
+MITRAL_E_FIELD_RELATIONSHIP
+
+Probable same clinical construct, with a known source-unit conflict and no merge
+
+Apply the specific Q6 handling below.
+
+SINUS_DIAM_CONVENTION
+
+LEADING_EDGE_END_DIASTOLIC
+
+Use the stated sinus-of-Valsalva operational convention, retaining uncertainty about source acquisition details.
+
+TR_MMHG_DEFINITION
+
+PEAK_TR_OR_RV_RA_GRADIENT_WITHOUT_RAP
+
+Interpret as the TR-derived RV–RA gradient. Do not relabel as RVSP/PASP or add/subtract RAP from recorded labels. Mask the appropriate formula/family shortcuts.
+
+Retain the supplied rationales as expert-endorsed interpretations, including their “most likely” qualification. The numbered reference markers [1–16] have no supplied bibliography; preserve them as unresolved citation identifiers and use verified primary guidelines where appropriate. Completing bibliography details is writing work, not a new clinical gate.
+
+Handle Q6 narrowly, preserving the valid E-velocity target
+
+The supplied interpretation is that mv_peak_e and mitral_e_velocity probably describe the same clinical measurement, conditional on unit verification. Existing project evidence already shows mitral_e_velocity recorded in ms, which is a time unit.
+
+Therefore:
+
+Retain mv_peak_e using its independently supported velocity source, verified unit handling and approved aggregation.
+
+Keep incompatible mitral_e_velocity excluded from velocity labels, aggregation and structured predictors.
+
+Preserve joint mitral-family shortcut masking and at most one scored E-velocity construct.
+
+Do not merge the two source fields, convert time into velocity, repair the source unit by assumption, or treat correlation as proof of identity.
+
+Do not discard the valid mv_peak_e task merely because the old generic unresolved option excludes both fields.
+
+Use a truthful typed disposition such as SAME_CONSTRUCT_HYPOTHESIS_SOURCE_UNIT_CONFLICT, or equivalent separate clinical-interpretation and processing fields. Existing SAME_CONSTRUCT_SAME_UNIT and unit-conversion approval would misstate the evidence.
+
+This closes the handling decision for the current analysis. Do not launch an open-ended source-repair investigation or ask the eight questions again. Any corroborating check must use permitted training evidence and cannot override an incompatible declared unit.
+
+Finalize the panel and execute
+
+Apply the review to exact construct IDs, source aggregation approvals, retained targets, positive predictor allowlists and all prohibited raw aliases/formulas/families. Complete supported technical decisions yourself. Do not simply toggle an unreviewed draft to approved.
+
+Where the current non-LVEF label-status schema cannot distinguish an expert-adjudicated operational definition from verified source conventions, amend it narrowly and retain explicit evidence strength/limitations. Do not fabricate stronger verification to pass the gate.
+
+Preserve identical modality rows and labels, all-missing structured rows, train-only preprocessing, validation-only selection/calibration, fixed support floors, and the SAP's four-claim core Holm family. Keep <40 primary and <=40/<50 secondary. Missing non-LVEF clinical margins may remain explicit limitations without blocking error/interval reporting.
+
+Use focused regressions for the new review route, altered evidence rejection, truthful unknown reviewer metadata, Q3 synonym handling, Q6 retained-valid/excluded-incompatible behavior, and raw-alias masking. Run the maintained suite once after substantive shared-code changes. Commit/push the scoped correction, update the separate SCC analysis checkout safely, and refresh its required source/environment/validation bindings. Preserve the C3 checkout. Reuse unchanged validated numerical inputs; regenerate affected analysis inputs only if a real processing change requires it.
+
+Then proceed through the existing exact-manifest stages:
+validate → validate --seal → development → freeze → release-test → evaluate → report → render.
+
+Arrange the already-authorized CPU scheduler execution; the runner itself does not submit jobs. Use resources appropriate to study-level analysis, with the existing 4-CPU/16-GB/four-hour envelope as a planning reference. Reconcile any consumed execution claim before recovery. No test-guided redesign, repeated test release, new cohort, encoder run or full source transfer is authorized.
+
+Amend Methods/Limitations and finish the ASA outputs
+
+Suggested Methods wording:
+“A qualified echocardiographer reviewed guideline-informed operational interpretations for ambiguous structured measurement fields. Source-unit compatibility and technical processing eligibility were assessed separately. Fields with incompatible units were excluded from the relevant analyses rather than merged on the basis of similar names.”
+
+Suggested limitation:
+“Several measurement locations, timings and conventions were inferred from field terminology and standard echocardiographic practice rather than verified in individual acquisition records. Residual variation may contribute to label heterogeneity.”
+
+State the E-field unit exclusion specifically. Do not describe these mappings as source-verified, assert that every examination followed a guideline convention, or promise direct measurement accuracy.
+
+Populate the verified cohort-flow figure now and fill performance figures only from the validated analysis bundle. Keep accepted historical results and new revalidation distinct, including prior exposure to the historical test split. Preserve the one-slide 16:9 ASA format and October 2 deadline. Outstanding organizer policy affects final presentation release, not this already-authorized analysis. Do not send messages or upload the poster.
+
+Continue beyond adjudication coding, tests, push and locking through fitting, fixed evaluation, paired reporting and visually checked figures. Do not return “eight clinician decisions pending” after receiving this owner-relayed expert agreement.
+
+Report the recorded review basis, final retained/excluded targets, actual implementation/job IDs, verified analysis progress, and any concrete remaining scientific or execution failure. End with the six-field ledger and the next analysis milestone.

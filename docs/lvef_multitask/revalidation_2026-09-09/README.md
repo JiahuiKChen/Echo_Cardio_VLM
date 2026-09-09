@@ -18,6 +18,7 @@ The critical path is the existing vision-only, structured-only, and early-fusion
 | [Comparator feasibility](comparator_feasibility.md) | Separate bounded proposal with primary-source checks |
 | [Execution runbook](execution_runbook.md) | Authorized stages, validation, environment and resource estimate |
 | [Current input funnel](current_input_funnel.md) | Verified SCC denominators, technical preparation and receipt bindings |
+| [Clinical review amendment](clinical_adjudication_amendment_2026_09_09.md) | Accepted owner-relayed expert interpretations, exact scope and retained limitations |
 | [Figure templates](figures/render_manifest.pending.json) | Five verified SVG/PDF shells; no performance estimates |
 
 Verified PDF shells: [cohort flow](figures/cohort_flow.pending.pdf),
@@ -27,6 +28,13 @@ Verified PDF shells: [cohort flow](figures/cohort_flow.pending.pdf),
 [masking/missingness](figures/masking_missingness.pending.pdf).
 They remain templates; current model-independent counts are in the input funnel,
 and no model-performance estimates have been inserted.
+
+The populated [verified cohort flow](figures/cohort_flow.verified_inputs.pdf)
+uses the exact aggregate input authority and a separately preserved preparation
+snapshot. Its source hashes and derivation are recorded alongside it. The later
+owner-relayed clinical review closes the eight interpretation questions; it does
+not change the verified numerical cohort inputs or turn these counts into
+performance estimates.
 
 ## Completion evidence available for reconstruction reporting
 

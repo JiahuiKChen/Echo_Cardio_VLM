@@ -20,6 +20,17 @@ The production path does not establish the absence of in-sector numerical overla
 
 ## Targets, structured data, and leakage controls
 
+The owner relayed a qualified echocardiographer's agreement with eight
+guideline-informed operational interpretations for ambiguous fields. The expert's
+identity, direct signature and review date were not provided and remain unknown;
+the communication record is separate. The versioned review preserves the
+original questionnaire and separately binds the supplied decisions and source
+metadata. Other direct measurements retain their project-metadata operational
+definitions and technical review. See the [clinical amendment](clinical_adjudication_amendment_2026_09_09.md).
+These interpretations do not establish examination-level acquisition conventions.
+The valid `mv_peak_e` source is retained, while the milliseconds-valued
+`mitral_e_velocity` export is excluded from labels, aggregation and predictors.
+
 LVEF will remain the separate continuous anchor, using the reviewed exact-name `lvef` label authority. The final-store audit found 2,836 observed selected labels before imaging eligibility, split 1,998/411/427. The prepared common cohort contains 2,833 subjects, split 1,997/410/426; 103 labels equal exactly 40, split 71/12/20. These counts were reconstructed from current source bindings and serialized inputs, rather than assumed from the historical counts they reproduce. Exact-name LVEF retains its historical analytical EF-percentage-point scale; native source-unit declaration remains unverified and acquisition-method composition remains unknown.
 
 The final strict panel will contain `[K_LOCKED_TARGETS]` reviewed echo-measurement targets. The provisional 21-target list is not a final authority, and historical `legacy29` is not a current leakage-minimized panel. Context-only body size and vital signs will not enter the primary echo-measurement macro average. LVEF will not enter that macro either. Final units, target families, aliases, deterministic/near-deterministic relationships, method dependencies, and inclusion dispositions will be recorded in the signed registry.
@@ -28,7 +39,7 @@ The input adapter uses explicit recorded units: compatible cm measurements are h
 
 For each target, all modalities will use exactly the same ordered subject-study rows, split assignments, and target values. An all-missing structured-predictor row remains eligible when the target and imaging prerequisites are satisfied. The exact target, verified duplicates/aliases, and prohibited dependencies will be removed before feature eligibility, imputation, scaling, or missingness indicators. Structured-only and fusion will share the same allowed structured features and transformations; vision-only and fusion will share the same imaging transformation.
 
-The three serialized split arrays were rehashed on SCC, and ordered subject-study-label fingerprints were replayed for all 22 prepared targets across all three splits. LVEF and all 21 provisional candidates passed the observed-label support and positive training-IQR checks. The candidate audit found that selected numeric counts equaled valid-unit counts, with zero repeated numeric target rows after selection and zero incompatible numeric rows among candidate21. These are computational input findings; they do not approve clinical construct identity, raw-field aggregation, final panel membership or predictor masks. Those remain subject to the eight clinical decisions and the evidence-based grouped review.
+The three serialized split arrays were rehashed on SCC, and ordered subject-study-label fingerprints were replayed for all 22 prepared targets across all three splits. LVEF and all 21 candidates passed the observed-label support and positive training-IQR checks. The candidate audit found that selected numeric counts equaled valid-unit counts, with zero repeated numeric target rows after selection and zero incompatible numeric rows among candidate21. These computational input findings are distinct from the clinical adjudication. The owner-relayed expert review closes the eight ambiguous-field decisions; the finalized panel and predictor masks additionally bind explicit technical processing evidence and raw-source exclusions.
 
 A target requires at least 120 training, 40 validation, 40 test, and 250 total observed labels, with a finite positive training-target IQR. Binary endpoints require at least 20 events and 20 nonevents in each split. Any later failure of a locked panel target fails the relevant run; it does not shrink the macro denominator.
 

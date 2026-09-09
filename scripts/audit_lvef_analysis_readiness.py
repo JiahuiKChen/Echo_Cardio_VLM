@@ -24,6 +24,8 @@ from build_multitask_target_panel import normalize_unit
 from lvef_multitask_clinical_metadata import ALLOWED_TARGETS, METHOD_PATTERN, INDEXED_PATTERN
 from build_lvef_clinician_signoff_packet import (
     CLINICAL_ISSUE_IDS, CLINICAL_ISSUE_SPECS, build_packet, validate_response,
+    OWNER_RELAY_MODE, OWNER_RELAY_SOURCE_SHA256, OWNER_RELAY_INPUT_SHA256,
+    OWNER_RELAY_OBSERVED_AT, OWNER_RELAY_EVIDENCE_STRENGTH, build_owner_relayed_response,
 )
 from lvef_multitask_analysis_modes import bind_approved_restricted_path, load_policy
 
@@ -83,7 +85,8 @@ def _json(data: bytes) -> dict[str, Any]:
     return value
 
 
-def inspect_clinician_packet(packet_dir: Path, review_rows_path: Path) -> dict[str, Any]:
+def inspect_clinician_packet(packet_dir: Path, review_rows_path: Path, *,
+                             owner_relayed_response_path: Path | None = None) -> dict[str, Any]:
     """Bind a historical questionnaire to its metadata before reusing decisions."""
     packet_path = packet_dir / "clinical_metadata_clinician_signoff_restricted.md"
     response_path = packet_dir / "clinical_metadata_clinician_response_restricted.json"
@@ -106,6 +109,36 @@ def inspect_clinician_packet(packet_dir: Path, review_rows_path: Path) -> dict[s
     _require(regenerated.encode() == packet, "READINESS_CLINICIAN_METADATA_MISMATCH")
     response_bytes = _bytes(response_path)
     response = _json(response_bytes)
+    if owner_relayed_response_path is not None:
+        _require(owner_relayed_response_path != response_path, "READINESS_OWNER_RELAY_ORIGINAL_OVERWRITE_REFUSED")
+        relay_bytes = _bytes(owner_relayed_response_path)
+        relay = _json(relay_bytes)
+        expected = build_owner_relayed_response(packet_path=packet_path,
+            original_response_path=response_path, review_rows_path=review_rows_path)
+        _require(json.dumps(relay, sort_keys=True, allow_nan=False) == json.dumps(expected, sort_keys=True, allow_nan=False),
+                 "READINESS_OWNER_RELAY_EVIDENCE_CHANGED")
+        validation = validate_response(packet_path, relay)
+        _require(validation["clinical_adjudication_complete"] is True and validation["n_validation_issues"] == 0,
+                 "READINESS_OWNER_RELAY_VALIDATION_FAILED")
+        _require(_bytes(packet_path) == packet and _bytes(response_path) == response_bytes
+                 and _bytes(review_rows_path) == review and _bytes(owner_relayed_response_path) == relay_bytes,
+                 "READINESS_CLINICIAN_CONTROL_CHANGED")
+        return {"status": "PASS_OWNER_RELAYED_QUALIFIED_ECHO_REVIEW", "review_mode": OWNER_RELAY_MODE,
+            "clinical_adjudication_complete": True, "human_signoff_complete": False,
+            "n_questions": 8, "n_pending_questions": 0, "packet_sha256": _sha(packet),
+            "response_sha256": _sha(relay_bytes), "original_response_sha256": _sha(response_bytes),
+            "manifest_sha256": _sha(manifest_bytes), "review_rows_sha256": _sha(review),
+            "owner_statement_sha256": OWNER_RELAY_SOURCE_SHA256, "input_audit_sha256": OWNER_RELAY_INPUT_SHA256,
+            "communication_observed_at": OWNER_RELAY_OBSERVED_AT, "source_commit": commit,
+            "evidence_strength": OWNER_RELAY_EVIDENCE_STRENGTH, "source_acquisition_conventions_verified": False,
+            "expert_name_or_initials": None, "expert_direct_signature": None, "actual_expert_review_date": None,
+            "qualification_reported_by_owner": "QUALIFIED_ECHOCARDIOGRAPHER", "agreement_reported_by_owner": True,
+            "metadata_packet_regenerated_exactly": True,
+            "questions": [{"issue_id": item["issue_id"], "selected_option": item["selected_option"],
+                           "status": "DECIDED_OWNER_RELAYED", "accepted_nomenclature_synonyms": item["accepted_nomenclature_synonyms"]}
+                          for item in relay["responses"]],
+            "mitral_e_processing": relay["mitral_e_processing"], "n_validation_issues": 0,
+            "reviewer_identity_exported": False, "restricted_metadata_exported": False}
     validation = validate_response(packet_path, response)
     _require(_bytes(packet_path) == packet and _bytes(response_path) == response_bytes,
              "READINESS_CLINICIAN_CONTROL_CHANGED")
@@ -288,6 +321,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clinician-packet-dir", type=Path, required=True)
     parser.add_argument("--clinical-review-rows-csv", type=Path, required=True)
+    parser.add_argument("--owner-relayed-response", type=Path)
     parser.add_argument("--safe-export-policy", type=Path,
                         default=Path(__file__).resolve().parents[1] / "configs/lvef_multitask_safe_export_policy.yaml")
     args = parser.parse_args()
@@ -297,9 +331,11 @@ def main() -> int:
                                                must_exist=True, expect="directory")
         rows = bind_approved_restricted_path(args.clinical_review_rows_csv, policy=policy,
                                              must_exist=True, expect="file")
-        result = inspect_clinician_packet(packet, rows)
+        relay = None if args.owner_relayed_response is None else bind_approved_restricted_path(
+            args.owner_relayed_response, policy=policy, must_exist=True, expect="file")
+        result = inspect_clinician_packet(packet, rows, owner_relayed_response_path=relay)
         print(json.dumps(result, sort_keys=True))
-        return 0 if result["human_signoff_complete"] else 2
+        return 0 if result.get("clinical_adjudication_complete", result["human_signoff_complete"]) else 2
     except Exception as exc:
         print(json.dumps({"status": "BLOCKED_READINESS_EVIDENCE",
                           "failure_code": str(exc) if isinstance(exc, ReadinessError) else "READINESS_EVIDENCE_INVALID"}))

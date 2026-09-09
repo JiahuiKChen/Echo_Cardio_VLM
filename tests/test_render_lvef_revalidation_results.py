@@ -1,5 +1,6 @@
 """Synthetic renderer fixtures only; no estimates are written to manuscript docs."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -118,3 +119,98 @@ def test_incomplete_private_report_and_changed_funnel_are_refused(aggregate_sour
         r.extract_aggregate_bundle(evaluation, changed, input_audit=audit)
     with pytest.raises(a.AnalysisError):
         r.extract_aggregate_bundle(evaluation, report, input_audit={**audit, "lvef_common_counts": {"train": 160, "val": 80, "test": 81}})
+
+
+@pytest.fixture
+def verified_flow_sources():
+    root = Path(__file__).resolve().parents[1] / "docs/lvef_multitask/revalidation_2026-09-09/figures"
+    return (root / "verified_input_funnel.source.json").read_bytes(), (root / "verified_input_funnel.source.md").read_bytes()
+
+
+def test_verified_input_flow_uses_exact_bound_aggregate_sources_without_models(verified_flow_sources, tmp_path):
+    replay, document = verified_flow_sources
+    old = r.render(tmp_path / "figures")
+    before = {p.name: p.read_bytes() for p in (tmp_path / "figures").iterdir()}
+    with patch.object(a, "select_development", side_effect=AssertionError("no fitting")), \
+         patch.object(a, "evaluate_locked_test", side_effect=AssertionError("no test access")), \
+         patch.object(r, "extract_aggregate_bundle", side_effect=AssertionError("no model results")):
+        verified = r.extract_verified_input_flow(replay, funnel_document=document)
+        result = r.render_verified_input_flow(tmp_path / "figures", replay_body=replay, funnel_document=document)
+    assert result["status"] == "PASS_RENDERED_VERIFIED_INPUT_FLOW" and result["performance_figures_generated"] == 0
+    assert len(result["artifacts"]) == 2 and result["poster_export_authorized"] is False
+    assert result == r.render_verified_input_flow(tmp_path / "figures", replay_body=replay, funnel_document=document)
+    assert all((tmp_path / "figures" / name).read_bytes() == body for name, body in before.items())
+    assert json.loads((tmp_path / "figures/render_manifest.pending.json").read_bytes()) == old
+    flow = verified["flow"]
+    assert sum(flow["selected_split_counts"].values()) == 4530
+    assert sum(flow["imaging_split_counts"].values()) == 4525
+    assert flow["no_cine_split_counts"] == dict(train=3, val=1, test=1)
+    assert sum(flow["lvef_pre_imaging_counts"].values()) == 2836
+    assert sum(flow["lvef_common_counts"].values()) == 2833
+    assert flow["labeled_no_cine_counts"] == dict(train=1, val=1, test=1)
+    assert sum(flow["exact40_counts"].values()) == 103 and flow["exact40_counts"]["test"] == 20
+    assert_aggregate_safe_json(verified)
+    with pytest.raises(a.AnalysisError, match="VALIDATED_BUNDLE"):
+        r.render(tmp_path / "refused_performance", bundle=verified)
+    assert not (tmp_path / "refused_performance").exists()
+
+
+@pytest.mark.parametrize("mutation", ["replay_bytes", "document_bytes", "receipt", "identity", "performance", "counts", "classes"])
+def test_verified_flow_refuses_changed_evidence_or_invalid_receipt(verified_flow_sources, mutation):
+    replay, document = verified_flow_sources
+    if mutation == "replay_bytes":
+        replay += b" "
+    elif mutation == "document_bytes":
+        document = document.replace(b"1,998 | 411 | 427", b"1,997 | 411 | 428")
+    else:
+        value = json.loads(replay)
+        if mutation == "receipt":
+            value["input_receipt_sha256"] = "a" * 64
+        elif mutation == "identity":
+            value["ordered_row_label_fingerprints_replayed"] = False
+        elif mutation == "performance":
+            value["test_performance_access_count"] = 1
+        elif mutation == "counts":
+            value["lvef_common_counts"]["test"] -= 1
+        elif mutation == "classes":
+            value["binary_class_counts"]["lvef_le_40"]["test"] = [53, 373]
+        replay = a.canonical_bytes(value)
+        # Exercise semantic checks independently from the outer immutable hash.
+        replay_sha = hashlib.sha256(replay).hexdigest()
+        document = document.replace(r.INPUT_FLOW_REPLAY_SHA256.encode(), replay_sha.encode())
+        with patch.object(r, "INPUT_FLOW_REPLAY_SHA256", replay_sha), \
+             patch.object(r, "INPUT_FLOW_DOCUMENT_SHA256", hashlib.sha256(document).hexdigest()):
+            with pytest.raises(a.AnalysisError):
+                r.extract_verified_input_flow(replay, funnel_document=document)
+        return
+    with pytest.raises(a.AnalysisError):
+        r.extract_verified_input_flow(replay, funnel_document=document)
+
+
+def test_input_flow_cli_requires_both_exact_sources(verified_flow_sources, tmp_path, capsys):
+    replay, document = verified_flow_sources
+    source, supplement = tmp_path / "source.json", tmp_path / "source.md"
+    source.write_bytes(replay); supplement.write_bytes(document)
+    with pytest.raises(SystemExit):
+        r.main(["--input-flow", str(source), "--output", str(tmp_path / "missing")])
+    assert not (tmp_path / "missing").exists()
+    assert r.main(["--input-flow", str(source), "--input-funnel-document", str(supplement), "--output", str(tmp_path / "flow")]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "PASS_RENDERED_VERIFIED_INPUT_FLOW"
+
+
+@pytest.mark.parametrize("target", ["left_ventricular_end_diastolic_diameter", "tricuspid_regurgitant_peak_velocity", "ivc_diam"])
+def test_actual_overlapping_family_identifiers_are_preserved(aggregate_sources, target):
+    from build_target_dependency_registry import FAMILIES
+    evaluation, report, audit = copy.deepcopy(aggregate_sources)
+    members = sorted(name for name, targets in FAMILIES.items() if target in targets)
+    assert len(members) == 2
+    family = "__".join(members)
+    tested = evaluation["strict_panel"][0]
+    evaluation["targets"][tested]["family"] = family
+    for condition in a.EVALUATION_CONDITIONS:
+        report["conditions"][condition]["panel_summary"] = inf.summarize_panel(evaluation, condition=condition)
+    candidate = r.extract_aggregate_bundle(evaluation, report, input_audit=audit)
+    r.validate_candidate(candidate)
+    assert all(row["family"] == family for row in candidate["rows"] if row["target"] == tested)
+    assert set(candidate["panel_summary"]["primary"]["early_fusion"]["family_means"]) == {family}
+    assert family.split("__") == members

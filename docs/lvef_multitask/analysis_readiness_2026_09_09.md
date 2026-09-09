@@ -5,6 +5,14 @@ The historical pre-C3 configuration and gate documents retain their original
 meaning; their pending reconstruction flags do not reopen C3. This dated record
 separates the completed reconstruction from the remaining analysis prerequisites.
 
+**Subsequent owner-relayed review:** the owner supplied all eight operational
+interpretations and relayed a qualified echocardiographer's agreement. The
+[versioned clinical amendment](revalidation_2026-09-09/clinical_adjudication_amendment_2026_09_09.md)
+supersedes the earlier human-action queue below. The original blank form is
+preserved as historical evidence; its blank fields no longer mean the clinical
+decisions are missing. The new route retains unknown expert identity/signature/date
+and independently checks source-unit eligibility, including the E-field conflict.
+
 ## Completed reconstruction and owner instruction
 
 The existing completion receipt SHA-256 is
@@ -39,11 +47,11 @@ plumbing and does not substitute for scientific readiness or export approval.
 | LVEF label identity | Exact case-sensitive raw `lvef`; numeric within-report median; selected subject/measurement join; ordered label fingerprints replayed | Verified independently of canonical mapping | Preserve the separate label authority and method/unit limitations |
 | LVEF thresholds | `<40` primary; `<=40` and `<50` sensitivities; final exact-40 count 71/12/20 | Label-only reconciliation passed | Keep thresholds fixed; all three endpoints pass class support floors |
 | Technical metadata | Current SCC audit, complete 188-row mapping, exact regenerated 67-row view, hash-bound technical decision receipt | Nine dispositions published | Apply bounded exclusions and retain the stated limitations |
-| Echocardiographer decisions | Current packet regenerated exactly; response checksum passed; all eight answers and reviewer fields blank | Eight human decisions remain | Obtain one allowed option, rationale, expertise attestation, and date for all eight questions |
-| Scored panel and dependency masks | Existing registries are provisional; candidate21 and legacy29 have distinct roles | Unlocked | Apply reviewed identities/units, exclusions, family masks, and support floors before performance |
+| Echocardiographer decisions | Exact owner-relayed expert agreement and eight supplied interpretations; original packet preserved | Supplied through versioned review route | Publish/replay the separately bound review; no repeat direct-entry form required |
+| Scored panel and dependency masks | Fixed finalization applies explicit measurement definitions, positive raw predictors, aliases/formulas/families and supported units | Awaiting concrete SCC authority publication | Retain 21 reviewed measurement targets, separate LVEF anchor and the valid E-velocity source; replay before lock |
 | Exact common modality inputs | Final-store LVEF 2,833 (1,997/410/426); all 22 candidate/anchor targets × three split fingerprints replayed | Verified shared rows and labels | Bind the clinically finalized subset without modality-specific row removal |
 | Implementation and environment | Commit `073d388`; local maintained suite 2,063 passed/1 skipped; SCC focused suite 86 passed; private environment/source receipts | Validated | Preserve tested source/environment bindings |
-| SAP/config and analysis lock | Existing prescription; recorded owner authorization; final clinical panel/dependencies still pending | Unsealed | Apply genuine clinical decisions, complete grouped source/predictor review, then seal and execute under existing authorization |
+| SAP/config and analysis lock | Existing prescription and owner authorization; new clinical route and concrete panel/dependency finalizer | Unsealed at this source checkpoint | Refresh source/environment/validation bindings, replay all gates, then seal and execute |
 | Non-LVEF native-unit margins | May explicitly remain unresolved | Does not independently block error/interval analysis | Suppress margin-based win/tie/loss claims for targets without a defensible margin |
 
 The completed SCC input preparation and receipt bindings are recorded in the
@@ -115,14 +123,14 @@ retain their evidence basis and `UNREVIEWED` status, with final approval false.
 The artifact supports a grouped review and does not create a new questionnaire
 for each of the historical 870 provisional edges or fill any clinical answer.
 
-## Required human action
+## Original questionnaire and subsequent review route
 
 The maintained questionnaire covers `ARCH_DIAM_LEVEL`,
 `ASCENDING_AORTA_CONVENTION`, `INF_LAT_THICKNESS_DEFINITION`,
 `IVC_DIAM_CONTEXT`, `LA_DIMEN_PLANE`, `MITRAL_E_FIELD_RELATIONSHIP`,
 `SINUS_DIAM_CONVENTION`, and `TR_MMHG_DEFINITION`.
 
-A qualified echocardiographer or echo-measurement expert must choose the permitted
+The original direct-entry workflow asked a qualified echo-measurement expert to choose the permitted
 option for each question and supply the required rationale, expertise attestation,
 and date. `UNRESOLVED_EXCLUDE` is a legitimate human decision, with no alias merge
 and exclusion from scored panels. An agent must not fill it in on the clinician's
@@ -130,8 +138,11 @@ behalf. The actual newly prepared packet has SHA-256
 `e5c6230c0f2a6f2b4f74d5ec5212b4e87f75b1350d4412b04bb4a7b8c82a71e7`.
 Its bytes regenerated under the maintained producer's CSV parsing, and the
 response's packet checksum passed. All eight choices/rationales and reviewer
-fields are blank, so the maintained validator correctly reports incomplete
-signoff. No clinical exclusions have been selected on the clinician's behalf.
+fields were blank at the independent-preparation checkpoint, so the direct-entry
+validator correctly reported incomplete signoff then. They remain unmodified.
+The subsequent owner communication now supplies the genuine review through a
+separate fixed owner-relayed route; no expert name, signature or review date is
+invented, and no second entry of the same eight decisions is required.
 For Q6, the concrete technical finding is that `mitral_e_velocity` carries a time
 unit while the six candidate velocity measurements carry velocity units. The
 existing questionnaire already displays the restricted source metadata. This

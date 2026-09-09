@@ -267,7 +267,8 @@ def test_common_gate_detects_changed_split_bytes_without_parsing_test_features()
             a.create_gate("common_inputs", spec_path=spec_path, parameters={"inputs_path": str(path)})
 
 
-def test_excluded_canonical_outside_candidate_targets_requires_complete_raw_alias_closure():
+@pytest.mark.parametrize("exclusion_source", ["clinical_unresolved_excluded", "processing_excluded_targets"])
+def test_excluded_canonical_outside_candidate_targets_requires_complete_raw_alias_closure(exclusion_source):
     # Gate replay has separate integration coverage; exercise the cross-gate join.
     with common_fixture() as (spec_path, path, spec):
         inputs = a.decode(path.read_bytes())
@@ -278,7 +279,8 @@ def test_excluded_canonical_outside_candidate_targets_requires_complete_raw_alia
         gates = {name: {"artifact_type": "lvef_revalidation_replayed_gate_v1", "gate": name,
                         "parameters": {}, "proof": {}} for name in a.REQUIRED_GATES}
         gates["panel_and_dependencies"]["parameters"] = {"clinical_parameters": {}, "technical_parameters": {}}
-        gates["panel_and_dependencies"]["proof"] = {"clinical_unresolved_excluded": ["mitral_e_velocity"], "target_approvals": {}}
+        gates["panel_and_dependencies"]["proof"] = {"clinical_unresolved_excluded": [], "processing_excluded_targets": [], "target_approvals": {}}
+        gates["panel_and_dependencies"]["proof"][exclusion_source] = ["mitral_e_velocity"]
         gates["clinical_signoff"]["evidence"] = {"review_rows": {"sha256": "f" * 64}}
         aliases = {"selected_studies": "selected", "subject_split_map": "split", "structured_measurements": "structured", "raw_canonical_mapping": "mapping"}
         checksums = {role: inputs["source_checksums"][key] for role, key in aliases.items()}
