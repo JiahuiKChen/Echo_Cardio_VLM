@@ -1315,6 +1315,7 @@ def test_dynamic_publisher_nofollow_topology_and_reopen_tamper_are_closed() -> N
                 os.mkfifo(output_parent, mode=0o600)
             else:
                 output_parent.mkdir(mode=0o755)
+                output_parent.chmod(0o755)
             restricted = (
                 output_parent
                 / capacity.DYNAMIC_SUCCESSOR_RESTRICTED_RECEIPT_BASENAME

@@ -612,7 +612,9 @@ def _materialize_production_preservation_inputs(
             context.artifacts["download_root"]
             / transferred["source_relative_path"]
         ).read_bytes()
-        (objects_root / f"{planned['source_object_key']}.dcm").write_bytes(payload)
+        object_path = objects_root / f"{planned['source_object_key']}.dcm"
+        object_path.write_bytes(payload)
+        object_path.chmod(0o600)
         download_rows.append(
             {
                 "subject_id": planned["subject_id"],
@@ -861,6 +863,7 @@ def _synthetic_hooks(
             output = download_root / scoped["source_relative_path"]
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(payload)
+            output.chmod(0o600)
             scoped["observed_sha256"] = hashlib.sha256(payload).hexdigest()
             transferred.append(scoped)
         context.artifacts.update(
@@ -1112,6 +1115,7 @@ def test_exact_five_canary_end_to_end_reuses_production_functions(
         *,
         expected_environment_receipt_sha256: str,
         scientific_governing_commit: str,
+        runtime_validation_context: production_stages.RuntimeAuthorityValidationContext,
     ) -> dict[str, Any]:
         receipt = production_stages.load_json_object(
             environment_receipt, "SYNTHETIC_ENVIRONMENT_RECEIPT"
@@ -1120,6 +1124,7 @@ def test_exact_five_canary_end_to_end_reuses_production_functions(
             expected_environment_receipt_sha256
         )
         assert scientific_governing_commit == COMMIT
+        assert runtime_validation_context is production_stages.LIVE_RUNTIME_CAPTURE
         calls["environment_authority_validation"] = 1
         return {
             "status": "ENVIRONMENT_AUTHORITY_COMMIT_EQUAL",
