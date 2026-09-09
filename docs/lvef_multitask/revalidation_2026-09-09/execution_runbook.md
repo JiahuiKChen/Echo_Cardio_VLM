@@ -3,7 +3,11 @@
 This is the analysis phase after completed C3. The original SCC producer checkout,
 attempt, receipts and historical partial remain preserved. New code runs from a
 separate analysis worktree; new restricted artifacts live in a separate analysis
-directory. No reconstruction job, new encoder run or cohort download is needed.
+directory. The completed preparation used commit
+`073d3883fc54c4041a043efce850ecfeca07890a` in the separate SCC
+`Echo_Cardio_VLM_lvef_multitask_asa_20260909` checkout; the original
+`cda842d04cc18eb3669ad5377c31a6e955fc43cb` checkout was preserved.
+No reconstruction job, new encoder run or cohort download is needed.
 
 ## Authorization and prerequisites
 
@@ -12,7 +16,10 @@ The owner's 2026-09-09 instruction is bound by SHA-256
 `lvef_revalidation_authority.owner_authorization` records its permitted stages,
 conditional on genuine clinical adjudication and the analysis lock. It does not
 answer a clinical question. The current restricted clinician questionnaire has
-eight unanswered decisions; the dated readiness record governs their disposition.
+eight unanswered decisions; the [dated readiness record](../analysis_readiness_2026_09_09.md)
+governs their disposition. Owner authorization, source and environment receipts
+have been published; their hashes are recorded below. They do not replace the
+clinical response or final panel/dependency approval.
 
 `prepare_lvef_revalidation_inputs.py` consumes the small completed C3 handoff and
 hash-bound canonical study array, study manifest/store and clip index. It checks
@@ -94,7 +101,7 @@ may change runtime. A **4-CPU, 16-GB, 4-hour CPU job** is a reasonable initial
 resource request. No GPU or 1.2-TB reconstruction envelope is justified.
 
 The critical path is clinical adjudication, followed by exact panel/input lock,
-SCC synthetic validation, one train/validation fit and fixed-test evaluation,
+one train/validation fit and fixed-test evaluation,
 then paired reporting and figure QA. Scheduler wait and clinician turnaround
 are not included in the computational estimate. The missing submission PDF
 affects historical source comparison. Vendor emails establish the slide format
@@ -113,5 +120,43 @@ the canary mock also accepts the existing typed runtime context. No C3
 production implementation changed. The same two fixture files also passed under
 umasks 077 and 022. The five PDF templates were rendered and visually checked;
 their manifest binds all ten SVG/PDF artifacts. These are software and layout
-checks, not project-model performance results. SCC validation and actual common
-input preparation are recorded separately when completed.
+checks, not project-model performance results.
+
+## Completed SCC preparation — 2026-09-09
+
+All six focused SCC test files passed: **86 passed**, exit status zero, under
+the separately recorded SCC environment. The actual input adapter passed,
+the three serialized split arrays were rehashed, and all 22 prepared targets'
+ordered subject-study-label fingerprints replayed across train, validation and
+test. The [current input funnel](current_input_funnel.md) records selected
+4,530 (3,171/679/680), imaging-eligible 4,525 (3,168/678/679), and the exact five
+prespecified no-cine exclusions. Observed selected LVEF before imaging was
+2,836 (1,998/411/427); common LVEF was 2,833 (1,997/410/426), with 103 exact-40
+labels (71/12/20).
+
+All 21 candidates plus LVEF passed computational support and positive training-IQR
+checks. Selected numeric candidate counts equaled valid-unit counts; there were
+zero repeated numeric target rows after selection and zero incompatible numeric
+rows among candidate21. These findings do not verify the native LVEF unit or
+approve final clinical construct/aggregation rules. The nine technical
+dispositions were published and the grouped panel/dependency draft prepared.
+Eight clinical choices and the evidence-based grouped final review remain open.
+
+| Owner-private evidence | SHA-256 |
+|---|---|
+| Owner instruction receipt | `eadccf524c778206b53ed28fce7f71e04de03ffd677d28a76e1e9b1faef3c650` |
+| SCC environment receipt | `0315a5ab66e8825c7c0a5743bc975af3d520be5dc8d4137dd010b10a82e57bfc` |
+| Analysis source receipt | `fc9beea169465d84974cd0589bf0db83dcbe52d90b80c05d7935ada4e1848bf3` |
+| Model-independent inputs | `b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de` |
+| Aggregate identity/funnel replay | `501501b91069ff9252f0bfc98d102e1d61b18a493f91daa278aa6cd80b99ec01` |
+| Nine technical decisions | `427fd59fe75b4985cb2556e94a6b949af1edeabe98282bac0e0eab1c2d28a975` |
+| Grouped panel/dependency draft, pending approval | `4d72afcdfa9f6e707e712183c36c1ac6d7a486e4e2cc741b12c30821fb41c0dc` |
+| SCC focused validation | `dcb15fbfcd59eda92e003485228f9dc97a9b0655aee3af41770b2434f7cb9035` |
+
+At reconciliation, there were zero project-model fits, zero performance access,
+no active preparation helper and no analysis `qsub` submission. The analysis
+lock remains unsealed; no model freeze or fixed-test release has been created.
+The next execution milestone is the clinically adjudicated panel and dependency
+lock, followed by the already authorized train/validation stage. Source or
+environment changes must be rebound before that execution; completed preparation
+does not require repeating C3 reconstruction or its full preservation replay.

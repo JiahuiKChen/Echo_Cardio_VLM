@@ -1,6 +1,6 @@
 # Results and figure shells
 
-Status: **unpopulated statistical templates**. `PENDING` means unavailable, never zero. Reconstruction facts below come from the completed C3 handoff; all label denominators and model estimates require the new validated analysis bundle. Do not import historical predictions or estimates into the revalidated column.
+Status: **verified input flow with unpopulated statistical templates**. `PENDING` means unavailable, never zero. Reconstruction facts come from the completed C3 handoff; current label denominators come from the completed SCC input and identity replay. Model estimates still require the released validated analysis bundle. Do not import historical predictions or estimates into the revalidated column. See the [current input funnel](current_input_funnel.md) and [readiness record](../analysis_readiness_2026_09_09.md).
 
 ## Table 1 / Figure 1: cohort and denominator flow
 
@@ -9,23 +9,29 @@ Status: **unpopulated statistical templates**. `PENDING` means unavailable, neve
 | Public source release | 7,243 / 4,579 | Historical provenance reference; not a new C3 count |
 | Measurement-linked and ≥5 DICOM objects | 7,104 studies | Historical selection funnel |
 | Deterministic one-study-per-subject selection | 4,530 / 4,530 | Completed C3 selection authority |
-| Selected split | 3,171 / 679 / 680 | Established train/validation/test map; current row audit to reverify |
+| Selected split | 3,171 / 679 / 680 | Original train/validation/test map and current subject-study ownership verified |
 | Reconstructed imaging representations | 4,525 study vectors; 184,570 clip vectors | Completed C3; selected cohort only |
 | Prespecified no-cine exclusion | 5 studies | Exclude in all three primary modalities; no new no-cine attrition |
-| Common imaging split | PENDING | Expected historical arithmetic 3,168 / 678 / 679; verify actual identities before use |
-| Common observed LVEF | PENDING | Historical reference 2,833; 1,997 / 410 / 426 |
-| Exact LVEF =40 | PENDING | Historical reference 103 overall; 71 / 12 / 20 |
-| Locked strict-panel target-specific common rows | PENDING, one row per target/split | Must include identical modality membership and label hashes |
+| Common imaging split | 3,168 / 678 / 679 | Current serialized-input identity audit passed; 4,525 overall |
+| Observed selected LVEF before imaging eligibility | 2,836 | 1,998 / 411 / 427; separate exact-name label authority |
+| Common observed LVEF | 2,833 | Current exact membership/label replay passed; 1,997 / 410 / 426 |
+| Exact common LVEF =40 | 103 | Current label-only boundary audit passed; 71 / 12 / 20 |
+| Candidate target-specific common rows | 21 candidates plus LVEF | All 22 targets across three splits replayed; computational support and positive training-IQR checks passed |
+| Locked strict-panel target-specific common rows | PENDING final membership | Eight clinical decisions and evidence-based grouped panel/mask/aggregation approval remain; candidate support is not panel authority |
 
 Render flow boxes for selection → imaging eligibility → target observation. Branch the five no-cine cases to a separately labeled structured-only sensitivity. Do not use the older all-study totals of 4,696 embeddings or 191,993 clips as selected C3 totals. Missing target labels are target-specific, not a single universal exclusion count. Source: [denominator funnel](../denominator_funnel.md).
+
+The completed preparation ran at analysis commit `073d3883fc54c4041a043efce850ecfeca07890a`. Input receipt SHA-256: `b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de`; safe aggregate identity/funnel SHA-256: `501501b91069ff9252f0bfc98d102e1d61b18a493f91daa278aa6cd80b99ec01`. The three serialized split arrays were rehashed. Candidate selected numeric counts equaled valid-unit counts, with zero repeated numeric target rows after selection and zero incompatible numeric candidate21 rows. The separate exact-name LVEF analytical scale does not establish a verified native-unit declaration. No model fit, prediction or performance comparison is represented by this table.
 
 ## Table 2 / Figure 2: continuous LVEF and paired effects
 
 | Model | Train / validation / test n | MAE, EF points (95% CI) | RMSE | R² | Bias | Error ≤5 EF points |
 |---|---|---|---|---|---|---|
-| Vision-only | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Structured-only | Same ordered rows | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Early fusion | Same ordered rows | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Vision-only | 1,997 / 410 / 426 | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Structured-only | 1,997 / 410 / 426; same ordered inputs | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Early fusion | 1,997 / 410 / 426; same ordered inputs | PENDING | PENDING | PENDING | PENDING | PENDING |
+
+These are verified prepared-input denominators. They do not imply that models have been fit or evaluated.
 
 | Paired MAE contrast | Difference (95% CI), EF points | Raw p | Core-family Holm p | Valid / 10,000 draws | Interpretation |
 |---|---|---|---|---|---|

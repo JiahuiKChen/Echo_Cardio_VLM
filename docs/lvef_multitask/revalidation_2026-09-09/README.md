@@ -17,7 +17,16 @@ The critical path is the existing vision-only, structured-only, and early-fusion
 | [Input-content audit](input_content_audit_and_sensitivity.md) | Exact preprocessing findings and blinded audit proposal |
 | [Comparator feasibility](comparator_feasibility.md) | Separate bounded proposal with primary-source checks |
 | [Execution runbook](execution_runbook.md) | Authorized stages, validation, environment and resource estimate |
+| [Current input funnel](current_input_funnel.md) | Verified SCC denominators, technical preparation and receipt bindings |
 | [Figure templates](figures/render_manifest.pending.json) | Five verified SVG/PDF shells; no performance estimates |
+
+Verified PDF shells: [cohort flow](figures/cohort_flow.pending.pdf),
+[LVEF modality table](figures/lvef_modality_table.pending.pdf),
+[paired effects](figures/lvef_paired_effects.pending.pdf),
+[complete task panel](figures/complete_task_panel.pending.pdf), and
+[masking/missingness](figures/masking_missingness.pending.pdf).
+They remain templates; current model-independent counts are in the input funnel,
+and no model-performance estimates have been inserted.
 
 ## Completion evidence available for reconstruction reporting
 

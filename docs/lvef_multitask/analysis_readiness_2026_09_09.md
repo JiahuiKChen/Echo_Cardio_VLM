@@ -34,16 +34,26 @@ plumbing and does not substitute for scientific readiness or export approval.
 
 | Requirement | Evidence | Status | Remaining action |
 |---|---|---|---|
-| Selected C3 imaging authority | Completion receipt above | Complete | Bind its final stores and manifests into the analysis inputs |
-| Original selected cohort and subject split | Preserved one-study selection; 3,171/679/680 split | Existing authority | Verify exact subject-study ownership and split against the final imaging store |
-| LVEF label identity | Exact case-sensitive raw `lvef`; numeric within-report median; selected subject/measurement join | Resolved independently of canonical mapping | Preserve this separate authority and verify current common-row identities |
-| LVEF thresholds | `<40` primary; `<=40` and `<50` sensitivities; prior exact-40 audit | Prespecified | Reconcile label-only counts against the final store; no prediction access |
-| Technical metadata | Current SCC audit passed; complete 188-row mapping, exact regenerated 67-row clinical view, and hash-bound unit-class projection | Nine technical processing dispositions reviewed | Bind the decisions below to the current technical manifest and input checksums; retain the stated limitations |
+| Selected C3 imaging authority | Completion receipt plus canonical artifact hashes and serialized input replay | Complete | Preserve the original producer and derived analysis bindings |
+| Original selected cohort and subject split | Selected 3,171/679/680; imaging eligible 3,168/678/679; exact membership and ownership passed | Verified on final store | Retain these fixed splits |
+| LVEF label identity | Exact case-sensitive raw `lvef`; numeric within-report median; selected subject/measurement join; ordered label fingerprints replayed | Verified independently of canonical mapping | Preserve the separate label authority and method/unit limitations |
+| LVEF thresholds | `<40` primary; `<=40` and `<50` sensitivities; final exact-40 count 71/12/20 | Label-only reconciliation passed | Keep thresholds fixed; all three endpoints pass class support floors |
+| Technical metadata | Current SCC audit, complete 188-row mapping, exact regenerated 67-row view, hash-bound technical decision receipt | Nine dispositions published | Apply bounded exclusions and retain the stated limitations |
 | Echocardiographer decisions | Current packet regenerated exactly; response checksum passed; all eight answers and reviewer fields blank | Eight human decisions remain | Obtain one allowed option, rationale, expertise attestation, and date for all eight questions |
 | Scored panel and dependency masks | Existing registries are provisional; candidate21 and legacy29 have distinct roles | Unlocked | Apply reviewed identities/units, exclusions, family masks, and support floors before performance |
-| Exact common modality rows | Historical LVEF common 2,833 (1,997/410/426) | Requires final-store audit | Freeze ordered subject-study-target rows, not merely matching totals |
-| SAP, implementation, environment, and analysis lock | Prespecified SAP plus separate analysis implementation and authority | In preparation | Validate implementation and bind final artifacts before fitting/test |
+| Exact common modality inputs | Final-store LVEF 2,833 (1,997/410/426); all 22 candidate/anchor targets × three split fingerprints replayed | Verified shared rows and labels | Bind the clinically finalized subset without modality-specific row removal |
+| Implementation and environment | Commit `073d388`; local maintained suite 2,063 passed/1 skipped; SCC focused suite 86 passed; private environment/source receipts | Validated | Preserve tested source/environment bindings |
+| SAP/config and analysis lock | Existing prescription; recorded owner authorization; final clinical panel/dependencies still pending | Unsealed | Apply genuine clinical decisions, complete grouped source/predictor review, then seal and execute under existing authorization |
 | Non-LVEF native-unit margins | May explicitly remain unresolved | Does not independently block error/interval analysis | Suppress margin-based win/tie/loss claims for targets without a defensible margin |
+
+The completed SCC input preparation and receipt bindings are recorded in the
+[current input funnel](revalidation_2026-09-09/current_input_funnel.md). The owner,
+environment, source, technical decisions and synthetic-validation receipts are
+actually published; they are not proposed filenames. The original C3 checkout
+remains at its completed producer commit. The separate analysis checkout consumed
+only existing stores and metadata. No model fitting, test-performance access,
+new source download or encoder execution occurred. The preparation helper has
+finished, and no statistical analysis job has been submitted.
 
 ## Nine technical dispositions
 
@@ -145,7 +155,7 @@ exclusions. Repeated exact-name LVEF measurements are aggregated by the numeric
 median within `(subject_id, measurement_id)` before the selected-study join.
 Other targets require their reviewed alias/unit rules and declared repeated-row
 aggregation. Neither 4,530 selected studies nor 4,525 study vectors is the LVEF
-label denominator. The prior common LVEF counts are 2,833 overall and
+label denominator. The final-store audit confirms common LVEF counts of 2,833 overall and
 1,997/410/426 by split; 103 overall and 71/12/20 by split equal exactly 40.
 
 All five no-cine studies are excluded from every primary modality. A row whose
