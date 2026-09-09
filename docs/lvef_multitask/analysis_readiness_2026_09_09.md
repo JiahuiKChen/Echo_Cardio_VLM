@@ -12,6 +12,14 @@ supersedes the earlier human-action queue below. The original blank form is
 preserved as historical evidence; its blank fields no longer mean the clinical
 decisions are missing. The new route retains unknown expert identity/signature/date
 and independently checks source-unit eligibility, including the E-field conflict.
+The review, final panel/dependencies and specification are now published on SCC;
+all seven preflight gates passed under implementation `d43f499`. CPU job 7504510
+was accepted with 4 CPUs, 16 GB and an 8-hour limit; its 15:12 UTC start was
+observed. Validate, seal, development, freeze, release-test and the single
+fixed-test evaluation now have maintained PASS receipts. Reporting is running;
+no stage failure has been observed. No performance estimate or claim is populated
+before the validated aggregate bundle. Current authority hashes are in the
+[execution record](revalidation_2026-09-09/execution_runbook.md).
 
 ## Completed reconstruction and owner instruction
 
@@ -47,21 +55,23 @@ plumbing and does not substitute for scientific readiness or export approval.
 | LVEF label identity | Exact case-sensitive raw `lvef`; numeric within-report median; selected subject/measurement join; ordered label fingerprints replayed | Verified independently of canonical mapping | Preserve the separate label authority and method/unit limitations |
 | LVEF thresholds | `<40` primary; `<=40` and `<50` sensitivities; final exact-40 count 71/12/20 | Label-only reconciliation passed | Keep thresholds fixed; all three endpoints pass class support floors |
 | Technical metadata | Current SCC audit, complete 188-row mapping, exact regenerated 67-row view, hash-bound technical decision receipt | Nine dispositions published | Apply bounded exclusions and retain the stated limitations |
-| Echocardiographer decisions | Exact owner-relayed expert agreement and eight supplied interpretations; original packet preserved | Supplied through versioned review route | Publish/replay the separately bound review; no repeat direct-entry form required |
-| Scored panel and dependency masks | Fixed finalization applies explicit measurement definitions, positive raw predictors, aliases/formulas/families and supported units | Awaiting concrete SCC authority publication | Retain 21 reviewed measurement targets, separate LVEF anchor and the valid E-velocity source; replay before lock |
+| Echocardiographer decisions | Exact owner-relayed expert agreement and eight supplied interpretations; original packet preserved | Published and replayed on SCC | Retain the operational limitations; no repeat direct-entry form required |
+| Scored panel and dependency masks | Fixed finalization applies explicit measurement definitions, positive raw predictors, aliases/formulas/families and supported units | Published and preflight passed | Retain 21 reviewed measurement targets, separate LVEF anchor and the valid E-velocity source |
 | Exact common modality inputs | Final-store LVEF 2,833 (1,997/410/426); all 22 candidate/anchor targets × three split fingerprints replayed | Verified shared rows and labels | Bind the clinically finalized subset without modality-specific row removal |
-| Implementation and environment | Commit `073d388`; local maintained suite 2,063 passed/1 skipped; SCC focused suite 86 passed; private environment/source receipts | Validated | Preserve tested source/environment bindings |
-| SAP/config and analysis lock | Existing prescription and owner authorization; new clinical route and concrete panel/dependency finalizer | Unsealed at this source checkpoint | Refresh source/environment/validation bindings, replay all gates, then seal and execute |
+| Implementation and environment | Commit `d43f499`; local maintained suite 2,110 passed/1 skipped; SCC focused suite 133 passed; refreshed private environment/source bindings | Validated | Preserve tested source/environment bindings |
+| SAP/config and analysis lock | Exact published specification/run manifest, owner authorization and all seven preflight gates | Job 7504510: validate through single fixed-test evaluation PASS; reporting running | Reconcile the validated aggregate bundle before populating performance claims |
 | Non-LVEF native-unit margins | May explicitly remain unresolved | Does not independently block error/interval analysis | Suppress margin-based win/tie/loss claims for targets without a defensible margin |
 
 The completed SCC input preparation and receipt bindings are recorded in the
 [current input funnel](revalidation_2026-09-09/current_input_funnel.md). The owner,
 environment, source, technical decisions and synthetic-validation receipts are
 actually published; they are not proposed filenames. The original C3 checkout
-remains at its completed producer commit. The separate analysis checkout consumed
-only existing stores and metadata. No model fitting, test-performance access,
-new source download or encoder execution occurred. The preparation helper has
-finished, and no statistical analysis job has been submitted.
+remains at its completed producer commit. At the preceding model-independent
+preparation checkpoint, the separate checkout consumed only existing stores and
+metadata, with no fitting, test-performance access, new source download or encoder
+execution. The preparation helper had finished and no analysis job had yet been
+submitted. The later job and completed scientific stages are recorded above;
+the original source and numerical inputs remain unchanged.
 
 ## Nine technical dispositions
 
@@ -171,8 +181,8 @@ label denominator. The final-store audit confirms common LVEF counts of 2,833 ov
 
 All five no-cine studies are excluded from every primary modality. A row whose
 allowed structured predictors are all missing remains eligible and uses training
-imputation; the separately labeled structured full-availability sensitivity has a
-different estimand. Prohibited predictors are removed before feature eligibility,
+imputation. Structured full-availability sensitivity would have a different
+estimand; it is unactivated and not run in the current manifest. Prohibited predictors are removed before feature eligibility,
 imputation, scaling, or missingness indicators. Exact ordered subject-study-target
 rows and labels must match across vision, structured, and fusion inputs.
 
@@ -180,6 +190,7 @@ A scored target requires at least 120/40/40 train/validation/test observed commo
 labels, at least 250 total, and finite positive training-target IQR. Binary tasks
 require at least 20 events and 20 nonevents in each split. Membership is fixed
 before fitting; LVEF is a separate anchor outside the macro. The candidate21 list
-is not a final panel, legacy29 is a historical sensitivity, and body-size/vital
+did not itself approve a final panel; the later concrete review now fixes those
+21 measurement targets. Legacy29 is historical, and body-size/vital
 fields are not primary echo-measurement macro targets. Historical counts may
 change only through documented source lineage or declared exclusions.

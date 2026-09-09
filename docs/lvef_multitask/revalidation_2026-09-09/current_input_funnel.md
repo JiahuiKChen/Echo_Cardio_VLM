@@ -1,11 +1,14 @@
 # Verified analysis input preparation — 2026-09-09
 
-**Model-independent preparation passed on SCC; clinical panel and analysis lock
-remain pending. No model fitting or test-performance access occurred.** This
-record summarizes the closed aggregate projection of the private input receipt;
-it contains no subject/study lists, individual labels, predictions or embeddings.
+**Model-independent preparation passed on SCC. The later owner-relayed review,
+final panel/dependency authorities and all seven preflight gates have passed;
+CPU job 7504510 has been submitted.** This record summarizes the closed aggregate
+projection of the unchanged private input receipt. It contains no subject/study
+lists, individual labels, predictions or embeddings. Current clinical and execution
+authorities are in the [runbook](execution_runbook.md); the original preparation
+checkpoint below involved no fitting or test-performance access.
 
-The analysis implementation is `073d3883fc54c4041a043efce850ecfeca07890a`,
+The preserved input-preparation implementation was `073d3883fc54c4041a043efce850ecfeca07890a`,
 executed from a separate detached SCC checkout. The original completed C3
 checkout remains at `cda842d04cc18eb3669ad5377c31a6e955fc43cb`.
 All four canonical artifact hashes/sizes, study-vector hashes, clip membership,
@@ -33,7 +36,8 @@ a usable exact-name numeric LVEF remain outside this label denominator. These ar
 availability and imaging dispositions, not failures of imputation or prediction.
 A row with all finally permitted structured predictors missing remains eligible;
 the primary denominator never requires an observed predictor. Any future
-structured full-availability sensitivity must retain a separate denominator.
+structured full-availability sensitivity would require a separate denominator;
+it is unactivated and not run in the current manifest.
 
 The label authority remains the exact case-sensitive raw `lvef` field, joined by
 selected subject/report and checked for study ownership. Numeric repeated rows
@@ -68,7 +72,9 @@ conversion; the six velocity targets use explicit m/s-to-cm/s conversion.
 `mitral_e_velocity`, whose source unit is ms, is outside this table and cannot be
 merged into a velocity label under the current source authority. Broader
 uncertain-unit predictors remain excluded independently of these candidate
-counts. Clinical validity of each retained source aggregation remains pending.
+counts. Subsequent clinical operational adjudication and technical review approved
+the exact retained source aggregation; individual acquisition conventions remain
+unverified, as recorded in the [clinical amendment](clinical_adjudication_amendment_2026_09_09.md).
 
 | Target | Unit | Observed / compatible before imaging | Common train | Common validation | Common test | Common total |
 |---|---|---:|---:|---:|---:|---:|
@@ -98,9 +104,9 @@ counts. Clinical validity of each retained source aggregation remains pending.
 Differences between each pre-imaging and common total arise from the verified
 no-cine intersection. They are not target-specific predictive exclusions.
 The accepted historical 29-task panel is unchanged and is not substituted for
-the eventual clinically adjudicated strict panel.
+the separately published 21-target operational strict panel.
 
-## Preparation evidence
+## Historical preparation evidence
 
 | Published record | SHA-256 |
 |---|---|
@@ -110,7 +116,7 @@ the eventual clinically adjudicated strict panel.
 | Private model-independent inputs | `b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de` |
 | Aggregate serialized-identity and funnel replay | `501501b91069ff9252f0bfc98d102e1d61b18a493f91daa278aa6cd80b99ec01` |
 | Nine technical dispositions | `427fd59fe75b4985cb2556e94a6b949af1edeabe98282bac0e0eab1c2d28a975` |
-| Pending grouped panel/dependency draft | `4d72afcdfa9f6e707e712183c36c1ac6d7a486e4e2cc741b12c30821fb41c0dc` |
+| Historical grouped panel/dependency draft, then pending | `4d72afcdfa9f6e707e712183c36c1ac6d7a486e4e2cc741b12c30821fb41c0dc` |
 | SCC focused synthetic validation, 86 passed | `dcb15fbfcd59eda92e003485228f9dc97a9b0655aee3af41770b2434f7cb9035` |
 | Final independent-preparation handoff | `5f09a6b3f17ca1d87807be0e6d6ca1fda56cd4791d53c206b07ae56b661d507d` |
 
@@ -119,15 +125,16 @@ input adapter and review constructor both returned zero. SCC ran all six new
 focused test files with isolated pytest 8.3.5 and the unchanged scientific Python
 environment. All 86 tests passed. The local maintained suite previously passed
 2,063 tests with one skip. These are actual software/input checks, with zero
-fitting and zero test-performance access. The preparation helper has finished;
-no analysis scheduler job, analysis lock, model freeze or test release exists.
+fitting and zero test-performance access. At that historical checkpoint the preparation helper had finished;
+no analysis scheduler job, analysis lock, model freeze or test release existed.
 
-Eight clinician choices remain blank in the existing hash-bound questionnaire.
-The final handoff rechecked the actual response, current source and environment
-and reports `PASS_INDEPENDENT_PREPARATION_CLINICAL_REVIEW_PENDING`.
-After genuine responses, the authorized next work is to apply their consequences,
-complete the grouped source-aggregation and positive-predictor review, lock the
-panel and specification, then fit/select, freeze and evaluate once. Numerical
-support alone cannot stand in for that review. See the
+The original eight-choice direct-entry response remains blank and unchanged.
+The historical handoff rechecked it and correctly reported
+`PASS_INDEPENDENT_PREPARATION_CLINICAL_REVIEW_PENDING` at that earlier checkpoint.
+The later separately bound owner-relayed review now supplies all eight decisions;
+its consequences and the grouped source-aggregation/positive-predictor review
+have been applied and replayed. Numerical support alone did not supply those
+approvals. The submitted worker proceeds through the exact manifest stages;
+no performance result is asserted by this preparation record. See the
 [readiness record](../analysis_readiness_2026_09_09.md) and
 [execution runbook](execution_runbook.md).

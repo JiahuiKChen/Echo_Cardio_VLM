@@ -45,11 +45,12 @@ most one scored E-velocity construct is permitted; joint mitral-family masking
 remains. No source repair, correlation-based identity claim or new aggregation
 is authorized by this interpretation.
 
-The proposed strict panel retains the 21 reviewed candidates because each has a
+The published strict panel retains the 21 reviewed candidates because each has a
 supported operational label, compatible numeric source, adequate support and
 positive training IQR. LVEF remains a separate anchor. The final panel and exact
-positive raw predictor decisions must be generated and replayed through the
-maintained gates before fitting. The unchanged input arrays need no regeneration
+positive raw predictor decisions were published on SCC, and all seven maintained
+preflight gates passed under implementation `d43f499`. Their hashes and the
+submitted execution job are recorded in the [runbook](execution_runbook.md). The unchanged input arrays need no regeneration
 for these interpretation/mask amendments. No clinical non-LVEF margin is invented;
 unresolved margins suppress margin-based labels, not errors or intervals.
 

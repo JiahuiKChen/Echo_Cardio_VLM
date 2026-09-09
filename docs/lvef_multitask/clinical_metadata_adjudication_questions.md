@@ -1,6 +1,6 @@
 # Restricted clinical metadata adjudication
 
-Status: **fixed SCC-only signoff workflow prepared; eight echocardiographer decisions and nine technical reviews remain open**.
+Historical Phase 1E workflow status: **the fixed SCC-only signoff workflow was prepared while eight echocardiographer decisions and nine technical reviews were still open**. The workflow description below is retained as history. The later [2026-09-09 readiness record](analysis_readiness_2026_09_09.md) records completed owner-relayed clinical adjudication, published technical/panel authorities and the submitted analysis; the original questionnaire and blank response remain unchanged.
 
 The Phase 1D metadata audit completed successfully at commit `e97324a`. Phase 1E adds a fixed packet builder and response validator. The form includes restricted source metadata and therefore remains on SCC as:
 

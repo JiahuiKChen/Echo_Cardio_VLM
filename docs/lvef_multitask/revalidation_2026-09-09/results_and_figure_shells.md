@@ -17,9 +17,9 @@ Status: **verified input flow with unpopulated statistical templates**. `PENDING
 | Common observed LVEF | 2,833 | Current exact membership/label replay passed; 1,997 / 410 / 426 |
 | Exact common LVEF =40 | 103 | Current label-only boundary audit passed; 71 / 12 / 20 |
 | Candidate target-specific common rows | 21 candidates plus LVEF | All 22 targets across three splits replayed; computational support and positive training-IQR checks passed |
-| Locked strict-panel target-specific common rows | PENDING final membership | Eight clinical decisions and evidence-based grouped panel/mask/aggregation approval remain; candidate support is not panel authority |
+| Approved strict-panel target-specific common rows | 21 measurement targets, with LVEF separate | Published panel, source aggregation and positive predictor/mask authorities passed all seven preflight gates; see the [current execution record](execution_runbook.md) |
 
-Render flow boxes for selection → imaging eligibility → target observation. Branch the five no-cine cases to a separately labeled structured-only sensitivity. Do not use the older all-study totals of 4,696 embeddings or 191,993 clips as selected C3 totals. Missing target labels are target-specific, not a single universal exclusion count. Source: [denominator funnel](../denominator_funnel.md).
+Render flow boxes for selection → imaging eligibility → target observation. Show the five no-cine cases as exclusions from all current modalities. Structured-only full-availability sensitivity is unactivated and not run; do not draw a completed-analysis branch for it. Do not use the older all-study totals of 4,696 embeddings or 191,993 clips as selected C3 totals. Missing target labels are target-specific, not a single universal exclusion count. Source: [denominator funnel](../denominator_funnel.md).
 
 The completed preparation ran at analysis commit `073d3883fc54c4041a043efce850ecfeca07890a`. Input receipt SHA-256: `b82fe7d4a7c3f3cb8aed57038af409d7861aa1b09130292052f0c330cebae4de`; safe aggregate identity/funnel SHA-256: `501501b91069ff9252f0bfc98d102e1d61b18a493f91daa278aa6cd80b99ec01`. The three serialized split arrays were rehashed. Candidate selected numeric counts equaled valid-unit counts, with zero repeated numeric target rows after selection and zero incompatible numeric candidate21 rows. The separate exact-name LVEF analytical scale does not establish a verified native-unit declaration. No model fit, prediction or performance comparison is represented by this table.
 
@@ -53,9 +53,9 @@ Generate two fusion-contrast rows per target with:
 
 | Full-panel summary | Target count | Vision | Structured | Fusion | Fusion − vision (paired CI) | Fusion − structured (paired CI) |
 |---|---:|---|---|---|---|---|
-| Strict mean MAE / training IQR | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Family-masked, same scored targets | Same locked count | PENDING | PENDING | PENDING | PENDING | PENDING |
-| Pragmatic, same scored targets | Same locked count | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Strict mean MAE / training IQR | 21 | PENDING | PENDING | PENDING | PENDING | PENDING |
+| Family-masked construct | Not activated | NOT RUN | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+| Pragmatic construct | Not activated | NOT RUN | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | Secondary family-balanced mean | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 
 Figure 3: a complete target forest plot grouped by reviewed family, with native-unit labels/denominators visible; an aligned normalized-error panel enables scale comparison. Include worse/indeterminate tasks and negative R² counts. A top-gains chart or macro-only plot cannot stand in for the complete display. No non-LVEF win/tie/loss labels without independent margins.
@@ -68,7 +68,7 @@ One row per modality and endpoint (`<40` primary; `<=40` and `<50` sensitivity):
 
 Diagram contract: target and prohibited aliases/dependencies/family fields → removal from schema → allowed training features → train-only imputation/scaling/indicators → shared transformations → modality-specific training → validation selection → frozen test. Show no route from a removed field into a missingness indicator. Use schematic dependency examples (LV diameters/FS, TR velocity/pressure, duplicate mitral E) marked **registry-dependent**; the diagram does not adjudicate their project-specific identity.
 
-Sensitivity table: with/without indicators on exact common rows; prespecified random 10/30/50% withholding; training joint-pattern withholding; structured full-availability cohort; threshold definitions/bands; eligible demographics with suppression; input-content sensitivities only if independently locked. Include support, paired sample, feature/mask hash, estimate/CI, and exploratory status. Do not combine different denominators into one paired bar chart.
+The current manifest activates six strict-construct conditions: primary, no indicators, random 10/30/50% withholding, and training joint-pattern withholding. Threshold definitions/bands remain prespecified reporting outputs. Structured full-availability, demographic/subgroup analyses, single-field or single-family withholding, input-content sensitivities, and family-masked/pragmatic constructs are unactivated and not run. Keep those proposed analyses out of the current result table. For actual outputs, include support, paired sample, feature/mask hash, estimate/CI, and secondary status. Do not combine different denominators into one paired bar chart.
 
 ## Result prose awaiting validated values
 

@@ -19,6 +19,7 @@ The critical path is the existing vision-only, structured-only, and early-fusion
 | [Execution runbook](execution_runbook.md) | Authorized stages, validation, environment and resource estimate |
 | [Current input funnel](current_input_funnel.md) | Verified SCC denominators, technical preparation and receipt bindings |
 | [Clinical review amendment](clinical_adjudication_amendment_2026_09_09.md) | Accepted owner-relayed expert interpretations, exact scope and retained limitations |
+| [Final panel and processing](final_panel_and_processing.md) | Ordered 21-target panel, separate LVEF anchor, eight excluded targets and raw-source processing rules |
 | [Figure templates](figures/render_manifest.pending.json) | Five verified SVG/PDF shells; no performance estimates |
 
 Verified PDF shells: [cohort flow](figures/cohort_flow.pending.pdf),
@@ -30,8 +31,10 @@ They remain templates; current model-independent counts are in the input funnel,
 and no model-performance estimates have been inserted.
 
 The populated [verified cohort flow](figures/cohort_flow.verified_inputs.pdf)
-uses the exact aggregate input authority and a separately preserved preparation
-snapshot. Its source hashes and derivation are recorded alongside it. The later
+uses the exact aggregate input authority and a separately preserved historical
+pre-adjudication snapshot, [verified_input_funnel.source.md](figures/verified_input_funnel.source.md).
+Pending-clinical language inside that immutable figure source records the earlier
+checkpoint, not current readiness. Its source hashes and derivation are recorded alongside it. The later
 owner-relayed clinical review closes the eight interpretation questions; it does
 not change the verified numerical cohort inputs or turn these counts into
 performance estimates.
@@ -53,7 +56,7 @@ The receipt is a derived, nonauthorizing handoff under the attempt's `r7h_auth_s
 
 ## Before replacing any result placeholder
 
-Use the current [analysis readiness record](../analysis_readiness_2026_09_09.md). Reconcile the nine technical and eight clinical questions against existing decisions; the older unresolved counts are a queue to inspect, not proof that every issue remains open. Do not adopt the provisional 21 targets as a final panel. Preserve exact-name LVEF authority separately from the broader canonical map. Clinical conventions require actual adjudication; the user's analysis authorization supplies no clinical answer.
+Use the current [analysis readiness record](../analysis_readiness_2026_09_09.md) and [execution authority](execution_runbook.md). The eight owner-relayed interpretations and nine technical dispositions have been applied to the published 21-target panel, with LVEF separate. All seven SCC preflight gates passed and CPU job 7504510 was submitted. The original blank direct-entry response remains historical evidence; it is not a current missing-review condition. Preserve the recorded operational evidence strength and source-acquisition limitations.
 
 Bind every populated table to the final ordered panel, common-row and split manifests, source and embedding hashes, reviewed masks/units, training-only transformations, frozen validation selections, SAP/config hashes, fixed-test release, and aggregate-safety-validated result bundle. Record the later statistical implementation commit independently of the completed C3 producer. Unresolved non-LVEF margins withhold margin-based labels but need not withhold native-unit errors and paired intervals.
 
