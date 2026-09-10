@@ -64,6 +64,13 @@ from .audit_default_preset import (
     preset_event_metadata,
     public_preset_for_event,
 )
+from .audit_team_progress import (
+    ADMIN_LOG_SCHEMA,
+    OWNER_ACCESS_CONFIG_FILENAME,
+    OwnerAccessControl,
+    TeamProgressCoordinator,
+    load_team_progress_configuration,
+)
 from .reduced_audit import (
     FORMAL_RELIABILITY_N,
     PROTOCOL_NAME,
@@ -497,12 +504,23 @@ class RoleQueueStore:
                 None,
             )
             if candidate is None:
+                locked_primary = {
+                    str(event["physical_study_token"])
+                    for event in active
+                    if event.get("role") == ROLE_PRIMARY and event.get("status") == "locked"
+                }
+                no_eligible_message = (
+                    "The minimum target-stratified Primary audit is complete."
+                    if role == ROLE_PRIMARY
+                    and locked_primary == set(map(str, self.policy["primary_queue"]))
+                    else NO_ELIGIBLE_MESSAGE
+                )
                 return {
                     "outcome": NO_ELIGIBLE_STUDY,
                     "workflow_state": UNCLAIMED,
                     "event": None,
                     "open_study": False,
-                    "message": NO_ELIGIBLE_MESSAGE,
+                    "message": no_eligible_message,
                     "requirements": [],
                 }
             formal = role == ROLE_SECONDARY and candidate in formal_ids
@@ -1917,8 +1935,34 @@ class RoleAwareAuditService:
             self.manifest,
             **checkpoint_options,
         )
+        self.team_progress_configuration = load_team_progress_configuration(
+            interface_root,
+            expected_source_commit=source_commit,
+        )
+        if self.team_progress_configuration is not None and source_commit is None:
+            raise ValueError("source_commit is required while team progress is active")
+        self.progress = TeamProgressCoordinator(
+            self.package_root,
+            self.queue,
+            self.checkpoints,
+            self.registry,
+        )
+        owner_config_path = active.protocol_root / "owner" / OWNER_ACCESS_CONFIG_FILENAME if active_pointer.is_file() else None
+        self.owner_access = (
+            OwnerAccessControl(owner_config_path)
+            if owner_config_path is not None and owner_config_path.is_file()
+            else None
+        )
+        if self.team_progress_configuration is not None and self.owner_access is None:
+            raise ValueError("team progress requires separate owner access configuration")
+        self.owner_log_root = (
+            active.protocol_root / "owner" / "admin_action_log"
+            if active_pointer.is_file()
+            else self.package_root / "restricted" / "owner" / "admin_action_log"
+        )
         self._sessions: dict[str, dict[str, str]] = {}
         self._session_lock = threading.RLock()
+        self._owner_sessions: set[str] = set()
 
     @staticmethod
     def _client_event(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -2131,6 +2175,143 @@ class RoleAwareAuditService:
             self._sessions.pop(str(token), None)
         return {"status": "SESSION_ENDED"}
 
+    def shared_progress(self) -> dict[str, Any]:
+        """Return contributor-visible aggregates without study-level target membership."""
+
+        return self.progress.shared()
+
+    def role_status(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        allowed = {"reviewer_code", "role", "qualification_confirmed"}
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise ValueError(f"role-status request contains unsupported fields: {unknown}")
+        if payload.get("qualification_confirmed") is not True:
+            raise PermissionError("qualification confirmation is required")
+        return self.progress.role_status(
+            str(payload.get("reviewer_code", "")),
+            str(payload.get("role", "")),
+        )
+
+    def owner_login(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if set(payload) != {"owner_secret"}:
+            raise ValueError("owner login contains unsupported fields")
+        if self.owner_access is None or not self.owner_access.verify(str(payload.get("owner_secret", ""))):
+            raise PermissionError("owner authorization failed")
+        token = secrets.token_urlsafe(32)
+        with self._session_lock:
+            self._owner_sessions.add(token)
+        return {
+            "status": "OWNER_AUTHENTICATED",
+            "owner_session_token": token,
+            "dashboard": self.progress.owner(),
+        }
+
+    def _require_owner(self, token: Any) -> str:
+        token = str(token)
+        with self._session_lock:
+            if token not in self._owner_sessions:
+                raise PermissionError("owner session is unavailable")
+        return token
+
+    def owner_dashboard(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if set(payload) != {"owner_session_token"}:
+            raise ValueError("owner dashboard request contains unsupported fields")
+        self._require_owner(payload.get("owner_session_token"))
+        return self.progress.owner()
+
+    def _write_owner_action_log(
+        self,
+        *,
+        action: str,
+        request: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> Path:
+        record = {
+            "schema_version": ADMIN_LOG_SCHEMA,
+            "action": str(action),
+            "timestamp_utc": utc_now(),
+            "owner_confirmed": True,
+            "request": dict(request),
+            "result": dict(result),
+            "annotation_values_modified": False,
+        }
+        self.owner_log_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = self.owner_log_root / f"owner-action-{sha256_json(record)[:24]}.json"
+        if path.exists():
+            raise FileExistsError("owner action log already exists")
+        _atomic_write_json(path, record)
+        return path
+
+    def owner_action(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        allowed = {
+            "owner_session_token",
+            "action",
+            "owner_confirmed",
+            "reviewer_code",
+            "event_id",
+            "reason",
+        }
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise ValueError(f"owner action contains unsupported fields: {unknown}")
+        self._require_owner(payload.get("owner_session_token"))
+        if payload.get("owner_confirmed") is not True:
+            raise PermissionError("explicit owner confirmation is required")
+        action = str(payload.get("action", ""))
+        request_record: dict[str, Any] = {"action": action}
+        if action == "register_reviewer":
+            code = _code(payload.get("reviewer_code", ""))
+            record = self.registry.register(code, qualified=True)
+            request_record["reviewer_code"] = code
+            result = {"reviewer_code": code, "active": record["active"]}
+        elif action == "deactivate_reviewer":
+            code = _code(payload.get("reviewer_code", ""))
+            record = self.registry.set_active(code, False)
+            request_record["reviewer_code"] = code
+            result = {"reviewer_code": code, "active": record["active"]}
+        elif action == "archive_incomplete":
+            event_id = str(payload.get("event_id", "")).strip()
+            reason = str(payload.get("reason", "")).strip()
+            archived = self.checkpoints.archive_for_reassignment(
+                event_id,
+                owner_confirmed=True,
+                reason=reason,
+            )
+            request_record.update({"event_id": event_id, "reason": reason})
+            result = {
+                "event_id": event_id,
+                "status": archived["event"]["status"],
+                "record_sha256": archived["record_sha256"],
+            }
+        elif action == "restart_finalized":
+            event_id = str(payload.get("event_id", "")).strip()
+            event = self.queue.get_event(event_id)
+            restarted = self.checkpoints.restart_finalized(
+                event_id,
+                reviewer_code=str(event["reviewer_code"]),
+                role=str(event["role"]),
+                owner_confirmed=True,
+            )
+            request_record["event_id"] = event_id
+            result = {
+                "archived_event_id": event_id,
+                "replacement_event_id": str(restarted["event"]["event_id"]),
+                "restart_record_sha256": restarted["restart_record_sha256"],
+            }
+        else:
+            raise ValueError("owner action is unsupported")
+        log_path = self._write_owner_action_log(
+            action=action,
+            request=request_record,
+            result=result,
+        )
+        return {
+            "status": "OWNER_ACTION_RECORDED",
+            "action": action,
+            "action_log_sha256": sha256_file(log_path),
+            "dashboard": self.progress.owner(),
+        }
+
     def media_path(self, token: str, media_token: str) -> Path:
         session = self.session(token)
         study = self.studies[session["audit_id"]]
@@ -2311,6 +2492,14 @@ def _interface_html() -> str:
   <main>
     <section id="start-screen" class="start-screen">
       <h1>Begin review session</h1>
+      <section class="progress-panel" aria-labelledby="audit-progress-heading">
+        <h2 id="audit-progress-heading">Audit progress</h2>
+        <div class="target-progress"><strong>LVOT VTI study reviews: <span id="lvot-progress-text">Loading</span></strong><progress id="lvot-progress" max="15" value="0"></progress></div>
+        <div class="target-progress"><strong>TAPSE study reviews: <span id="tapse-progress-text">Loading</span></strong><progress id="tapse-progress" max="15" value="0"></progress></div>
+        <dl class="progress-summary"><dt>Unique physical studies finalized</dt><dd id="physical-progress">Loading</dd><dt>Primary studies in progress</dt><dd id="primary-in-progress">Loading</dd><dt>Primary studies not yet claimed</dt><dd id="primary-unclaimed">Loading</dd><dt>Formal independent repeat reviews</dt><dd id="repeat-progress">Loading</dd><dt>Repeat reviews in progress</dt><dd id="repeat-in-progress">Loading</dd><dt>Tier A studies finalized</dt><dd id="tier-a-progress">Loading</dd><dt>Tier C studies finalized</dt><dd id="tier-c-progress">Loading</dd></dl>
+        <p>These are cumulative team totals across all reviewers. Only finalized and locked Primary study reviews count toward the 15-study target.</p>
+        <p>Repeat reviews assess agreement and do not count again toward the 15-study target totals.</p>
+      </section>
       <label>Reviewer code<input id="reviewer-code" maxlength="64" autocomplete="off"></label>
       <fieldset><legend>Review role</legend>
         <label><input type="radio" name="role" value="primary">Primary independent review</label>
@@ -2319,12 +2508,15 @@ def _interface_html() -> str:
         <p>An independent repeat review used to assess agreement. You will not see the primary reviewer&apos;s annotations.</p>
       </fieldset>
       <label class="confirm"><input id="qualification" type="checkbox">I confirm that I am qualified and am using my own reviewer code.</label>
+      <div id="role-status" class="role-status" aria-live="polite"></div>
       <div class="actions"><button id="resume-review" type="button">Resume my incomplete study</button><button id="claim-review" type="button">Claim next eligible study</button></div>
       <div class="actions"><button id="view-finalized" type="button">View my latest finalized study (read-only)</button></div>
       <div class="actions"><button id="pending-action" type="button" hidden></button><button id="end-session-start" type="button">End review session</button></div>
       <p id="start-status" class="status" aria-live="polite"></p>
       <ul id="start-requirements"></ul>
       <p id="start-error" role="alert"></p>
+      <p><a href="/owner">Audit coordination / owner view</a></p>
+      <p class="owner-note">Archive and restart under current protocol is available only through separately authorized owner controls.</p>
     </section>
     <section id="review-screen" hidden>
       <aside>
@@ -2335,7 +2527,6 @@ def _interface_html() -> str:
         <p id="read-only-status" class="read-only" hidden>Finalized record: read-only</p>
         <ul id="remaining-requirements"></ul>
         <button id="lock-study" class="finalize" type="button">Finalize study</button>
-        <button id="restart-study" class="restart" type="button" hidden>Archive and restart under current protocol</button>
         <button id="leave-session" type="button">End review session</button>
       </aside>
       <article>
@@ -2365,7 +2556,7 @@ def _interface_html() -> str:
 
 
 def _interface_css() -> str:
-    return """*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;font:14px Arial,sans-serif;color:#171717;background:#f4f5f6}header{height:48px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #bbb}.start-screen{max-width:680px;margin:36px auto;padding:24px;background:#fff;border:1px solid #aaa;border-radius:6px}.start-screen h1{font-size:22px;margin:0 0 20px}.start-screen label{display:flex;align-items:center;gap:8px;margin:10px 0}.start-screen input[type=text],.start-screen input:not([type]){width:260px}.start-screen fieldset{margin:18px 0}.start-screen fieldset p{margin:3px 0 14px 28px;color:#555}.actions{display:flex;gap:8px;flex-wrap:wrap}.status{color:#234b2f;line-height:1.4}.read-only{padding:8px;border:1px solid #835d15;background:#fff7dd;font-weight:700}.finalize{font-weight:700;border:2px solid #1d5a35;background:#eef8f1}.restart{font-weight:700;border:2px solid #835d15;background:#fff7dd}.scope-banner{position:sticky;top:48px;z-index:2;margin:8px 0;padding:12px;border:2px solid #24496b;background:#eef6fc;font-weight:700;line-height:1.45}.preset-banner{margin:8px 0;padding:12px;border:2px solid #7a5411;background:#fff8dc;line-height:1.45}.preset-banner span{display:block;margin-top:6px}.preset-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0;padding:10px;border:1px solid #7a5411;background:#fff}.preset-actions button{font-weight:700;border:2px solid #1d5a35;background:#eef8f1}.preset-actions kbd{padding:2px 5px;border:1px solid #999;background:#f4f4f4}button,select,input{min-height:34px;margin:4px;padding:5px 8px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}#start-error{color:#9b1c1c;min-height:20px}#start-requirements,#remaining-requirements{padding-left:20px;color:#7c2d12}#review-screen{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 48px)}aside{padding:16px;border-right:1px solid #bbb;background:#fff}article{padding:14px;min-width:0}.clip-nav,.frame-controls{display:flex;align-items:center;justify-content:center}.frame-controls input{width:min(420px,55vw)}.tier{font-weight:700;margin:6px 0}.views{display:grid;grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);gap:10px}.views figure{margin:0;background:#fff;border:2px solid #777;padding:8px}.views figcaption{min-height:34px;font-weight:700;line-height:1.35}.views canvas{display:block;width:100%;max-height:60vh;aspect-ratio:1;object-fit:contain;background:#000}.source-only #model-panel{display:none}.source-only .views{grid-template-columns:minmax(280px,1fr)}fieldset{border:1px solid #aaa;margin:10px 0;padding:10px;background:#fff}fieldset h3{font-size:15px;margin:12px 0 4px}label{display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}.presence-label{display:grid;grid-template-columns:minmax(190px,1fr) minmax(120px,220px);align-items:start;gap:8px;margin:8px 0}.presence-copy{display:flex;flex-direction:column}.presence-copy small{color:#4a4a4a;line-height:1.35;margin-top:2px}.category-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:4px 14px}.category-grid label{align-items:flex-start}.derived-note{color:#4a4a4a}.derived-summary{display:grid;grid-template-columns:minmax(180px,1fr) minmax(100px,160px);gap:6px 12px;margin:8px 0}.derived-summary dt,.derived-summary dd{margin:0;padding:4px 0}.derived-summary dd{font-weight:700}.counter{margin:8px 0;color:#555}@media(max-width:850px){#review-screen{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #bbb}.views{grid-template-columns:1fr}.presence-label,.category-grid,.derived-summary{grid-template-columns:1fr}.scope-banner{top:0}}
+    return """*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;font:14px Arial,sans-serif;color:#171717;background:#f4f5f6}header{height:48px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #bbb}.start-screen{max-width:720px;margin:24px auto;padding:24px;background:#fff;border:1px solid #aaa;border-radius:6px}.start-screen h1{font-size:22px;margin:0 0 20px}.start-screen h2{font-size:18px;margin:0 0 12px}.start-screen label{display:flex;align-items:center;gap:8px;margin:10px 0}.start-screen input[type=text],.start-screen input:not([type]){width:260px}.start-screen fieldset{margin:18px 0}.start-screen fieldset p{margin:3px 0 14px 28px;color:#555}.progress-panel{padding:14px;margin:0 0 18px;border:1px solid #8a949d;background:#f8fafb}.target-progress{display:grid;grid-template-columns:minmax(240px,1fr) minmax(160px,260px);gap:12px;align-items:center;margin:8px 0}.target-progress progress{width:100%;height:18px}.progress-summary{display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:5px 14px;margin:12px 0}.progress-summary dt,.progress-summary dd{margin:0}.progress-summary dd{font-weight:700}.progress-panel p,.role-status{color:#444;line-height:1.4}.role-status{min-height:22px;padding:8px 0}.actions{display:flex;gap:8px;flex-wrap:wrap}.status{color:#234b2f;line-height:1.4}.read-only{padding:8px;border:1px solid #835d15;background:#fff7dd;font-weight:700}.finalize{font-weight:700;border:2px solid #1d5a35;background:#eef8f1}.scope-banner{position:sticky;top:48px;z-index:2;margin:8px 0;padding:12px;border:2px solid #24496b;background:#eef6fc;font-weight:700;line-height:1.45}.preset-banner{margin:8px 0;padding:12px;border:2px solid #7a5411;background:#fff8dc;line-height:1.45}.preset-banner span{display:block;margin-top:6px}.preset-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0;padding:10px;border:1px solid #7a5411;background:#fff}.preset-actions button{font-weight:700;border:2px solid #1d5a35;background:#eef8f1}.preset-actions kbd{padding:2px 5px;border:1px solid #999;background:#f4f4f4}button,select,input{min-height:34px;margin:4px;padding:5px 8px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}#start-error{color:#9b1c1c;min-height:20px}#start-requirements,#remaining-requirements{padding-left:20px;color:#7c2d12}#review-screen{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 48px)}aside{padding:16px;border-right:1px solid #bbb;background:#fff}article{padding:14px;min-width:0}.clip-nav,.frame-controls{display:flex;align-items:center;justify-content:center}.frame-controls input{width:min(420px,55vw)}.tier{font-weight:700;margin:6px 0}.views{display:grid;grid-template-columns:minmax(280px,1fr) minmax(280px,1fr);gap:10px}.views figure{margin:0;background:#fff;border:2px solid #777;padding:8px}.views figcaption{min-height:34px;font-weight:700;line-height:1.35}.views canvas{display:block;width:100%;max-height:60vh;aspect-ratio:1;object-fit:contain;background:#000}.source-only #model-panel{display:none}.source-only .views{grid-template-columns:minmax(280px,1fr)}fieldset{border:1px solid #aaa;margin:10px 0;padding:10px;background:#fff}fieldset h3{font-size:15px;margin:12px 0 4px}label{display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}.presence-label{display:grid;grid-template-columns:minmax(190px,1fr) minmax(120px,220px);align-items:start;gap:8px;margin:8px 0}.presence-copy{display:flex;flex-direction:column}.presence-copy small{color:#4a4a4a;line-height:1.35;margin-top:2px}.category-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:4px 14px}.category-grid label{align-items:flex-start}.derived-note{color:#4a4a4a}.derived-summary{display:grid;grid-template-columns:minmax(180px,1fr) minmax(100px,160px);gap:6px 12px;margin:8px 0}.derived-summary dt,.derived-summary dd{margin:0;padding:4px 0}.derived-summary dd{font-weight:700}.counter{margin:8px 0;color:#555}.owner-main{max-width:1180px;margin:24px auto;padding:0 18px}.owner-card{background:#fff;border:1px solid #aaa;padding:18px;margin:12px 0}.owner-card h1,.owner-card h2{margin-top:0}.owner-grid{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:12px}.owner-table{width:100%;border-collapse:collapse}.owner-table th,.owner-table td{padding:6px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}.owner-error{color:#9b1c1c}.owner-note{color:#444;line-height:1.4}@media(max-width:850px){#review-screen{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #bbb}.views,.target-progress,.owner-grid{grid-template-columns:1fr}.presence-label,.category-grid,.derived-summary{grid-template-columns:1fr}.scope-banner{top:0}}
 """
 
 
@@ -2401,9 +2592,12 @@ function selectedNamespace(){const code=document.querySelector('#reviewer-code')
 function requireCurrentNamespace(){if(!clientNamespace||clientNamespace!==selectedNamespace())throw new Error('Reviewer identity or role changed. End this session and resume with the correct reviewer code and role.');}
 function setQueueBusy(value){requestPending=value;['resume-review','claim-review','view-finalized','pending-action'].forEach(id=>{document.querySelector(`#${id}`).disabled=value;});}
 async function request(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const p=await r.json();if(!r.ok)throw new Error(p.error||'Request failed');return p;}
+function renderTeamProgress(p){const lvot=p.target_progress.lvot_vti,tapse=p.target_progress.tapse;document.querySelector('#lvot-progress-text').textContent=`${lvot.finalized} of ${lvot.goal} finalized`;document.querySelector('#lvot-progress').max=lvot.goal;document.querySelector('#lvot-progress').value=lvot.finalized;document.querySelector('#tapse-progress-text').textContent=`${tapse.finalized} of ${tapse.goal} finalized`;document.querySelector('#tapse-progress').max=tapse.goal;document.querySelector('#tapse-progress').value=tapse.finalized;document.querySelector('#physical-progress').textContent=`${p.physical_studies.finalized} of ${p.physical_studies.total}`;document.querySelector('#primary-in-progress').textContent=String(p.primary.in_progress);document.querySelector('#primary-unclaimed').textContent=String(p.primary.not_yet_claimed);document.querySelector('#repeat-progress').textContent=`${p.formal_repeat_reviews.finalized} of ${p.formal_repeat_reviews.goal}`;document.querySelector('#repeat-in-progress').textContent=String(p.formal_repeat_reviews.in_progress);document.querySelector('#tier-a-progress').textContent=`${p.evidence_tiers.EXACT_MODEL_INPUT.finalized} of ${p.evidence_tiers.EXACT_MODEL_INPUT.total}`;document.querySelector('#tier-c-progress').textContent=`${p.evidence_tiers.SOURCE_ACQUISITION_ONLY.finalized} of ${p.evidence_tiers.SOURCE_ACQUISITION_ONLY.total}`;}
+async function refreshTeamProgress(){const r=await fetch('/api/progress',{cache:'no-store'});const p=await r.json();if(!r.ok)throw new Error(p.error||'Progress unavailable');renderTeamProgress(p);}
+async function refreshRoleStatus(){const who=identity(),root=document.querySelector('#role-status');if(!who.reviewer_code||!who.role||!who.qualification_confirmed){root.textContent='';return;}try{const p=await request('/api/role-status',who);const target=p.shared.target_progress;root.textContent=who.role==='primary'?`Team LVOT VTI ${target.lvot_vti.finalized} / 15; TAPSE ${target.tapse.finalized} / 15. Eligible unique Primary studies remaining: ${p.eligible_remaining}. Your incomplete Primary reviews: ${p.reviewer_incomplete}; finalized Primary reviews: ${p.reviewer_finalized}.`:`Formal repeat reviews ${p.shared.formal_repeat_reviews.finalized} / 8. Formal repeats remaining: ${p.eligible_remaining}. Your incomplete Secondary reviews: ${p.reviewer_incomplete}; finalized Secondary reviews: ${p.reviewer_finalized}.`;}catch(error){root.textContent=error.message||String(error);}}
 function resetReviewState(){stopPlayback();session='';event=null;study=null;state={annotations:{studies:{},clips:{}}};defaultPreset=null;ci=0;locked=false;readOnly=false;frameIndex=0;workflowState='UNCLAIMED';clientNamespace='';clipDirty=false;sprites.source=null;sprites.model=null;document.querySelector('#clip-form').reset();document.querySelector('#study-form').reset();document.querySelector('#remaining-requirements').innerHTML='';document.body.classList.remove('source-only');}
 function fillRequirements(rootId,requirements){const root=document.querySelector(`#${rootId}`);root.innerHTML='';(requirements||[]).forEach(message=>{const item=document.createElement('li');item.textContent=message;root.appendChild(item);});}
-function showStart(message,{preserveIdentity=true,pendingAction='',requirements=[]}={}){resetReviewState();document.querySelector('#review-screen').hidden=true;document.querySelector('#start-screen').hidden=false;document.querySelector('#start-error').textContent='';document.querySelector('#start-status').textContent=message||'';fillRequirements('start-requirements',requirements);document.querySelector('#save-state').textContent='Ready';const pending=document.querySelector('#pending-action');pending.hidden=!pendingAction;if(pendingAction==='resume'){pending.textContent='Resume incomplete study';pending.onclick=()=>claim('resume').catch(showError);}else if(pendingAction==='finalize'){pending.textContent='Finalize completed study';pending.onclick=()=>claim('resume').catch(showError);}else{pending.onclick=null;}if(!preserveIdentity){document.querySelector('#reviewer-code').value='';document.querySelectorAll('input[name=role]').forEach(input=>{input.checked=false;});document.querySelector('#qualification').checked=false;}}
+function showStart(message,{preserveIdentity=true,pendingAction='',requirements=[]}={}){resetReviewState();document.querySelector('#review-screen').hidden=true;document.querySelector('#start-screen').hidden=false;document.querySelector('#start-error').textContent='';document.querySelector('#start-status').textContent=message||'';fillRequirements('start-requirements',requirements);document.querySelector('#save-state').textContent='Ready';const pending=document.querySelector('#pending-action');pending.hidden=!pendingAction;if(pendingAction==='resume'){pending.textContent='Resume incomplete study';pending.onclick=()=>claim('resume').catch(showError);}else if(pendingAction==='finalize'){pending.textContent='Finalize completed study';pending.onclick=()=>claim('resume').catch(showError);}else{pending.onclick=null;}if(!preserveIdentity){document.querySelector('#reviewer-code').value='';document.querySelectorAll('input[name=role]').forEach(input=>{input.checked=false;});document.querySelector('#qualification').checked=false;}refreshTeamProgress().catch(showError);refreshRoleStatus();}
 function identity(){return {reviewer_code:document.querySelector('#reviewer-code').value.trim(),role:document.querySelector('input[name=role]:checked')?.value||'',qualification_confirmed:document.querySelector('#qualification').checked};}
 function handleQueueOutcome(payload){if(payload.status==='INCOMPLETE_STUDY_EXISTS'){showStart(payload.message,{pendingAction:'resume',requirements:payload.requirements});return;}if(payload.status==='FINALIZATION_REQUIRED'){showStart(payload.message,{pendingAction:'finalize',requirements:payload.requirements});return;}showStart(payload.message,{requirements:payload.requirements});}
 function openStudy(payload,code,role){session=payload.session_token;event=payload.event;study=payload.study;state=payload.checkpoint;defaultPreset=payload.default_preset||null;workflowState=payload.workflow_state||payload.status;readOnly=payload.access_mode==='read_only_finalized';clientNamespace=[interfaceVersion,code,role].join(':');state.annotations=state.annotations||{studies:{},clips:{}};state.annotations.studies=state.annotations.studies||{};state.annotations.clips=state.annotations.clips||{};state.clip_review_states=state.clip_review_states||{};locked=!!state.locked||readOnly;ci=0;clipDirty=false;document.querySelector('#start-screen').hidden=true;document.querySelector('#review-screen').hidden=false;document.querySelector('#review-status').textContent=payload.message||'';fillRequirements('remaining-requirements',payload.requirements);render();}
@@ -2418,18 +2612,65 @@ function renderFrame(){drawSprite('source');drawSprite('model');document.querySe
 function loadSprite(name,token){sprites[name]=null;drawSprite(name);if(!token)return;const img=new Image();img.onload=()=>{sprites[name]=img;renderFrame();};img.src=`/media/${encodeURIComponent(token)}?session=${encodeURIComponent(session)}`;}
 function stopPlayback(){if(playTimer){clearInterval(playTimer);playTimer=null;}document.querySelector('#toggle-play').textContent='Play';}
 function togglePlayback(){if(playTimer){stopPlayback();return;}playTimer=setInterval(()=>{frameIndex=(frameIndex+1)%16;renderFrame();},250);document.querySelector('#toggle-play').textContent='Pause';}
-function render(){const clip=study.clips[ci];const tierA=clip.evidence_tier==='EXACT_MODEL_INPUT';const saved=state.annotations.clips[clip.clip_audit_id];const displayed=saved||(defaultPreset?defaultPreset.field_values:{});document.querySelector('#study-id').textContent=study.audit_id;document.querySelector('#role-label').textContent=event.role==='primary'?'Primary independent review':'Secondary independent review';document.querySelector('#clip-counter').textContent=`Clip ${ci+1} of ${study.clips.length}`;document.querySelector('#tier').textContent=clip.source_only?'SOURCE ACQUISITION ONLY - NOT VERIFIED MODEL INPUT':clip.evidence_tier.replaceAll('_',' ');document.querySelector('#scoring-scope').textContent=scoringScope[clip.evidence_tier]||'';document.body.classList.toggle('source-only',clip.source_only);document.querySelector('#source-caption').textContent=tierA?'Source acquisition — corresponding source frame':'Source acquisition — scoring target';document.querySelector('#model-caption').textContent='Exact model input — scoring target';fill(document.querySelector('#clip-form'),displayed);syncSourceOnlyVisibility(clip);syncCandidateValueVisibility();renderStudySummary();frameIndex=0;loadSprite('source',clip.source_media_id);loadSprite('model',clip.model_input_media_id);document.querySelector('#lock-study').hidden=readOnly;document.querySelector('#lock-study').disabled=locked;document.querySelector('#restart-study').hidden=!readOnly;document.querySelector('#read-only-status').hidden=!readOnly;document.querySelector('#preset-confirmation-banner').hidden=!defaultPreset||readOnly;document.querySelector('#preset-actions').hidden=!defaultPreset||readOnly;document.querySelector('#confirm-defaults-next').disabled=locked;document.querySelector('#clip-confirmation-state').textContent=defaultPreset?(clipIsConfirmed(clip)?'Confirmed':'Unreviewed until confirmed'):'';clipDirty=false;updateProgress();}
+function render(){const clip=study.clips[ci];const tierA=clip.evidence_tier==='EXACT_MODEL_INPUT';const saved=state.annotations.clips[clip.clip_audit_id];const displayed=saved||(defaultPreset?defaultPreset.field_values:{});document.querySelector('#study-id').textContent=study.audit_id;document.querySelector('#role-label').textContent=event.role==='primary'?'Primary independent review':'Secondary independent review';document.querySelector('#clip-counter').textContent=`Clip ${ci+1} of ${study.clips.length}`;document.querySelector('#tier').textContent=clip.source_only?'SOURCE ACQUISITION ONLY - NOT VERIFIED MODEL INPUT':clip.evidence_tier.replaceAll('_',' ');document.querySelector('#scoring-scope').textContent=scoringScope[clip.evidence_tier]||'';document.body.classList.toggle('source-only',clip.source_only);document.querySelector('#source-caption').textContent=tierA?'Source acquisition — corresponding source frame':'Source acquisition — scoring target';document.querySelector('#model-caption').textContent='Exact model input — scoring target';fill(document.querySelector('#clip-form'),displayed);syncSourceOnlyVisibility(clip);syncCandidateValueVisibility();renderStudySummary();frameIndex=0;loadSprite('source',clip.source_media_id);loadSprite('model',clip.model_input_media_id);document.querySelector('#lock-study').hidden=readOnly;document.querySelector('#lock-study').disabled=locked;document.querySelector('#read-only-status').hidden=!readOnly;document.querySelector('#preset-confirmation-banner').hidden=!defaultPreset||readOnly;document.querySelector('#preset-actions').hidden=!defaultPreset||readOnly;document.querySelector('#confirm-defaults-next').disabled=locked;document.querySelector('#clip-confirmation-state').textContent=defaultPreset?(clipIsConfirmed(clip)?'Confirmed':'Unreviewed until confirmed'):'';clipDirty=false;updateProgress();}
 async function move(delta){if(!readOnly&&defaultPreset&&!clipIsConfirmed(study.clips[ci]))throw new Error('Confirm this clip before navigating. Unconfirmed defaults remain unreviewed.');if(!readOnly&&defaultPreset&&clipDirty)throw new Error('Reconfirm this edited clip before navigating.');if(!readOnly&&!defaultPreset)await save();stopPlayback();ci=Math.max(0,Math.min(study.clips.length-1,ci+delta));render();}
 function conditionalRequirement(){const studyRecord=state.annotations.studies[study.audit_id]||{};if(studyFields.some(field=>['yes','uncertain'].includes(String(studyRecord[field]||'')))&&!String(studyRecord.restricted_notes||'').trim())return 'Add restricted study notes for positive or uncertain study findings.';for(const clip of study.clips){const record=state.annotations.clips[clip.clip_audit_id]||{};if(presence.some(field=>String(record[field]||'')==='uncertain')&&!String(record.restricted_notes||'').trim())return 'Add restricted notes for every clip marked uncertain.';if(String(record.candidate_target_value_present||'')==='yes'&&!complete(record,displayedValueRequired))return 'Complete displayed-value details for every clip marked as containing a candidate value.';if(!sourceOnlySelectionComplete(clip,record))return 'Select at least one source-only category for every Tier-A clip marked Yes.';}return '';}
 async function clipChanged(event){syncSourceOnlyVisibility(study.clips[ci]);if(event?.target?.name==='candidate_target_value_present')syncCandidateValueVisibility({clearDisabled:true});else syncCandidateValueVisibility();const confirmation=document.querySelector('input[name=derived_summary_confirmed]');confirmation.checked=false;const record=state.annotations.studies[study.audit_id]||{};record.derived_summary_confirmed='';state.annotations.studies[study.audit_id]=record;if(defaultPreset){clipDirty=true;document.querySelector('#clip-confirmation-state').textContent='Changed; reconfirm required';document.querySelector('#save-state').textContent='Clip not yet confirmed';return;}await save();}
 async function confirmCurrentClip(){if(!defaultPreset||locked||readOnly)return;requireCurrentNamespace();const clip=study.clips[ci];const annotation={...defaultPreset.field_values,...readForm(document.querySelector('#clip-form'))};document.querySelector('#save-state').textContent='Confirming';const p=await request('/api/confirm-clip',{session_token:session,clip_id:clip.clip_audit_id,annotation});state=p.checkpoint;clipDirty=false;document.querySelector('#save-state').textContent='Confirmed';if(ci<study.clips.length-1)ci+=1;render();}
 async function lockStudy(){if(defaultPreset&&clipDirty)throw new Error('Reconfirm the edited clip before finalizing.');await save();const firstMissing=study.clips.findIndex(c=>!clipComplete(c,state.annotations.clips[c.clip_audit_id]));if(firstMissing>=0){ci=firstMissing;render();throw new Error('Complete and confirm every required clip before finalizing.');}if(!complete(state.annotations.studies[study.audit_id],studyRequired))throw new Error('Review and confirm the derived study summary before finalizing.');const conditional=conditionalRequirement();if(conditional)throw new Error(conditional);if(!confirm('Finalize and lock this study-role review? It cannot be edited afterward.'))return;const p=await request('/api/lock',{session_token:session});showStart(p.message,{preserveIdentity:true});}
-async function restartStudy(){if(!readOnly)throw new Error('Only a finalized read-only record can be restarted.');if(!confirm('Archive this finalized record by hash and restart it blank under the current protocol?'))return;const code=document.querySelector('#reviewer-code').value.trim();const role=document.querySelector('input[name=role]:checked')?.value||'';const p=await request('/api/restart-finalized',{session_token:session,owner_confirmed:true});openStudy(p,code,role);}
 async function endSession(){const token=session;if(defaultPreset&&clipDirty&&!confirm('This clip has unconfirmed changes that will not be saved. End the review session?'))return;if(token&&study&&!locked&&!readOnly&&clientNamespace===selectedNamespace()){await save();}if(token){await request('/api/end-session',{session_token:token});}showStart('Review session ended. Saved server progress was preserved.',{preserveIdentity:false});}
 function showError(error){const message=error.message||String(error);if(document.querySelector('#review-screen').hidden){document.querySelector('#start-error').textContent=message;}else{document.querySelector('#save-state').textContent=message;}}
-function clearStaleClientState(){if(!document.querySelector('#review-screen').hidden)return;resetReviewState();document.querySelector('#start-status').textContent='';document.querySelector('#start-error').textContent='';document.querySelector('#pending-action').hidden=true;}
-function init(){fields(document.querySelector('#presence-fields'),presence);sourceCategoryFields(document.querySelector('#source-only-category-fields'));document.querySelector('#resume-review').onclick=()=>claim('resume').catch(showError);document.querySelector('#claim-review').onclick=()=>claim('claim_next').catch(showError);document.querySelector('#view-finalized').onclick=()=>viewFinalized().catch(showError);document.querySelector('#previous-clip').onclick=()=>move(-1).catch(showError);document.querySelector('#next-clip').onclick=()=>move(1).catch(showError);document.querySelector('#toggle-play').onclick=togglePlayback;document.querySelector('#frame-slider').oninput=e=>{frameIndex=Number(e.target.value);renderFrame();};document.querySelector('#confirm-defaults-next').onclick=()=>confirmCurrentClip().catch(showError);document.querySelector('#lock-study').onclick=()=>lockStudy().catch(showError);document.querySelector('#restart-study').onclick=()=>restartStudy().catch(showError);document.querySelector('#leave-session').onclick=()=>endSession().catch(showError);document.querySelector('#end-session-start').onclick=()=>endSession().catch(showError);document.querySelector('#reviewer-code').addEventListener('input',clearStaleClientState);document.querySelectorAll('input[name=role]').forEach(input=>input.addEventListener('change',clearStaleClientState));document.querySelectorAll('#clip-form select,#clip-form input').forEach(e=>e.addEventListener('change',event=>clipChanged(event).catch(showError)));document.querySelectorAll('#study-form select,#study-form input').forEach(e=>e.addEventListener('change',()=>save().catch(showError)));document.addEventListener('keydown',event=>{if(event.altKey&&event.key==='Enter'&&defaultPreset&&!readOnly){event.preventDefault();confirmCurrentClip().catch(showError);}});document.addEventListener('contextmenu',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});document.addEventListener('dragstart',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});showStart('',{preserveIdentity:false});}
+function clearStaleClientState(){if(!document.querySelector('#review-screen').hidden)return;resetReviewState();document.querySelector('#start-status').textContent='';document.querySelector('#start-error').textContent='';document.querySelector('#pending-action').hidden=true;refreshRoleStatus();}
+function init(){fields(document.querySelector('#presence-fields'),presence);sourceCategoryFields(document.querySelector('#source-only-category-fields'));document.querySelector('#resume-review').onclick=()=>claim('resume').catch(showError);document.querySelector('#claim-review').onclick=()=>claim('claim_next').catch(showError);document.querySelector('#view-finalized').onclick=()=>viewFinalized().catch(showError);document.querySelector('#previous-clip').onclick=()=>move(-1).catch(showError);document.querySelector('#next-clip').onclick=()=>move(1).catch(showError);document.querySelector('#toggle-play').onclick=togglePlayback;document.querySelector('#frame-slider').oninput=e=>{frameIndex=Number(e.target.value);renderFrame();};document.querySelector('#confirm-defaults-next').onclick=()=>confirmCurrentClip().catch(showError);document.querySelector('#lock-study').onclick=()=>lockStudy().catch(showError);document.querySelector('#leave-session').onclick=()=>endSession().catch(showError);document.querySelector('#end-session-start').onclick=()=>endSession().catch(showError);document.querySelector('#reviewer-code').addEventListener('input',clearStaleClientState);document.querySelector('#qualification').addEventListener('change',refreshRoleStatus);document.querySelectorAll('input[name=role]').forEach(input=>input.addEventListener('change',clearStaleClientState));document.querySelectorAll('#clip-form select,#clip-form input').forEach(e=>e.addEventListener('change',event=>clipChanged(event).catch(showError)));document.querySelectorAll('#study-form select,#study-form input').forEach(e=>e.addEventListener('change',()=>save().catch(showError)));document.addEventListener('keydown',event=>{if(event.altKey&&event.key==='Enter'&&defaultPreset&&!readOnly){event.preventDefault();confirmCurrentClip().catch(showError);}});document.addEventListener('contextmenu',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});document.addEventListener('dragstart',e=>{if(e.target.tagName==='CANVAS')e.preventDefault();});showStart('',{preserveIdentity:false});}
 init();
+"""
+
+
+def _owner_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Audit Coordination Owner View</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><strong>Audit coordination / owner view</strong><a href="/">Reviewer start page</a></header>
+  <main class="owner-main">
+    <section id="owner-login" class="owner-card">
+      <h1>Owner authorization</h1>
+      <label>Owner access secret<input id="owner-secret" type="password" autocomplete="off"></label>
+      <button id="owner-login-button" type="button">Open coordination view</button>
+      <p id="owner-error" class="owner-error" role="alert"></p>
+    </section>
+    <section id="owner-dashboard" hidden>
+      <div class="owner-card"><h1>Team audit progress</h1><div id="owner-summary"></div><p class="owner-note">Target membership remains hidden at the individual-study level. No clinical responses are shown here.</p><button id="owner-refresh" type="button">Refresh</button></div>
+      <div class="owner-grid"><section class="owner-card"><h2>Evidence tiers and readiness</h2><div id="owner-tiers"></div></section><section class="owner-card"><h2>Data-quality status</h2><div id="owner-quality"></div></section></div>
+      <section class="owner-card"><h2>Reviewer workload</h2><div id="owner-reviewers"></div></section>
+      <section class="owner-card"><h2>Active coordination</h2><div id="owner-active"></div></section>
+      <section class="owner-card"><h2>Finalized records</h2><div id="owner-finalized"></div></section>
+      <section class="owner-card"><h2>Reviewer registration</h2><label>New qualified reviewer code<input id="new-reviewer-code" autocomplete="off"></label><button id="register-reviewer" type="button">Register reviewer</button></section>
+      <p id="owner-action-status" class="status" aria-live="polite"></p>
+    </section>
+  </main>
+  <script src="owner.js"></script>
+</body>
+</html>
+"""
+
+
+def _owner_js() -> str:
+    return """'use strict';
+let ownerSession='';
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const p=await r.json();if(!r.ok)throw new Error(p.error||'Request failed');return p;}
+function table(headers,rows){const t=document.createElement('table');t.className='owner-table';const head=document.createElement('thead'),hr=document.createElement('tr');headers.forEach(h=>{const th=document.createElement('th');th.textContent=h;hr.appendChild(th);});head.appendChild(hr);t.appendChild(head);const body=document.createElement('tbody');rows.forEach(values=>{const tr=document.createElement('tr');values.forEach(value=>{const td=document.createElement('td');if(value instanceof Node)td.appendChild(value);else td.textContent=String(value??'');tr.appendChild(td);});body.appendChild(tr);});t.appendChild(body);return t;}
+function button(label,action){const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=action;return b;}
+function render(d){const s=d.shared,t=s.target_progress;document.querySelector('#owner-summary').replaceChildren(table(['Measure','Progress'],[['LVOT VTI finalized assignments',`${t.lvot_vti.finalized} / ${t.lvot_vti.goal}`],['TAPSE finalized assignments',`${t.tapse.finalized} / ${t.tapse.goal}`],['Unique physical studies finalized',`${s.physical_studies.finalized} / ${s.physical_studies.total}`],['Primary in progress',s.primary.in_progress],['Primary unclaimed',s.primary.not_yet_claimed],['Formal Secondary finalized',`${s.formal_repeat_reviews.finalized} / ${s.formal_repeat_reviews.goal}`],['Formal Secondary in progress',s.formal_repeat_reviews.in_progress]]));document.querySelector('#owner-tiers').replaceChildren(table(['Tier','Finalized'],Object.entries(s.evidence_tiers).map(([tier,p])=>[tier,`${p.finalized} / ${p.total}`]).concat(Object.entries(s.statuses).map(([name,value])=>[name,value?'Yes':'No']))));document.querySelector('#owner-quality').replaceChildren(table(['Measure','Count'],Object.entries(d.data_quality).map(([name,value])=>[name.replaceAll('_',' '),value])));document.querySelector('#owner-reviewers').replaceChildren(table(['Reviewer','Active','Primary open','Primary final','Secondary open','Secondary final','Last save','Claim age (h)','Action'],d.reviewer_workload.map(r=>[r.reviewer_code,r.active?'Yes':'No',r.incomplete_primary,r.finalized_primary,r.incomplete_secondary,r.finalized_secondary,r.last_save_timestamp_utc||'',r.current_claim_age_hours??'',button('Deactivate',()=>ownerAction('deactivate_reviewer',{reviewer_code:r.reviewer_code}))])));document.querySelector('#owner-active').replaceChildren(table(['Event','Study','Reviewer','Role','State','Claim age (h)','Action'],d.active_events.map(e=>[e.event_id,e.audit_id,e.reviewer_code,e.role,e.workflow_state,e.claim_age_hours??'',button('Archive incomplete',()=>ownerAction('archive_incomplete',{event_id:e.event_id,reason:'Owner-verified stale or abandoned claim'}))])));document.querySelector('#owner-finalized').replaceChildren(table(['Event','Study','Reviewer','Role','Locked','Action'],d.finalized_events.map(e=>[e.event_id,e.audit_id,e.reviewer_code,e.role,e.locked_at_utc||'',button('Archive and restart',()=>ownerAction('restart_finalized',{event_id:e.event_id}))])));}
+async function login(){document.querySelector('#owner-error').textContent='';try{const p=await post('/api/owner/login',{owner_secret:document.querySelector('#owner-secret').value});ownerSession=p.owner_session_token;document.querySelector('#owner-secret').value='';document.querySelector('#owner-login').hidden=true;document.querySelector('#owner-dashboard').hidden=false;render(p.dashboard);}catch(error){document.querySelector('#owner-error').textContent=error.message||String(error);}}
+async function refresh(){render(await post('/api/owner/dashboard',{owner_session_token:ownerSession}));}
+async function ownerAction(action,details){if(!confirm(`Confirm owner action: ${action}? Prior records will be preserved and the action will be logged.`))return;const p=await post('/api/owner/action',{owner_session_token:ownerSession,action,owner_confirmed:true,...details});document.querySelector('#owner-action-status').textContent=`${p.status}: ${action}`;render(p.dashboard);}
+document.querySelector('#owner-login-button').onclick=login;document.querySelector('#owner-refresh').onclick=()=>refresh().catch(error=>{document.querySelector('#owner-action-status').textContent=error.message||String(error);});document.querySelector('#register-reviewer').onclick=()=>{const reviewer_code=document.querySelector('#new-reviewer-code').value.trim();ownerAction('register_reviewer',{reviewer_code}).catch(error=>{document.querySelector('#owner-action-status').textContent=error.message||String(error);});};
 """
 
 
@@ -2438,8 +2679,10 @@ def current_role_aware_interface_assets() -> dict[str, bytes]:
 
     return {
         "index.html": _interface_html().encode("utf-8"),
+        "owner.html": _owner_html().encode("utf-8"),
         "style.css": _interface_css().encode("utf-8"),
         "app.js": _interface_js().encode("utf-8"),
+        "owner.js": _owner_js().encode("utf-8"),
     }
 
 

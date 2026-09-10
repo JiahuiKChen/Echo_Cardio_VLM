@@ -25,8 +25,11 @@ from jdim_tier1.safety import require_restricted_destination
 STATIC_FILES = {
     "/": "index.html",
     "/index.html": "index.html",
+    "/owner": "owner.html",
+    "/owner.html": "owner.html",
     "/style.css": "style.css",
     "/app.js": "app.js",
+    "/owner.js": "owner.js",
 }
 
 
@@ -98,6 +101,9 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
                     token = parse_qs(parsed.query).get("session", [""])[0]
                     self._send_json(service.checkpoint(token))
                     return
+                if route == "/api/progress":
+                    self._send_json(service.shared_progress())
+                    return
                 if route.startswith("/media/"):
                     token = parse_qs(parsed.query).get("session", [""])[0]
                     media_token = unquote(route.removeprefix("/media/"))
@@ -117,6 +123,18 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
                     return
                 if route == "/api/view-finalized":
                     self._send_json(service.view_finalized(payload))
+                    return
+                if route == "/api/role-status":
+                    self._send_json(service.role_status(payload))
+                    return
+                if route == "/api/owner/login":
+                    self._send_json(service.owner_login(payload))
+                    return
+                if route == "/api/owner/dashboard":
+                    self._send_json(service.owner_dashboard(payload))
+                    return
+                if route == "/api/owner/action":
+                    self._send_json(service.owner_action(payload))
                     return
                 if route == "/api/checkpoint":
                     allowed = {"session_token", "annotations"}
@@ -145,16 +163,6 @@ def build_handler(service: RoleAwareAuditService) -> type[BaseHTTPRequestHandler
                     if set(payload) != {"session_token"}:
                         raise ValueError("lock request contains unsupported fields")
                     self._send_json(service.lock(str(payload["session_token"])))
-                    return
-                if route == "/api/restart-finalized":
-                    if set(payload) != {"session_token", "owner_confirmed"}:
-                        raise ValueError("restart request contains unsupported fields")
-                    self._send_json(
-                        service.restart_finalized(
-                            str(payload["session_token"]),
-                            owner_confirmed=payload.get("owner_confirmed") is True,
-                        )
-                    )
                     return
                 if route == "/api/end-session":
                     if set(payload) != {"session_token"}:

@@ -22,9 +22,25 @@ from jdim_tier1.audit_default_preset import (  # noqa: E402
     REVIEWED_CONFIRMED,
     REVIEWED_MODIFIED_AND_CONFIRMED,
     activate_default_preset,
+    aggregate_review_state_counts,
     build_default_preset_configuration,
     create_production_review_backup,
     metadata_only_default_preset_dry_run,
+)
+from jdim_tier1.audit_team_progress import (  # noqa: E402
+    AUDIT_READY_FOR_LOCKED_AGGREGATION,
+    BLINDED_ADJUDICATION_COMPLETE,
+    FORMAL_REPEAT_REVIEW_COMPLETE,
+    LVOT_VTI_TARGET_REVIEW_GOAL,
+    OWNER_ACCESS_CONFIG_FILENAME,
+    OWNER_VIEW_DRY_RUN_PASS,
+    READY_FOR_TEAM_CUMULATIVE_V3_HUMAN_AUDIT,
+    TAPSE_TARGET_REVIEW_GOAL,
+    TARGET_AUDIT_MINIMUM_REACHED,
+    TEAM_CUMULATIVE_PROGRESS_DRY_RUN_PASS,
+    activate_team_progress,
+    calculate_team_progress,
+    metadata_only_team_progress_dry_run,
 )
 from jdim_tier1.audit_protocol_v3 import (  # noqa: E402
     BASE_SCORING_SCOPE_BY_TIER,
@@ -1745,6 +1761,308 @@ class AuditDefaultPresetTests(unittest.TestCase):
         self.assertEqual(activated["status"], "DEFAULT_PRESET_PRODUCTION_VERIFIED")
         self.assertEqual(activated["aggregate_counts_before"], activated["aggregate_counts_after"])
         self.assertFalse(activated["existing_records_modified"])
+
+
+class TeamCumulativeProgressTests(unittest.TestCase):
+    SOURCE_COMMIT = "e" * 40
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.fixture = ParentFixture(self.root)
+        self.output = self.root / "reduced"
+        self.fixture.build_package(self.output)
+        plan = plan_protocol_v3_transition(
+            self.output,
+            created_at_utc="2026-09-03T12:00:00Z",
+        )
+        apply_protocol_v3_transition(plan, source_commit="a" * 40)
+        backup = create_production_review_backup(
+            self.output,
+            source_commit=self.SOURCE_COMMIT,
+            created_at_utc="2026-09-10T12:00:00Z",
+        )
+        activate_default_preset(
+            self.output,
+            source_commit=self.SOURCE_COMMIT,
+            backup_certificate_path=Path(backup["certificate_path"]),
+            owner_quiet_window_confirmed=True,
+            cutover_timestamp_utc="2026-09-10T12:01:00Z",
+            cutover_id="V31-TEAM-TEST-CUTOVER",
+        )
+        self.activation = activate_team_progress(
+            self.output,
+            source_commit=self.SOURCE_COMMIT,
+            backup_certificate_path=Path(backup["certificate_path"]),
+            owner_quiet_window_confirmed=True,
+            created_at_utc="2026-09-10T12:02:00Z",
+        )
+        self.owner_secret = Path(self.activation["owner_secret_path"]).read_text(
+            encoding="utf-8"
+        ).strip()
+        self.service = RoleAwareAuditService(
+            self.output,
+            self.fixture.paths.parent_media_root,
+            source_commit=self.SOURCE_COMMIT,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def claim(self, code: str, role: str) -> dict[str, object]:
+        return self.service.claim(
+            {
+                "reviewer_code": code,
+                "role": role,
+                "action": ACTION_CLAIM_NEXT,
+                "qualification_confirmed": True,
+            }
+        )
+
+    def finalize(self, response: dict[str, object]) -> None:
+        checkpoint = response["checkpoint"]
+        for clip in response["study"]["clips"]:
+            record = dict(DEFAULT_PRESET_VALUES)
+            if clip["evidence_tier"] == TIER_A:
+                record[V3_SOURCE_ONLY_PRIMARY_FIELD] = "no"
+            checkpoint = self.service.confirm_clip(
+                response["session_token"],
+                clip_id=clip["clip_audit_id"],
+                annotation=record,
+            )["checkpoint"]
+        audit_id = response["study"]["audit_id"]
+        study = dict(checkpoint["annotations"]["studies"][audit_id])
+        study.update(
+            {
+                "reader_confidence": "not_assessable",
+                "derived_summary_confirmed": "yes",
+                "restricted_notes": "Synthetic completion.",
+            }
+        )
+        self.service.save(
+            response["session_token"],
+            {
+                "studies": {audit_id: study},
+                "clips": checkpoint["annotations"]["clips"],
+            },
+        )
+        self.service.lock(response["session_token"])
+
+    def owner_login(self) -> str:
+        return self.service.owner_login({"owner_secret": self.owner_secret})[
+            "owner_session_token"
+        ]
+
+    def test_team_counts_are_cumulative_cross_target_and_secondary_safe(self) -> None:
+        lvot = {"X", *(f"L{index}" for index in range(1, 15))}
+        tapse = {"X", *(f"T{index}" for index in range(1, 15))}
+        primary = sorted(lvot | tapse)
+        formal = primary[:FORMAL_RELIABILITY_N]
+        tier = {study: TIER_A if index < 7 else TIER_C for index, study in enumerate(primary)}
+        events = [
+            {"event_id": "E1", "physical_study_token": "L1", "reviewer_code": "A", "role": "primary", "protocol_name": "P"},
+            {"event_id": "E2", "physical_study_token": "T1", "reviewer_code": "B", "role": "primary", "protocol_name": "P"},
+            {"event_id": "E3", "physical_study_token": "X", "reviewer_code": "C", "role": "primary", "protocol_name": "P"},
+            {"event_id": "E4", "physical_study_token": formal[0], "reviewer_code": "B", "role": "secondary", "protocol_name": "P", "formal_reliability": True},
+            {"event_id": "E5", "physical_study_token": "L2", "reviewer_code": "A", "role": "primary", "protocol_name": "P", "claim_timestamp_utc": "2026-09-10T11:00:00Z"},
+        ]
+        states = {
+            event["event_id"]: {
+                "workflow_state": "CLAIMED_INCOMPLETE" if event["event_id"] == "E5" else "FINALIZED_LOCKED",
+                "completion_validation_passed": event["event_id"] != "E5",
+                "required_clip_count": 2,
+                "completed_clip_count": 0 if event["event_id"] == "E5" else 2,
+            }
+            for event in events
+        }
+        calculated = calculate_team_progress(
+            primary_queue=primary,
+            formal_queue=formal,
+            target_studies={LVOT_VTI: lvot, TAPSE: tapse},
+            tier_by_study=tier,
+            events=events,
+            review_states=states,
+            reviewers=[{"reviewer_code": code, "active": True} for code in "ABC"],
+            protocol_name="P",
+            now_utc="2026-09-10T12:00:00Z",
+        )["shared"]
+        self.assertEqual(calculated["target_progress"][LVOT_VTI], {"finalized": 2, "goal": 15})
+        self.assertEqual(calculated["target_progress"][TAPSE], {"finalized": 2, "goal": 15})
+        self.assertEqual(calculated["physical_studies"]["finalized"], 3)
+        self.assertEqual(calculated["formal_repeat_reviews"]["finalized"], 1)
+        self.assertEqual(calculated["primary"]["in_progress"], 1)
+        self.assertFalse(calculated["statuses"][TARGET_AUDIT_MINIMUM_REACHED])
+        self.assertFalse(calculated["statuses"][AUDIT_READY_FOR_LOCKED_AGGREGATION])
+
+    def test_minimum_gate_requires_both_targets_and_repeat_gate_is_separate(self) -> None:
+        overlap = "X"
+        lvot = {overlap, *(f"L{index}" for index in range(1, 15))}
+        tapse = {overlap, *(f"T{index}" for index in range(1, 15))}
+        primary = sorted(lvot | tapse)
+        formal = primary[:FORMAL_RELIABILITY_N]
+        events = [
+            {
+                "event_id": f"P{index}",
+                "physical_study_token": study,
+                "reviewer_code": f"R{index}",
+                "role": "primary",
+                "protocol_name": "P",
+            }
+            for index, study in enumerate(primary)
+        ]
+        states = {
+            event["event_id"]: {
+                "workflow_state": "FINALIZED_LOCKED",
+                "completion_validation_passed": True,
+                "required_clip_count": 1,
+                "completed_clip_count": 1,
+            }
+            for event in events
+        }
+        shared = calculate_team_progress(
+            primary_queue=primary,
+            formal_queue=formal,
+            target_studies={LVOT_VTI: lvot, TAPSE: tapse},
+            tier_by_study={study: TIER_C for study in primary},
+            events=events,
+            review_states=states,
+            reviewers=[],
+            protocol_name="P",
+        )["shared"]
+        self.assertTrue(shared["statuses"][TARGET_AUDIT_MINIMUM_REACHED])
+        self.assertFalse(shared["statuses"][FORMAL_REPEAT_REVIEW_COMPLETE])
+        self.assertFalse(shared["statuses"][BLINDED_ADJUDICATION_COMPLETE])
+        self.assertFalse(shared["statuses"][AUDIT_READY_FOR_LOCKED_AGGREGATION])
+        self.assertTrue(shared["primary"]["formal_claiming_closed"])
+
+    def test_claim_and_defaults_do_not_count_but_lock_updates_one_team_total(self) -> None:
+        self.service.registry.register("teamone", qualified=True)
+        before = self.service.shared_progress()
+        response = self.claim("teamone", ROLE_PRIMARY)
+        claimed = self.service.shared_progress()
+        self.assertEqual(claimed["physical_studies"]["finalized"], 0)
+        self.assertEqual(claimed["primary"]["in_progress"], 1)
+        self.assertEqual(before["target_progress"], claimed["target_progress"])
+        self.finalize(response)
+        finalized = self.service.shared_progress()
+        self.assertEqual(finalized["physical_studies"]["finalized"], 1)
+        self.assertEqual(sum(v["finalized"] for v in finalized["target_progress"].values()), 1)
+
+    def test_role_status_has_team_totals_without_next_study_target(self) -> None:
+        self.service.registry.register("rolestatus", qualified=True)
+        status = self.service.role_status(
+            {
+                "reviewer_code": "rolestatus",
+                "role": ROLE_PRIMARY,
+                "qualification_confirmed": True,
+            }
+        )
+        self.assertFalse(status["individual_target_obligation"])
+        self.assertFalse(status["next_study_target_visible"])
+        self.assertNotIn("target_membership", json.dumps(status))
+
+    def test_owner_auth_is_separate_and_actions_are_immutably_logged(self) -> None:
+        self.service.registry.register("ordinary", qualified=True)
+        with self.assertRaises(PermissionError):
+            self.service.owner_login({"owner_secret": "ordinary"})
+        owner = self.owner_login()
+        with self.assertRaises(PermissionError):
+            self.service.owner_action(
+                {
+                    "owner_session_token": "ordinary",
+                    "action": "register_reviewer",
+                    "owner_confirmed": True,
+                    "reviewer_code": "newdoctor",
+                }
+            )
+        result = self.service.owner_action(
+            {
+                "owner_session_token": owner,
+                "action": "register_reviewer",
+                "owner_confirmed": True,
+                "reviewer_code": "newdoctor",
+            }
+        )
+        self.assertEqual(result["status"], "OWNER_ACTION_RECORDED")
+        logs = list(self.service.owner_log_root.glob("owner-action-*.json"))
+        self.assertEqual(len(logs), 1)
+        log = json.loads(logs[0].read_text(encoding="utf-8"))
+        self.assertFalse(log["annotation_values_modified"])
+
+    def test_owner_archive_and_restart_preserve_prior_files(self) -> None:
+        for code in ("openreview", "lockedreview"):
+            self.service.registry.register(code, qualified=True)
+        open_response = self.claim("openreview", ROLE_PRIMARY)
+        locked_response = self.claim("lockedreview", ROLE_PRIMARY)
+        self.finalize(locked_response)
+        event_id = locked_response["event"]["event_id"]
+        event_root = self.service.checkpoints.root / event_id
+        checkpoint_hash = sha256_file(event_root / "checkpoint.json")
+        lock_hash = sha256_file(event_root / "LOCKED.json")
+        owner = self.owner_login()
+        self.service.owner_action(
+            {
+                "owner_session_token": owner,
+                "action": "archive_incomplete",
+                "owner_confirmed": True,
+                "event_id": open_response["event"]["event_id"],
+                "reason": "verified test reassignment",
+            }
+        )
+        self.assertEqual(
+            self.service.queue.get_event(open_response["event"]["event_id"])["status"],
+            "archived_incomplete",
+        )
+        self.service.owner_action(
+            {
+                "owner_session_token": owner,
+                "action": "restart_finalized",
+                "owner_confirmed": True,
+                "event_id": event_id,
+            }
+        )
+        self.assertEqual(checkpoint_hash, sha256_file(event_root / "checkpoint.json"))
+        self.assertEqual(lock_hash, sha256_file(event_root / "LOCKED.json"))
+        self.assertIn(event_id, json.loads(self.service.queue.state_path.read_text())["superseded_event_ids"])
+
+    def test_shared_assets_are_aggregate_and_owner_route_is_separate(self) -> None:
+        assets = current_role_aware_interface_assets()
+        html = assets["index.html"].decode("utf-8")
+        javascript = assets["app.js"].decode("utf-8")
+        owner = assets["owner.html"].decode("utf-8") + assets["owner.js"].decode("utf-8")
+        self.assertIn("LVOT VTI study reviews", html)
+        self.assertIn("cumulative team totals", html)
+        self.assertIn('href="/owner"', html)
+        self.assertIn("/api/progress", javascript)
+        self.assertNotIn("/api/restart-finalized", javascript)
+        self.assertIn("Owner access secret", owner)
+        self.assertIn("/api/owner/action", owner)
+        self.assertNotIn("clinical answers", owner)
+
+    def test_production_metadata_dry_run_is_read_only(self) -> None:
+        before = aggregate_review_state_counts(self.output)
+        result = metadata_only_team_progress_dry_run(
+            self.output,
+            source_commit=self.SOURCE_COMMIT,
+        )
+        self.assertEqual(result["status"], TEAM_CUMULATIVE_PROGRESS_DRY_RUN_PASS)
+        self.assertEqual(result["owner_status"], OWNER_VIEW_DRY_RUN_PASS)
+        self.assertEqual(result["production_state_sha256_before"], result["production_state_sha256_after"])
+        self.assertEqual(before, aggregate_review_state_counts(self.output))
+        self.assertFalse(result["production_annotation_content_read"])
+
+    def test_activation_certificate_preserves_existing_state(self) -> None:
+        self.assertEqual(
+            self.activation["readiness_status"],
+            READY_FOR_TEAM_CUMULATIVE_V3_HUMAN_AUDIT,
+        )
+        self.assertEqual(
+            self.activation["review_state_sha256_before"],
+            self.activation["review_state_sha256_after"],
+        )
+        self.assertFalse(self.activation["existing_records_modified"])
+        config = active_protocol_paths(self.output).protocol_root / "owner" / OWNER_ACCESS_CONFIG_FILENAME
+        self.assertTrue(config.is_file())
 
 
 if __name__ == "__main__":
