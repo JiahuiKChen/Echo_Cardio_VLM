@@ -1,10 +1,12 @@
 # Revalidation writing and presentation snapshot — 2026-09-09
 
-Status: **draft preparation; no new predictive results in this directory**. This dated snapshot preserves the accepted version-10 abstract and April historical results unchanged. It does not create a SAP, clinical, test-access, conference, or execution lock.
+Status: **analysis complete; first-manuscript reporting package prepared privately outside Git**. Job 7504510 completed all eight stages through rendering with failed=0 and exit_status=0; exactly one fixed-test evaluation occurred in that run. The completed result bundle is `2cd9738b32517c145565da39fc24eec0289e1d1545250b58669504de88a4424f` and paired ASA supplement is `abda1880ed00f548e71b2edd8ccf812c2f8896d760dabb1bd770b20a36319bdf`. The maintained suite previously passed 2,110 tests with one skip. No new scientific computation is required for manuscript preparation.
 
-The critical path is the existing vision-only, structured-only, and early-fusion revalidation. C3 reconstruction is complete; clinical/technical decisions and the validated statistical bundle determine which analysis claims can be released. Comparator feasibility and image-content audit proposals are separate workstreams and do not authorize new downloads or encoder inference.
+The current private deliverables are under `lvef_asa_revalidation_20260909_results/manuscript_package_v1`: manuscript DOCX/Markdown/PDF, complete numerical tables and supplement, publication figures, verified bibliography, reporting checklist and internal submission review. The approved ASA author slide and speech remain preserved for October 2. These unpublished artifacts and licensed article files are not committed here. The accepted version-10 abstract, April results and earlier draft/template files below remain historical records.
 
-## Drafts
+The vision-only, structured-only and early-fusion revalidation is finished. The eight owner-relayed operational interpretations remain closed with their recorded evidence limitations. Comparator feasibility and image-content audit proposals remain unperformed workstreams; their presence does not authorize new downloads or encoder inference.
+
+## Preserved preparation drafts and authority records
 
 | Document | Purpose |
 |---|---|
@@ -54,10 +56,10 @@ The 2026-09-09 owner-private completion handoff establishes 19 finalized batches
 
 The receipt is a derived, nonauthorizing handoff under the attempt's `r7h_auth_successor_v2/completion` namespace. Four execution epochs and the original 16 batch receipts remain preserved. Historical partials (4,757 files, 259 directories, 8,583,119,701 bytes) remain sealed and unadopted. These control details belong in reproducibility materials, not the poster's central scientific message.
 
-## Before replacing any result placeholder
+## Completed analysis and current reporting authority
 
-Use the current [analysis readiness record](../analysis_readiness_2026_09_09.md) and [execution authority](execution_runbook.md). The eight owner-relayed interpretations and nine technical dispositions have been applied to the published 21-target panel, with LVEF separate. All seven SCC preflight gates passed and CPU job 7504510 was submitted. The original blank direct-entry response remains historical evidence; it is not a current missing-review condition. Preserve the recorded operational evidence strength and source-acquisition limitations.
+Use the completed [execution record](execution_runbook.md), final panel and private completed-run reconciliation. The eight owner-relayed interpretations and nine technical dispositions were applied to the retained 21-target panel, with LVEF separate. All seven SCC preflight gates and all eight analysis stages passed. The original blank direct-entry response remains historical evidence; it is not a current missing-review condition. Preserve the recorded operational evidence strength and source-acquisition limitations.
 
 Bind every populated table to the final ordered panel, common-row and split manifests, source and embedding hashes, reviewed masks/units, training-only transformations, frozen validation selections, SAP/config hashes, fixed-test release, and aggregate-safety-validated result bundle. Record the later statistical implementation commit independently of the completed C3 producer. Unresolved non-LVEF margins withhold margin-based labels but need not withhold native-unit errors and paired intervals.
 
-The current vendor emails establish a single landscape 16:9 PowerPoint or PDF slide and an October 2, 2026 deadline described as “all day for all time zones.” Permission to replace accepted results and the remaining export/publication rules are still unverified. These remaining questions do not block drafts or authorized statistical work.
+The vendor emails establish a single landscape 16:9 PowerPoint or PDF slide and an October 2, 2026 deadline described as “all day for all time zones.” No demonstrated 2026 special-permission requirement or ban on updated results was found. Earlier organizer questions are not an ASA ruling or a new approval gate. No poster upload, preprint posting or manuscript submission has been performed. The next milestone is coauthor review of the completed draft and the consolidated genuinely unavailable declarations; no further scientific run is required.

@@ -1,5 +1,7 @@
 # Restricted execution and evidence record
 
+**Current status: completed.** Job 7504510 passed all eight stages through rendering, with failed=0 and exit_status=0 and exactly one fixed-test evaluation in this run. The completed receipts supersede preparation estimates and intermediate execution states below. Manuscript reporting uses the existing validated aggregates; the original scientific artifacts, evaluation claim and C3 producer remain unchanged.
+
 This is the analysis phase after completed C3. The original SCC producer checkout,
 attempt, receipts and historical partial remain preserved. New code runs from a
 separate analysis worktree; new restricted artifacts live in a separate analysis
@@ -80,7 +82,7 @@ patterns and already selected models; it does not create a new fitting search.
 Secondary constructs or missingness simulations never activate a replacement
 core Holm family. The strict core remains exactly four claims.
 
-## Environment and resource planning
+## Historical environment inspection and resource planning
 
 The SCC C3 Python environment was inspected without modification: Python 3.10.12,
 NumPy 2.2.6, pandas 2.3.3, SciPy 1.15.3, scikit-learn 1.7.2, PyYAML 6.0.3 and
@@ -103,14 +105,13 @@ six analysis conditions; conditioning, extra binary summaries and SCC contention
 may change runtime. A **4-CPU, 16-GB, 4-hour CPU job** is a reasonable initial
 resource request. No GPU or 1.2-TB reconstruction envelope is justified.
 
-Clinical adjudication and panel/input preflight have passed. The execution path
-is analysis lock, one train/validation fit and fixed-test evaluation, then paired
-reporting and figure QA. Scheduler wait is not included in the computational
-estimate. The missing submission PDF
-affects historical source comparison. Vendor emails establish the slide format
-and deadline; permission for updated results and remaining export/publication
-rules still require confirmation before final poster submission. These gaps do
-not block scientific preparation.
+These estimates preceded the completed run and exclude scheduler wait. Clinical
+adjudication, panel/input preflight, development, the single fixed-test evaluation,
+reporting and rendering subsequently passed. Vendor emails establish the slide
+format and deadline. Later source clarification found no demonstrated 2026
+special-permission requirement or ban on updated results; earlier organizer
+questions are not a release rule. The accepted abstract and prior results remain
+historical evidence, and no poster or manuscript has been submitted in this phase.
 
 ## Historical preparation validation — 2026-09-09
 
@@ -189,9 +190,25 @@ and predictors, with no merge or time-to-velocity conversion.
 | SCC focused validation | `02171a51aef97514ccd0f045555977949d91bde36d6e0bdf44e7ac7ff876f59c` |
 
 CPU job **7504510** was accepted with **4 CPUs, 16 GB and an 8-hour limit**.
-It started at **15:12 UTC**. Maintained stage receipts now record PASS for
-validate, seal, development, freeze, release-test and the single fixed-test
-evaluation. Reporting is running, with no stage failure observed. These receipts
-establish completed fitting and evaluation, but no performance estimate or claim
-is populated before the validated aggregate bundle. The worker performs validate → seal → development → freeze → release-test
-→ evaluate → report → render, with no automatic retry of a consumed claim.
+It started at **15:12 UTC** and finished at **17:07:09 UTC on 2026-09-09**.
+The completed reconciliation records PASS for validate, seal, development,
+freeze, release-test, the single fixed-test evaluation, report and render.
+Scheduler accounting records **failed=0 and exit_status=0**. No job remains
+active for this completed analysis, and no scientific failure is demonstrated.
+
+| Completed owner-private reporting authority | SHA-256 |
+|---|---|
+| Completed-run reconciliation | `ba47419f6317cff28b6376d8ba501c6fa9b44dffea144113868648196bac5ef2` |
+| Validated aggregate bundle | `2cd9738b32517c145565da39fc24eec0289e1d1545250b58669504de88a4424f` |
+| Paired ASA supplement | `abda1880ed00f548e71b2edd8ccf812c2f8896d760dabb1bd770b20a36319bdf` |
+| Fixed-model freeze | `f03694bf2eabcf3806c1fa7837d6fc290e2cecad2521f89f9fe1b067e39f9c44` |
+| Single test-evaluation receipt | `87ead8b3f8945602554c745ca1ee06a791a0fdbdb9ce718ce018c494d7031623` |
+
+The completed writing package remains outside Git in the owner-private results
+directory. It distinguishes historical split exposure from the one evaluation
+in this run, preserves all 21 retained measurements and all six conditions, and
+keeps unavailable author declarations explicit. Reporting-only projection of
+already produced aggregate leaves does not rerun evaluation or resampling.
+The maintained 2,110-passed/one-skipped test result remains the implementation
+validation record; prose edits do not justify repeating that suite. The preserved
+C3 producer is not resynchronized for writing changes.

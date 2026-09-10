@@ -2,6 +2,12 @@
 
 Reproducible echocardiography ML pipeline for MIMIC-IV-ECHO with an EchoPrime embedding baseline and cloud/SCC-first execution.
 
+## Current completed LVEF revalidation
+
+C3 reconstruction and the locked revalidation are complete. C3 finalized 19 batches, 4,530 selected studies/subjects, 4,525 study embeddings and 184,570 clip embeddings, with five prespecified no-cine studies. Job 7504510 completed all eight analysis stages with failed=0 and exit_status=0 and exactly one fixed-test evaluation in that run. The split had historical performance exposure; completion does not establish untouched external validation. The analysis implementation is `d43f49901ea4e01f9380923387a6ad45960877db`; the preserved C3 producer is `cda842d04cc18eb3669ad5377c31a6e955fc43cb`.
+
+The [current reporting record](docs/lvef_multitask/revalidation_2026-09-09/README.md) supersedes the historical preparation statuses below. The first manuscript and supporting results remain in the owner-private results directory outside Git. This writing phase does not authorize another encoder, fit, bootstrap or fixed-test evaluation.
+
 ## Scope
 
 - Cohort construction from `physionet-data.mimiciv_echo` (BigQuery)
@@ -62,7 +68,9 @@ Reproducible echocardiography ML pipeline for MIMIC-IV-ECHO with an EchoPrime em
 - Do not commit DUA-governed data, raw/derived patient-level outputs, or downloaded imaging assets.
 - This repo is for code, SQL, configs, and documentation only.
 
-## LVEF/multitask Phase 1E-E status
+## Historical LVEF/multitask Phase 1E-E checkpoint
+
+The following capacity and authorization statements describe the earlier Phase 1E-E checkpoint, preserved for provenance. They are superseded for current execution status by the completed C3 and revalidation record above.
 
 On `codex/lvef-multitask-revalidation`, prospective C3 production orchestration is implemented for offline/synthetic validation only. The immutable selected-source authority remains 4,530 studies, 335,984 verified objects, and 1,216,569,133,322 source bytes. Immutable parent research attempt `lvef_multitask_phase1ee_post_expansion_capacity_attempt_001` established the research quota/filesystem evidence; composite successor `lvef_multitask_phase1ee_post_expansion_capacity_attempt_002` hash-revalidated it and added current backed-control evidence without repeating the research commands. The 1,989,000,000,000-byte research quota, underlying filesystem, file quota, and frozen 200-GB reserve all pass. Full C3 nevertheless remains `NO_GO`: the 11,000,000,000-byte backed control tier has only 40,635,392 quota bytes available and fails its control-plane operating-margin gate. The preferred administrative adjustment is 50 GB backed plus 1,950 GB research; 25/1,975 GB is the minimum option. The owner-attested administrative composition keeps the purchased 1-TB SAAS allocation entirely on the research tier; the machine receipt proves the exact total quota, not its funding source.
 
