@@ -93,6 +93,34 @@ candidate matching is not applicable because any entered value triggers human
 adjudication. The exporter fails closed for nonempty queues: post-adjudication
 candidate matching is a separate gated step, not an automated clinical choice.
 
+After completed human adjudication, use the distinct bounded export path:
+
+```sh
+$PY scripts/finalize_jdim_audit.py preflight-adjudicated-export \
+  --package-root "$AUDIT_ROOT" --output-root "$FINAL_ROOT" \
+  --expected-user "$PROJECT_USER" --review-source-commit "$REVIEW_SHA"
+$PY scripts/finalize_jdim_audit.py export-adjudicated \
+  --package-root "$AUDIT_ROOT" --output-root "$FINAL_ROOT" \
+  --expected-user "$PROJECT_USER" --review-source-commit "$REVIEW_SHA"
+```
+
+Both commands require the explicit confirmation phrase. The preflight writes
+nothing, including no administrative event. Every queued human decision must
+have an exact completion-lock hash, valid qualification/confirmation, and valid
+blinded linkage. Choices are applied only to an in-memory copy of Primary clips;
+the existing V3 roll-up supplies the analytical study summaries. Original
+Primary/Secondary reviews, their locked summaries, the adjudication records, and
+all earlier certificates remain byte-identical. Target assignments are read
+only after these gates pass. Report-label values and images are never read.
+
+This path is deliberately limited to completed adjudication with no remaining
+candidate-value matching requirement. Any candidate presence, uncertainty,
+non-assessability, or entered candidate number fails closed before membership is
+read. It does not infer a match or change a human answer. The aggregate-only
+summary records the completion-lock hash, number of applied items, and aggregate
+number of changed clip fields. Repeated export cannot overwrite an earlier
+aggregate directory. No new models or other scientific analyses are run.
+
 Pre-preset clarified reviews are validated as complete attributable manually
 entered clip records plus confirmed derived study summary. V3.1 reviews also
 require every explicit per-clip confirmation. Displayed defaults never count.

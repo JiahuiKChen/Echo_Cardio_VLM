@@ -37,8 +37,16 @@ class FinalAuditLockTests(unittest.TestCase):
                     record["reader_confidence"] = "high"
                     if v3.V3_SOURCE_ONLY_PRIMARY_FIELD in record:
                         record[v3.V3_SOURCE_ONLY_PRIMARY_FIELD] = "no"
+                    if getattr(self, "include_adjudication", False) and role == "primary" and _ == 0:
+                        record["calipers"] = "yes"
+                    if getattr(self, "include_candidate", False) and role == "primary" and _ == 0:
+                        record.update(candidate_target_value_present="yes", candidate_target_value="12.3",
+                                      visible_unit_text="cm", visible_measurement_name_text="LVOT VTI",
+                                      display_precision="0.1")
                 summary = v3.derive_study_summary(payload["annotations"]["clips"],self.service.checkpoints.clip_evidence_tiers)
                 summary.update(derived_summary_confirmed="yes",reader_confidence="high")
+                if getattr(self, "include_adjudication", False):
+                    summary["restricted_notes"] = "Synthetic positive-case test fixture."
                 payload["annotations"]["studies"] = {claimed["study"]["audit_id"]:summary}
                 self.service.save(claimed["session_token"], payload["annotations"])
                 self.service.lock(claimed["session_token"])
@@ -185,6 +193,127 @@ class FinalAuditLockTests(unittest.TestCase):
             def server_close(inner): pass
         with patch.object(adj,"ThreadingHTTPServer",FakeServer),patch("builtins.print"):
             adj.serve(self.output,self.root,8767)
+
+
+class PostAdjudicationExportTests(unittest.TestCase):
+    include_adjudication = True
+    setUp = FinalAuditLockTests.setUp
+    tearDown = FinalAuditLockTests.tearDown
+    freeze = FinalAuditLockTests.freeze
+
+    def complete_adjudication(self, *, lock=True):
+        from jdim_tier1.audit_adjudication import AdjudicationStore, lock_adjudication
+        self.freeze()
+        final.make_queue(self.output)
+        store = AdjudicationStore(self.output, self.root)
+        self.assertGreater(len(store.tasks), 0)
+        while store.next_task() is not None:
+            task = store.next_task()
+            answers = dict(task["primary"])
+            answers["calipers"] = "no"
+            store.save(task["token"], answers, "SYNTHETICPRIMARY", True)
+        if lock:
+            lock_adjudication(self.output)
+
+    def test_no_write_preflight_checks_complete_path_and_preserves_reviews(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication()
+        before = final.input_inventory(self.package)
+        digest = final.sha256_file(self.output / "blinded_snapshot_restricted.json")
+        result = export_after_adjudication(self.output, write=False)
+        self.assertEqual(result["status"], "POST_ADJUDICATION_EXPORT_PREFLIGHT_PASS")
+        self.assertFalse(result["files_written"])
+        self.assertFalse((self.output / "aggregate_safe").exists())
+        self.assertEqual(before, final.input_inventory(self.package))
+        self.assertEqual(digest, final.sha256_file(self.output / "blinded_snapshot_restricted.json"))
+
+    def test_export_uses_locked_choices_and_rederives_only_aggregate_summary(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication()
+        snapshot_path = self.output / "blinded_snapshot_restricted.json"
+        before = snapshot_path.read_bytes()
+        self.assertIn(b'"calipers": "yes"', before)
+        result = export_after_adjudication(self.output)
+        self.assertEqual(result["status"], "MANUAL_INPUT_CONTENT_AUDIT_LOCKED")
+        payload = final.load(self.output / "aggregate_safe/manual_input_content_audit_summary.json")
+        self.assertGreater(payload["post_adjudication"]["changed_clip_fields"], 0)
+        self.assertTrue(payload["post_adjudication"]["human_decisions_only"])
+        self.assertFalse(payload["post_adjudication"]["report_label_values_read"])
+        rows = [r for r in payload["rows"] if r["field"] == "calipers_present"]
+        self.assertEqual(sum(r["counts"].get("yes", 0) for r in rows), 0)
+        self.assertEqual(sum(r["denominator"] for r in rows), 30)
+        self.assertEqual(before, snapshot_path.read_bytes())
+        for forbidden in ("reviewer_code", "audit_id", "subject_id", "study_id", "ADJ-", "DICOM"):
+            self.assertNotIn(forbidden, json.dumps(payload))
+        with self.assertRaises(FileExistsError):
+            export_after_adjudication(self.output)
+
+    def test_completed_records_without_completion_lock_are_rejected(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication(lock=False)
+        with self.assertRaises(FileNotFoundError):
+            export_after_adjudication(self.output, write=False)
+
+    def test_changed_human_record_is_rejected(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication()
+        path = next((self.output / "human_adjudication").glob("*.json"))
+        path.chmod(0o600)
+        path.write_text(path.read_text() + " ")
+        with self.assertRaises(ValueError):
+            export_after_adjudication(self.output, write=False)
+
+    def test_unexpected_human_record_is_rejected(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication()
+        final.write_once(self.output / "human_adjudication/unexpected.json", {})
+        with self.assertRaises(ValueError):
+            export_after_adjudication(self.output, write=False)
+
+    def test_completion_must_cover_exact_queue(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication()
+        path = self.output / "adjudication_completion_lock.json"
+        payload = final.load(path)
+        payload["completed_items"] -= 1
+        path.chmod(0o600)
+        path.write_text(json.dumps(payload))
+        with self.assertRaises(ValueError):
+            export_after_adjudication(self.output, write=False)
+
+    def test_completion_queue_hash_must_match(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication()
+        path = self.output / "adjudication_completion_lock.json"
+        payload = final.load(path)
+        payload["queue_sha256"] = "0" * 64
+        path.chmod(0o600)
+        path.write_text(json.dumps(payload))
+        with self.assertRaises(ValueError):
+            export_after_adjudication(self.output, write=False)
+
+    def test_nonempty_queue_cannot_use_old_empty_queue_export(self):
+        from jdim_tier1.audit_final_export import export_no_adjudication
+        self.complete_adjudication()
+        with self.assertRaises(ValueError):
+            export_no_adjudication(self.output)
+
+
+class PostAdjudicationCandidateGateTests(unittest.TestCase):
+    include_adjudication = True
+    include_candidate = True
+    setUp = FinalAuditLockTests.setUp
+    tearDown = FinalAuditLockTests.tearDown
+    freeze = FinalAuditLockTests.freeze
+    complete_adjudication = PostAdjudicationExportTests.complete_adjudication
+
+    def test_candidate_requires_matching_before_unblinding(self):
+        from jdim_tier1.audit_final_export import export_after_adjudication
+        self.complete_adjudication()
+        with patch("jdim_tier1.audit_final_export.csv.DictReader", side_effect=AssertionError("membership read")):
+            with self.assertRaisesRegex(ValueError, "matching requires"):
+                export_after_adjudication(self.output, write=False)
+        self.assertFalse((self.output / "aggregate_safe").exists())
 
 
 class AdjudicationEligibilityTests(unittest.TestCase):

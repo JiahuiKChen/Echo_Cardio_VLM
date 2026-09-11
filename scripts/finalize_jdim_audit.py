@@ -16,7 +16,8 @@ from jdim_tier1.audit_finalization import (
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("validate", "freeze", "finalize", "queue", "verify-lock",
-        "technical-check", "serve", "lock-adjudication", "export"))
+        "technical-check", "serve", "lock-adjudication", "export", "export-adjudicated",
+        "preflight-adjudicated-export"))
     parser.add_argument("--package-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--review-source-commit", required=True)
@@ -70,10 +71,14 @@ def main() -> int:
                 elif args.command == "lock-adjudication":
                     from jdim_tier1.audit_adjudication import lock_adjudication
                     result = lock_adjudication(args.output_root)
+                elif args.command in {"export-adjudicated", "preflight-adjudicated-export"}:
+                    from jdim_tier1.audit_final_export import export_after_adjudication
+                    result = export_after_adjudication(args.output_root,
+                        write=args.command == "export-adjudicated")
                 else:
                     from jdim_tier1.audit_final_export import export_no_adjudication
                     result = export_no_adjudication(args.output_root)
-                if args.command not in {"freeze", "finalize"}:
+                if args.command not in {"freeze", "finalize", "preflight-adjudicated-export"}:
                     logs = args.output_root / "administrative_events"
                     logs.mkdir(mode=0o700, exist_ok=True)
                     import secrets
