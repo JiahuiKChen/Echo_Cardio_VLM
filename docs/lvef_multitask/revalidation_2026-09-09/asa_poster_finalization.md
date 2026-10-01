@@ -22,7 +22,9 @@ and states that scaled MAE is unitless, not percentage error. LVOT VTI's scaled
 MAE is not divided by ten. The overall scores remain the full-precision,
 equal-weight means; they are not recomputed from rounded table values.
 
-The top bar also includes the owner's supplied BMC and BU logos. Original PNG
+The top bar also includes the owner's supplied BMC and BU logos, each 56 points
+high, below the title beside the author/affiliation block. The block reserves
+space for the logos without reducing its font sizes. Original PNG
 bytes are hash-bound, embedded locally with aspect ratios preserved, and kept
 outside Git. Transparent margins determine placement without modifying pixels.
 The no-cine exclusion sentence and duplicate panel-scaling footer were removed

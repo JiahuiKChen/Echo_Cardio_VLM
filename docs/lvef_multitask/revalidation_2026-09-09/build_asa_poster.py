@@ -141,27 +141,27 @@ def render(candidate, supplement, authors, *, output, font_directory,
     rect(0, 727, WIDTH, 173, INK)
     text(40, 880, "ANESTHESIOLOGY 2026  |  A1122", 13, "#BBD8E5", True)
     logo_placements = {}
-    for name, right in (("bmc", 1434), ("bu", 1560)):
+    for name, right in (("bmc", 1412), ("bu", 1560)):
         logo = logos[name]
         left, top, edge, bottom = logo["visible_bounds"]
         width, height = logo["size"]
-        scale = 34 / (bottom - top)
-        visible_x, visible_y = right - (edge - left) * scale, 861
+        scale = 56 / (bottom - top)
+        visible_x, visible_y = right - (edge - left) * scale, 736
         canvas.drawImage(ImageReader(io.BytesIO(logo["body"])),
                          visible_x - left * scale, visible_y - (height - bottom) * scale,
                          width=width * scale, height=height * scale, mask="auto")
         logo_placements[name] = {"source_sha256": logo["sha256"],
             "original_pixels_preserved": True, "aspect_ratio_preserved": True,
-            "visible_bounds_points": [visible_x, visible_y, right, 895]}
+            "visible_bounds_points": [visible_x, visible_y, right, 792]}
     paragraph(escape(base.TITLE), 40, 863, 1520, size=28, leading=32,
               color="#FFFFFF", bold=True, max_height=65)
     author_line = ";  ".join(escape(a["name"] + ", " + a["credentials"])
                               + f"<super>{a['affiliation']}</super>" for a in authors["authors"])
-    paragraph(author_line, 40, 791, 1520, size=17, leading=23, color="#FFFFFF", max_height=24)
+    paragraph(author_line, 40, 791, 1210, size=17, leading=23, color="#FFFFFF", max_height=24)
     for start, top in ((0, 765), (3, 748)):
         value = "   ".join(f"<super>{i+1}</super> " + escape(authors["affiliations"][i])
                            for i in range(start, start + 3))
-        paragraph(value, 40, top, 1520, size=11.4, leading=15.5,
+        paragraph(value, 40, top, 1210, size=11.4, leading=15.5,
                   color="#D0DFE6", max_height=16)
 
     rect(40, 663, 1520, 49, PALE)
