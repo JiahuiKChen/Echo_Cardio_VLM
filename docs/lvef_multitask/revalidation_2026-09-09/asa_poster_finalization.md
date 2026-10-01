@@ -22,6 +22,12 @@ and states that scaled MAE is unitless, not percentage error. LVOT VTI's scaled
 MAE is not divided by ten. The overall scores remain the full-precision,
 equal-weight means; they are not recomputed from rounded table values.
 
+The top bar also includes the owner's supplied BMC and BU logos. Original PNG
+bytes are hash-bound, embedded locally with aspect ratios preserved, and kept
+outside Git. Transparent margins determine placement without modifying pixels.
+The no-cine exclusion sentence and duplicate panel-scaling footer were removed
+at the owner's request; the table's scaled-MAE definition remains visible.
+
 The successor imports the unchanged `validated_inputs` reader from
 `build_asa_draft.py`. It requires independently observed SHA-256 bindings for the
 aggregate bundle, paired supplement and private author metadata. The full panel,
@@ -38,9 +44,13 @@ python docs/lvef_multitask/revalidation_2026-09-09/build_asa_poster.py \
   --bundle /path/outside-git/aggregate_bundle.json \
   --supplement /path/outside-git/asa_supplement.json \
   --authors /path/outside-git/author_details.json \
+  --bmc-logo /path/outside-git/bmc_logo.png \
+  --bu-logo /path/outside-git/bu_logo.png \
   --bundle-sha256 OBSERVED_BUNDLE_SHA256 \
   --supplement-sha256 OBSERVED_SUPPLEMENT_SHA256 \
   --authors-sha256 OBSERVED_AUTHOR_SHA256 \
+  --bmc-logo-sha256 OBSERVED_BMC_LOGO_SHA256 \
+  --bu-logo-sha256 OBSERVED_BU_LOGO_SHA256 \
   --output /path/outside-git/asa_a1122_poster_final.pdf \
   --receipt /path/outside-git/asa_a1122_poster_final.receipt.json
 ```

@@ -68,13 +68,29 @@ def display_measurement(row):
     return row["unit"], row["metrics"]["mae"]
 
 
+def read_logo(path: Path, expected: str) -> dict:
+    """Read the original supplied PNG; use alpha bounds only for PDF placement."""
+    from PIL import Image
+    base.require(path.is_file() and not path.is_symlink()
+                 and base.SHA.fullmatch(expected) is not None, "POSTER_LOGO_SOURCE_REQUIRED")
+    body = path.read_bytes()
+    base.require(len(body) < 16 * 1024 * 1024 and hashlib.sha256(body).hexdigest() == expected,
+                 "POSTER_LOGO_HASH_MISMATCH")
+    with Image.open(io.BytesIO(body)) as logo:
+        base.require(logo.format == "PNG" and logo.mode in ("RGB", "RGBA"), "POSTER_LOGO_PNG_REQUIRED")
+        bounds = logo.getchannel("A").getbbox() if logo.mode == "RGBA" else (0, 0, *logo.size)
+        base.require(bounds is not None, "POSTER_LOGO_EMPTY")
+        return {"body": body, "sha256": expected, "size": logo.size, "visible_bounds": bounds}
+
+
 def render(candidate, supplement, authors, *, output, font_directory,
-           bundle_sha256, supplement_sha256, authors_sha256):
+           bundle_sha256, supplement_sha256, authors_sha256, logos):
     from reportlab.pdfgen.canvas import Canvas
     from reportlab.lib.colors import HexColor
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.platypus import Paragraph
     from reportlab.pdfbase.pdfmetrics import registerFontFamily, stringWidth
+    from reportlab.lib.utils import ImageReader
     from pypdf import PdfReader
 
     base.fonts(font_directory)
@@ -124,6 +140,19 @@ def render(candidate, supplement, authors, *, output, font_directory,
     rect(0, 0, WIDTH, HEIGHT, "#FFFFFF")
     rect(0, 727, WIDTH, 173, INK)
     text(40, 880, "ANESTHESIOLOGY 2026  |  A1122", 13, "#BBD8E5", True)
+    logo_placements = {}
+    for name, right in (("bmc", 1434), ("bu", 1560)):
+        logo = logos[name]
+        left, top, edge, bottom = logo["visible_bounds"]
+        width, height = logo["size"]
+        scale = 34 / (bottom - top)
+        visible_x, visible_y = right - (edge - left) * scale, 861
+        canvas.drawImage(ImageReader(io.BytesIO(logo["body"])),
+                         visible_x - left * scale, visible_y - (height - bottom) * scale,
+                         width=width * scale, height=height * scale, mask="auto")
+        logo_placements[name] = {"source_sha256": logo["sha256"],
+            "original_pixels_preserved": True, "aspect_ratio_preserved": True,
+            "visible_bounds_points": [visible_x, visible_y, right, 895]}
     paragraph(escape(base.TITLE), 40, 863, 1520, size=28, leading=32,
               color="#FFFFFF", bold=True, max_height=65)
     author_line = ";  ".join(escape(a["name"] + ", " + a["credentials"])
@@ -137,7 +166,7 @@ def render(candidate, supplement, authors, *, output, font_directory,
 
     rect(40, 663, 1520, 49, PALE)
     text(55, 690, f"{flow['counts']['imaging_eligible']:,} patients with echo video data  |  LVEF test: {split['test']:,} patients  |  21 additional measurements", 20, bold=True)
-    text(55, 671, f"LVEF analysis: {split['train']:,} training / {split['val']:,} validation / {split['test']:,} test patients.  {flow['counts']['no_cine']} of {flow['counts']['selected_subjects']:,} selected patients had no cine data.", 14.5, MUTED)
+    text(55, 671, f"LVEF analysis: {split['train']:,} training / {split['val']:,} validation / {split['test']:,} test patients.", 14.5, MUTED)
 
     lx, lw, rx, rw = 40, 654, 735, 825
     text(lx, 638, "Question and design", 24, bold=True)
@@ -252,7 +281,7 @@ def render(candidate, supplement, authors, *, output, font_directory,
     text(815, 87, "Interpretation and limitations", 20, bold=True)
     paragraph("Single-dataset revalidation of a previously examined test split. Report values were the reference, without independent remeasurement. Acquisition details and image-annotation cues remain incompletely verified. Accuracy for unreported values and clinical use is not established.",
               815, 74, 745, size=12.7, leading=16, max_height=49)
-    text(40, 8, "[1] Vukadinovic et al. Nature 2026. doi:10.1038/s41586-025-09850-x.  [2] Data: MIMIC-IV-ECHO v1.0, PhysioNet. doi:10.13026/nrjh-5r77.  Panel scaling: MAE / training IQR (middle-50% spread).", 9.4, MUTED)
+    text(40, 8, "[1] Vukadinovic et al. Nature 2026. doi:10.1038/s41586-025-09850-x.  [2] Data: MIMIC-IV-ECHO v1.0, PhysioNet. doi:10.13026/nrjh-5r77.", 9.4, MUTED)
     canvas.linkURL("https://doi.org/10.1038/s41586-025-09850-x", (40, 6, 505, 20), relative=0, thickness=0)
     canvas.linkURL("https://doi.org/10.13026/nrjh-5r77", (509, 6, 1050, 20), relative=0, thickness=0)
     canvas.showPage(); canvas.save()
@@ -264,6 +293,7 @@ def render(candidate, supplement, authors, *, output, font_directory,
     base.require(all(label in extracted for label in base.LABELS.values())
                  and all(a["name"] in extracted for a in authors["authors"])
                  and "DRAFT" not in extracted and "Aggregate bundle" not in extracted
+                 and "selected patients had no cine data" not in extracted and "Panel scaling:" not in extracted
                  and "NOT FOR SUBMISSION" not in extracted, "POSTER_COMPLETE_TEXT_REQUIRED")
     base.require(not output.exists() and not output.is_symlink(), "POSTER_OUTPUT_ALREADY_EXISTS")
     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -276,15 +306,16 @@ def render(candidate, supplement, authors, *, output, font_directory,
             "display_conversion": {"lvot_vti": "mm to cm; divide all three MAEs by 10"},
             "display_order": "Clinical groups; source strict_panel order unchanged",
             "scaled_mae_definition": "Existing normalized_mae = native MAE / training IQR; dimensionless; no display-unit conversion",
+            "header_logos": logo_placements,
             "rendered_projection": projection, "conference_uploaded": False}
 
 
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("bundle", "supplement", "authors", "output", "receipt"):
+    for name in ("bundle", "supplement", "authors", "output", "receipt", "bmc-logo", "bu-logo"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("bundle", "supplement", "authors"):
+    for name in ("bundle", "supplement", "authors", "bmc-logo", "bu-logo"):
         parser.add_argument("--" + name + "-sha256", required=True)
     parser.add_argument("--font-directory", type=Path)
     args = parser.parse_args()
@@ -292,9 +323,11 @@ def main():
     candidate, supplement = base.validated_inputs(args.bundle, args.supplement,
         bundle_sha256=args.bundle_sha256, supplement_sha256=args.supplement_sha256)
     authors = read_authors(args.authors, args.authors_sha256)
+    logos = {"bmc": read_logo(args.bmc_logo, args.bmc_logo_sha256),
+             "bu": read_logo(args.bu_logo, args.bu_logo_sha256)}
     result = render(candidate, supplement, authors, output=args.output, font_directory=args.font_directory,
         bundle_sha256=args.bundle_sha256, supplement_sha256=args.supplement_sha256,
-        authors_sha256=args.authors_sha256)
+        authors_sha256=args.authors_sha256, logos=logos)
     result["builder_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     result["validated_reader_sha256"] = hashlib.sha256(Path(base.__file__).read_bytes()).hexdigest()
     with os.fdopen(os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as stream:
