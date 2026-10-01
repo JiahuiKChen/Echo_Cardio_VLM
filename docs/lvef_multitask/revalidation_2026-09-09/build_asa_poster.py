@@ -224,16 +224,17 @@ def render(candidate, supplement, authors, *, output, font_directory,
     paired_table(lx, lw, 197, anchor["contrasts"], 0, 2)
 
     text(rx, 638, "Prediction across 21 measurements", 24, bold=True)
-    text(rx, 615, "Cells: MAE in the listed unit (scaled MAE). Lower is better for both.", 14.3, MUTED)
-    text(rx, 598, "Scaled MAE = MAE / training IQR (middle-50% spread); unitless, not percentage error.", 12.6, MUTED)
-    rect(rx, 569, rw, 23, INK)
+    table_caption = "Cells: MAE in listed units (scaled MAE = MAE / training IQR); IQR = middle-50% spread. Lower is better."
+    base.require(stringWidth(table_caption, "ASA", 14.3) <= rw, "POSTER_CAPTION_OVERFLOW")
+    text(rx, 615, table_caption, 14.3, MUTED)
+    rect(rx, 587, rw, 23, INK)
     pos = {"group": rx + 8, "target": rx + 100, "unit": rx + 367, "n": rx + 422,
            "v": rx + 553, "s": rx + 686, "f": rx + 816}
-    text(pos["group"], 576, "Group", 13.5, "#FFFFFF", True)
-    text(pos["target"], 576, "Measurement", 14, "#FFFFFF", True)
+    text(pos["group"], 594, "Group", 13.5, "#FFFFFF", True)
+    text(pos["target"], 594, "Measurement", 14, "#FFFFFF", True)
     for key, name in (("unit", "Unit"), ("n", "Test n"), ("v", "Video"), ("s", "Recorded"), ("f", "Combined")):
-        text(pos[key], 576, name, 13.5, "#FFFFFF", True, right=True)
-    yy = 556
+        text(pos[key], 594, name, 13.5, "#FFFFFF", True, right=True)
+    yy = 574
     for group_index, (group, targets) in enumerate(DISPLAY_GROUPS):
         group_height = len(targets) * 14.5
         rect(rx, yy + 11 - group_height, 92, group_height, "#E8F0F4")
@@ -265,22 +266,21 @@ def render(candidate, supplement, authors, *, output, font_directory,
         if group_index < len(DISPLAY_GROUPS) - 1:
             line(rx, yy + 9, rx + rw, yy + 9)
             yy -= 3
-    base.require(yy >= 238, "POSTER_TABLE_OVERFLOW")
+    base.require(yy >= 256, "POSTER_TABLE_OVERFLOW")
 
-    text(rx, 231, "Overall scaled error across 21 measurements", 20, bold=True)
+    text(rx, 249, "Overall scaled error across 21 measurements", 20, bold=True)
     for i, modality in enumerate(MODALITIES):
-        text(rx + i * 278, 211, f"{SHORT_NAMES[i]}  {macro['macro_normalized_mae'][modality]:.3f}", 17, base.COLORS[i], True)
-    text(rx, 195, "Equal-weight average of the 21 scaled MAEs shown above.", 11.8, MUTED)
-    paired_table(rx, rw, 179, macro["macro_contrasts"], 2, 4)
+        text(rx + i * 278, 229, f"{SHORT_NAMES[i]}  {macro['macro_normalized_mae'][modality]:.3f}", 17, base.COLORS[i], True)
+    text(rx, 213, "Equal-weight average of the 21 scaled MAEs shown above.", 11.8, MUTED)
+    paired_table(rx, rw, 197, macro["macro_contrasts"], 2, 4)
 
-    text(40, 117, "95% CIs: 10,000 paired patient resamples with fitted models fixed. P values: Holm-adjusted across four planned comparisons. Negative differences favor Combined.", 11.7, MUTED)
-    line(40, 108, 1560, 108)
-    text(40, 87, "What we found", 20, bold=True)
+    line(lx, 144, rx + rw, 144)
+    text(lx, 122, "What we found", 20, bold=True)
     paragraph("Combining video and recorded measurements did not demonstrate better LVEF prediction than video alone. It modestly reduced average normalized error across 21 other measurements; clinical importance remains uncertain.",
-              40, 74, 735, size=13.7, leading=17.5, max_height=54)
-    text(815, 87, "Interpretation and limitations", 20, bold=True)
+              lx, 110, lw, size=18, leading=23, max_height=92)
+    text(rx, 122, "Interpretation and limitations", 20, bold=True)
     paragraph("Single-dataset revalidation of a previously examined test split. Report values were the reference, without independent remeasurement. Acquisition details and image-annotation cues remain incompletely verified. Accuracy for unreported values and clinical use is not established.",
-              815, 74, 745, size=12.7, leading=16, max_height=49)
+              rx, 110, rw, size=18, leading=23, max_height=92)
     text(40, 8, "[1] Vukadinovic et al. Nature 2026. doi:10.1038/s41586-025-09850-x.  [2] Data: MIMIC-IV-ECHO v1.0, PhysioNet. doi:10.13026/nrjh-5r77.", 9.4, MUTED)
     canvas.linkURL("https://doi.org/10.1038/s41586-025-09850-x", (40, 6, 505, 20), relative=0, thickness=0)
     canvas.linkURL("https://doi.org/10.13026/nrjh-5r77", (509, 6, 1050, 20), relative=0, thickness=0)

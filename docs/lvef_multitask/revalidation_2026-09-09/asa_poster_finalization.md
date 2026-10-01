@@ -17,8 +17,8 @@ and tissue Doppler, aorta/LV outflow, and right heart. This is a checked display
 permutation of the same 21 targets; the locked analysis order is unchanged.
 Each model cell shows native-unit MAE followed by scaled MAE in parentheses.
 The latter uses the existing validated `normalized_mae` (MAE / training IQR),
-displayed to three decimals. The caption defines IQR as the middle-50% spread
-and states that scaled MAE is unitless, not percentage error. LVOT VTI's scaled
+displayed to three decimals. The caption defines IQR as the middle-50% spread.
+Scaled MAE is unitless, not percentage error. LVOT VTI's scaled
 MAE is not divided by ten. The overall scores remain the full-precision,
 equal-weight means; they are not recomputed from rounded table values.
 
@@ -29,6 +29,13 @@ bytes are hash-bound, embedded locally with aspect ratios preserved, and kept
 outside Git. Transparent margins determine placement without modifying pixels.
 The no-cine exclusion sentence and duplicate panel-scaling footer were removed
 at the owner's request; the table's scaled-MAE definition remains visible.
+
+The two bottom paragraphs now use 18-point text, matching the research question,
+and align with the main left/right columns. A single-line measurement caption
+defines the parenthetical scaled MAE and training IQR. The full-width resampling,
+Holm-method and contrast-direction note was removed at the owner's request to
+give the conclusions more space. The displayed estimates, intervals, adjusted
+p values and paragraph wording are unchanged.
 
 The successor imports the unchanged `validated_inputs` reader from
 `build_asa_draft.py`. It requires independently observed SHA-256 bindings for the
