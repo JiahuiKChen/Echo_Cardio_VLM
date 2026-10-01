@@ -24,6 +24,18 @@ NAMES = ("Video only", "Recorded measurements", "Combined")
 SHORT_NAMES = ("Video", "Recorded", "Combined")
 INK, MUTED, PALE, LINE = base.INK, base.MUTED, base.PALE, base.LINE
 WIDTH, HEIGHT = base.WIDTH, base.HEIGHT
+DISPLAY_GROUPS = (
+    ("Left-heart<br/>size and<br/>walls", (
+        "left_ventricular_end_diastolic_diameter", "left_ventricular_end_systolic_diameter",
+        "septal_thickness", "inf_lat_thickness", "la_dimen", "la_4ch_length")),
+    ("Mitral and<br/>tissue<br/>Doppler", (
+        "mv_peak_e", "mv_peak_a", "sept_e_prime", "lat_e_prime")),
+    ("Aorta and<br/>LV outflow", (
+        "sinus_diam", "ascending_aorta_diameter", "arch_diam", "lvot_diam", "lvot_vti", "av_pk_vel")),
+    ("Right heart", (
+        "ra_length", "rv_diam", "tricuspid_annular_plane_systolic_excursion",
+        "tricuspid_regurgitant_peak_velocity", "ivc_diam")),
+)
 
 
 def read_authors(path: Path, expected: str) -> dict:
@@ -99,6 +111,9 @@ def render(candidate, supplement, authors, *, output, font_directory,
         return f"{value['effect']:+.{digits}f} [{lo:+.{digits}f}, {hi:+.{digits}f}]"
 
     primary = supplement["conditions"]["primary"]
+    display_panel = [target for _, targets in DISPLAY_GROUPS for target in targets]
+    base.require(len(display_panel) == len(set(display_panel)) == len(candidate["strict_panel"])
+                 and set(display_panel) == set(candidate["strict_panel"]), "POSTER_DISPLAY_PANEL_MISMATCH")
     anchor, macro = primary["lvef_mae"], primary["strict_panel_macro"]
     flow = candidate["flow"]
     split = flow["lvef_common_counts"]
@@ -180,35 +195,54 @@ def render(candidate, supplement, authors, *, output, font_directory,
     paired_table(lx, lw, 197, anchor["contrasts"], 0, 2)
 
     text(rx, 638, "Prediction across 21 measurements", 24, bold=True)
-    text(rx, 615, "Average prediction error in the units shown; lower is better.", 14.5, MUTED)
-    rect(rx, 584, rw, 24, INK)
-    pos = {"target": rx + 8, "unit": rx + 384, "n": rx + 452, "v": rx + 567, "s": rx + 683, "f": rx + 816}
-    text(pos["target"], 591, "Measurement", 14, "#FFFFFF", True)
+    text(rx, 615, "Cells: MAE in the listed unit (scaled MAE). Lower is better for both.", 14.3, MUTED)
+    text(rx, 598, "Scaled MAE = MAE / training IQR (middle-50% spread); unitless, not percentage error.", 12.6, MUTED)
+    rect(rx, 569, rw, 23, INK)
+    pos = {"group": rx + 8, "target": rx + 100, "unit": rx + 367, "n": rx + 422,
+           "v": rx + 553, "s": rx + 686, "f": rx + 816}
+    text(pos["group"], 576, "Group", 13.5, "#FFFFFF", True)
+    text(pos["target"], 576, "Measurement", 14, "#FFFFFF", True)
     for key, name in (("unit", "Unit"), ("n", "Test n"), ("v", "Video"), ("s", "Recorded"), ("f", "Combined")):
-        text(pos[key], 591, name, 13.5, "#FFFFFF", True, right=True)
-    for i, target in enumerate(candidate["strict_panel"]):
-        yy = 567 - i * 15
-        if i % 2 == 0: rect(rx, yy - 3, rw, 15, "#F1F5F7")
-        base.require(stringWidth(base.LABELS[target], "ASA", 14) < 344, "POSTER_LABEL_OVERFLOW")
-        text(pos["target"], yy, base.LABELS[target], 14)
-        target_rows = [r for r in rows if r["target"] == target]
-        display_unit = display_measurement(target_rows[0])[0]
-        text(pos["unit"], yy, display_unit, 12.5, MUTED, right=True)
-        text(pos["n"], yy, target_rows[0]["denominators"]["test"], 14, right=True)
-        record = {"target": target, "display_unit": display_unit,
-                  "test_n": target_rows[0]["denominators"]["test"], "display_mae": {}}
-        for key, modality, color in zip(("v", "s", "f"), MODALITIES, base.COLORS):
-            row = next(r for r in target_rows if r["modality"] == modality)
-            _, value = display_measurement(row)
-            text(pos[key], yy, f"{value:.2f}", 14.2, color, right=True)
-            record["display_mae"][modality] = value
-        projection["measurements"].append(record)
+        text(pos[key], 576, name, 13.5, "#FFFFFF", True, right=True)
+    yy = 556
+    for group_index, (group, targets) in enumerate(DISPLAY_GROUPS):
+        group_height = len(targets) * 14.5
+        rect(rx, yy + 11 - group_height, 92, group_height, "#E8F0F4")
+        paragraph(group, pos["group"], yy + 9, 78, size=11.7, leading=14,
+                  bold=True, max_height=group_height - 4)
+        for i, target in enumerate(targets):
+            if i % 2 == 0: rect(rx + 96, yy - 3.5, rw - 96, 14.5, "#F1F5F7")
+            base.require(stringWidth(base.LABELS[target], "ASA", 13.3) < 224, "POSTER_LABEL_OVERFLOW")
+            text(pos["target"], yy, base.LABELS[target], 13.3)
+            target_rows = [r for r in rows if r["target"] == target]
+            display_unit = display_measurement(target_rows[0])[0]
+            text(pos["unit"], yy, display_unit, 12.5, MUTED, right=True)
+            text(pos["n"], yy, target_rows[0]["denominators"]["test"], 13.3, right=True)
+            record = {"target": target, "display_group": group.replace("<br/>", " "),
+                      "display_unit": display_unit,
+                      "test_n": target_rows[0]["denominators"]["test"],
+                      "display_mae": {}, "scaled_mae": {}}
+            for key, modality, color in zip(("v", "s", "f"), MODALITIES, base.COLORS):
+                row = next(r for r in target_rows if r["modality"] == modality)
+                _, value = display_measurement(row)
+                scaled = row["metrics"]["normalized_mae"]
+                cell = f"{value:.2f} ({scaled:.3f})"
+                base.require(stringWidth(cell, "ASA", 13.3) < 118, "POSTER_VALUE_OVERFLOW")
+                text(pos[key], yy, cell, 13.3, color, right=True)
+                record["display_mae"][modality] = value
+                record["scaled_mae"][modality] = scaled
+            projection["measurements"].append(record)
+            yy -= 14.5
+        if group_index < len(DISPLAY_GROUPS) - 1:
+            line(rx, yy + 9, rx + rw, yy + 9)
+            yy -= 3
+    base.require(yy >= 238, "POSTER_TABLE_OVERFLOW")
 
-    text(rx, 236, "Overall error across 21 measurements", 20, bold=True)
+    text(rx, 231, "Overall scaled error across 21 measurements", 20, bold=True)
     for i, modality in enumerate(MODALITIES):
-        text(rx + i * 278, 214, f"{SHORT_NAMES[i]}  {macro['macro_normalized_mae'][modality]:.3f}", 17, base.COLORS[i], True)
-    text(rx, 198, "Errors scaled to each measurement's training variability, then averaged.", 11.8, MUTED)
-    paired_table(rx, rw, 180, macro["macro_contrasts"], 2, 4)
+        text(rx + i * 278, 211, f"{SHORT_NAMES[i]}  {macro['macro_normalized_mae'][modality]:.3f}", 17, base.COLORS[i], True)
+    text(rx, 195, "Equal-weight average of the 21 scaled MAEs shown above.", 11.8, MUTED)
+    paired_table(rx, rw, 179, macro["macro_contrasts"], 2, 4)
 
     text(40, 117, "95% CIs: 10,000 paired patient resamples with fitted models fixed. P values: Holm-adjusted across four planned comparisons. Negative differences favor Combined.", 11.7, MUTED)
     line(40, 108, 1560, 108)
@@ -240,6 +274,8 @@ def render(candidate, supplement, authors, *, output, font_directory,
             "supplement_sha256": supplement_sha256, "authors_sha256": authors_sha256,
             "patient_level_data_read": False, "model_refitted": False, "bootstrap_recomputed": False,
             "display_conversion": {"lvot_vti": "mm to cm; divide all three MAEs by 10"},
+            "display_order": "Clinical groups; source strict_panel order unchanged",
+            "scaled_mae_definition": "Existing normalized_mae = native MAE / training IQR; dimensionless; no display-unit conversion",
             "rendered_projection": projection, "conference_uploaded": False}
 
 

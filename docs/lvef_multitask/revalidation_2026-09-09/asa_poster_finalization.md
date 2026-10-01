@@ -12,6 +12,16 @@ Video, recorded measurements, and combined inputs have consistent colors.
 LVOT VTI alone is displayed in centimetres by dividing each existing millimetre
 MAE by ten. No source label, model, prediction, bootstrap or interval changes.
 
+The measurement table now groups rows by left-heart size/walls, mitral inflow
+and tissue Doppler, aorta/LV outflow, and right heart. This is a checked display
+permutation of the same 21 targets; the locked analysis order is unchanged.
+Each model cell shows native-unit MAE followed by scaled MAE in parentheses.
+The latter uses the existing validated `normalized_mae` (MAE / training IQR),
+displayed to three decimals. The caption defines IQR as the middle-50% spread
+and states that scaled MAE is unitless, not percentage error. LVOT VTI's scaled
+MAE is not divided by ten. The overall scores remain the full-precision,
+equal-weight means; they are not recomputed from rounded table values.
+
 The successor imports the unchanged `validated_inputs` reader from
 `build_asa_draft.py`. It requires independently observed SHA-256 bindings for the
 aggregate bundle, paired supplement and private author metadata. The full panel,
